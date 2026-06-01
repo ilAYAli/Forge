@@ -175,6 +175,155 @@ class DistributeTests(unittest.TestCase):
             self.assertEqual(0, result.returncode)
             self.assertEqual("mapped", (worker / "out.txt").read_text(encoding="utf-8"))
 
+    def test_worker_claims_runs_and_syncs_to_coordinator(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            coordinator = root / "coordinator"
+            subprocess.run(["git", "init", "-b", "main", str(coordinator)], check=True, stdout=subprocess.DEVNULL)
+            subprocess.run(["git", "config", "user.name", "Petter Wahlman"], cwd=coordinator, check=True)
+            subprocess.run(["git", "config", "user.email", "petter@wahlman.no"], cwd=coordinator, check=True)
+            (coordinator / "input.txt").write_text("fixed\n", encoding="utf-8")
+            subprocess.run(["git", "add", "input.txt"], cwd=coordinator, check=True)
+            subprocess.run(["git", "commit", "-m", "test"], cwd=coordinator, check=True, stdout=subprocess.DEVNULL)
+
+            worker = root / "worker"
+            subprocess.run(["git", "clone", str(coordinator), str(worker)], check=True, stdout=subprocess.DEVNULL)
+
+            manifest = coordinator / "manifest.json"
+            result = self.run_cli(
+                "plan",
+                "--name", "sync",
+                "--shards", "2",
+                "--work-dir", str(coordinator),
+                "--out", str(manifest),
+                "--command-template", "printf '{index}\\n' > {output}",
+                "--output-template", str(coordinator / "out" / "shard.{index}.txt"),
+                "--path-map", f"worker:{coordinator}={worker}",
+            )
+            self.assertEqual("", result.stderr)
+            self.assertEqual(0, result.returncode)
+
+            work = self.run_cli(
+                "work",
+                "--manifest", str(manifest),
+                "--coordinator", str(manifest),
+                "--profile", "worker",
+                "--worker", "test-worker",
+                "--max-tasks", "2",
+            )
+            self.assertEqual("", work.stderr)
+            self.assertEqual(0, work.returncode)
+
+            status = self.run_cli("status", "--manifest", str(manifest))
+            self.assertEqual(0, status.returncode)
+            self.assertIn("done=2", status.stdout)
+
+            verify = self.run_cli("verify", "--manifest", str(manifest))
+            self.assertEqual("", verify.stderr)
+            self.assertEqual(0, verify.returncode)
+            self.assertEqual("0\n", (coordinator / "out" / "shard.0.txt").read_text(encoding="utf-8"))
+            self.assertEqual("1\n", (coordinator / "out" / "shard.1.txt").read_text(encoding="utf-8"))
+
+    def test_claim_is_atomic_status_visible_and_released(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            subprocess.run(["git", "init", "-b", "main"], cwd=root, check=True, stdout=subprocess.DEVNULL)
+            subprocess.run(["git", "config", "user.name", "Petter Wahlman"], cwd=root, check=True)
+            subprocess.run(["git", "config", "user.email", "petter@wahlman.no"], cwd=root, check=True)
+            (root / "input.txt").write_text("fixed\n", encoding="utf-8")
+            subprocess.run(["git", "add", "input.txt"], cwd=root, check=True)
+            subprocess.run(["git", "commit", "-m", "test"], cwd=root, check=True, stdout=subprocess.DEVNULL)
+
+            manifest = root / "manifest.json"
+            plan = self.run_cli(
+                "plan",
+                "--name", "claim",
+                "--shards", "1",
+                "--work-dir", str(root),
+                "--out", str(manifest),
+                "--command-template", "printf x > {output}",
+                "--output-template", str(root / "out.txt"),
+            )
+            self.assertEqual(0, plan.returncode)
+
+            claim = self.run_cli(
+                "claim",
+                "--manifest", str(manifest),
+                "--worker", "worker-a",
+                "--json",
+            )
+            self.assertEqual("", claim.stderr)
+            self.assertEqual(0, claim.returncode)
+            self.assertEqual("task_0000", json.loads(claim.stdout)["task"])
+
+            second = self.run_cli(
+                "claim",
+                "--manifest", str(manifest),
+                "--worker", "worker-b",
+                "--json",
+            )
+            self.assertEqual(0, second.returncode)
+            self.assertIsNone(json.loads(second.stdout)["task"])
+
+            status = self.run_cli("status", "--manifest", str(manifest))
+            self.assertEqual(0, status.returncode)
+            self.assertIn("claimed=1", status.stdout)
+
+            heartbeat = self.run_cli(
+                "heartbeat",
+                "--manifest", str(manifest),
+                "--task", "task_0000",
+                "--worker", "worker-a",
+            )
+            self.assertEqual("", heartbeat.stderr)
+            self.assertEqual(0, heartbeat.returncode)
+
+            wrong_worker = self.run_cli(
+                "heartbeat",
+                "--manifest", str(manifest),
+                "--task", "task_0000",
+                "--worker", "worker-b",
+            )
+            self.assertNotEqual(0, wrong_worker.returncode)
+            self.assertIn("claimed by worker-a", wrong_worker.stderr)
+
+            release = self.run_cli("release", "--manifest", str(manifest), "--task", "task_0000")
+            self.assertEqual(0, release.returncode)
+            status = self.run_cli("status", "--manifest", str(manifest))
+            self.assertIn("pending=1", status.stdout)
+
+    def test_coordinator_doctor_requires_notify_command(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            subprocess.run(["git", "init", "-b", "main"], cwd=root, check=True, stdout=subprocess.DEVNULL)
+            subprocess.run(["git", "config", "user.name", "Petter Wahlman"], cwd=root, check=True)
+            subprocess.run(["git", "config", "user.email", "petter@wahlman.no"], cwd=root, check=True)
+            (root / "input.txt").write_text("fixed\n", encoding="utf-8")
+            subprocess.run(["git", "add", "input.txt"], cwd=root, check=True)
+            subprocess.run(["git", "commit", "-m", "test"], cwd=root, check=True, stdout=subprocess.DEVNULL)
+            manifest = root / "manifest.json"
+            self.run_cli(
+                "plan",
+                "--name", "doctor",
+                "--shards", "1",
+                "--work-dir", str(root),
+                "--out", str(manifest),
+                "--command-template", "true",
+                "--output-template", str(root / "out.txt"),
+            )
+
+            worker = self.run_cli("doctor", "--manifest", str(manifest), "--role", "worker")
+            self.assertEqual(0, worker.returncode)
+
+            coordinator = self.run_cli(
+                "doctor",
+                "--manifest", str(manifest),
+                "--role", "coordinator",
+                "--notify-command", "__definitely_missing_notifai__",
+            )
+            self.assertNotEqual(0, coordinator.returncode)
+            self.assertIn("notify command not found", coordinator.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()

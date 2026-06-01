@@ -9,10 +9,13 @@ import json
 import os
 import platform
 import re
+import shlex
 import shutil
+import signal
 import socket
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -27,6 +30,15 @@ def expand_path(value: str | Path) -> Path:
 
 def now() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%S%z")
+
+
+def epoch() -> float:
+    return time.time()
+
+
+def manifest_checksum(manifest: dict[str, Any]) -> str:
+    payload = json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
 
 
 def sha256_file(path: Path) -> str:
@@ -46,7 +58,10 @@ def file_record(path: Path) -> dict[str, Any]:
 
 
 def read_json(path: Path) -> dict[str, Any]:
-    data = json.loads(path.read_text(encoding="utf-8"))
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"{path}: invalid JSON: {exc}") from exc
     if not isinstance(data, dict):
         raise SystemExit(f"{path}: expected JSON object")
     return data
@@ -146,6 +161,10 @@ def log_dir(manifest: dict[str, Any]) -> Path:
     return manifest_base(manifest, "log_dir", "logs")
 
 
+def claim_dir(manifest: dict[str, Any]) -> Path:
+    return expand_path(str(manifest.get("claim_dir") or (state_dir(manifest).parent / "claims")))
+
+
 def work_dir(manifest: dict[str, Any]) -> Path:
     return manifest_base(manifest, "work_dir", ".")
 
@@ -222,6 +241,18 @@ def task_running_path(manifest: dict[str, Any], task: dict[str, Any]) -> Path:
     return state_dir(manifest) / f"{task['id']}.running.json"
 
 
+def task_claim_dir(manifest: dict[str, Any], task: dict[str, Any]) -> Path:
+    return claim_dir(manifest) / f"{task['id']}.claim"
+
+
+def task_claim_path(manifest: dict[str, Any], task: dict[str, Any]) -> Path:
+    return task_claim_dir(manifest, task) / "claim.json"
+
+
+def task_heartbeat_path(manifest: dict[str, Any], task: dict[str, Any]) -> Path:
+    return task_claim_dir(manifest, task) / "heartbeat.json"
+
+
 def task_log_path(manifest: dict[str, Any], task: dict[str, Any]) -> Path:
     return log_dir(manifest) / f"{task['id']}.log"
 
@@ -258,6 +289,60 @@ def task_complete(manifest: dict[str, Any], task: dict[str, Any]) -> bool:
     return all(path.exists() for path in task_outputs(task))
 
 
+def task_claim_state(manifest: dict[str, Any], task: dict[str, Any], *, lease_seconds: int) -> str | None:
+    path = task_claim_path(manifest, task)
+    if not path.exists():
+        return None
+    try:
+        payload = read_json(path)
+    except (OSError, json.JSONDecodeError):
+        return "claimed"
+    heartbeat = task_heartbeat_path(manifest, task)
+    heartbeat_epoch = float(payload.get("heartbeat_epoch") or payload.get("claimed_epoch") or 0)
+    if heartbeat.exists():
+        try:
+            heartbeat_payload = read_json(heartbeat)
+            heartbeat_epoch = float(heartbeat_payload.get("heartbeat_epoch") or heartbeat_epoch)
+        except (OSError, json.JSONDecodeError, ValueError):
+            pass
+    if lease_seconds > 0 and heartbeat_epoch and epoch() - heartbeat_epoch > lease_seconds:
+        return "stale"
+    return "claimed"
+
+
+def task_state(manifest: dict[str, Any], task: dict[str, Any], *, lease_seconds: int = 600) -> str:
+    if task_complete(manifest, task):
+        return "done"
+    if task_fail_path(manifest, task).exists():
+        return "fail"
+    if task_running_path(manifest, task).exists():
+        return "running"
+    claim_state = task_claim_state(manifest, task, lease_seconds=lease_seconds)
+    if claim_state:
+        return claim_state
+    return "pending"
+
+
+def terminate_process_group(proc: subprocess.Popen[Any], log: Any, reason: str) -> None:
+    log.write(f"{now()} terminate {reason}: pid={proc.pid}\n")
+    log.flush()
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    try:
+        proc.wait(timeout=10)
+        return
+    except subprocess.TimeoutExpired:
+        log.write(f"{now()} kill {reason}: pid={proc.pid}\n")
+        log.flush()
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        return
+    proc.wait()
+
+
 def run_task(manifest: dict[str, Any], task: dict[str, Any], *, force: bool) -> int:
     if task_complete(manifest, task) and not force:
         print(f"skip {task['id']}: already complete")
@@ -287,13 +372,23 @@ def run_task(manifest: dict[str, Any], task: dict[str, Any], *, force: bool) -> 
     with log_path.open("w", encoding="utf-8") as log:
         log.write(f"{started_at} start {task['id']}: {command}\n")
         log.flush()
-        rc = subprocess.call(
+        proc = subprocess.Popen(
             ["bash", "-lc", command],
             cwd=work_dir(manifest),
             stdout=log,
             stderr=subprocess.STDOUT,
             text=True,
+            start_new_session=True,
         )
+        timeout = task.get("timeout_s", manifest.get("timeout_s"))
+        try:
+            rc = proc.wait(timeout=float(timeout)) if timeout else proc.wait()
+        except subprocess.TimeoutExpired:
+            terminate_process_group(proc, log, "timeout")
+            rc = 124
+        except KeyboardInterrupt:
+            terminate_process_group(proc, log, "interrupt")
+            rc = 130
         finished_at = now()
         log.write(f"{finished_at} done {task['id']} rc={rc}\n")
 
@@ -311,6 +406,7 @@ def run_task(manifest: dict[str, Any], task: dict[str, Any], *, force: bool) -> 
         "command": command,
         "rc": rc,
         "log": str(log_path),
+        "manifest_sha256": manifest_checksum(manifest),
         "outputs": [file_record(path) for path in task_outputs(task) if path.exists()],
     }
     if rc == 0 and all(path.exists() for path in task_outputs(task)):
@@ -318,6 +414,210 @@ def run_task(manifest: dict[str, Any], task: dict[str, Any], *, force: bool) -> 
     else:
         write_json(task_fail_path(manifest, task), payload)
     return rc
+
+
+def claim_task(
+    manifest: dict[str, Any],
+    *,
+    worker: str,
+    profile: str | None,
+    lease_seconds: int,
+    retry_failed: bool,
+) -> dict[str, Any] | None:
+    claim_dir(manifest).mkdir(parents=True, exist_ok=True)
+    digest = manifest_checksum(manifest)
+    for task in sorted(manifest["tasks"], key=lambda item: int(item.get("index", 0))):
+        if task_complete(manifest, task):
+            continue
+        if task_fail_path(manifest, task).exists() and not retry_failed:
+            continue
+        claim_state = task_claim_state(manifest, task, lease_seconds=lease_seconds)
+        task_claim = task_claim_dir(manifest, task)
+        if claim_state == "claimed":
+            continue
+        if claim_state == "stale":
+            shutil.rmtree(task_claim, ignore_errors=True)
+        try:
+            task_claim.mkdir(parents=True)
+        except FileExistsError:
+            continue
+        payload = {
+            "schema": SCHEMA,
+            "task": task["id"],
+            "index": task.get("index"),
+            "worker": worker,
+            "profile": profile,
+            "claimed_at": now(),
+            "claimed_epoch": epoch(),
+            "heartbeat_epoch": epoch(),
+            "lease_seconds": lease_seconds,
+            "manifest_sha256": digest,
+        }
+        write_json(task_claim_path(manifest, task), payload)
+        write_json(task_heartbeat_path(manifest, task), payload)
+        return {"task": task["id"], "index": task.get("index"), "claim": payload}
+    return None
+
+
+def release_claim(manifest: dict[str, Any], task: dict[str, Any]) -> None:
+    shutil.rmtree(task_claim_dir(manifest, task), ignore_errors=True)
+
+
+def update_claim_heartbeat(manifest: dict[str, Any], task: dict[str, Any], *, worker: str) -> None:
+    claim_path = task_claim_path(manifest, task)
+    if not claim_path.exists():
+        raise SystemExit(f"{task['id']}: no active claim")
+    payload = read_json(claim_path)
+    expected_worker = str(payload.get("worker") or "")
+    if expected_worker and expected_worker != worker:
+        raise SystemExit(f"{task['id']}: claimed by {expected_worker}, not {worker}")
+    payload["heartbeat_at"] = now()
+    payload["heartbeat_epoch"] = epoch()
+    write_json(task_heartbeat_path(manifest, task), payload)
+
+
+def parse_coordinator(value: str) -> tuple[str | None, str]:
+    if ":" in value and not value.startswith("/"):
+        host, path = value.split(":", 1)
+        if host:
+            return host, path
+    return None, value
+
+
+def shell_join(args: list[str]) -> str:
+    return " ".join(shlex.quote(item) for item in args)
+
+
+def run_coordinator_cli(coordinator: str, args: list[str]) -> subprocess.CompletedProcess[str]:
+    host, manifest_path = parse_coordinator(coordinator)
+    full_args = ["distrib", *args]
+    full_args = [item.replace("{manifest}", manifest_path) for item in full_args]
+    if host:
+        return subprocess.run(
+            ["ssh", host, shell_join(full_args)],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+    script = str(Path(__file__).resolve())
+    local_args = [sys.executable, script, *full_args[1:]]
+    return subprocess.run(
+        local_args,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+
+
+def ensure_remote_parent(coordinator: str, path: Path) -> None:
+    host, _ = parse_coordinator(coordinator)
+    if not host:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        return
+    command = "mkdir -p " + shlex.quote(str(path.parent))
+    result = subprocess.run(["ssh", host, command], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.strip() or f"failed to create {host}:{path.parent}")
+
+
+def sync_file_to_coordinator(local: Path, coordinator: str, remote_path: Path) -> None:
+    ensure_remote_parent(coordinator, remote_path)
+    host, _ = parse_coordinator(coordinator)
+    if host:
+        result = subprocess.run(
+            ["rsync", "-a", str(local), f"{host}:{remote_path}"],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(result.stderr.strip() or f"rsync failed for {local}")
+        return
+    shutil.copy2(local, remote_path)
+
+
+def coordinator_result_payload(
+    *,
+    coordinator_manifest: dict[str, Any],
+    local_payload: dict[str, Any],
+    local_manifest: dict[str, Any],
+    coordinator_task: dict[str, Any],
+    local_task: dict[str, Any],
+    state: str,
+) -> tuple[dict[str, Any], Path]:
+    coordinator_outputs = task_outputs(coordinator_task)
+    local_outputs = task_outputs(local_task)
+    output_records = []
+    worker_outputs = []
+    for local_path, coordinator_path in zip(local_outputs, coordinator_outputs, strict=False):
+        if local_path.exists():
+            local_record = file_record(local_path)
+            output_records.append({
+                "path": str(coordinator_path),
+                "bytes": local_record["bytes"],
+                "sha256": local_record["sha256"],
+            })
+            worker_outputs.append(local_record)
+    state_path = (
+        task_done_path(coordinator_manifest, coordinator_task)
+        if state == "done"
+        else task_fail_path(coordinator_manifest, coordinator_task)
+    )
+    payload = dict(local_payload)
+    payload["manifest_sha256"] = manifest_checksum(coordinator_manifest)
+    payload["log"] = str(task_log_path(coordinator_manifest, coordinator_task))
+    payload["outputs"] = output_records
+    payload["worker"] = {
+        "host": local_payload.get("host"),
+        "platform": local_payload.get("platform"),
+        "profile_manifest_sha256": manifest_checksum(local_manifest),
+        "log": local_payload.get("log"),
+        "outputs": worker_outputs,
+    }
+    payload["synced_at"] = now()
+    payload["sync_state"] = "synced"
+    return payload, state_path
+
+
+def sync_task_result(
+    *,
+    coordinator: str,
+    coordinator_manifest: dict[str, Any],
+    local_manifest: dict[str, Any],
+    coordinator_task: dict[str, Any],
+    local_task: dict[str, Any],
+) -> None:
+    local_done = task_done_path(local_manifest, local_task)
+    local_fail = task_fail_path(local_manifest, local_task)
+    state = "done" if local_done.exists() else "fail"
+    local_state_path = local_done if local_done.exists() else local_fail
+    if not local_state_path.exists():
+        raise RuntimeError(f"{local_task['id']}: no local result state found")
+    local_payload = read_json(local_state_path)
+
+    for local_path, coordinator_path in zip(task_outputs(local_task), task_outputs(coordinator_task), strict=False):
+        if local_path.exists():
+            sync_file_to_coordinator(local_path, coordinator, coordinator_path)
+
+    sync_file_to_coordinator(
+        task_log_path(local_manifest, local_task),
+        coordinator,
+        task_log_path(coordinator_manifest, coordinator_task),
+    )
+
+    payload, coordinator_state_path = coordinator_result_payload(
+        coordinator_manifest=coordinator_manifest,
+        local_payload=local_payload,
+        local_manifest=local_manifest,
+        coordinator_task=coordinator_task,
+        local_task=local_task,
+        state=state,
+    )
+    sync_payload_path = local_state_path.with_suffix(local_state_path.suffix + ".sync.json")
+    write_json(sync_payload_path, payload)
+    sync_file_to_coordinator(sync_payload_path, coordinator, coordinator_state_path)
 
 
 def cmd_plan(args: argparse.Namespace) -> int:
@@ -363,6 +663,7 @@ def cmd_plan(args: argparse.Namespace) -> int:
         "work_dir": str(expand_path(args.work_dir)),
         "state_dir": str(state),
         "log_dir": str(logs),
+        "claim_dir": str(out.parent / "claims"),
         "vars": vars_obj,
         "path_maps": path_maps,
         "requirements": {
@@ -412,27 +713,180 @@ def cmd_run(args: argparse.Namespace) -> int:
     return run_task(manifest, task, force=args.force)
 
 
-def task_state(manifest: dict[str, Any], task: dict[str, Any]) -> str:
-    if task_complete(manifest, task):
-        return "done"
-    if task_fail_path(manifest, task).exists():
-        return "fail"
-    if task_running_path(manifest, task).exists():
-        return "running"
-    return "pending"
+def cmd_claim(args: argparse.Namespace) -> int:
+    manifest = load_manifest(expand_path(args.manifest))
+    result = claim_task(
+        manifest,
+        worker=args.worker,
+        profile=args.profile,
+        lease_seconds=args.lease_seconds,
+        retry_failed=args.retry_failed,
+    )
+    if args.json:
+        print(json.dumps(result or {"task": None}, sort_keys=True))
+    elif result:
+        print(result["task"])
+    else:
+        print("no pending tasks")
+    return 0
+
+
+def cmd_release(args: argparse.Namespace) -> int:
+    manifest = load_manifest(expand_path(args.manifest))
+    task = find_task(manifest, task_id=args.task, index=None)
+    release_claim(manifest, task)
+    print(task["id"])
+    return 0
+
+
+def coordinator_manifest_path(coordinator: str) -> str:
+    _, path = parse_coordinator(coordinator)
+    return path
+
+
+def claim_from_coordinator(args: argparse.Namespace) -> dict[str, Any] | None:
+    command = [
+        "claim",
+        "--manifest", "{manifest}",
+        "--worker", args.worker,
+        "--lease-seconds", str(args.lease_seconds),
+        "--json",
+    ]
+    if args.profile:
+        command.extend(["--profile", args.profile])
+    if args.retry_failed:
+        command.append("--retry-failed")
+    result = run_coordinator_cli(args.coordinator, command)
+    if result.returncode != 0:
+        raise SystemExit(result.stderr.strip() or result.stdout.strip() or "coordinator claim failed")
+    payload = json.loads(result.stdout)
+    if not payload.get("task"):
+        return None
+    return payload
+
+
+def release_on_coordinator(coordinator: str, task_id: str) -> None:
+    result = run_coordinator_cli(
+        coordinator,
+        ["release", "--manifest", "{manifest}", "--task", task_id],
+    )
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.strip() or result.stdout.strip() or "coordinator release failed")
+
+
+def heartbeat_on_coordinator(coordinator: str, task_id: str, worker: str) -> None:
+    result = run_coordinator_cli(
+        coordinator,
+        ["heartbeat", "--manifest", "{manifest}", "--task", task_id, "--worker", worker],
+    )
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.strip() or result.stdout.strip() or "coordinator heartbeat failed")
+
+
+def heartbeat_loop(
+    *,
+    coordinator: str,
+    task_id: str,
+    worker: str,
+    lease_seconds: int,
+    stop: threading.Event,
+) -> None:
+    interval = max(5.0, min(60.0, lease_seconds / 3 if lease_seconds > 0 else 30.0))
+    while not stop.wait(interval):
+        try:
+            heartbeat_on_coordinator(coordinator, task_id, worker)
+        except Exception as exc:
+            print(f"{task_id}: heartbeat failed: {exc}", file=sys.stderr)
+
+
+def cmd_work(args: argparse.Namespace) -> int:
+    coordinator_manifest = load_manifest(expand_path(args.manifest))
+    local_manifest = apply_profile(copy.deepcopy(coordinator_manifest), args.profile)
+    completed = 0
+    failed = 0
+
+    while args.max_tasks <= 0 or completed < args.max_tasks:
+        claim = claim_from_coordinator(args)
+        if claim is None:
+            break
+        task_id = str(claim["task"])
+        coordinator_task = find_task(coordinator_manifest, task_id=task_id, index=None)
+        local_task = find_task(local_manifest, task_id=task_id, index=None)
+        stop_heartbeat = threading.Event()
+        heartbeat = threading.Thread(
+            target=heartbeat_loop,
+            kwargs={
+                "coordinator": args.coordinator,
+                "task_id": task_id,
+                "worker": args.worker,
+                "lease_seconds": args.lease_seconds,
+                "stop": stop_heartbeat,
+            },
+            daemon=True,
+        )
+        heartbeat.start()
+        try:
+            rc = run_task(local_manifest, local_task, force=args.force)
+        finally:
+            stop_heartbeat.set()
+            heartbeat.join(timeout=5)
+        try:
+            sync_task_result(
+                coordinator=args.coordinator,
+                coordinator_manifest=coordinator_manifest,
+                local_manifest=local_manifest,
+                coordinator_task=coordinator_task,
+                local_task=local_task,
+            )
+            release_on_coordinator(args.coordinator, task_id)
+        except Exception as exc:
+            failed += 1
+            print(f"{task_id}: sync failed: {exc}", file=sys.stderr)
+            if args.fail_fast:
+                return 1
+        completed += 1
+        if rc != 0:
+            failed += 1
+            if args.fail_fast or rc in {130, 143}:
+                return rc
+
+    print(f"worker={args.worker} completed={completed} failed={failed}")
+    return 0 if failed == 0 else 1
+
+
+def cmd_doctor(args: argparse.Namespace) -> int:
+    manifest = apply_profile(load_manifest(expand_path(args.manifest)), args.profile)
+    check_requirements(manifest)
+    if args.role == "coordinator" and args.notify_command:
+        command = shlex.split(args.notify_command)
+        if not command:
+            raise SystemExit("--notify-command is empty")
+        if shutil.which(command[0]) is None:
+            raise SystemExit(f"notify command not found: {command[0]}")
+    print("ok")
+    return 0
+
+
+def cmd_heartbeat(args: argparse.Namespace) -> int:
+    manifest = load_manifest(expand_path(args.manifest))
+    task = find_task(manifest, task_id=args.task, index=None)
+    update_claim_heartbeat(manifest, task, worker=args.worker)
+    print(task["id"])
+    return 0
 
 
 def cmd_status(args: argparse.Namespace) -> int:
     manifest = apply_profile(load_manifest(expand_path(args.manifest)), args.profile)
-    counts = {"done": 0, "fail": 0, "running": 0, "pending": 0}
+    counts = {"done": 0, "fail": 0, "running": 0, "claimed": 0, "stale": 0, "pending": 0}
     rows = []
     for task in manifest["tasks"]:
-        state = task_state(manifest, task)
+        state = task_state(manifest, task, lease_seconds=args.lease_seconds)
         counts[state] += 1
         rows.append((task["id"], state))
     print(
         f"tasks={len(manifest['tasks'])} done={counts['done']} "
-        f"running={counts['running']} fail={counts['fail']} pending={counts['pending']}"
+        f"running={counts['running']} claimed={counts['claimed']} stale={counts['stale']} "
+        f"fail={counts['fail']} pending={counts['pending']}"
     )
     if args.verbose:
         for task_id, state in rows:
@@ -443,9 +897,26 @@ def cmd_status(args: argparse.Namespace) -> int:
 def verify_manifest(manifest: dict[str, Any]) -> None:
     check_requirements(manifest)
     failures = []
+    expected_manifest_sha = manifest_checksum(manifest)
     for task in manifest["tasks"]:
         if not task_complete(manifest, task):
             failures.append(f"{task['id']}: {task_state(manifest, task)}")
+            continue
+        done = read_json(task_done_path(manifest, task))
+        done_manifest_sha = str(done.get("manifest_sha256") or "")
+        if done_manifest_sha and done_manifest_sha != expected_manifest_sha:
+            failures.append(f"{task['id']}: manifest checksum mismatch")
+        records = done.get("outputs", [])
+        if isinstance(records, list):
+            by_path = {
+                str(item.get("path")): item
+                for item in records
+                if isinstance(item, dict) and item.get("path")
+            }
+            for output in task_outputs(task):
+                record = by_path.get(str(output))
+                if record and record.get("sha256") and sha256_file(output) != record["sha256"]:
+                    failures.append(f"{task['id']}: output checksum mismatch: {output}")
     if failures:
         raise SystemExit("incomplete tasks:\n" + "\n".join(failures))
 
@@ -532,10 +1003,54 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--force", action="store_true")
     run.set_defaults(func=cmd_run)
 
+    claim = sub.add_parser("claim", help="Atomically claim the next coordinator task.")
+    claim.add_argument("--manifest", required=True)
+    claim.add_argument("--worker", required=True)
+    claim.add_argument("--profile")
+    claim.add_argument("--lease-seconds", type=int, default=600)
+    claim.add_argument("--retry-failed", action="store_true")
+    claim.add_argument("--json", action="store_true")
+    claim.set_defaults(func=cmd_claim)
+
+    release = sub.add_parser("release", help="Release a coordinator task claim.")
+    release.add_argument("--manifest", required=True)
+    release.add_argument("--task", required=True)
+    release.set_defaults(func=cmd_release)
+
+    heartbeat = sub.add_parser("heartbeat", help="Refresh a coordinator task claim heartbeat.")
+    heartbeat.add_argument("--manifest", required=True)
+    heartbeat.add_argument("--task", required=True)
+    heartbeat.add_argument("--worker", required=True)
+    heartbeat.set_defaults(func=cmd_heartbeat)
+
+    work = sub.add_parser("work", help="Claim, run, sync, and repeat worker tasks.")
+    work.add_argument("--manifest", required=True)
+    work.add_argument(
+        "--coordinator",
+        required=True,
+        help="Coordinator manifest path, either /path/manifest.json or host:/path/manifest.json.",
+    )
+    work.add_argument("--profile")
+    work.add_argument("--worker", default=socket.gethostname())
+    work.add_argument("--lease-seconds", type=int, default=600)
+    work.add_argument("--max-tasks", type=int, default=0)
+    work.add_argument("--retry-failed", action="store_true")
+    work.add_argument("--force", action="store_true")
+    work.add_argument("--fail-fast", action="store_true")
+    work.set_defaults(func=cmd_work)
+
+    doctor = sub.add_parser("doctor", help="Check host prerequisites for a manifest.")
+    doctor.add_argument("--manifest", required=True)
+    doctor.add_argument("--profile")
+    doctor.add_argument("--role", choices=["worker", "coordinator"], default="worker")
+    doctor.add_argument("--notify-command")
+    doctor.set_defaults(func=cmd_doctor)
+
     status = sub.add_parser("status", help="Show task status.")
     status.add_argument("--manifest", required=True)
     status.add_argument("-v", "--verbose", action="store_true")
     status.add_argument("--profile")
+    status.add_argument("--lease-seconds", type=int, default=600)
     status.set_defaults(func=cmd_status)
 
     verify = sub.add_parser("verify", help="Verify all tasks are complete.")

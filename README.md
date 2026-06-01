@@ -6,6 +6,20 @@ The goal is simple: define deterministic tasks once, run individual shards on
 any host, copy the finished shard outputs back, verify metadata, and merge in a
 stable order. It is intentionally not NNUE-specific.
 
+## Topology
+
+Use one coordinator and any number of outbound-only workers:
+
+- Coordinator owns the manifest, claims, central state, logs, outputs, and
+  notifications.
+- Workers only need outbound SSH/rsync access to the coordinator.
+- Workers claim work from the coordinator, run it locally, push results back,
+  then claim another task.
+- Localhost can be a worker even when inbound SSH is blocked.
+- `notifai.sh` is required only on the coordinator.
+
+For NNUE work, the normal coordinator is `pwa-5090`.
+
 ## Prerequisites
 
 - Python 3.11 or newer.
@@ -17,6 +31,7 @@ stable order. It is intentionally not NNUE-specific.
   manifest.
 - Identical input artifacts for deterministic work. Use file checksums for
   engine binaries, nets, books, source JSONL, or other fixed inputs.
+- `notifai.sh` in `PATH` on the coordinator for long jobs.
 
 Check a worker:
 
@@ -34,8 +49,12 @@ ssh pwa-5090 'python3 --version && git --version'
   - `state/<task-id>.running.json`
   - `state/<task-id>.done.json` or `state/<task-id>.fail.json`
   - `logs/<task-id>.log`
+- A coordinator claim writes:
+  - `claims/<task-id>.claim/claim.json`
+  - `claims/<task-id>.claim/heartbeat.json`
 - Each done file records host, start/end time, command, rc, elapsed seconds, and
   checksums for declared output files.
+- Only coordinator-side verified `done.json` files count for merge.
 
 ## Create A Plan
 
@@ -70,6 +89,28 @@ Run one shard:
 ./distribute.py run --manifest score.manifest.json --task score_0007
 ```
 
+Claim one task on the coordinator:
+
+```sh
+distrib claim --manifest score.manifest.json --worker pwa-wsl --json
+```
+
+Run an outbound-only worker loop from another host:
+
+```sh
+distrib work \
+  --manifest /Users/pwahlman/code/cpp/chess/nnue/runs/my-run/distribute/score.manifest.json \
+  --coordinator pwa-5090:/home/petter/code/cpp/chess/nnue/runs/my-run/distribute/score.manifest.json \
+  --profile localhost \
+  --worker localhost \
+  --max-tasks 0
+```
+
+The worker repeatedly claims an unclaimed coordinator task over SSH, runs it
+locally with the selected profile path map, refreshes a coordinator heartbeat
+while the task runs, pushes declared outputs/log/state back to the coordinator,
+releases the claim, and asks for another task.
+
 Run several shards:
 
 ```sh
@@ -88,6 +129,26 @@ rsync -a pwa-wsl:/home/petter/code/cpp/chess/nnue/runs/my-run/score/shards/ /hom
 rsync -a pwa-wsl:/home/petter/code/cpp/chess/nnue/runs/my-run/distribute/state/ /home/petter/code/cpp/chess/nnue/runs/my-run/distribute/state/
 ```
 
+Manual copy is only a fallback. Prefer `distrib work` for normal distributed
+runs.
+
+## Preflight
+
+Check a worker:
+
+```sh
+distrib doctor --manifest score.manifest.json --profile pwa-wsl --role worker
+```
+
+Check the coordinator notification command:
+
+```sh
+distrib doctor \
+  --manifest score.manifest.json \
+  --role coordinator \
+  --notify-command notifai.sh
+```
+
 ## Status And Merge
 
 ```sh
@@ -97,7 +158,10 @@ rsync -a pwa-wsl:/home/petter/code/cpp/chess/nnue/runs/my-run/distribute/state/ 
 ```
 
 `merge` concatenates declared task outputs in task order and fails if any task is
-missing, failed, or has missing outputs.
+missing, failed, has missing outputs, or has checksum mismatches.
+
+`status` reports pending, claimed, stale, running, failed, and done tasks.
+Claims become stale when their heartbeat is older than the lease timeout.
 
 ## Manifest Format
 
@@ -110,6 +174,7 @@ Minimal manifest:
   "work_dir": "/abs/project/root",
   "state_dir": "/abs/project/root/distribute/state",
   "log_dir": "/abs/project/root/distribute/logs",
+  "claim_dir": "/abs/project/root/distribute/claims",
   "path_maps": {
     "localhost": {
       "/home/petter/code/cpp/chess": "/Users/pwahlman/code/cpp/chess"
@@ -149,8 +214,16 @@ roots.
 
 - A task is complete only when its `done.json` exists and all declared outputs
   exist.
+- Done outputs are verified against the checksums recorded in `done.json`.
+- Done state must match the manifest checksum when the field is present.
 - Failed tasks are not merged.
+- Active claims prevent duplicate work.
+- Stale claims can be reclaimed after the lease timeout.
 - Duplicate task ids are rejected.
 - Wrong Git commit, too-old Git/Python, or mismatched input checksums fail
   before the command starts.
 - Re-running a done task requires `--force`.
+- Worker-side task processes run in their own process group. Timeout or
+  interruption terminates the whole group before writing fail state.
+- Successful worker scratch/output can be discarded after coordinator sync.
+  Failed local scratch should be retained for debugging.
