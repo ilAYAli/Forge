@@ -488,20 +488,30 @@ def shell_join(args: list[str]) -> str:
     return " ".join(shlex.quote(item) for item in args)
 
 
+def remote_distrib_command(args: list[str]) -> str:
+    quoted_args = shell_join(args)
+    return (
+        "if command -v distrib >/dev/null 2>&1; then "
+        f"exec distrib {quoted_args}; "
+        "else "
+        f'exec "$HOME/.local/bin/distrib" {quoted_args}; '
+        "fi"
+    )
+
+
 def run_coordinator_cli(coordinator: str, args: list[str]) -> subprocess.CompletedProcess[str]:
     host, manifest_path = parse_coordinator(coordinator)
-    full_args = ["distrib", *args]
-    full_args = [item.replace("{manifest}", manifest_path) for item in full_args]
+    resolved_args = [item.replace("{manifest}", manifest_path) for item in args]
     if host:
         return subprocess.run(
-            ["ssh", host, shell_join(full_args)],
+            ["ssh", host, remote_distrib_command(resolved_args)],
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             check=False,
         )
     script = str(Path(__file__).resolve())
-    local_args = [sys.executable, script, *full_args[1:]]
+    local_args = [sys.executable, script, *resolved_args]
     return subprocess.run(
         local_args,
         text=True,
