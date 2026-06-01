@@ -224,6 +224,54 @@ class DistributeTests(unittest.TestCase):
             self.assertEqual("0\n", (coordinator / "out" / "shard.0.txt").read_text(encoding="utf-8"))
             self.assertEqual("1\n", (coordinator / "out" / "shard.1.txt").read_text(encoding="utf-8"))
 
+    def test_wait_reports_timeout_until_tasks_are_done(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            subprocess.run(["git", "init", "-b", "main"], cwd=root, check=True, stdout=subprocess.DEVNULL)
+            subprocess.run(["git", "config", "user.name", "Petter Wahlman"], cwd=root, check=True)
+            subprocess.run(["git", "config", "user.email", "petter@wahlman.no"], cwd=root, check=True)
+            (root / "input.txt").write_text("fixed\n", encoding="utf-8")
+            subprocess.run(["git", "add", "input.txt"], cwd=root, check=True)
+            subprocess.run(["git", "commit", "-m", "test"], cwd=root, check=True, stdout=subprocess.DEVNULL)
+
+            manifest = root / "manifest.json"
+            plan = self.run_cli(
+                "plan",
+                "--name", "wait",
+                "--shards", "2",
+                "--work-dir", str(root),
+                "--out", str(manifest),
+                "--command-template", "printf '{index}\\n' > {output}",
+                "--output-template", str(root / "out" / "shard.{index}.txt"),
+            )
+            self.assertEqual(0, plan.returncode)
+
+            first = self.run_cli("run", "--manifest", str(manifest), "--index", "0")
+            self.assertEqual(0, first.returncode)
+
+            waiting = self.run_cli(
+                "wait",
+                "--manifest", str(manifest),
+                "--interval-seconds", "0.01",
+                "--timeout-seconds", "0.02",
+            )
+            self.assertEqual(124, waiting.returncode)
+            self.assertIn("done=1", waiting.stdout)
+            self.assertIn("pending=1", waiting.stdout)
+
+            second = self.run_cli("run", "--manifest", str(manifest), "--index", "1")
+            self.assertEqual(0, second.returncode)
+
+            done = self.run_cli(
+                "wait",
+                "--manifest", str(manifest),
+                "--interval-seconds", "0.01",
+                "--timeout-seconds", "1",
+            )
+            self.assertEqual("", done.stderr)
+            self.assertEqual(0, done.returncode)
+            self.assertIn("done=2", done.stdout)
+
     def test_claim_is_atomic_status_visible_and_released(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

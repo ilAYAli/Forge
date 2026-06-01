@@ -1038,6 +1038,39 @@ def cmd_status(args: argparse.Namespace) -> int:
     return 0 if counts["fail"] == 0 else 1
 
 
+def task_counts(manifest: dict[str, Any], *, lease_seconds: int) -> dict[str, int]:
+    counts = {"done": 0, "fail": 0, "running": 0, "claimed": 0, "stale": 0, "pending": 0}
+    for task in manifest["tasks"]:
+        counts[task_state(manifest, task, lease_seconds=lease_seconds)] += 1
+    return counts
+
+
+def cmd_wait(args: argparse.Namespace) -> int:
+    deadline = time.monotonic() + args.timeout_seconds if args.timeout_seconds > 0 else None
+    last_line = ""
+    while True:
+        manifest = apply_profile(load_manifest(expand_path(args.manifest)), args.profile)
+        counts = task_counts(manifest, lease_seconds=args.lease_seconds)
+        total = len(manifest["tasks"])
+        line = (
+            f"tasks={total} done={counts['done']} running={counts['running']} "
+            f"claimed={counts['claimed']} stale={counts['stale']} "
+            f"fail={counts['fail']} pending={counts['pending']}"
+        )
+        if line != last_line:
+            print(line, flush=True)
+            last_line = line
+
+        if counts["fail"] and args.fail_on_fail:
+            return 1
+        if counts["done"] == total:
+            return 0
+        if deadline is not None and time.monotonic() >= deadline:
+            print("timeout waiting for tasks", file=sys.stderr)
+            return 124
+        time.sleep(max(0.1, args.interval_seconds))
+
+
 def verify_manifest(manifest: dict[str, Any]) -> None:
     check_requirements(manifest)
     failures = []
@@ -1207,6 +1240,15 @@ def build_parser() -> argparse.ArgumentParser:
     status.add_argument("--profile")
     status.add_argument("--lease-seconds", type=int, default=600)
     status.set_defaults(func=cmd_status)
+
+    wait = sub.add_parser("wait", help="Wait until coordinator tasks finish.")
+    wait.add_argument("--manifest", required=True)
+    wait.add_argument("--profile")
+    wait.add_argument("--lease-seconds", type=int, default=600)
+    wait.add_argument("--interval-seconds", type=float, default=30.0)
+    wait.add_argument("--timeout-seconds", type=float, default=0.0)
+    wait.add_argument("--fail-on-fail", action=argparse.BooleanOptionalAction, default=True)
+    wait.set_defaults(func=cmd_wait)
 
     verify = sub.add_parser("verify", help="Verify all tasks are complete.")
     verify.add_argument("--manifest", required=True)
