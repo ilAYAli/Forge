@@ -545,6 +545,8 @@ def sync_file_to_coordinator(local: Path, coordinator: str, remote_path: Path) -
         if result.returncode != 0:
             raise RuntimeError(result.stderr.strip() or f"rsync failed for {local}")
         return
+    if local.resolve() == remote_path.resolve():
+        return
     shutil.copy2(local, remote_path)
 
 
