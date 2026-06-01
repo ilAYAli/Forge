@@ -575,35 +575,6 @@ def run_coordinator_cli(coordinator: str, args: list[str]) -> subprocess.Complet
     )
 
 
-def ensure_remote_parent(coordinator: str, path: Path) -> None:
-    host, _ = parse_coordinator(coordinator)
-    if not host:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        return
-    command = "mkdir -p " + shlex.quote(str(path.parent))
-    result = subprocess.run(["ssh", host, command], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    if result.returncode != 0:
-        raise RuntimeError(result.stderr.strip() or f"failed to create {host}:{path.parent}")
-
-
-def sync_file_to_coordinator(local: Path, coordinator: str, remote_path: Path) -> None:
-    ensure_remote_parent(coordinator, remote_path)
-    host, _ = parse_coordinator(coordinator)
-    if host:
-        result = subprocess.run(
-            ["rsync", "-a", str(local), f"{host}:{remote_path}"],
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
-        if result.returncode != 0:
-            raise RuntimeError(result.stderr.strip() or f"rsync failed for {local}")
-        return
-    if local.resolve() == remote_path.resolve():
-        return
-    shutil.copy2(local, remote_path)
-
-
 def coordinator_result_payload(
     *,
     coordinator_manifest: dict[str, Any],
@@ -647,6 +618,41 @@ def coordinator_result_payload(
     return payload, state_path
 
 
+def sync_files_to_coordinator(coordinator: str, transfers: list[tuple[Path, Path]]) -> None:
+    if not transfers:
+        return
+    host, _ = parse_coordinator(coordinator)
+    if not host:
+        for local, remote in transfers:
+            remote.parent.mkdir(parents=True, exist_ok=True)
+            if local.resolve() != remote.resolve():
+                shutil.copy2(local, remote)
+        return
+
+    parents = {str(remote.parent) for _, remote in transfers}
+    quoted_parents = " ".join(shlex.quote(p) for p in sorted(parents))
+    mkdir_result = subprocess.run(
+        ["ssh", host, f"mkdir -p {quoted_parents}"],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if mkdir_result.returncode != 0:
+        raise RuntimeError(
+            mkdir_result.stderr.strip() or f"failed to create remote output dirs on {host}"
+        )
+
+    for local, remote in transfers:
+        result = subprocess.run(
+            ["rsync", "-a", str(local), f"{host}:{remote}"],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(result.stderr.strip() or f"rsync failed for {local}")
+
+
 def sync_task_result(
     *,
     coordinator: str,
@@ -666,15 +672,15 @@ def sync_task_result(
     local_payload = read_json(local_state_path)
     heartbeat_on_coordinator(coordinator, str(coordinator_task["id"]), worker, claim_id)
 
+    transfers = []
     for local_path, coordinator_path in zip(task_outputs(local_task), task_outputs(coordinator_task), strict=False):
         if local_path.exists():
-            sync_file_to_coordinator(local_path, coordinator, coordinator_path)
+            transfers.append((local_path, coordinator_path))
 
-    sync_file_to_coordinator(
+    transfers.append((
         task_log_path(local_manifest, local_task),
-        coordinator,
         task_log_path(coordinator_manifest, coordinator_task),
-    )
+    ))
 
     payload, coordinator_state_path = coordinator_result_payload(
         coordinator_manifest=coordinator_manifest,
@@ -684,10 +690,12 @@ def sync_task_result(
         local_task=local_task,
         state=state,
     )
-    heartbeat_on_coordinator(coordinator, str(coordinator_task["id"]), worker, claim_id)
     sync_payload_path = local_state_path.with_suffix(local_state_path.suffix + ".sync.json")
     write_json(sync_payload_path, payload)
-    sync_file_to_coordinator(sync_payload_path, coordinator, coordinator_state_path)
+    transfers.append((sync_payload_path, coordinator_state_path))
+
+    sync_files_to_coordinator(coordinator, transfers)
+    heartbeat_on_coordinator(coordinator, str(coordinator_task["id"]), worker, claim_id)
 
 
 def cmd_plan(args: argparse.Namespace) -> int:
@@ -919,12 +927,9 @@ def cmd_work(args: argparse.Namespace) -> int:
         )
         heartbeat.start()
         sync_failed = False
+        error_rc = 1
         try:
             rc = run_task(local_manifest, local_task, force=args.force)
-        finally:
-            stop_heartbeat.set()
-            heartbeat.join(timeout=5)
-        try:
             sync_task_result(
                 coordinator=args.coordinator,
                 coordinator_manifest=coordinator_manifest,
@@ -934,11 +939,19 @@ def cmd_work(args: argparse.Namespace) -> int:
                 worker=args.worker,
                 claim_id=claim_id,
             )
+        except SystemExit as exc:
+            sync_failed = True
+            failed += 1
+            if isinstance(exc.code, int):
+                error_rc = exc.code
+            print(f"{task_id}: worker failed: {exc}", file=sys.stderr)
         except Exception as exc:
             sync_failed = True
             failed += 1
             print(f"{task_id}: sync failed: {exc}", file=sys.stderr)
         finally:
+            stop_heartbeat.set()
+            heartbeat.join(timeout=5)
             try:
                 release_on_coordinator(
                     args.coordinator,
@@ -949,7 +962,7 @@ def cmd_work(args: argparse.Namespace) -> int:
             except Exception as exc:
                 print(f"{task_id}: release failed: {exc}", file=sys.stderr)
         if sync_failed:
-            return 1
+            return error_rc
         completed += 1
         if rc != 0:
             failed += 1
@@ -963,6 +976,11 @@ def cmd_work(args: argparse.Namespace) -> int:
 def cmd_doctor(args: argparse.Namespace) -> int:
     manifest = apply_profile(load_manifest(expand_path(args.manifest)), args.profile)
     check_requirements(manifest)
+
+    for cmd in ["ssh", "rsync"]:
+        if shutil.which(cmd) is None:
+            raise SystemExit(f"required command not found: {cmd}")
+
     if args.role == "coordinator" and args.notify_command:
         command = shlex.split(args.notify_command)
         if not command:

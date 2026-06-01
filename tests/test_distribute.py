@@ -459,6 +459,58 @@ class DistributeTests(unittest.TestCase):
             self.assertNotEqual(0, coordinator.returncode)
             self.assertIn("notify command not found", coordinator.stderr)
 
+    def test_status_verbose_shows_host_and_worker(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest_path = root / "manifest.json"
+            manifest = {
+                "schema": "distribute.task.v1",
+                "name": "test",
+                "work_dir": str(root),
+                "state_dir": str(root / "state"),
+                "log_dir": str(root / "logs"),
+                "claim_dir": str(root / "claims"),
+                "tasks": [
+                    {"id": "task_0", "index": 0, "command": "true", "outputs": [str(root / "out0.txt")]},
+                    {"id": "task_1", "index": 1, "command": "true", "outputs": [str(root / "out1.txt")]},
+                    {"id": "task_2", "index": 2, "command": "true", "outputs": [str(root / "out2.txt")]},
+                ]
+            }
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+            state_dir = root / "state"
+            state_dir.mkdir()
+            (root / "out0.txt").write_text("done")
+            done_payload = {
+                "task": "task_0",
+                "host": "host-done",
+                "manifest_sha256": "dummy",
+                "outputs": [{"path": str(root / "out0.txt"), "bytes": 4, "sha256": "dummy"}]
+            }
+            (state_dir / "task_0.done.json").write_text(json.dumps(done_payload))
+
+            claim_dir = root / "claims" / "task_1.claim"
+            claim_dir.mkdir(parents=True)
+            claim_payload = {
+                "task": "task_1",
+                "worker": "worker-claimed",
+                "claimed_at": "2023-01-01T00:00:00Z"
+            }
+            (claim_dir / "claim.json").write_text(json.dumps(claim_payload))
+
+            fail_payload = {
+                "task": "task_2",
+                "host": "host-fail",
+                "rc": 1
+            }
+            (state_dir / "task_2.fail.json").write_text(json.dumps(fail_payload))
+
+            result = self.run_cli("status", "--manifest", str(manifest_path), "--verbose")
+            self.assertEqual(1, result.returncode)
+            self.assertIn("task_0\tdone\thost-done", result.stdout)
+            self.assertIn("task_1\tclaimed\tworker-claimed", result.stdout)
+            self.assertIn("task_2\tfail\thost-fail", result.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()
