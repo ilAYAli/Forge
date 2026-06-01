@@ -26,7 +26,10 @@ SCHEMA = "distribute.task.v1"
 
 
 def expand_path(value: str | Path) -> Path:
-    return Path(os.path.expandvars(str(value))).expanduser().resolve()
+    path = Path(os.path.expandvars(str(value))).expanduser()
+    if path.is_absolute():
+        return path
+    return Path.cwd() / path
 
 
 def now() -> str:

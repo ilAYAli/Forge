@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -10,6 +11,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 CLI = ROOT / "distribute.py"
+sys.path.insert(0, str(ROOT))
+import distribute  # noqa: E402
 
 
 class DistributeTests(unittest.TestCase):
@@ -22,6 +25,19 @@ class DistributeTests(unittest.TestCase):
             stderr=subprocess.PIPE,
             check=False,
         )
+
+    @unittest.skipIf(not hasattr(os, "symlink"), "symlink support required")
+    def test_expand_path_preserves_symlink_text(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            real = root / "real"
+            link = root / "link"
+            real.mkdir()
+            link.symlink_to(real, target_is_directory=True)
+
+            path = distribute.expand_path(link / "manifest.json")
+
+            self.assertEqual(link / "manifest.json", path)
 
     def test_plan_run_status_merge(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
