@@ -17,6 +17,7 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -253,6 +254,10 @@ def task_heartbeat_path(manifest: dict[str, Any], task: dict[str, Any]) -> Path:
     return task_claim_dir(manifest, task) / "heartbeat.json"
 
 
+def task_stale_lock_dir(manifest: dict[str, Any], task: dict[str, Any]) -> Path:
+    return claim_dir(manifest) / f".{task['id']}.stale.lock"
+
+
 def task_log_path(manifest: dict[str, Any], task: dict[str, Any]) -> Path:
     return log_dir(manifest) / f"{task['id']}.log"
 
@@ -340,7 +345,11 @@ def terminate_process_group(proc: subprocess.Popen[Any], log: Any, reason: str) 
         os.killpg(proc.pid, signal.SIGKILL)
     except ProcessLookupError:
         return
-    proc.wait()
+    try:
+        proc.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        log.write(f"{now()} process still alive after SIGKILL {reason}: pid={proc.pid}\n")
+        log.flush()
 
 
 def run_task(manifest: dict[str, Any], task: dict[str, Any], *, force: bool) -> int:
@@ -436,7 +445,8 @@ def claim_task(
         if claim_state == "claimed":
             continue
         if claim_state == "stale":
-            shutil.rmtree(task_claim, ignore_errors=True)
+            if not remove_stale_claim(manifest, task, lease_seconds=lease_seconds):
+                continue
         try:
             task_claim.mkdir(parents=True)
         except FileExistsError:
@@ -445,6 +455,7 @@ def claim_task(
             "schema": SCHEMA,
             "task": task["id"],
             "index": task.get("index"),
+            "claim_id": uuid.uuid4().hex,
             "worker": worker,
             "profile": profile,
             "claimed_at": now(),
@@ -459,18 +470,61 @@ def claim_task(
     return None
 
 
-def release_claim(manifest: dict[str, Any], task: dict[str, Any]) -> None:
-    shutil.rmtree(task_claim_dir(manifest, task), ignore_errors=True)
+def remove_stale_claim(manifest: dict[str, Any], task: dict[str, Any], *, lease_seconds: int) -> bool:
+    lock = task_stale_lock_dir(manifest, task)
+    try:
+        lock.mkdir(parents=True)
+    except FileExistsError:
+        return False
+    try:
+        if task_claim_state(manifest, task, lease_seconds=lease_seconds) != "stale":
+            return False
+        shutil.rmtree(task_claim_dir(manifest, task), ignore_errors=True)
+        return True
+    finally:
+        shutil.rmtree(lock, ignore_errors=True)
 
 
-def update_claim_heartbeat(manifest: dict[str, Any], task: dict[str, Any], *, worker: str) -> None:
+def check_claim_owner(
+    manifest: dict[str, Any],
+    task: dict[str, Any],
+    *,
+    worker: str | None,
+    claim_id: str | None,
+) -> dict[str, Any]:
     claim_path = task_claim_path(manifest, task)
     if not claim_path.exists():
         raise SystemExit(f"{task['id']}: no active claim")
     payload = read_json(claim_path)
     expected_worker = str(payload.get("worker") or "")
-    if expected_worker and expected_worker != worker:
+    if worker and expected_worker and expected_worker != worker:
         raise SystemExit(f"{task['id']}: claimed by {expected_worker}, not {worker}")
+    expected_claim = str(payload.get("claim_id") or "")
+    if claim_id and expected_claim and expected_claim != claim_id:
+        raise SystemExit(f"{task['id']}: claim id mismatch")
+    return payload
+
+
+def release_claim(
+    manifest: dict[str, Any],
+    task: dict[str, Any],
+    *,
+    worker: str | None = None,
+    claim_id: str | None = None,
+) -> None:
+    if worker or claim_id:
+        check_claim_owner(manifest, task, worker=worker, claim_id=claim_id)
+    shutil.rmtree(task_claim_dir(manifest, task), ignore_errors=True)
+
+
+def update_claim_heartbeat(
+    manifest: dict[str, Any],
+    task: dict[str, Any],
+    *,
+    worker: str,
+    claim_id: str | None,
+) -> None:
+    payload = check_claim_owner(manifest, task, worker=worker, claim_id=claim_id)
     payload["heartbeat_at"] = now()
     payload["heartbeat_epoch"] = epoch()
     write_json(task_heartbeat_path(manifest, task), payload)
@@ -600,6 +654,8 @@ def sync_task_result(
     local_manifest: dict[str, Any],
     coordinator_task: dict[str, Any],
     local_task: dict[str, Any],
+    worker: str,
+    claim_id: str | None,
 ) -> None:
     local_done = task_done_path(local_manifest, local_task)
     local_fail = task_fail_path(local_manifest, local_task)
@@ -608,6 +664,7 @@ def sync_task_result(
     if not local_state_path.exists():
         raise RuntimeError(f"{local_task['id']}: no local result state found")
     local_payload = read_json(local_state_path)
+    heartbeat_on_coordinator(coordinator, str(coordinator_task["id"]), worker, claim_id)
 
     for local_path, coordinator_path in zip(task_outputs(local_task), task_outputs(coordinator_task), strict=False):
         if local_path.exists():
@@ -627,6 +684,7 @@ def sync_task_result(
         local_task=local_task,
         state=state,
     )
+    heartbeat_on_coordinator(coordinator, str(coordinator_task["id"]), worker, claim_id)
     sync_payload_path = local_state_path.with_suffix(local_state_path.suffix + ".sync.json")
     write_json(sync_payload_path, payload)
     sync_file_to_coordinator(sync_payload_path, coordinator, coordinator_state_path)
@@ -746,7 +804,7 @@ def cmd_claim(args: argparse.Namespace) -> int:
 def cmd_release(args: argparse.Namespace) -> int:
     manifest = load_manifest(expand_path(args.manifest))
     task = find_task(manifest, task_id=args.task, index=None)
-    release_claim(manifest, task)
+    release_claim(manifest, task, worker=args.worker, claim_id=args.claim_id)
     print(task["id"])
     return 0
 
@@ -777,19 +835,38 @@ def claim_from_coordinator(args: argparse.Namespace) -> dict[str, Any] | None:
     return payload
 
 
-def release_on_coordinator(coordinator: str, task_id: str) -> None:
+def release_on_coordinator(
+    coordinator: str,
+    task_id: str,
+    *,
+    worker: str | None,
+    claim_id: str | None,
+) -> None:
+    command = ["release", "--manifest", "{manifest}", "--task", task_id]
+    if worker:
+        command.extend(["--worker", worker])
+    if claim_id:
+        command.extend(["--claim-id", claim_id])
     result = run_coordinator_cli(
         coordinator,
-        ["release", "--manifest", "{manifest}", "--task", task_id],
+        command,
     )
     if result.returncode != 0:
         raise RuntimeError(result.stderr.strip() or result.stdout.strip() or "coordinator release failed")
 
 
-def heartbeat_on_coordinator(coordinator: str, task_id: str, worker: str) -> None:
+def heartbeat_on_coordinator(
+    coordinator: str,
+    task_id: str,
+    worker: str,
+    claim_id: str | None,
+) -> None:
+    command = ["heartbeat", "--manifest", "{manifest}", "--task", task_id, "--worker", worker]
+    if claim_id:
+        command.extend(["--claim-id", claim_id])
     result = run_coordinator_cli(
         coordinator,
-        ["heartbeat", "--manifest", "{manifest}", "--task", task_id, "--worker", worker],
+        command,
     )
     if result.returncode != 0:
         raise RuntimeError(result.stderr.strip() or result.stdout.strip() or "coordinator heartbeat failed")
@@ -800,13 +877,14 @@ def heartbeat_loop(
     coordinator: str,
     task_id: str,
     worker: str,
+    claim_id: str | None,
     lease_seconds: int,
     stop: threading.Event,
 ) -> None:
     interval = max(5.0, min(60.0, lease_seconds / 3 if lease_seconds > 0 else 30.0))
     while not stop.wait(interval):
         try:
-            heartbeat_on_coordinator(coordinator, task_id, worker)
+            heartbeat_on_coordinator(coordinator, task_id, worker, claim_id)
         except Exception as exc:
             print(f"{task_id}: heartbeat failed: {exc}", file=sys.stderr)
 
@@ -822,6 +900,8 @@ def cmd_work(args: argparse.Namespace) -> int:
         if claim is None:
             break
         task_id = str(claim["task"])
+        claim_payload = claim.get("claim") if isinstance(claim.get("claim"), dict) else {}
+        claim_id = str(claim_payload.get("claim_id") or "")
         coordinator_task = find_task(coordinator_manifest, task_id=task_id, index=None)
         local_task = find_task(local_manifest, task_id=task_id, index=None)
         stop_heartbeat = threading.Event()
@@ -831,12 +911,14 @@ def cmd_work(args: argparse.Namespace) -> int:
                 "coordinator": args.coordinator,
                 "task_id": task_id,
                 "worker": args.worker,
+                "claim_id": claim_id,
                 "lease_seconds": args.lease_seconds,
                 "stop": stop_heartbeat,
             },
             daemon=True,
         )
         heartbeat.start()
+        sync_failed = False
         try:
             rc = run_task(local_manifest, local_task, force=args.force)
         finally:
@@ -849,13 +931,25 @@ def cmd_work(args: argparse.Namespace) -> int:
                 local_manifest=local_manifest,
                 coordinator_task=coordinator_task,
                 local_task=local_task,
+                worker=args.worker,
+                claim_id=claim_id,
             )
-            release_on_coordinator(args.coordinator, task_id)
         except Exception as exc:
+            sync_failed = True
             failed += 1
             print(f"{task_id}: sync failed: {exc}", file=sys.stderr)
-            if args.fail_fast:
-                return 1
+        finally:
+            try:
+                release_on_coordinator(
+                    args.coordinator,
+                    task_id,
+                    worker=args.worker,
+                    claim_id=claim_id,
+                )
+            except Exception as exc:
+                print(f"{task_id}: release failed: {exc}", file=sys.stderr)
+        if sync_failed:
+            return 1
         completed += 1
         if rc != 0:
             failed += 1
@@ -882,7 +976,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
 def cmd_heartbeat(args: argparse.Namespace) -> int:
     manifest = load_manifest(expand_path(args.manifest))
     task = find_task(manifest, task_id=args.task, index=None)
-    update_claim_heartbeat(manifest, task, worker=args.worker)
+    update_claim_heartbeat(manifest, task, worker=args.worker, claim_id=args.claim_id)
     print(task["id"])
     return 0
 
@@ -894,15 +988,35 @@ def cmd_status(args: argparse.Namespace) -> int:
     for task in manifest["tasks"]:
         state = task_state(manifest, task, lease_seconds=args.lease_seconds)
         counts[state] += 1
-        rows.append((task["id"], state))
+        info = ""
+        if args.verbose:
+            if state == "done":
+                try:
+                    done = read_json(task_done_path(manifest, task))
+                    info = str(done.get("host") or "")
+                except Exception:
+                    pass
+            elif state == "fail":
+                try:
+                    fail = read_json(task_fail_path(manifest, task))
+                    info = str(fail.get("host") or "")
+                except Exception:
+                    pass
+            elif state in {"claimed", "running", "stale"}:
+                try:
+                    claim = read_json(task_claim_path(manifest, task))
+                    info = str(claim.get("worker") or "")
+                except Exception:
+                    pass
+        rows.append((task["id"], state, info))
     print(
         f"tasks={len(manifest['tasks'])} done={counts['done']} "
         f"running={counts['running']} claimed={counts['claimed']} stale={counts['stale']} "
         f"fail={counts['fail']} pending={counts['pending']}"
     )
     if args.verbose:
-        for task_id, state in rows:
-            print(f"{task_id}\t{state}")
+        for task_id, state, info in rows:
+            print(f"{task_id}\t{state}\t{info}")
     return 0 if counts["fail"] == 0 else 1
 
 
@@ -919,16 +1033,24 @@ def verify_manifest(manifest: dict[str, Any]) -> None:
         if done_manifest_sha and done_manifest_sha != expected_manifest_sha:
             failures.append(f"{task['id']}: manifest checksum mismatch")
         records = done.get("outputs", [])
+        outputs = task_outputs(task)
+        if not outputs:
+            failures.append(f"{task['id']}: no outputs declared")
         if isinstance(records, list):
             by_path = {
                 str(item.get("path")): item
                 for item in records
                 if isinstance(item, dict) and item.get("path")
             }
-            for output in task_outputs(task):
+            for output in outputs:
+                if str(output) not in by_path:
+                    failures.append(f"{task['id']}: missing output record: {output}")
+                    continue
                 record = by_path.get(str(output))
                 if record and record.get("sha256") and sha256_file(output) != record["sha256"]:
                     failures.append(f"{task['id']}: output checksum mismatch: {output}")
+        else:
+            failures.append(f"{task['id']}: invalid output records")
     if failures:
         raise SystemExit("incomplete tasks:\n" + "\n".join(failures))
 
@@ -1027,12 +1149,15 @@ def build_parser() -> argparse.ArgumentParser:
     release = sub.add_parser("release", help="Release a coordinator task claim.")
     release.add_argument("--manifest", required=True)
     release.add_argument("--task", required=True)
+    release.add_argument("--worker")
+    release.add_argument("--claim-id")
     release.set_defaults(func=cmd_release)
 
     heartbeat = sub.add_parser("heartbeat", help="Refresh a coordinator task claim heartbeat.")
     heartbeat.add_argument("--manifest", required=True)
     heartbeat.add_argument("--task", required=True)
     heartbeat.add_argument("--worker", required=True)
+    heartbeat.add_argument("--claim-id")
     heartbeat.set_defaults(func=cmd_heartbeat)
 
     work = sub.add_parser("work", help="Claim, run, sync, and repeat worker tasks.")
