@@ -126,6 +126,50 @@ def translate_obj(value: Any, path_map: dict[str, str]) -> Any:
     return value
 
 
+def item_profiles(item: dict[str, Any], *, field: str) -> set[str]:
+    values: list[Any] = []
+    if "profile" in item:
+        values.append(item.get("profile"))
+    if "profiles" in item:
+        raw = item.get("profiles")
+        if isinstance(raw, str):
+            values.append(raw)
+        elif isinstance(raw, list):
+            values.extend(raw)
+        else:
+            raise SystemExit(f"{field}.profiles must be a string or list of strings")
+    profiles = {str(value).strip() for value in values if str(value).strip()}
+    if "" in profiles:
+        profiles.remove("")
+    return profiles
+
+
+def item_matches_profile(item: dict[str, Any], active_profile: str | None, *, field: str) -> bool:
+    profiles = item_profiles(item, field=field)
+    if not profiles:
+        return True
+    return bool(active_profile and active_profile in profiles)
+
+
+def manifest_profile_names(manifest: dict[str, Any]) -> set[str]:
+    profiles = set()
+    path_maps = manifest.get("path_maps", {})
+    if isinstance(path_maps, dict):
+        profiles.update(str(profile) for profile in path_maps)
+    req = manifest.get("requirements", {})
+    if isinstance(req, dict):
+        for field in ("inputs", "commands", "repos"):
+            raw = req.get(field, [])
+            if isinstance(raw, list):
+                for item in raw:
+                    if isinstance(item, dict):
+                        profiles.update(item_profiles(item, field=f"requirements.{field}"))
+        git_req = req.get("git")
+        if isinstance(git_req, dict):
+            profiles.update(item_profiles(git_req, field="requirements.git"))
+    return profiles
+
+
 def apply_profile(manifest: dict[str, Any], profile: str | None) -> dict[str, Any]:
     if not profile:
         return manifest
@@ -134,10 +178,14 @@ def apply_profile(manifest: dict[str, Any], profile: str | None) -> dict[str, An
         raise SystemExit("path_maps must be an object")
     selected = path_maps.get(profile)
     if selected is None:
-        raise SystemExit(f"unknown profile {profile!r}")
+        if profile not in manifest_profile_names(manifest):
+            raise SystemExit(f"unknown profile {profile!r}")
+        selected = {}
     if not isinstance(selected, dict):
         raise SystemExit(f"path_maps.{profile} must be an object")
-    return translate_obj(copy.deepcopy(manifest), {str(k): str(v) for k, v in selected.items()})
+    translated = translate_obj(copy.deepcopy(manifest), {str(k): str(v) for k, v in selected.items()})
+    translated["_active_profile"] = profile
+    return translated
 
 
 def parse_version(text: str) -> tuple[int, ...]:
@@ -510,6 +558,7 @@ def check_requirements(manifest: dict[str, Any]) -> None:
     req = manifest.get("requirements", {})
     if not isinstance(req, dict):
         raise SystemExit("requirements must be an object")
+    active_profile = str(manifest.get("_active_profile") or "").strip() or None
 
     python_min = str(req.get("python_min", "")).strip()
     if python_min:
@@ -522,6 +571,8 @@ def check_requirements(manifest: dict[str, Any]) -> None:
         require_min_version("git", actual, git_min)
 
     for item in iter_git_requirements(manifest, req):
+        if not item_matches_profile(item, active_profile, field="requirements.repos"):
+            continue
         check_git_requirement(item)
         run_repo_hook(item, "probe", repo=expand_path(str(item.get("path") or item.get("repo") or ".")))
 
@@ -531,6 +582,10 @@ def check_requirements(manifest: dict[str, Any]) -> None:
     if not isinstance(commands, list):
         raise SystemExit("requirements.commands must be a list")
     for item in commands:
+        if not isinstance(item, dict):
+            raise SystemExit("requirements.commands entries must be objects")
+        if not item_matches_profile(item, active_profile, field="requirements.commands"):
+            continue
         check_command_requirement(item)
 
     inputs = req.get("inputs", [])
@@ -539,6 +594,8 @@ def check_requirements(manifest: dict[str, Any]) -> None:
     for item in inputs:
         if not isinstance(item, dict):
             raise SystemExit("requirements.inputs entries must be objects")
+        if not item_matches_profile(item, active_profile, field="requirements.inputs"):
+            continue
         path = expand_path(str(item.get("path", "")))
         if not path.exists():
             raise SystemExit(f"required input missing: {path}")
@@ -1887,7 +1944,7 @@ def worker_profile_args(manifest: dict[str, Any], worker: dict[str, Any]) -> lis
     path_maps = manifest.get("path_maps", {})
     if not isinstance(path_maps, dict):
         raise SystemExit("path_maps must be an object")
-    if profile not in path_maps:
+    if profile not in manifest_profile_names(manifest):
         return []
     return ["--profile", profile]
 

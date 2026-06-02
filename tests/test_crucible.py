@@ -257,6 +257,47 @@ class CrucibleTests(unittest.TestCase):
             self.assertEqual(0, result.returncode)
             self.assertEqual("mapped", (worker / "out.txt").read_text(encoding="utf-8"))
 
+    def test_profile_specific_inputs_are_checked_only_for_active_profile(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            common = root / "common.txt"
+            common.write_text("common\n", encoding="utf-8")
+            mac_input = root / "mac.bin"
+            manifest = {
+                "schema": "crucible.task.v1",
+                "name": "profile-inputs",
+                "work_dir": str(root),
+                "requirements": {
+                    "inputs": [
+                        {
+                            "path": str(common),
+                            "sha256": crucible.sha256_file(common),
+                        },
+                        {
+                            "path": str(mac_input),
+                            "sha256": "0" * 64,
+                            "profile": "mac",
+                        },
+                    ],
+                },
+                "tasks": [],
+            }
+
+            crucible.check_requirements(manifest)
+            self.assertEqual(["--profile", "mac"], crucible.worker_profile_args(manifest, {"profile": "mac"}))
+
+            with self.assertRaises(SystemExit) as missing:
+                crucible.check_requirements(crucible.apply_profile(manifest, "mac"))
+            self.assertIn("required input missing", str(missing.exception))
+
+            mac_input.write_text("mac\n", encoding="utf-8")
+            with self.assertRaises(SystemExit) as mismatch:
+                crucible.check_requirements(crucible.apply_profile(manifest, "mac"))
+            self.assertIn("checksum mismatch", str(mismatch.exception))
+
+            manifest["requirements"]["inputs"][1]["sha256"] = crucible.sha256_file(mac_input)
+            crucible.check_requirements(crucible.apply_profile(manifest, "mac"))
+
     def test_worker_claims_runs_and_syncs_to_coordinator(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
