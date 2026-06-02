@@ -132,8 +132,8 @@ crucible verify --manifest run.manifest.json
 crucible merge --manifest run.manifest.json --output merged.txt
 ```
 
-`status` scans the current directory by default. Pass a run directory to show
-all manifests below it, or use `--manifest` for one explicit manifest. Template
+`status` checks the current directory by default. Pass a run directory to scan
+that run recursively, or use `--manifest` for one explicit manifest. Template
 manifests under `examples/` are hidden unless `--all` is passed. The default
 view shows counts, active shards, failed/stale shards, and compressed pending
 ranges. Use `--show-done` for completed shard breakdowns by worker, or

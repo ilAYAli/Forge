@@ -771,6 +771,10 @@ class CrucibleTests(unittest.TestCase):
             self.assertNotIn("nnue-selfplay.manifest.json", status.stdout)
             self.assertEqual(2, status.stdout.count("tasks: 1"))
 
+            default_status = self.run_cli("status", cwd=root)
+            self.assertEqual(1, default_status.returncode)
+            self.assertIn("no Crucible manifests found", default_status.stderr)
+
             status_all = self.run_cli("status", str(root), "--all", cwd=root)
             self.assertEqual(0, status_all.returncode)
             self.assertIn("== examples/setup.manifest.json ==", status_all.stdout)

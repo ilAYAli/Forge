@@ -1516,13 +1516,17 @@ def cmd_status(args: argparse.Namespace) -> int:
 def status_manifest_paths(args: argparse.Namespace) -> list[Path]:
     if args.manifest:
         return [expand_path(args.manifest)]
+    explicit_path = args.path is not None
+    root = expand_path(args.path or ".")
     paths = discover_manifest_paths(
-        expand_path(args.path),
+        root,
         include_taskless=bool(args.all),
         include_examples=bool(args.all),
+        recursive=explicit_path or bool(args.all),
     )
     if not paths:
-        raise SystemExit(f"{args.path}: no Crucible manifests found")
+        hint = "pass a run directory, --manifest, or --all for recursive discovery"
+        raise SystemExit(f"{root}: no Crucible manifests found; {hint}")
     return paths
 
 
@@ -1531,6 +1535,7 @@ def discover_manifest_paths(
     *,
     include_taskless: bool = True,
     include_examples: bool = True,
+    recursive: bool = True,
 ) -> list[Path]:
     if root.is_file():
         return [root]
@@ -1540,7 +1545,8 @@ def discover_manifest_paths(
     paths: list[Path] = []
     seen: set[Path] = set()
     for pattern in ("manifest.json", "*.manifest.json"):
-        for path in root.rglob(pattern):
+        candidates = root.rglob(pattern) if recursive else root.glob(pattern)
+        for path in candidates:
             if path in seen or ignored_manifest_path(path, root, include_examples=include_examples):
                 continue
             seen.add(path)
@@ -2480,7 +2486,7 @@ def build_parser() -> argparse.ArgumentParser:
     doctor.set_defaults(func=cmd_doctor)
 
     status = sub.add_parser("status", help="Show task status.")
-    status.add_argument("path", nargs="?", default=".", help="Manifest file or directory to scan.")
+    status.add_argument("path", nargs="?", default=None, help="Manifest file or run directory to scan.")
     status.add_argument("--manifest", help="Explicit manifest file. Overrides path discovery.")
     status.add_argument("-v", "--verbose", action="store_true")
     status.add_argument("--show-done", action="store_true", help="Show completed shard breakdown.")
