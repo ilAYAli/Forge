@@ -943,6 +943,7 @@ class DistributeTests(unittest.TestCase):
                             workers=str(workers_path),
                             jobs=1,
                             remote_timeout_seconds=1800.0,
+                            no_color=True,
                             verbose=False,
                         )
                     )
@@ -950,9 +951,10 @@ class DistributeTests(unittest.TestCase):
             self.assertEqual(0, rc)
             deploy_output = stdout.getvalue()
             self.assertIn("deploy: 2 worker(s), jobs=1", deploy_output)
-            self.assertIn("pwa-5090(pwa-5090): syncing runner and manifest", deploy_output)
-            self.assertIn("pwa-5090(pwa-5090): checking prerequisites", deploy_output)
-            self.assertIn("pwa-5090(pwa-5090): prerequisites OK", deploy_output)
+            self.assertIn("  OK     pwa-5090(pwa-5090): setup", deploy_output)
+            self.assertIn("  OK     localhost(localhost): setup", deploy_output)
+            self.assertNotIn("syncing runner", deploy_output)
+            self.assertNotIn("checking prerequisites", deploy_output)
             self.assertIn("deploy: setup complete", deploy_output)
             self.assertTrue(
                 any(command[0] == "ssh" and command[-2:] == ["pwa-5090", "mkdir -p .cache/distrib"] for command in commands)
@@ -963,6 +965,55 @@ class DistributeTests(unittest.TestCase):
             self.assertTrue(any(command[:4] == ["rsync", "-a", "-e", distrib.RSYNC_SSH] for command in commands))
             scripts = [command[-1] for command in commands if command[0] in {"ssh", "sh"}]
             self.assertFalse(any("--profile pwa-5090" in script for script in scripts))
+
+    def test_deploy_verbose_shows_phase_progress(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest = root / "manifest.json"
+            manifest.write_text(
+                json.dumps({
+                    "schema": "distribute.task.v1",
+                    "name": "deploy-verbose",
+                    "work_dir": str(root),
+                    "state_dir": str(root / "state"),
+                    "log_dir": str(root / "logs"),
+                    "requirements": {
+                        "python_min": "3.11",
+                        "git_min": "2.38",
+                    },
+                    "tasks": [],
+                }),
+                encoding="utf-8",
+            )
+            workers_path = root / "workers.json"
+            workers_path.write_text(
+                json.dumps({
+                    "schema": "distribute.workers.v1",
+                    "workers": [{"host": "localhost", "local": True, "cache_dir": str(root / "cache")}],
+                }),
+                encoding="utf-8",
+            )
+
+            with mock.patch("distrib.subprocess.run", return_value=subprocess.CompletedProcess(["sh"], 0, stdout="", stderr="")):
+                stdout = io.StringIO()
+                with contextlib.redirect_stdout(stdout):
+                    rc = distrib.cmd_deploy(
+                        argparse.Namespace(
+                            manifest=str(manifest),
+                            workers=str(workers_path),
+                            jobs=1,
+                            remote_timeout_seconds=1800.0,
+                            no_color=True,
+                            verbose=True,
+                        )
+                    )
+
+            self.assertEqual(0, rc)
+            deploy_output = stdout.getvalue()
+            self.assertIn("localhost(localhost): syncing runner and manifest", deploy_output)
+            self.assertIn("localhost(localhost): checking prerequisites", deploy_output)
+            self.assertIn("localhost(localhost): prerequisites OK", deploy_output)
+            self.assertIn("  OK     localhost(localhost): setup", deploy_output)
 
     def test_deploy_passes_matching_profile_and_runs_tasks(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1008,6 +1059,7 @@ class DistributeTests(unittest.TestCase):
                             workers=str(workers_path),
                             jobs=1,
                             remote_timeout_seconds=1800.0,
+                            no_color=True,
                             verbose=False,
                         )
                     )
@@ -1076,6 +1128,7 @@ class DistributeTests(unittest.TestCase):
                             workers=str(workers_path),
                             jobs=2,
                             remote_timeout_seconds=1800.0,
+                            no_color=True,
                             verbose=False,
                         )
                     )
@@ -1123,6 +1176,7 @@ class DistributeTests(unittest.TestCase):
                             workers=str(workers_path),
                             jobs=1,
                             remote_timeout_seconds=1800.0,
+                            no_color=True,
                             verbose=False,
                         )
                     )
@@ -1140,6 +1194,8 @@ class DistributeTests(unittest.TestCase):
         self.assertEqual(0, result.returncode)
         self.assertIn("workers", result.stdout)
         self.assertIn("manifest", result.stdout)
+        self.assertIn("--no-color", result.stdout)
+        self.assertNotIn("--color,", result.stdout)
         self.assertNotIn("--workers", result.stdout)
 
 

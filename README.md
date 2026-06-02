@@ -26,8 +26,8 @@ distrib deploy workers.json manifest.json
 sync/build/install/probe requirements, runs `doctor`, then starts worker loops
 for task shards. Workers need Python, Git, SSH/rsync, and the toolchain required
 by the manifest. Workers do not need `distrib` installed.
-Progress is printed per worker as sync, prerequisite, and task phases start and
-finish.
+Default output is an ordered per-worker summary. Use `--verbose` for live phase
+details. TTY output is colored by default; use `--no-color` to disable it.
 
 ## Workers
 

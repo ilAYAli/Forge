@@ -1656,6 +1656,18 @@ def worker_label(host: str, profile: str) -> str:
     return f"{host}({profile})"
 
 
+def colorize(text: str, color: str, *, enabled: bool) -> str:
+    if not enabled:
+        return text
+    colors = {
+        "red": "31",
+        "green": "32",
+        "yellow": "33",
+        "cyan": "36",
+    }
+    return f"\033[{colors[color]}m{text}\033[0m"
+
+
 def cmd_deploy(args: argparse.Namespace) -> int:
     workers = load_workers(expand_path(args.workers))
     jobs = max(1, int(args.jobs))
@@ -1663,45 +1675,52 @@ def cmd_deploy(args: argparse.Namespace) -> int:
     manifest_path = expand_path(args.manifest)
     manifest = load_manifest(manifest_path)
     has_tasks = bool(manifest.get("tasks"))
+    color_enabled = not bool(args.no_color) and sys.stdout.isatty()
     print_lock = threading.Lock()
 
     def status(message: str, *, error: bool = False) -> None:
         with print_lock:
             print(message, file=sys.stderr if error else sys.stdout, flush=True)
 
-    def emit_result_output(result: subprocess.CompletedProcess[str], *, error: bool) -> None:
-        stream = sys.stderr if error else sys.stdout
-        if result.stdout.strip() and (error or args.verbose):
-            with print_lock:
-                print(result.stdout.strip(), file=stream)
-        if result.stderr.strip() and (error or args.verbose):
-            with print_lock:
-                print(result.stderr.strip(), file=stream)
+    def verbose_status(message: str, *, error: bool = False) -> None:
+        if args.verbose:
+            status(message, error=error)
 
-    def run_worker(index: int, worker: dict[str, Any]) -> tuple[int, bool]:
+    def run_worker(index: int, worker: dict[str, Any]) -> dict[str, Any]:
         host = str(worker["host"])
         profile = str(worker["profile"])
         label = worker_label(host, profile)
+
+        def result_payload(stage: str, result: subprocess.CompletedProcess[str]) -> dict[str, Any]:
+            return {
+                "index": index,
+                "host": host,
+                "profile": profile,
+                "stage": stage,
+                "ok": result.returncode == 0,
+                "rc": result.returncode,
+                "stdout": result.stdout,
+                "stderr": result.stderr,
+            }
+
         try:
-            status(f"{label}: syncing runner and manifest")
+            verbose_status(f"{label}: syncing runner and manifest")
             bootstrap_worker_runner(worker, manifest_path, timeout=remote_timeout)
-            status(f"{label}: checking prerequisites")
+            verbose_status(f"{label}: checking prerequisites")
             script = deploy_prereq_command(worker=worker, manifest=manifest)
             prereq = run_worker_shell(worker, script, timeout=remote_timeout)
         except Exception as exc:
             prereq = subprocess.CompletedProcess(["deploy", host], 1, stdout="", stderr=str(exc))
 
         if prereq.returncode != 0:
-            status(f"{label}: prerequisites FAILED rc={prereq.returncode}", error=True)
-            emit_result_output(prereq, error=True)
-            return index, False
+            verbose_status(f"{label}: prerequisites FAILED rc={prereq.returncode}", error=True)
+            return result_payload("setup", prereq)
 
-        status(f"{label}: prerequisites OK")
-        emit_result_output(prereq, error=False)
+        verbose_status(f"{label}: prerequisites OK")
         if not has_tasks:
-            return index, True
+            return result_payload("setup", prereq)
 
-        status(f"{worker_label(host, profile)}: running tasks")
+        verbose_status(f"{worker_label(host, profile)}: running tasks")
         script = deploy_work_command(
             worker=worker,
             manifest=manifest,
@@ -1709,14 +1728,12 @@ def cmd_deploy(args: argparse.Namespace) -> int:
         )
         result = run_worker_shell(worker, script, timeout=remote_timeout)
         if result.returncode == 0:
-            status(f"{label}: tasks OK")
-            emit_result_output(result, error=False)
-            return index, True
-        status(f"{label}: tasks FAILED rc={result.returncode}", error=True)
-        emit_result_output(result, error=True)
-        return index, False
+            verbose_status(f"{label}: tasks OK")
+            return result_payload("tasks", result)
+        verbose_status(f"{label}: tasks FAILED rc={result.returncode}", error=True)
+        return result_payload("tasks", result)
 
-    status(f"deploy: {len(workers)} worker(s), jobs={jobs}")
+    status(colorize(f"deploy: {len(workers)} worker(s), jobs={jobs}", "cyan", enabled=color_enabled))
     with concurrent.futures.ThreadPoolExecutor(max_workers=jobs) as executor:
         futures = [
             executor.submit(run_worker, index, worker)
@@ -1724,9 +1741,27 @@ def cmd_deploy(args: argparse.Namespace) -> int:
         ]
         results = [future.result() for future in concurrent.futures.as_completed(futures)]
 
-    failed = sum(1 for _, ok in results if not ok)
+    failed = sum(1 for item in results if not item["ok"])
+    stage = "setup" if not has_tasks else "tasks"
+    for item in sorted(results, key=lambda entry: int(entry["index"])):
+        ok = bool(item["ok"])
+        marker_text = "OK" if ok else "FAILED"
+        marker_color = "green" if ok else "red"
+        marker = colorize(f"{marker_text:<6}", marker_color, enabled=color_enabled)
+        suffix = "" if ok else f" rc={item['rc']}"
+        status(f"  {marker} {worker_label(str(item['host']), str(item['profile']))}: {stage}{suffix}")
+        output = "\n".join(
+            part.strip()
+            for part in (str(item.get("stdout") or ""), str(item.get("stderr") or ""))
+            if part.strip()
+        )
+        if output and (args.verbose or not ok):
+            for line in output.splitlines():
+                status(f"         {line}")
     if not has_tasks:
-        status("deploy: setup complete")
+        status(colorize("deploy: setup complete", "green", enabled=color_enabled) if failed == 0 else colorize("deploy: setup failed", "red", enabled=color_enabled))
+    else:
+        status(colorize("deploy: tasks complete", "green", enabled=color_enabled) if failed == 0 else colorize("deploy: tasks failed", "red", enabled=color_enabled))
     return 1 if failed else 0
 
 
@@ -1879,6 +1914,7 @@ def build_parser() -> argparse.ArgumentParser:
     deploy.add_argument("manifest")
     deploy.add_argument("--jobs", type=int, default=4)
     deploy.add_argument("--remote-timeout-seconds", type=float, default=1800.0)
+    deploy.add_argument("--no-color", action="store_true")
     deploy.add_argument("--verbose", action="store_true")
     deploy.set_defaults(func=cmd_deploy)
 
