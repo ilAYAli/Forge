@@ -2184,6 +2184,16 @@ def worker_label(host: str, profile: str, slot: Any = None, slots: Any = None) -
     return label
 
 
+def deploy_setup_key(worker: dict[str, Any]) -> tuple[Any, ...]:
+    return (
+        worker.get("host"),
+        worker.get("profile"),
+        worker.get("local"),
+        worker.get("cache_dir"),
+        worker.get("python"),
+    )
+
+
 def colorize(text: str, color: str, *, enabled: bool) -> str:
     if not enabled:
         return text
@@ -2206,6 +2216,8 @@ def cmd_deploy(args: argparse.Namespace) -> int:
     color_enabled = not bool(args.no_color) and sys.stdout.isatty()
     print_lock = threading.Lock()
     tracker = ProcessTracker()
+    setup_lock = threading.Condition()
+    setup_results: dict[tuple[Any, ...], subprocess.CompletedProcess[str] | None] = {}
 
     def status(message: str, *, error: bool = False) -> None:
         with print_lock:
@@ -2214,6 +2226,40 @@ def cmd_deploy(args: argparse.Namespace) -> int:
     def verbose_status(message: str, *, error: bool = False) -> None:
         if args.verbose:
             status(message, error=error)
+
+    def run_worker_setup(worker: dict[str, Any]) -> subprocess.CompletedProcess[str]:
+        host = str(worker["host"])
+        profile = str(worker["profile"])
+        label = worker_label(host, profile)
+        try:
+            verbose_status(f"{label}: syncing runner and manifest")
+            bootstrap_worker_runner(worker, manifest_path, timeout=remote_timeout, tracker=tracker)
+            synced_inputs = sync_inputs_to_worker(worker, manifest, timeout=remote_timeout, tracker=tracker)
+            if synced_inputs:
+                verbose_status(f"{label}: synced {synced_inputs} input file(s)")
+            verbose_status(f"{label}: checking prerequisites")
+            script = deploy_prereq_command(worker=worker, manifest=manifest)
+            return run_worker_shell(worker, script, timeout=remote_timeout, tracker=tracker)
+        except Exception as exc:
+            return subprocess.CompletedProcess(["deploy", host], 1, stdout="", stderr=str(exc))
+
+    def ensure_worker_setup(worker: dict[str, Any]) -> subprocess.CompletedProcess[str]:
+        key = deploy_setup_key(worker)
+        with setup_lock:
+            if key not in setup_results:
+                setup_results[key] = None
+                owner = True
+            else:
+                owner = False
+                while setup_results[key] is None:
+                    setup_lock.wait()
+                return setup_results[key]
+
+        result = run_worker_setup(worker)
+        with setup_lock:
+            setup_results[key] = result
+            setup_lock.notify_all()
+        return result
 
     def run_worker(index: int, worker: dict[str, Any]) -> dict[str, Any]:
         host = str(worker["host"])
@@ -2234,18 +2280,7 @@ def cmd_deploy(args: argparse.Namespace) -> int:
                 "stderr": result.stderr,
             }
 
-        try:
-            verbose_status(f"{label}: syncing runner and manifest")
-            bootstrap_worker_runner(worker, manifest_path, timeout=remote_timeout, tracker=tracker)
-            synced_inputs = sync_inputs_to_worker(worker, manifest, timeout=remote_timeout, tracker=tracker)
-            if synced_inputs:
-                verbose_status(f"{label}: synced {synced_inputs} input file(s)")
-            verbose_status(f"{label}: checking prerequisites")
-            script = deploy_prereq_command(worker=worker, manifest=manifest)
-            prereq = run_worker_shell(worker, script, timeout=remote_timeout, tracker=tracker)
-        except Exception as exc:
-            prereq = subprocess.CompletedProcess(["deploy", host], 1, stdout="", stderr=str(exc))
-
+        prereq = ensure_worker_setup(worker)
         if prereq.returncode != 0:
             verbose_status(f"{label}: prerequisites FAILED rc={prereq.returncode}", error=True)
             return result_payload("setup", prereq)

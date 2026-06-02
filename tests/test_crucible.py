@@ -1454,6 +1454,8 @@ class CrucibleTests(unittest.TestCase):
             self.assertIn("  OK     localhost#1: tasks", output)
             self.assertIn("  OK     localhost#2: tasks", output)
             work_scripts = [command[-1] for command in commands if command[0] == "sh" and " work " in command[-1]]
+            doctor_scripts = [command[-1] for command in commands if command[0] == "sh" and " doctor " in command[-1]]
+            self.assertEqual(1, len(doctor_scripts))
             self.assertEqual(2, len(work_scripts))
             self.assertTrue(all("--worker localhost" in script for script in work_scripts))
 
