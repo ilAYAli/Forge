@@ -133,9 +133,10 @@ crucible merge --manifest run.manifest.json --output merged.txt
 ```
 
 `status` scans the current directory by default. Pass a run directory to show
-all manifests below it, or use `--manifest` for one explicit manifest. The
-default view shows counts, active shards, failed/stale shards, and compressed
-pending ranges. Use `--show-done` for completed shard breakdowns by worker, or
+all manifests below it, or use `--manifest` for one explicit manifest. Template
+manifests under `examples/` are hidden unless `--all` is passed. The default
+view shows counts, active shards, failed/stale shards, and compressed pending
+ranges. Use `--show-done` for completed shard breakdowns by worker, or
 `--verbose` for the full task table.
 
 Lower-level commands remain available for diagnostics: `sync-repos`, `doctor`,

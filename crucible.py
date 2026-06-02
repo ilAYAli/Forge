@@ -1516,13 +1516,22 @@ def cmd_status(args: argparse.Namespace) -> int:
 def status_manifest_paths(args: argparse.Namespace) -> list[Path]:
     if args.manifest:
         return [expand_path(args.manifest)]
-    paths = discover_manifest_paths(expand_path(args.path), include_taskless=bool(args.all))
+    paths = discover_manifest_paths(
+        expand_path(args.path),
+        include_taskless=bool(args.all),
+        include_examples=bool(args.all),
+    )
     if not paths:
         raise SystemExit(f"{args.path}: no Crucible manifests found")
     return paths
 
 
-def discover_manifest_paths(root: Path, *, include_taskless: bool = True) -> list[Path]:
+def discover_manifest_paths(
+    root: Path,
+    *,
+    include_taskless: bool = True,
+    include_examples: bool = True,
+) -> list[Path]:
     if root.is_file():
         return [root]
     if not root.exists():
@@ -1532,7 +1541,7 @@ def discover_manifest_paths(root: Path, *, include_taskless: bool = True) -> lis
     seen: set[Path] = set()
     for pattern in ("manifest.json", "*.manifest.json"):
         for path in root.rglob(pattern):
-            if path in seen or ignored_manifest_path(path, root):
+            if path in seen or ignored_manifest_path(path, root, include_examples=include_examples):
                 continue
             seen.add(path)
             try:
@@ -1546,12 +1555,15 @@ def discover_manifest_paths(root: Path, *, include_taskless: bool = True) -> lis
     return sorted(paths, key=lambda item: str(item))
 
 
-def ignored_manifest_path(path: Path, root: Path) -> bool:
+def ignored_manifest_path(path: Path, root: Path, *, include_examples: bool) -> bool:
     try:
         parts = path.relative_to(root).parts[:-1]
     except ValueError:
         parts = path.parts[:-1]
-    return any(part in {".git", ".cache", "__pycache__"} for part in parts)
+    ignored = {".git", ".cache", "__pycache__"}
+    if not include_examples:
+        ignored.add("examples")
+    return any(part in ignored for part in parts)
 
 
 def format_manifest_path(path: Path) -> str:
@@ -2472,7 +2484,7 @@ def build_parser() -> argparse.ArgumentParser:
     status.add_argument("--manifest", help="Explicit manifest file. Overrides path discovery.")
     status.add_argument("-v", "--verbose", action="store_true")
     status.add_argument("--show-done", action="store_true", help="Show completed shard breakdown.")
-    status.add_argument("--all", action="store_true", help="Include setup-only manifests during directory discovery.")
+    status.add_argument("--all", action="store_true", help="Include example and setup-only manifests during directory discovery.")
     status.add_argument("--json", action="store_true")
     status.add_argument("--profile")
     status.add_argument("--no-color", action="store_true")
