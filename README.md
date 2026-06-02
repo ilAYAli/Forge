@@ -22,22 +22,32 @@ For NNUE work, the normal coordinator is `pwa-5090`.
 
 ## Prerequisites
 
+Coordinator:
+
 - Python 3.11 or newer.
 - Git 2.38 or newer.
-- `ssh` and `rsync` for moving manifests and shard outputs between hosts.
+- `ssh` and `rsync` for worker access and artifact transfer.
 - `distrib` available in `PATH` on the coordinator.
-- Workers need Python, Git, SSH/rsync access, and any toolchain required by the
-  manifest. They do not need `distrib` installed for coordinator-driven
-  `prepare`.
+- `notifai.sh` in `PATH` for long jobs, if notification hooks are used.
+
+Workers:
+
+- Python 3.11 or newer.
+- Git 2.38 or newer.
+- `ssh` and `rsync` access from the coordinator.
+- Any compiler, engine, scorer, or other toolchain required by the manifest.
+- Workers do not need `distrib` installed for coordinator-driven `prepare`.
+
+Manifest:
+
 - Project checkouts, exact commits, build commands, install commands, and probes
-  should be declared in the manifest.
+  should be declared as manifest requirements.
 - Use `~` or `$HOME` for worker-local paths when possible. They are expanded
   on the host running the command.
 - If hosts use different absolute roots, add explicit path maps to the
   manifest.
 - Identical input artifacts for deterministic work. Use file checksums for
   engine binaries, nets, books, source JSONL, or other fixed inputs.
-- `notifai.sh` in `PATH` on the coordinator for long jobs.
 
 `distrib` is deliberately project-agnostic. It does not know about any
 particular repository, binary, or training pipeline. Put project-specific setup
