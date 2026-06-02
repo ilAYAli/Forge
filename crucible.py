@@ -1475,6 +1475,7 @@ def cmd_heartbeat(args: argparse.Namespace) -> int:
 def cmd_status(args: argparse.Namespace) -> int:
     paths = status_manifest_paths(args)
     summaries: list[dict[str, Any]] = []
+    color_enabled = not bool(args.no_color) and sys.stdout.isatty()
     for path in paths:
         manifest = apply_profile(load_manifest(path), args.profile)
         summary = status_summary(manifest, lease_seconds=args.lease_seconds)
@@ -1490,8 +1491,8 @@ def cmd_status(args: argparse.Namespace) -> int:
             if len(summaries) > 1:
                 if index:
                     print()
-                print(f"== {format_manifest_path(Path(summary['manifest']))} ==")
-            print_compact_status(summary)
+                print(colorize(f"== {format_manifest_path(Path(summary['manifest']))} ==", "cyan", enabled=color_enabled))
+            print_compact_status(summary, color_enabled=color_enabled)
             if args.verbose:
                 for row in summary["rows"]:
                     print(f"{row['id']}\t{row['state']}\t{row['worker']}")
@@ -1680,15 +1681,23 @@ def format_status_values(values: list[int | str]) -> str:
     return ",".join(ranges)
 
 
-def print_status_group(title: str, groups: dict[str, list[int | str]]) -> None:
+def status_color(state: str) -> str:
+    if state == "done":
+        return "green"
+    if state in {"running", "claimed", "pending"}:
+        return "yellow"
+    return "red"
+
+
+def print_status_group(title: str, groups: dict[str, list[int | str]], *, color_enabled: bool) -> None:
     if not groups:
         return
-    print(f"{title}:")
+    print(colorize(f"{title}:", status_color(title), enabled=color_enabled))
     for worker, values in sorted(groups.items()):
         print(f"  {worker} [{len(values)}]: {format_status_values(values)}")
 
 
-def print_compact_status(summary: dict[str, Any]) -> None:
+def print_compact_status(summary: dict[str, Any], *, color_enabled: bool = False) -> None:
     counts = summary["counts"]
     print(
         f"tasks: {summary['tasks']}  done={counts['done']} "
@@ -1696,17 +1705,18 @@ def print_compact_status(summary: dict[str, Any]) -> None:
         f"claimed={counts['claimed']} pending={counts['pending']} "
         f"fail={counts['fail']} stale={counts['stale']}"
     )
-    print_status_group("done", summary["groups"]["done"])
+    print_status_group("done", summary["groups"]["done"], color_enabled=color_enabled)
     if summary["active"]:
-        print("active:")
+        print(colorize("active:", "yellow", enabled=color_enabled))
         for row in sorted(summary["active"], key=lambda item: status_value_key(item["index"])):
             progress = f" [{row['progress']}]" if row.get("progress") else ""
             worker = row["worker"] or "unknown"
-            print(f"  {worker} {row['state']}: {row['index']}{progress}")
-    print_status_group("fail", summary["groups"]["fail"])
-    print_status_group("stale", summary["groups"]["stale"])
+            state = colorize(str(row["state"]), status_color(str(row["state"])), enabled=color_enabled)
+            print(f"  {worker} {state}: {row['index']}{progress}")
+    print_status_group("fail", summary["groups"]["fail"], color_enabled=color_enabled)
+    print_status_group("stale", summary["groups"]["stale"], color_enabled=color_enabled)
     if summary["pending"]:
-        print("pending:")
+        print(colorize("pending:", "yellow", enabled=color_enabled))
         print(f"  {format_status_values(summary['pending'])}")
 
 
@@ -2287,6 +2297,7 @@ def build_parser() -> argparse.ArgumentParser:
     status.add_argument("-v", "--verbose", action="store_true")
     status.add_argument("--json", action="store_true")
     status.add_argument("--profile")
+    status.add_argument("--no-color", action="store_true")
     status.add_argument("--lease-seconds", type=int, default=600)
     status.set_defaults(func=cmd_status)
 
