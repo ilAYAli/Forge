@@ -154,6 +154,38 @@ def git_output(repo: Path, *args: str) -> str:
     ).strip()
 
 
+def resolve_git_commit(repo: Path, commit: str, *, label: str) -> str:
+    try:
+        return git_output(repo, "rev-parse", "--verify", f"{commit}^{{commit}}")
+    except subprocess.CalledProcessError as exc:
+        output = exc.output.strip()
+        detail = f": {output}" if output else ""
+        raise SystemExit(f"{label}: git commit {commit!r} is not available{detail}") from exc
+
+
+def fetch_git_remote(repo: Path, remote: str) -> None:
+    refspec = f"+refs/heads/*:refs/remotes/{remote}/*"
+    run_checked(["git", "-C", str(repo), "fetch", "--no-tags", remote, refspec])
+    try:
+        shallow = git_output(repo, "rev-parse", "--is-shallow-repository")
+    except subprocess.CalledProcessError:
+        shallow = "false"
+    if shallow == "true":
+        run_checked(["git", "-C", str(repo), "fetch", "--unshallow", remote])
+
+
+def ensure_git_remote(repo: Path, remote: str, url: str) -> None:
+    if not remote or not url:
+        return
+    remotes = set(git_output(repo, "remote").splitlines())
+    if remote in remotes:
+        current = git_output(repo, "remote", "get-url", remote)
+        if current != url:
+            run_checked(["git", "-C", str(repo), "remote", "set-url", remote, url])
+        return
+    run_checked(["git", "-C", str(repo), "remote", "add", remote, url])
+
+
 def command_output(command: list[str]) -> str:
     return subprocess.check_output(command, text=True, stderr=subprocess.STDOUT).strip()
 
@@ -317,9 +349,10 @@ def check_git_requirement(item: dict[str, Any]) -> None:
     expected_commit = str(item.get("commit") or "").strip()
     if expected_commit:
         actual_commit = git_output(repo, "rev-parse", "HEAD")
-        if actual_commit != expected_commit:
+        resolved_commit = resolve_git_commit(repo, expected_commit, label=label)
+        if actual_commit != resolved_commit:
             raise SystemExit(
-                f"{label}: git commit {actual_commit} != required {expected_commit}"
+                f"{label}: git commit {actual_commit} != required {resolved_commit}"
             )
     branch = str(item.get("branch") or "").strip()
     if branch and not expected_commit:
@@ -1020,8 +1053,9 @@ def sync_git_requirement(item: dict[str, Any]) -> None:
     if status and not bool(item.get("allow_dirty", False)):
         raise SystemExit(f"{label}: git worktree is not clean")
     remote = str(item.get("remote") or "").strip()
+    ensure_git_remote(repo, remote, url)
     if remote:
-        run_checked(["git", "-C", str(repo), "fetch", remote])
+        fetch_git_remote(repo, remote)
     branch = str(item.get("branch") or "").strip()
     commit = str(item.get("commit") or "").strip()
     if branch:
@@ -1029,7 +1063,8 @@ def sync_git_requirement(item: dict[str, Any]) -> None:
         if remote:
             run_checked(["git", "-C", str(repo), "pull", "--ff-only", remote, branch])
     if commit:
-        run_checked(["git", "-C", str(repo), "checkout", commit])
+        resolved_commit = resolve_git_commit(repo, commit, label=label)
+        run_checked(["git", "-C", str(repo), "checkout", resolved_commit])
     run_repo_hook(item, "build", repo=repo)
     run_repo_hook(item, "install", repo=repo)
     run_repo_hook(item, "probe", repo=repo)
@@ -1627,13 +1662,23 @@ def cmd_deploy(args: argparse.Namespace) -> int:
     remote_timeout = max(1.0, float(args.remote_timeout_seconds))
     manifest_path = expand_path(args.manifest)
     manifest = load_manifest(manifest_path)
+    has_tasks = bool(manifest.get("tasks"))
     print_lock = threading.Lock()
 
     def status(message: str, *, error: bool = False) -> None:
         with print_lock:
             print(message, file=sys.stderr if error else sys.stdout, flush=True)
 
-    def run_prereq(index: int, worker: dict[str, Any]) -> tuple[int, str, str, subprocess.CompletedProcess[str]]:
+    def emit_result_output(result: subprocess.CompletedProcess[str], *, error: bool) -> None:
+        stream = sys.stderr if error else sys.stdout
+        if result.stdout.strip() and (error or args.verbose):
+            with print_lock:
+                print(result.stdout.strip(), file=stream)
+        if result.stderr.strip() and (error or args.verbose):
+            with print_lock:
+                print(result.stderr.strip(), file=stream)
+
+    def run_worker(index: int, worker: dict[str, Any]) -> tuple[int, bool]:
         host = str(worker["host"])
         profile = str(worker["profile"])
         label = worker_label(host, profile)
@@ -1642,72 +1687,46 @@ def cmd_deploy(args: argparse.Namespace) -> int:
             bootstrap_worker_runner(worker, manifest_path, timeout=remote_timeout)
             status(f"{label}: checking prerequisites")
             script = deploy_prereq_command(worker=worker, manifest=manifest)
-            result = run_worker_shell(worker, script, timeout=remote_timeout)
+            prereq = run_worker_shell(worker, script, timeout=remote_timeout)
         except Exception as exc:
-            result = subprocess.CompletedProcess(["deploy", host], 1, stdout="", stderr=str(exc))
-        return index, host, profile, result
+            prereq = subprocess.CompletedProcess(["deploy", host], 1, stdout="", stderr=str(exc))
 
-    status(f"deploy: {len(workers)} worker(s), jobs={jobs}")
-    with concurrent.futures.ThreadPoolExecutor(max_workers=jobs) as executor:
-        futures = [
-            executor.submit(run_prereq, index, worker)
-            for index, worker in enumerate(workers)
-        ]
-        results = [future.result() for future in concurrent.futures.as_completed(futures)]
+        if prereq.returncode != 0:
+            status(f"{label}: prerequisites FAILED rc={prereq.returncode}", error=True)
+            emit_result_output(prereq, error=True)
+            return index, False
 
-    failed = 0
-    for _, host, profile, result in sorted(results, key=lambda item: item[0]):
-        label = worker_label(host, profile)
-        if result.returncode == 0:
-            status(f"{label}: prerequisites OK")
-            if args.verbose and result.stdout.strip():
-                print(result.stdout.strip())
-        else:
-            failed += 1
-            status(f"{label}: prerequisites FAILED rc={result.returncode}", error=True)
-            if result.stdout.strip():
-                print(result.stdout.strip(), file=sys.stderr)
-            if result.stderr.strip():
-                print(result.stderr.strip(), file=sys.stderr)
-    if failed:
-        return 1
+        status(f"{label}: prerequisites OK")
+        emit_result_output(prereq, error=False)
+        if not has_tasks:
+            return index, True
 
-    if not manifest.get("tasks"):
-        status("deploy: no tasks declared")
-        return 0
-
-    def run_work(index: int, worker: dict[str, Any]) -> tuple[int, str, str, subprocess.CompletedProcess[str]]:
-        host = str(worker["host"])
-        profile = str(worker["profile"])
         status(f"{worker_label(host, profile)}: running tasks")
         script = deploy_work_command(
             worker=worker,
             manifest=manifest,
             coordinator=coordinator_for_worker(worker, manifest_path),
         )
-        return index, host, profile, run_worker_shell(worker, script, timeout=remote_timeout)
-
-    with concurrent.futures.ThreadPoolExecutor(max_workers=jobs) as executor:
-        futures = [
-            executor.submit(run_work, index, worker)
-            for index, worker in enumerate(workers)
-        ]
-        work_results = [future.result() for future in concurrent.futures.as_completed(futures)]
-
-    failed = 0
-    for _, host, profile, result in sorted(work_results, key=lambda item: item[0]):
-        label = worker_label(host, profile)
+        result = run_worker_shell(worker, script, timeout=remote_timeout)
         if result.returncode == 0:
             status(f"{label}: tasks OK")
-            if args.verbose and result.stdout.strip():
-                print(result.stdout.strip())
-        else:
-            failed += 1
-            status(f"{label}: tasks FAILED rc={result.returncode}", error=True)
-            if result.stdout.strip():
-                print(result.stdout.strip(), file=sys.stderr)
-            if result.stderr.strip():
-                print(result.stderr.strip(), file=sys.stderr)
+            emit_result_output(result, error=False)
+            return index, True
+        status(f"{label}: tasks FAILED rc={result.returncode}", error=True)
+        emit_result_output(result, error=True)
+        return index, False
+
+    status(f"deploy: {len(workers)} worker(s), jobs={jobs}")
+    with concurrent.futures.ThreadPoolExecutor(max_workers=jobs) as executor:
+        futures = [
+            executor.submit(run_worker, index, worker)
+            for index, worker in enumerate(workers)
+        ]
+        results = [future.result() for future in concurrent.futures.as_completed(futures)]
+
+    failed = sum(1 for _, ok in results if not ok)
+    if not has_tasks:
+        status("deploy: no tasks declared")
     return 1 if failed else 0
 
 

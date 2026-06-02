@@ -12,10 +12,10 @@
     "repos": [
       {
         "name": "enyo",
-        "url": "git@github.com:ilAYAli/enyo.git",
+        "url": "git@github.com:ilAYAli/enyo_private.git",
         "path": "~/code/cpp/chess/enyo",
         "remote": "origin",
-        "commit": "8203c19",
+        "commit": "8203c1999d689ac993cf86db84fcfd6159aabc24",
         "allow_dirty": false,
         "build_timeout_s": 900,
         "install_timeout_s": 120,
@@ -29,7 +29,7 @@
         ],
         "probe": [
           "test -x build/enyo",
-          "test -x ../assets/engines/candidate"
+          "test -x ~/assets/engines/candidate"
         ]
       }
     ]

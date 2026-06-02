@@ -8,6 +8,7 @@ import argparse
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from unittest import mock
 from pathlib import Path
@@ -664,6 +665,44 @@ class DistributeTests(unittest.TestCase):
             head = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
             self.assertEqual(first, head)
 
+    def test_sync_repos_accepts_short_commit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            subprocess.run(["git", "init", "-b", "main", str(repo)], check=True, stdout=subprocess.DEVNULL)
+            subprocess.run(["git", "config", "user.name", "Petter Wahlman"], cwd=repo, check=True)
+            subprocess.run(["git", "config", "user.email", "petter@wahlman.no"], cwd=repo, check=True)
+            (repo / "file.txt").write_text("one", encoding="utf-8")
+            subprocess.run(["git", "add", "file.txt"], cwd=repo, check=True)
+            subprocess.run(["git", "commit", "-m", "one"], cwd=repo, check=True, stdout=subprocess.DEVNULL)
+            first = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
+            (repo / "file.txt").write_text("two", encoding="utf-8")
+            subprocess.run(["git", "commit", "-am", "two"], cwd=repo, check=True, stdout=subprocess.DEVNULL)
+
+            manifest = {
+                "schema": "distribute.task.v1",
+                "name": "sync-short",
+                "work_dir": str(root),
+                "state_dir": str(root / "state"),
+                "log_dir": str(root / "logs"),
+                "requirements": {
+                    "repos": [{"name": "repo", "path": str(repo), "commit": first[:7]}],
+                },
+                "tasks": [],
+            }
+            manifest_path = root / "manifest.json"
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+            sync = self.run_cli("sync-repos", "--manifest", str(manifest_path))
+            self.assertEqual("", sync.stderr)
+            self.assertEqual(0, sync.returncode)
+
+            doctor = self.run_cli("doctor", "--manifest", str(manifest_path))
+            self.assertEqual("", doctor.stderr)
+            self.assertEqual(0, doctor.returncode)
+            head = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
+            self.assertEqual(first, head)
+
     def test_sync_repos_clones_and_runs_setup_hooks(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -977,6 +1016,72 @@ class DistributeTests(unittest.TestCase):
             scripts = [command[-1] for command in commands if command[0] == "sh"]
             self.assertTrue(any("sync-repos" in script and "--profile worker" in script for script in scripts))
             self.assertTrue(any(" work " in script and "--profile worker" in script for script in scripts))
+
+    def test_deploy_starts_ready_worker_before_all_prereqs_finish(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest = root / "manifest.json"
+            manifest.write_text(
+                json.dumps({
+                    "schema": "distribute.task.v1",
+                    "name": "deploy-pipeline",
+                    "work_dir": str(root),
+                    "state_dir": str(root / "state"),
+                    "log_dir": str(root / "logs"),
+                    "path_maps": {"fast": {}, "slow": {}},
+                    "requirements": {
+                        "python_min": "3.11",
+                        "git_min": "2.38",
+                    },
+                    "tasks": [{"id": "task_0000", "index": 0, "command": "true", "outputs": []}],
+                }),
+                encoding="utf-8",
+            )
+            workers_path = root / "workers.json"
+            workers_path.write_text(
+                json.dumps({
+                    "schema": "distribute.workers.v1",
+                    "workers": [
+                        {"host": "fast", "profile": "fast", "local": True, "cache_dir": str(root / "cache-fast")},
+                        {"host": "slow", "profile": "slow", "local": True, "cache_dir": str(root / "cache-slow")},
+                    ],
+                }),
+                encoding="utf-8",
+            )
+            events: list[str] = []
+            allow_slow = threading.Event()
+
+            def fake_run(command, **kwargs):
+                script = command[-1]
+                if "doctor" in script and "--profile slow" in script:
+                    events.append("slow_prereq_start")
+                    allow_slow.wait(2)
+                    events.append("slow_prereq_done")
+                    return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+                if "doctor" in script and "--profile fast" in script:
+                    events.append("fast_prereq_done")
+                    return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+                if " work " in script and "--profile fast" in script:
+                    events.append("fast_work_start")
+                    allow_slow.set()
+                    return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+                return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+            with mock.patch("distrib.subprocess.run", fake_run):
+                stdout = io.StringIO()
+                with contextlib.redirect_stdout(stdout):
+                    rc = distrib.cmd_deploy(
+                        argparse.Namespace(
+                            manifest=str(manifest),
+                            workers=str(workers_path),
+                            jobs=2,
+                            remote_timeout_seconds=1800.0,
+                            verbose=False,
+                        )
+                    )
+
+            self.assertEqual(0, rc)
+            self.assertLess(events.index("fast_work_start"), events.index("slow_prereq_done"))
 
     def test_deploy_stops_when_prerequisites_fail(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
