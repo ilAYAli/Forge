@@ -876,7 +876,7 @@ class DistributeTests(unittest.TestCase):
                 workers,
             )
 
-    def test_prepare_uses_workers_json(self) -> None:
+    def test_deploy_uses_workers_json_without_unknown_profiles(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             workers_path = Path(tmp) / "workers.json"
             workers_path.write_text(
@@ -898,7 +898,7 @@ class DistributeTests(unittest.TestCase):
             with mock.patch("distribute.subprocess.run", fake_run):
                 stdout = io.StringIO()
                 with contextlib.redirect_stdout(stdout):
-                    rc = distribute.cmd_prepare(
+                    rc = distribute.cmd_deploy(
                         argparse.Namespace(
                             manifest=str(ROOT / "examples/enyo-candidate-deploy.manifest.json"),
                             workers=str(workers_path),
@@ -915,6 +915,110 @@ class DistributeTests(unittest.TestCase):
             self.assertTrue((Path(tmp) / "cache/distribute.py").exists())
             self.assertTrue((Path(tmp) / "cache/manifest.json").exists())
             self.assertTrue(any(command[:4] == ["rsync", "-a", "-e", distribute.RSYNC_SSH] for command in commands))
+            scripts = [command[-1] for command in commands if command[0] in {"ssh", "sh"}]
+            self.assertFalse(any("--profile pwa-5090" in script for script in scripts))
+
+    def test_deploy_passes_matching_profile_and_runs_tasks(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest = root / "manifest.json"
+            manifest.write_text(
+                json.dumps({
+                    "schema": "distribute.task.v1",
+                    "name": "deploy-test",
+                    "work_dir": str(root),
+                    "state_dir": str(root / "state"),
+                    "log_dir": str(root / "logs"),
+                    "path_maps": {"worker": {}},
+                    "requirements": {
+                        "python_min": "3.11",
+                        "git_min": "2.38",
+                        "git": {"repo": str(root), "commit": ""},
+                    },
+                    "tasks": [{"id": "task_0000", "index": 0, "command": "true", "outputs": []}],
+                }),
+                encoding="utf-8",
+            )
+            workers_path = root / "workers.json"
+            workers_path.write_text(
+                json.dumps({
+                    "schema": "distribute.workers.v1",
+                    "workers": [{"host": "localhost", "profile": "worker", "local": True, "cache_dir": str(root / "cache")}],
+                }),
+                encoding="utf-8",
+            )
+            commands = []
+
+            def fake_run(command, **kwargs):
+                commands.append(command)
+                return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+            with mock.patch("distribute.subprocess.run", fake_run):
+                stdout = io.StringIO()
+                with contextlib.redirect_stdout(stdout):
+                    rc = distribute.cmd_deploy(
+                        argparse.Namespace(
+                            manifest=str(manifest),
+                            workers=str(workers_path),
+                            jobs=1,
+                            verbose=False,
+                        )
+                    )
+
+            self.assertEqual(0, rc)
+            scripts = [command[-1] for command in commands if command[0] == "sh"]
+            self.assertTrue(any("sync-repos" in script and "--profile worker" in script for script in scripts))
+            self.assertTrue(any(" work " in script and "--profile worker" in script for script in scripts))
+
+    def test_deploy_stops_when_prerequisites_fail(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest = root / "manifest.json"
+            manifest.write_text(
+                json.dumps({
+                    "schema": "distribute.task.v1",
+                    "name": "deploy-fail",
+                    "work_dir": str(root),
+                    "state_dir": str(root / "state"),
+                    "log_dir": str(root / "logs"),
+                    "requirements": {"python_min": "3.11", "git_min": "2.38"},
+                    "tasks": [{"id": "task_0000", "index": 0, "command": "true", "outputs": []}],
+                }),
+                encoding="utf-8",
+            )
+            workers_path = root / "workers.json"
+            workers_path.write_text(
+                json.dumps({
+                    "schema": "distribute.workers.v1",
+                    "workers": [{"host": "localhost", "local": True, "cache_dir": str(root / "cache")}],
+                }),
+                encoding="utf-8",
+            )
+            commands = []
+
+            def fake_run(command, **kwargs):
+                commands.append(command)
+                return subprocess.CompletedProcess(command, 1, stdout="", stderr="failed")
+
+            with mock.patch("distribute.subprocess.run", fake_run):
+                stderr = io.StringIO()
+                with contextlib.redirect_stderr(stderr):
+                    rc = distribute.cmd_deploy(
+                        argparse.Namespace(
+                            manifest=str(manifest),
+                            workers=str(workers_path),
+                            jobs=1,
+                            verbose=False,
+                        )
+                    )
+
+            self.assertEqual(1, rc)
+            scripts = [command[-1] for command in commands if command[0] == "sh"]
+            self.assertFalse(any(" work " in script for script in scripts))
+
+    def test_prepare_command_is_removed(self) -> None:
+        result = self.run_cli("prepare", "manifest.json")
+        self.assertNotEqual(0, result.returncode)
 
 
 if __name__ == "__main__":

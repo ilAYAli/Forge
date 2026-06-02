@@ -1559,35 +1559,76 @@ def bootstrap_worker_runner(worker: dict[str, Any], manifest_path: Path) -> None
     copy_to_worker(worker, manifest_path, worker_cache_file(worker, "manifest.json"))
 
 
-def remote_prepare_worker_command(*, worker: dict[str, Any], profile: str) -> str:
+def worker_profile_args(manifest: dict[str, Any], worker: dict[str, Any]) -> list[str]:
+    profile = str(worker.get("profile") or "").strip()
+    if not profile:
+        return []
+    path_maps = manifest.get("path_maps", {})
+    if not isinstance(path_maps, dict):
+        raise SystemExit("path_maps must be an object")
+    if profile not in path_maps:
+        return []
+    return ["--profile", profile]
+
+
+def manifest_has_git_requirements(manifest: dict[str, Any]) -> bool:
+    req = manifest.get("requirements", {})
+    if not isinstance(req, dict):
+        return False
+    return bool(iter_git_requirements(manifest, req))
+
+
+def deploy_prereq_command(*, worker: dict[str, Any], manifest: dict[str, Any]) -> str:
     runner = worker_cache_file(worker, "distribute.py")
-    manifest = worker_cache_file(worker, "manifest.json")
-    return "\n".join([
-        "set -e",
-        shell_join(["python3", runner, "sync-repos", "--manifest", manifest, "--profile", profile]),
-        shell_join(["python3", runner, "doctor", "--manifest", manifest, "--profile", profile, "--role", "worker"]),
+    manifest_path = worker_cache_file(worker, "manifest.json")
+    profile_args = worker_profile_args(manifest, worker)
+    commands = ["set -e"]
+    if manifest_has_git_requirements(manifest):
+        commands.append(shell_join(["python3", runner, "sync-repos", "--manifest", manifest_path, *profile_args]))
+    commands.append(shell_join(["python3", runner, "doctor", "--manifest", manifest_path, *profile_args, "--role", "worker"]))
+    return "\n".join(commands)
+
+
+def deploy_work_command(*, worker: dict[str, Any], manifest: dict[str, Any], coordinator: str) -> str:
+    runner = worker_cache_file(worker, "distribute.py")
+    manifest_path = worker_cache_file(worker, "manifest.json")
+    profile_args = worker_profile_args(manifest, worker)
+    return shell_join([
+        "python3", runner,
+        "work",
+        "--manifest", manifest_path,
+        "--coordinator", coordinator,
+        "--worker", str(worker["host"]),
+        *profile_args,
     ])
 
 
-def cmd_prepare(args: argparse.Namespace) -> int:
+def coordinator_for_worker(worker: dict[str, Any], manifest_path: Path) -> str:
+    if is_local_worker(worker):
+        return str(manifest_path)
+    return f"{socket.gethostname()}:{manifest_path}"
+
+
+def cmd_deploy(args: argparse.Namespace) -> int:
     workers = load_workers(expand_path(args.workers))
     jobs = max(1, int(args.jobs))
     manifest_path = expand_path(args.manifest)
+    manifest = load_manifest(manifest_path)
 
-    def run_worker(index: int, worker: dict[str, Any]) -> tuple[int, str, str, subprocess.CompletedProcess[str]]:
+    def run_prereq(index: int, worker: dict[str, Any]) -> tuple[int, str, str, subprocess.CompletedProcess[str]]:
         host = str(worker["host"])
         profile = str(worker["profile"])
         try:
             bootstrap_worker_runner(worker, manifest_path)
-            script = remote_prepare_worker_command(worker=worker, profile=profile)
+            script = deploy_prereq_command(worker=worker, manifest=manifest)
             result = run_worker_shell(worker, script)
         except Exception as exc:
-            result = subprocess.CompletedProcess(["prepare", host], 1, stdout="", stderr=str(exc))
+            result = subprocess.CompletedProcess(["deploy", host], 1, stdout="", stderr=str(exc))
         return index, host, profile, result
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=jobs) as executor:
         futures = [
-            executor.submit(run_worker, index, worker)
+            executor.submit(run_prereq, index, worker)
             for index, worker in enumerate(workers)
         ]
         results = [future.result() for future in concurrent.futures.as_completed(futures)]
@@ -1596,12 +1637,49 @@ def cmd_prepare(args: argparse.Namespace) -> int:
     for _, host, profile, result in sorted(results, key=lambda item: item[0]):
         label = f"{host}({profile})"
         if result.returncode == 0:
-            print(f"{label}: ok")
+            print(f"ensuring prerequisites for {label}: OK")
             if args.verbose and result.stdout.strip():
                 print(result.stdout.strip())
         else:
             failed += 1
-            print(f"{label}: failed rc={result.returncode}", file=sys.stderr)
+            print(f"ensuring prerequisites for {label}: FAILED rc={result.returncode}", file=sys.stderr)
+            if result.stdout.strip():
+                print(result.stdout.strip(), file=sys.stderr)
+            if result.stderr.strip():
+                print(result.stderr.strip(), file=sys.stderr)
+    if failed:
+        return 1
+
+    if not manifest.get("tasks"):
+        return 0
+
+    def run_work(index: int, worker: dict[str, Any]) -> tuple[int, str, str, subprocess.CompletedProcess[str]]:
+        host = str(worker["host"])
+        profile = str(worker["profile"])
+        script = deploy_work_command(
+            worker=worker,
+            manifest=manifest,
+            coordinator=coordinator_for_worker(worker, manifest_path),
+        )
+        return index, host, profile, run_worker_shell(worker, script)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=jobs) as executor:
+        futures = [
+            executor.submit(run_work, index, worker)
+            for index, worker in enumerate(workers)
+        ]
+        work_results = [future.result() for future in concurrent.futures.as_completed(futures)]
+
+    failed = 0
+    for _, host, profile, result in sorted(work_results, key=lambda item: item[0]):
+        label = f"{host}({profile})"
+        if result.returncode == 0:
+            print(f"running tasks on {label}: OK")
+            if args.verbose and result.stdout.strip():
+                print(result.stdout.strip())
+        else:
+            failed += 1
+            print(f"running tasks on {label}: FAILED rc={result.returncode}", file=sys.stderr)
             if result.stdout.strip():
                 print(result.stdout.strip(), file=sys.stderr)
             if result.stderr.strip():
@@ -1753,12 +1831,12 @@ def build_parser() -> argparse.ArgumentParser:
     version.add_argument("--json", action="store_true")
     version.set_defaults(func=cmd_version)
 
-    prepare = sub.add_parser("prepare", help="Run sync-repos and doctor for workers from workers.json.")
-    prepare.add_argument("manifest")
-    prepare.add_argument("--workers", default="workers.json")
-    prepare.add_argument("--jobs", type=int, default=4)
-    prepare.add_argument("--verbose", action="store_true")
-    prepare.set_defaults(func=cmd_prepare)
+    deploy = sub.add_parser("deploy", help="Verify workers and run manifest tasks.")
+    deploy.add_argument("manifest")
+    deploy.add_argument("--workers", default="workers.json")
+    deploy.add_argument("--jobs", type=int, default=4)
+    deploy.add_argument("--verbose", action="store_true")
+    deploy.set_defaults(func=cmd_deploy)
 
     return parser
 

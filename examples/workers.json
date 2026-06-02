@@ -3,10 +3,7 @@
   "workers": [
     "pwa-5090",
     "pwa-rce",
-    {
-      "host": "pwa-win",
-      "profile": "pwa-wsl"
-    },
+    "pwa-wsl",
     {
       "host": "localhost",
       "local": true,

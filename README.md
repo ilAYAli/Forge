@@ -36,7 +36,7 @@ Workers:
 - Git 2.38 or newer.
 - `ssh` and `rsync` access from the coordinator.
 - Any compiler, engine, scorer, or other toolchain required by the manifest.
-- Workers do not need `distrib` installed for coordinator-driven `prepare`.
+- Workers do not need `distrib` installed for coordinator-driven `deploy`.
 
 Manifest:
 
@@ -73,8 +73,8 @@ distrib --help >/dev/null
 ```
 
 After this bootstrap, manifests should declare everything else workers need.
-Use `prepare` from the coordinator to create/update worker checkouts, install
-tools, and validate before work starts.
+Use `deploy` from the coordinator to create/update worker checkouts, install
+tools, validate them, and then run manifest tasks when present.
 
 ## Worker Setup
 
@@ -119,7 +119,7 @@ Generic repository setup:
 }
 ```
 
-Prepare and validate a worker:
+Lower-level single-worker setup:
 
 ```sh
 distrib sync-repos --manifest run.manifest.json --profile worker-a
@@ -140,12 +140,13 @@ Example: ensure Enyo is checked out at a specific commit, built, and deployed as
 the candidate engine:
 
 ```sh
-distrib prepare examples/enyo-candidate-deploy.manifest.json
+distrib deploy examples/enyo-candidate-deploy.manifest.json
 ```
 
-`prepare` reads `workers.json` on the coordinator, copies the current
-`distrib` runner and manifest to each worker cache, then runs `sync-repos` and
-`doctor` there. Workers need Python, Git, SSH/rsync access, and the project
+`deploy` reads `workers.json` on the coordinator, copies the current `distrib`
+runner and manifest to each worker cache, then runs `sync-repos` and `doctor`
+there. If the manifest declares tasks, `deploy` starts worker loops and waits
+for them to finish. Workers need Python, Git, SSH/rsync access, and the project
 toolchain, but they do not need `distrib` installed.
 
 Example `workers.json`:
@@ -156,10 +157,7 @@ Example `workers.json`:
   "workers": [
     "pwa-5090",
     "pwa-rce",
-    {
-      "host": "pwa-win",
-      "profile": "pwa-wsl"
-    },
+    "pwa-wsl",
     {
       "host": "localhost",
       "local": true
