@@ -23,6 +23,13 @@ from typing import Any
 
 
 SCHEMA = "distribute.task.v1"
+SSH_OPTS = [
+    "-o", "BatchMode=yes",
+    "-o", "ConnectTimeout=15",
+    "-o", "ServerAliveInterval=30",
+    "-o", "ServerAliveCountMax=3",
+]
+RSYNC_SSH = "ssh " + " ".join(shlex.quote(item) for item in SSH_OPTS)
 
 
 def script_path() -> Path:
@@ -193,7 +200,7 @@ def distrib_version_payload() -> dict[str, Any]:
     remote = ""
     upstream = ""
     try:
-        remote = git_output(repo, "config", "--get", "branch.main.remote")
+        remote = git_output(repo, "config", "--get", f"branch.{branch}.remote")
     except subprocess.CalledProcessError:
         remote = ""
     try:
@@ -211,6 +218,14 @@ def distrib_version_payload() -> dict[str, Any]:
         "remote": remote,
         "upstream": upstream,
     }
+
+
+def print_version_payload(payload: dict[str, Any], *, as_json: bool) -> None:
+    if as_json:
+        print(json.dumps(payload, sort_keys=True))
+        return
+    suffix = " dirty" if payload["dirty"] else ""
+    print(f"distrib {payload['commit']} {payload['branch']}{suffix}")
 
 
 def load_manifest(path: Path) -> dict[str, Any]:
@@ -720,7 +735,11 @@ def shell_join(args: list[str]) -> str:
 
 def remote_distrib_command(args: list[str]) -> str:
     quoted_args = shell_join(args)
-    return f"exec distrib {quoted_args}"
+    return (
+        "command -v distrib >/dev/null 2>&1 || "
+        "{ echo 'distrib not found in PATH on coordinator' >&2; exit 127; }; "
+        f"exec distrib {quoted_args}"
+    )
 
 
 def run_coordinator_cli(coordinator: str, args: list[str]) -> subprocess.CompletedProcess[str]:
@@ -728,7 +747,7 @@ def run_coordinator_cli(coordinator: str, args: list[str]) -> subprocess.Complet
     resolved_args = [item.replace("{manifest}", manifest_path) for item in args]
     if host:
         return subprocess.run(
-            ["ssh", host, remote_distrib_command(resolved_args)],
+            ["ssh", *SSH_OPTS, host, remote_distrib_command(resolved_args)],
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -802,7 +821,7 @@ def sync_files_to_coordinator(coordinator: str, transfers: list[tuple[Path, Path
     parents = {str(remote.parent) for _, remote in transfers}
     quoted_parents = " ".join(shlex.quote(p) for p in sorted(parents))
     mkdir_result = subprocess.run(
-        ["ssh", host, f"mkdir -p {quoted_parents}"],
+        ["ssh", *SSH_OPTS, host, f"mkdir -p {quoted_parents}"],
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -814,7 +833,7 @@ def sync_files_to_coordinator(coordinator: str, transfers: list[tuple[Path, Path
 
     for local, remote in transfers:
         result = subprocess.run(
-            ["rsync", "-a", str(local), f"{host}:{remote}"],
+            ["rsync", "-a", "-e", RSYNC_SSH, str(local), f"{host}:{remote}"],
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -1141,9 +1160,17 @@ def heartbeat_loop(
             print(f"{task_id}: heartbeat failed: {exc}", file=sys.stderr)
 
 
+def check_coordinator_cli(coordinator: str) -> None:
+    result = run_coordinator_cli(coordinator, ["version", "--json"])
+    if result.returncode != 0:
+        detail = result.stderr.strip() or result.stdout.strip() or "coordinator distrib check failed"
+        raise SystemExit(detail)
+
+
 def cmd_work(args: argparse.Namespace) -> int:
     coordinator_manifest = load_manifest(expand_path(args.manifest))
     local_manifest = apply_profile(copy.deepcopy(coordinator_manifest), args.profile)
+    check_coordinator_cli(args.coordinator)
     check_requirements(local_manifest)
     completed = 0
     failed = 0
@@ -1396,25 +1423,20 @@ def cmd_self_update(args: argparse.Namespace) -> int:
     repo = script_repo()
     if args.require_clean and git_output(repo, "status", "--porcelain"):
         raise SystemExit(f"{repo}: git worktree is not clean")
+    current_branch = git_output(repo, "rev-parse", "--abbrev-ref", "HEAD")
+    branch = args.branch or current_branch
+    if branch == "HEAD":
+        raise SystemExit("distrib is on a detached HEAD; pass --branch explicitly")
     run_checked(["git", "-C", str(repo), "fetch", args.remote])
-    run_checked(["git", "-C", str(repo), "checkout", args.branch])
-    run_checked(["git", "-C", str(repo), "pull", "--ff-only", args.remote, args.branch])
-    payload = distrib_version_payload()
-    if args.json:
-        print(json.dumps(payload, sort_keys=True))
-    else:
-        suffix = " dirty" if payload["dirty"] else ""
-        print(f"distrib {payload['commit']} {payload['branch']}{suffix}")
+    if current_branch != branch:
+        run_checked(["git", "-C", str(repo), "checkout", branch])
+    run_checked(["git", "-C", str(repo), "pull", "--ff-only", args.remote, branch])
+    print_version_payload(distrib_version_payload(), as_json=args.json)
     return 0
 
 
 def cmd_version(args: argparse.Namespace) -> int:
-    payload = distrib_version_payload()
-    if args.json:
-        print(json.dumps(payload, sort_keys=True))
-    else:
-        suffix = " dirty" if payload["dirty"] else ""
-        print(f"distrib {payload['commit']} {payload['branch']}{suffix}")
+    print_version_payload(distrib_version_payload(), as_json=args.json)
     return 0
 
 
@@ -1491,7 +1513,7 @@ def run_worker_shell(worker: dict[str, Any], script: str) -> subprocess.Complete
             check=False,
         )
     return subprocess.run(
-        ["ssh", str(worker["host"]), script],
+        ["ssh", *SSH_OPTS, str(worker["host"]), script],
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -1512,7 +1534,7 @@ def copy_to_worker(worker: dict[str, Any], src: Path, dst: str) -> None:
         shutil.copy2(src, target)
         return
     result = subprocess.run(
-        ["rsync", "-a", str(src), worker_rsync_target(worker, dst)],
+        ["rsync", "-a", "-e", RSYNC_SSH, str(src), worker_rsync_target(worker, dst)],
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -1723,7 +1745,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     self_update = sub.add_parser("self-update", help="Fast-forward the distrib checkout itself.")
     self_update.add_argument("--remote", default="origin")
-    self_update.add_argument("--branch", default="main")
+    self_update.add_argument("--branch")
     self_update.add_argument("--require-clean", action=argparse.BooleanOptionalAction, default=True)
     self_update.add_argument("--json", action="store_true")
     self_update.set_defaults(func=cmd_self_update)

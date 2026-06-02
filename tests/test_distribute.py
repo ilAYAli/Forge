@@ -776,6 +776,27 @@ class DistributeTests(unittest.TestCase):
         self.assertIn("commit", payload)
         self.assertIn("repo", payload)
 
+    def test_version_payload_uses_current_branch_remote(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "repo"
+            subprocess.run(["git", "init", "-b", "develop", str(repo)], check=True, stdout=subprocess.DEVNULL)
+            subprocess.run(["git", "config", "user.name", "Petter Wahlman"], cwd=repo, check=True)
+            subprocess.run(["git", "config", "user.email", "petter@wahlman.no"], cwd=repo, check=True)
+            subprocess.run(["git", "config", "branch.develop.remote", "origin"], cwd=repo, check=True)
+            (repo / "distribute.py").write_text("#!/usr/bin/env python3\n", encoding="utf-8")
+            subprocess.run(["git", "add", "distribute.py"], cwd=repo, check=True)
+            subprocess.run(["git", "commit", "-m", "test"], cwd=repo, check=True, stdout=subprocess.DEVNULL)
+
+            original_file = distribute.__file__
+            try:
+                distribute.__file__ = str(repo / "distribute.py")
+                payload = distribute.distrib_version_payload()
+            finally:
+                distribute.__file__ = original_file
+
+            self.assertEqual("develop", payload["branch"])
+            self.assertEqual("origin", payload["remote"])
+
     def test_self_update_fast_forwards_distrib_checkout(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -801,7 +822,7 @@ class DistributeTests(unittest.TestCase):
                     rc = distribute.cmd_self_update(
                         argparse.Namespace(
                             remote="origin",
-                            branch="main",
+                            branch=None,
                             require_clean=True,
                             json=True,
                         )
@@ -815,7 +836,18 @@ class DistributeTests(unittest.TestCase):
     def test_remote_distrib_command_uses_path(self) -> None:
         command = distribute.remote_distrib_command(["status", "--manifest", "/tmp/run manifest.json"])
 
-        self.assertEqual("exec distrib status --manifest '/tmp/run manifest.json'", command)
+        self.assertIn("command -v distrib", command)
+        self.assertIn("exec distrib status --manifest '/tmp/run manifest.json'", command)
+
+    def test_check_coordinator_cli_fails_early(self) -> None:
+        result = subprocess.CompletedProcess(["ssh"], 127, stdout="", stderr="distrib not found")
+
+        with mock.patch("distribute.run_coordinator_cli", return_value=result):
+            with self.assertRaises(SystemExit) as raised:
+                distribute.check_coordinator_cli("pwa-5090:/tmp/manifest.json")
+
+        self.assertIn("distrib not found", str(raised.exception))
+
 
     def test_load_workers_reads_workers_json(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -868,7 +900,7 @@ class DistributeTests(unittest.TestCase):
                 with contextlib.redirect_stdout(stdout):
                     rc = distribute.cmd_prepare(
                         argparse.Namespace(
-                            manifest="examples/enyo-candidate-deploy.manifest.json",
+                            manifest=str(ROOT / "examples/enyo-candidate-deploy.manifest.json"),
                             workers=str(workers_path),
                             jobs=1,
                             verbose=False,
@@ -876,9 +908,11 @@ class DistributeTests(unittest.TestCase):
                     )
 
             self.assertEqual(0, rc)
-            self.assertIn(["ssh", "pwa-5090", "mkdir -p .cache/distrib"], commands)
+            self.assertTrue(
+                any(command[0] == "ssh" and command[-2:] == ["pwa-5090", "mkdir -p .cache/distrib"] for command in commands)
+            )
             self.assertIn(["sh", "-lc", "mkdir -p " + str(Path(tmp) / "cache")], commands)
-            self.assertTrue(any(command[:2] == ["rsync", "-a"] for command in commands))
+            self.assertTrue(any(command[:4] == ["rsync", "-a", "-e", distribute.RSYNC_SSH] for command in commands))
 
 
 if __name__ == "__main__":
