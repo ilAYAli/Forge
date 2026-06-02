@@ -24,11 +24,19 @@ from typing import Any
 
 
 SCHEMA = "distribute.task.v1"
+SSH_CONNECT_TIMEOUT_SECONDS = 15
+SSH_SERVER_ALIVE_INTERVAL_SECONDS = 30
+SSH_SERVER_ALIVE_COUNT_MAX = 3
+REMOTE_PROCESS_STOP_GRACE_SECONDS = 2
+DEFAULT_REQUIREMENT_TIMEOUT_SECONDS = 15.0
+HEARTBEAT_MIN_INTERVAL_SECONDS = 5.0
+HEARTBEAT_MAX_INTERVAL_SECONDS = 60.0
+HEARTBEAT_DEFAULT_INTERVAL_SECONDS = 30.0
 SSH_OPTS = [
     "-o", "BatchMode=yes",
-    "-o", "ConnectTimeout=15",
-    "-o", "ServerAliveInterval=30",
-    "-o", "ServerAliveCountMax=3",
+    "-o", f"ConnectTimeout={SSH_CONNECT_TIMEOUT_SECONDS}",
+    "-o", f"ServerAliveInterval={SSH_SERVER_ALIVE_INTERVAL_SECONDS}",
+    "-o", f"ServerAliveCountMax={SSH_SERVER_ALIVE_COUNT_MAX}",
 ]
 RSYNC_SSH = "ssh " + " ".join(shlex.quote(item) for item in SSH_OPTS)
 
@@ -212,6 +220,13 @@ def command_result(command: str | list[str], *, cwd: Path | None = None, timeout
     )
 
 
+def bounded_timeout(value: Any, default: float | None = None) -> float | None:
+    if value in (None, ""):
+        return default
+    timeout = max(0.0, float(value))
+    return timeout if timeout > 0 else None
+
+
 class ProcessTracker:
     def __init__(self) -> None:
         self._lock = threading.Lock()
@@ -233,7 +248,8 @@ class ProcessTracker:
             except subprocess.TimeoutExpired:
                 self._terminate(proc, signal.SIGTERM)
                 try:
-                    stdout, stderr = proc.communicate(timeout=2)
+                    stdout, stderr = proc.communicate(
+                        timeout=REMOTE_PROCESS_STOP_GRACE_SECONDS)
                 except subprocess.TimeoutExpired:
                     self._terminate(proc, signal.SIGKILL)
                     stdout, stderr = proc.communicate()
@@ -249,7 +265,7 @@ class ProcessTracker:
             processes = list(self._processes)
         for proc in processes:
             self._terminate(proc, signal.SIGTERM)
-        deadline = time.monotonic() + 2
+        deadline = time.monotonic() + REMOTE_PROCESS_STOP_GRACE_SECONDS
         for proc in processes:
             remaining = max(0.0, deadline - time.monotonic())
             try:
@@ -330,6 +346,7 @@ def load_manifest(path: Path) -> dict[str, Any]:
     if not isinstance(tasks, list):
         raise SystemExit(f"{path}: tasks must be a list")
     seen: set[str] = set()
+    seen_outputs: dict[str, str] = {}
     for task in tasks:
         if not isinstance(task, dict):
             raise SystemExit(f"{path}: each task must be an object")
@@ -339,6 +356,17 @@ def load_manifest(path: Path) -> dict[str, Any]:
         if task_id in seen:
             raise SystemExit(f"{path}: duplicate task id {task_id}")
         seen.add(task_id)
+        outputs = task.get("outputs", [])
+        if not isinstance(outputs, list):
+            raise SystemExit(f"{path}: {task_id}: outputs must be a list")
+        for output in outputs:
+            output_key = str(output)
+            other_task = seen_outputs.get(output_key)
+            if other_task is not None:
+                raise SystemExit(
+                    f"{path}: duplicate output path {output_key!r} in "
+                    f"{other_task} and {task_id}")
+            seen_outputs[output_key] = task_id
     return manifest
 
 
@@ -442,7 +470,8 @@ def check_command_requirement(item: dict[str, Any]) -> None:
         command = [path, "--version"]
     if command is None:
         return
-    timeout = float(item.get("timeout_s") or 15)
+    timeout = bounded_timeout(
+        item.get("timeout_s"), DEFAULT_REQUIREMENT_TIMEOUT_SECONDS)
     result = command_result(command, timeout=timeout)
     output = result.stdout
     if result.returncode != int(item.get("rc", 0)):
@@ -468,7 +497,9 @@ def requirement_commands(value: Any, field: str) -> list[str]:
 def run_repo_hook(item: dict[str, Any], field: str, *, repo: Path) -> None:
     label = str(item.get("name") or repo)
     for index, command in enumerate(requirement_commands(item.get(field), f"{label}.{field}"), start=1):
-        result = command_result(command, cwd=repo, timeout=float(item.get(f"{field}_timeout_s") or 0) or None)
+        result = command_result(
+            command, cwd=repo,
+            timeout=bounded_timeout(item.get(f"{field}_timeout_s")))
         if result.returncode != 0:
             raise SystemExit(
                 f"{label}: {field}[{index}] failed rc={result.returncode}: {result.stdout.strip()}"
@@ -651,6 +682,7 @@ def run_task(manifest: dict[str, Any], task: dict[str, Any], *, force: bool) -> 
 
     task_fail_path(manifest, task).unlink(missing_ok=True)
     task_done_path(manifest, task).unlink(missing_ok=True)
+    task_running_path(manifest, task).unlink(missing_ok=True)
     command = format_command(manifest, task)
     log_path = task_log_path(manifest, task)
     start = time.monotonic()
@@ -675,9 +707,9 @@ def run_task(manifest: dict[str, Any], task: dict[str, Any], *, force: bool) -> 
             text=True,
             start_new_session=True,
         )
-        timeout = task.get("timeout_s", manifest.get("timeout_s"))
+        timeout = bounded_timeout(task.get("timeout_s", manifest.get("timeout_s")))
         try:
-            rc = proc.wait(timeout=float(timeout)) if timeout else proc.wait()
+            rc = proc.wait(timeout=timeout) if timeout else proc.wait()
         except subprocess.TimeoutExpired:
             terminate_process_group(proc, log, "timeout")
             rc = 124
@@ -1004,6 +1036,7 @@ def cmd_plan(args: argparse.Namespace) -> int:
         path_maps.setdefault(profile, {})[src] = dst
 
     tasks = []
+    generated_outputs: dict[str, str] = {}
     width = max(4, len(str(args.shards - 1)))
     for index in range(args.shards):
         task_id = f"{args.task_prefix}_{index:0{width}d}"
@@ -1011,6 +1044,13 @@ def cmd_plan(args: argparse.Namespace) -> int:
             template.format(index=index, shard=index, task_id=task_id, shards=args.shards, **vars_obj)
             for template in args.output_template
         ]
+        for output in outputs:
+            other_task = generated_outputs.get(output)
+            if other_task is not None:
+                raise SystemExit(
+                    f"{out}: duplicate output path {output!r} in "
+                    f"{other_task} and {task_id}")
+            generated_outputs[output] = task_id
         tasks.append({
             "id": task_id,
             "index": index,
@@ -1249,7 +1289,14 @@ def heartbeat_loop(
     lease_seconds: int,
     stop: threading.Event,
 ) -> None:
-    interval = max(5.0, min(60.0, lease_seconds / 3 if lease_seconds > 0 else 30.0))
+    interval = max(
+        HEARTBEAT_MIN_INTERVAL_SECONDS,
+        min(
+            HEARTBEAT_MAX_INTERVAL_SECONDS,
+            lease_seconds / 3 if lease_seconds > 0
+            else HEARTBEAT_DEFAULT_INTERVAL_SECONDS,
+        ),
+    )
     while not stop.wait(interval):
         try:
             heartbeat_on_coordinator(coordinator, task_id, worker, claim_id)

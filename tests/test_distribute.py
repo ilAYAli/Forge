@@ -90,6 +90,67 @@ class DistributeTests(unittest.TestCase):
             self.assertEqual(0, merge.returncode)
             self.assertEqual("0\n\n1\n\n2\n\n", merged.read_text(encoding="utf-8"))
 
+    def test_plan_rejects_duplicate_output_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            subprocess.run(["git", "init", "-b", "main"], cwd=root, check=True, stdout=subprocess.DEVNULL)
+            subprocess.run(["git", "config", "user.name", "Petter Wahlman"], cwd=root, check=True)
+            subprocess.run(["git", "config", "user.email", "petter@wahlman.no"], cwd=root, check=True)
+            (root / "input.txt").write_text("fixed\n", encoding="utf-8")
+            subprocess.run(["git", "add", "input.txt"], cwd=root, check=True)
+            subprocess.run(["git", "commit", "-m", "test"], cwd=root, check=True, stdout=subprocess.DEVNULL)
+
+            result = self.run_cli(
+                "plan",
+                "--name", "duplicate-output",
+                "--shards", "2",
+                "--work-dir", str(root),
+                "--out", str(root / "manifest.json"),
+                "--command-template", "printf '{index}\\n' > {output}",
+                "--output-template", str(root / "out.txt"),
+            )
+
+            self.assertNotEqual(0, result.returncode)
+            self.assertIn("duplicate output path", result.stderr)
+
+    def test_negative_timeout_is_not_passed_to_subprocess(self) -> None:
+        self.assertIsNone(distrib.bounded_timeout(-1))
+        self.assertIsNone(distrib.bounded_timeout(0))
+        self.assertEqual(15.0, distrib.bounded_timeout(None, 15.0))
+
+    def test_run_task_removes_stale_running_marker(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            subprocess.run(["git", "init", "-b", "main"], cwd=root, check=True, stdout=subprocess.DEVNULL)
+            subprocess.run(["git", "config", "user.name", "Petter Wahlman"], cwd=root, check=True)
+            subprocess.run(["git", "config", "user.email", "petter@wahlman.no"], cwd=root, check=True)
+            (root / "input.txt").write_text("fixed\n", encoding="utf-8")
+            subprocess.run(["git", "add", "input.txt"], cwd=root, check=True)
+            subprocess.run(["git", "commit", "-m", "test"], cwd=root, check=True, stdout=subprocess.DEVNULL)
+
+            manifest = root / "manifest.json"
+            plan = self.run_cli(
+                "plan",
+                "--name", "stale-running",
+                "--shards", "1",
+                "--work-dir", str(root),
+                "--out", str(manifest),
+                "--command-template", "printf ok > {output}",
+                "--output-template", str(root / "out.txt"),
+            )
+            self.assertEqual(0, plan.returncode)
+
+            state = root / "state"
+            state.mkdir(exist_ok=True)
+            running = state / "task_0000.running.json"
+            running.write_text(json.dumps({"task": "task_0000"}), encoding="utf-8")
+
+            run = self.run_cli("run", "--manifest", str(manifest), "--index", "0")
+
+            self.assertEqual("", run.stderr)
+            self.assertEqual(0, run.returncode)
+            self.assertFalse(running.exists())
+
     def test_wrong_git_commit_rejects_task(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
