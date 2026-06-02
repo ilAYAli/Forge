@@ -717,6 +717,36 @@ class CrucibleTests(unittest.TestCase):
             self.assertEqual([0], payload["groups"]["done"]["host-done"])
             self.assertEqual("42/1000", payload["active"][0]["progress"])
 
+    def test_status_discovers_manifests_under_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for name in ("main", "bonus"):
+                run = root / name
+                manifest = run / "manifest.json"
+                manifest.parent.mkdir(parents=True)
+                manifest.write_text(
+                    json.dumps({
+                        "schema": "crucible.task.v1",
+                        "name": name,
+                        "work_dir": str(run),
+                        "state_dir": str(run / "state"),
+                        "log_dir": str(run / "logs"),
+                        "tasks": [{"id": f"{name}_0", "index": 0, "command": "true", "outputs": []}],
+                    }),
+                    encoding="utf-8",
+                )
+
+            status = self.run_cli("status", str(root), cwd=root)
+            self.assertEqual(0, status.returncode)
+            self.assertIn("== main/manifest.json ==", status.stdout)
+            self.assertIn("== bonus/manifest.json ==", status.stdout)
+            self.assertEqual(2, status.stdout.count("tasks: 1"))
+
+            status_json = self.run_cli("status", str(root), "--json", cwd=root)
+            self.assertEqual(0, status_json.returncode)
+            payload = json.loads(status_json.stdout)
+            self.assertEqual(2, len(payload["manifests"]))
+
     def test_multi_repo_and_command_requirements(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

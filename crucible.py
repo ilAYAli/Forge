@@ -1473,17 +1473,78 @@ def cmd_heartbeat(args: argparse.Namespace) -> int:
 
 
 def cmd_status(args: argparse.Namespace) -> int:
-    manifest = apply_profile(load_manifest(expand_path(args.manifest)), args.profile)
-    summary = status_summary(manifest, lease_seconds=args.lease_seconds)
+    paths = status_manifest_paths(args)
+    summaries: list[dict[str, Any]] = []
+    for path in paths:
+        manifest = apply_profile(load_manifest(path), args.profile)
+        summary = status_summary(manifest, lease_seconds=args.lease_seconds)
+        summary["manifest"] = str(path)
+        summaries.append(summary)
+
     if args.json:
-        print(json.dumps(summary, sort_keys=True))
+        payload: dict[str, Any] | list[dict[str, Any]]
+        payload = summaries[0] if len(summaries) == 1 else {"manifests": summaries}
+        print(json.dumps(payload, sort_keys=True))
     else:
-        print_compact_status(summary)
-        if args.verbose:
-            for row in summary["rows"]:
-                print(f"{row['id']}\t{row['state']}\t{row['worker']}")
-    counts = summary["counts"]
-    return 0 if counts["fail"] == 0 else 1
+        for index, summary in enumerate(summaries):
+            if len(summaries) > 1:
+                if index:
+                    print()
+                print(f"== {format_manifest_path(Path(summary['manifest']))} ==")
+            print_compact_status(summary)
+            if args.verbose:
+                for row in summary["rows"]:
+                    print(f"{row['id']}\t{row['state']}\t{row['worker']}")
+    return 0 if all(item["counts"]["fail"] == 0 for item in summaries) else 1
+
+
+def status_manifest_paths(args: argparse.Namespace) -> list[Path]:
+    if args.manifest:
+        return [expand_path(args.manifest)]
+    paths = discover_manifest_paths(expand_path(args.path))
+    if not paths:
+        raise SystemExit(f"{args.path}: no Crucible manifests found")
+    return paths
+
+
+def discover_manifest_paths(root: Path) -> list[Path]:
+    if root.is_file():
+        return [root]
+    if not root.exists():
+        raise SystemExit(f"{root}: no such file or directory")
+
+    paths: list[Path] = []
+    seen: set[Path] = set()
+    for pattern in ("manifest.json", "*.manifest.json"):
+        for path in root.rglob(pattern):
+            if path in seen or ignored_manifest_path(path, root):
+                continue
+            seen.add(path)
+            try:
+                payload = read_json(path)
+            except SystemExit:
+                continue
+            if payload.get("schema") == SCHEMA:
+                paths.append(path)
+    return sorted(paths, key=lambda item: str(item))
+
+
+def ignored_manifest_path(path: Path, root: Path) -> bool:
+    try:
+        parts = path.relative_to(root).parts[:-1]
+    except ValueError:
+        parts = path.parts[:-1]
+    return any(part in {".git", ".cache", "__pycache__"} for part in parts)
+
+
+def format_manifest_path(path: Path) -> str:
+    try:
+        return str(path.relative_to(Path.cwd()))
+    except ValueError:
+        try:
+            return str(path.resolve().relative_to(Path.cwd().resolve()))
+        except ValueError:
+            return str(path)
 
 
 def task_counts(manifest: dict[str, Any], *, lease_seconds: int) -> dict[str, int]:
@@ -2221,7 +2282,8 @@ def build_parser() -> argparse.ArgumentParser:
     doctor.set_defaults(func=cmd_doctor)
 
     status = sub.add_parser("status", help="Show task status.")
-    status.add_argument("--manifest", required=True)
+    status.add_argument("path", nargs="?", default=".", help="Manifest file or directory to scan.")
+    status.add_argument("--manifest", help="Explicit manifest file. Overrides path discovery.")
     status.add_argument("-v", "--verbose", action="store_true")
     status.add_argument("--json", action="store_true")
     status.add_argument("--profile")
