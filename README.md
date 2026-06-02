@@ -26,7 +26,8 @@ For NNUE work, the normal coordinator is `pwa-5090`.
 - Git 2.38 or newer.
 - `ssh` and `rsync` for moving manifests and shard outputs between hosts.
 - The same project checkout on every worker, at the same Git commit.
-- Absolute paths in manifests. Do not rely on `~` expansion across hosts.
+- Use `~` or `$HOME` for worker-local paths when possible. They are expanded
+  on the host running the command.
 - If hosts use different absolute roots, add explicit path maps to the
   manifest.
 - Identical input artifacts for deterministic work. Use file checksums for
@@ -62,26 +63,26 @@ Generic repository setup:
       {
         "name": "project",
         "url": "git@example.com:owner/project.git",
-        "path": "/home/user/work/project",
+        "path": "~/work/project",
         "commit": "abcdef123456...",
         "build": [
           "cmake -S . -B build -DCMAKE_BUILD_TYPE=Release",
           "cmake --build build -j8"
         ],
         "install": [
-          "mkdir -p /home/user/.local/bin",
-          "ln -sf /home/user/work/project/build/project-tool /home/user/.local/bin/project-tool"
+          "mkdir -p ~/.local/bin",
+          "ln -sf ~/work/project/build/project-tool ~/.local/bin/project-tool"
         ],
         "probe": [
-          "/home/user/.local/bin/project-tool --version | grep 'project-tool'"
+          "~/.local/bin/project-tool --version | grep 'project-tool'"
         ]
       }
     ],
     "commands": [
       {
         "name": "external-tool",
-        "path": "/home/user/.local/bin/external-tool",
-        "command": "/home/user/.local/bin/external-tool --version",
+        "path": "~/.local/bin/external-tool",
+        "command": "~/.local/bin/external-tool --version",
         "regex": "External Tool [0-9]+"
       }
     ]
@@ -255,18 +256,18 @@ Minimal manifest:
       {
         "name": "dependency",
         "url": "git@example.com:owner/dependency.git",
-        "path": "/abs/dependency/root",
+        "path": "~/work/dependency",
         "commit": "123456...",
         "build": "make -j8",
-        "install": "ln -sf /abs/dependency/root/bin/tool /home/user/.local/bin/tool",
-        "probe": "tool --version | grep dependency"
+        "install": "ln -sf ~/work/dependency/bin/tool ~/.local/bin/tool",
+        "probe": "~/.local/bin/tool --version | grep dependency"
       }
     ],
     "commands": [
       {
         "name": "tool",
-        "path": "/home/user/.local/bin/tool",
-        "command": "/home/user/.local/bin/tool --version",
+        "path": "~/.local/bin/tool",
+        "command": "~/.local/bin/tool --version",
         "contains": "tool"
       }
     ],
