@@ -1417,39 +1417,15 @@ def cmd_heartbeat(args: argparse.Namespace) -> int:
 
 def cmd_status(args: argparse.Namespace) -> int:
     manifest = apply_profile(load_manifest(expand_path(args.manifest)), args.profile)
-    counts = task_counts(manifest, lease_seconds=args.lease_seconds)
-    rows = []
-    if args.verbose:
-        for task in manifest["tasks"]:
-            state = task_state(manifest, task, lease_seconds=args.lease_seconds)
-            info = ""
-            if state == "done":
-                try:
-                    done = read_json(task_done_path(manifest, task))
-                    info = str(done.get("host") or "")
-                except Exception:
-                    pass
-            elif state == "fail":
-                try:
-                    fail = read_json(task_fail_path(manifest, task))
-                    info = str(fail.get("host") or "")
-                except Exception:
-                    pass
-            elif state in {"claimed", "running", "stale"}:
-                try:
-                    claim = read_json(task_claim_path(manifest, task))
-                    info = str(claim.get("worker") or "")
-                except Exception:
-                    pass
-            rows.append((task["id"], state, info))
-    print(
-        f"tasks={len(manifest['tasks'])} done={counts['done']} "
-        f"running={counts['running']} claimed={counts['claimed']} stale={counts['stale']} "
-        f"fail={counts['fail']} pending={counts['pending']}"
-    )
-    if args.verbose:
-        for task_id, state, info in rows:
-            print(f"{task_id}\t{state}\t{info}")
+    summary = status_summary(manifest, lease_seconds=args.lease_seconds)
+    if args.json:
+        print(json.dumps(summary, sort_keys=True))
+    else:
+        print_compact_status(summary)
+        if args.verbose:
+            for row in summary["rows"]:
+                print(f"{row['id']}\t{row['state']}\t{row['worker']}")
+    counts = summary["counts"]
     return 0 if counts["fail"] == 0 else 1
 
 
@@ -1458,6 +1434,162 @@ def task_counts(manifest: dict[str, Any], *, lease_seconds: int) -> dict[str, in
     for task in manifest["tasks"]:
         counts[task_state(manifest, task, lease_seconds=lease_seconds)] += 1
     return counts
+
+
+def task_display_index(task: dict[str, Any]) -> int | str:
+    index = task.get("index")
+    if isinstance(index, int):
+        return index
+    match = re.search(r"(\d+)$", str(task.get("id", "")))
+    if match:
+        return int(match.group(1))
+    return str(task.get("id", ""))
+
+
+def status_worker(manifest: dict[str, Any], task: dict[str, Any], state: str) -> str:
+    paths: list[Path] = []
+    if state == "done":
+        paths.append(task_done_path(manifest, task))
+    elif state == "fail":
+        paths.append(task_fail_path(manifest, task))
+    elif state in {"claimed", "running", "stale"}:
+        paths.append(task_claim_path(manifest, task))
+        paths.append(task_running_path(manifest, task))
+
+    for path in paths:
+        try:
+            payload = read_json(path)
+        except Exception:
+            continue
+        worker = payload.get("worker")
+        if isinstance(worker, dict):
+            worker = worker.get("host")
+        worker = worker or payload.get("host")
+        if worker:
+            return str(worker)
+    return ""
+
+
+def task_log_progress(manifest: dict[str, Any], task: dict[str, Any]) -> str:
+    path = task_log_path(manifest, task)
+    try:
+        with path.open("rb") as file:
+            file.seek(0, os.SEEK_END)
+            size = file.tell()
+            file.seek(max(0, size - 8192))
+            text = file.read().decode("utf-8", errors="replace")
+    except OSError:
+        return ""
+
+    progress_re = re.compile(r"\[\s*\d+/\d+\s+(\d+)\s*/\s*(\d+)\]")
+    for line in reversed(text.splitlines()):
+        match = progress_re.search(line)
+        if match:
+            return f"{match.group(1)}/{match.group(2)}"
+    return ""
+
+
+def status_summary(manifest: dict[str, Any], *, lease_seconds: int) -> dict[str, Any]:
+    counts = {"done": 0, "fail": 0, "running": 0, "claimed": 0, "stale": 0, "pending": 0}
+    rows: list[dict[str, Any]] = []
+    groups: dict[str, dict[str, list[int | str]]] = {
+        "done": {},
+        "fail": {},
+        "stale": {},
+    }
+    active: list[dict[str, Any]] = []
+    pending: list[int | str] = []
+
+    for task in manifest["tasks"]:
+        state = task_state(manifest, task, lease_seconds=lease_seconds)
+        counts[state] += 1
+        worker = status_worker(manifest, task, state)
+        index = task_display_index(task)
+        progress = task_log_progress(manifest, task) if state == "running" else ""
+        row = {
+            "id": task["id"],
+            "index": index,
+            "state": state,
+            "worker": worker,
+            "progress": progress,
+        }
+        rows.append(row)
+
+        if state in {"done", "fail", "stale"}:
+            key = worker or "unknown"
+            groups[state].setdefault(key, []).append(index)
+        elif state in {"running", "claimed"}:
+            active.append(row)
+        elif state == "pending":
+            pending.append(index)
+
+    return {
+        "tasks": len(manifest["tasks"]),
+        "counts": counts,
+        "active_count": counts["running"] + counts["claimed"],
+        "groups": groups,
+        "active": active,
+        "pending": pending,
+        "rows": rows,
+    }
+
+
+def sort_status_values(values: list[int | str]) -> list[int | str]:
+    return sorted(values, key=status_value_key)
+
+
+def status_value_key(value: int | str) -> tuple[bool, int | str]:
+    return (not isinstance(value, int), value)
+
+
+def format_status_values(values: list[int | str]) -> str:
+    values = sort_status_values(values)
+    if not values:
+        return "-"
+    if not all(isinstance(value, int) for value in values):
+        return ",".join(str(value) for value in values)
+
+    ranges: list[str] = []
+    start = prev = int(values[0])
+    for value in values[1:]:
+        current = int(value)
+        if current == prev + 1:
+            prev = current
+            continue
+        ranges.append(f"{start}-{prev}" if start != prev else str(start))
+        start = prev = current
+    ranges.append(f"{start}-{prev}" if start != prev else str(start))
+    return ",".join(ranges)
+
+
+def print_status_group(title: str, groups: dict[str, list[int | str]]) -> None:
+    if not groups:
+        return
+    print(f"{title}:")
+    for worker, values in sorted(groups.items()):
+        print(f"  {worker} [{len(values)}]: {format_status_values(values)}")
+
+
+def print_compact_status(summary: dict[str, Any]) -> None:
+    counts = summary["counts"]
+    print(
+        f"tasks: {summary['tasks']}  done={counts['done']} "
+        f"active={summary['active_count']} running={counts['running']} "
+        f"claimed={counts['claimed']} pending={counts['pending']} "
+        f"fail={counts['fail']} stale={counts['stale']}"
+    )
+    print_status_group("done", summary["groups"]["done"])
+    if summary["active"]:
+        print("active:")
+        for row in sorted(summary["active"], key=lambda item: status_value_key(item["index"])):
+            progress = f" [{row['progress']}]" if row.get("progress") else ""
+            worker = row["worker"] or "unknown"
+            print(f"  {worker} {row['state']}: {row['index']}{progress}")
+    print_status_group("fail", summary["groups"]["fail"])
+    print_status_group("stale", summary["groups"]["stale"])
+    if summary["pending"]:
+        print("pending:")
+        print(f"  {format_status_values(summary['pending'])}")
 
 
 def cmd_wait(args: argparse.Namespace) -> int:
@@ -2026,6 +2158,7 @@ def build_parser() -> argparse.ArgumentParser:
     status = sub.add_parser("status", help="Show task status.")
     status.add_argument("--manifest", required=True)
     status.add_argument("-v", "--verbose", action="store_true")
+    status.add_argument("--json", action="store_true")
     status.add_argument("--profile")
     status.add_argument("--lease-seconds", type=int, default=600)
     status.set_defaults(func=cmd_status)

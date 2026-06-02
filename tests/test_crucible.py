@@ -604,16 +604,20 @@ class CrucibleTests(unittest.TestCase):
                     {"id": "task_0", "index": 0, "command": "true", "outputs": [str(root / "out0.txt")]},
                     {"id": "task_1", "index": 1, "command": "true", "outputs": [str(root / "out1.txt")]},
                     {"id": "task_2", "index": 2, "command": "true", "outputs": [str(root / "out2.txt")]},
+                    {"id": "task_3", "index": 3, "command": "true", "outputs": [str(root / "out3.txt")]},
                 ]
             }
             manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
 
             state_dir = root / "state"
             state_dir.mkdir()
+            log_dir = root / "logs"
+            log_dir.mkdir()
             (root / "out0.txt").write_text("done")
             done_payload = {
                 "task": "task_0",
                 "host": "host-done",
+                "worker": {"host": "host-done"},
                 "manifest_sha256": "dummy",
                 "outputs": [{"path": str(root / "out0.txt"), "bytes": 4, "sha256": "dummy"}]
             }
@@ -627,6 +631,16 @@ class CrucibleTests(unittest.TestCase):
                 "claimed_at": "2023-01-01T00:00:00Z"
             }
             (claim_dir / "claim.json").write_text(json.dumps(claim_payload))
+            running_payload = {
+                "task": "task_1",
+                "host": "host-running",
+                "started_at": "2023-01-01T00:00:00Z",
+            }
+            (state_dir / "task_1.running.json").write_text(json.dumps(running_payload))
+            (log_dir / "task_1.log").write_text(
+                "[1/1   42/1000] selfplay | score 0.500 | draw 30.0%\n",
+                encoding="utf-8",
+            )
 
             fail_payload = {
                 "task": "task_2",
@@ -635,11 +649,32 @@ class CrucibleTests(unittest.TestCase):
             }
             (state_dir / "task_2.fail.json").write_text(json.dumps(fail_payload))
 
+            compact = self.run_cli("status", "--manifest", str(manifest_path))
+            self.assertEqual(1, compact.returncode)
+            self.assertIn(
+                "tasks: 4  done=1 active=1 running=1 claimed=0 pending=1 fail=1 stale=0",
+                compact.stdout,
+            )
+            self.assertIn("host-done [1]: 0", compact.stdout)
+            self.assertIn("worker-claimed running: 1 [42/1000]", compact.stdout)
+            self.assertIn("host-fail [1]: 2", compact.stdout)
+            self.assertIn("pending:\n  3", compact.stdout)
+
             result = self.run_cli("status", "--manifest", str(manifest_path), "--verbose")
             self.assertEqual(1, result.returncode)
             self.assertIn("task_0\tdone\thost-done", result.stdout)
-            self.assertIn("task_1\tclaimed\tworker-claimed", result.stdout)
+            self.assertIn("task_1\trunning\tworker-claimed", result.stdout)
             self.assertIn("task_2\tfail\thost-fail", result.stdout)
+            self.assertIn("task_3\tpending\t", result.stdout)
+
+            result_json = self.run_cli("status", "--manifest", str(manifest_path), "--json")
+            self.assertEqual(1, result_json.returncode)
+            payload = json.loads(result_json.stdout)
+            self.assertEqual(4, payload["tasks"])
+            self.assertEqual(1, payload["counts"]["done"])
+            self.assertEqual(1, payload["active_count"])
+            self.assertEqual([0], payload["groups"]["done"]["host-done"])
+            self.assertEqual("42/1000", payload["active"][0]["progress"])
 
     def test_multi_repo_and_command_requirements(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
