@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import copy
 import hashlib
 import json
@@ -1274,13 +1275,12 @@ def cmd_heartbeat(args: argparse.Namespace) -> int:
 
 def cmd_status(args: argparse.Namespace) -> int:
     manifest = apply_profile(load_manifest(expand_path(args.manifest)), args.profile)
-    counts = {"done": 0, "fail": 0, "running": 0, "claimed": 0, "stale": 0, "pending": 0}
+    counts = task_counts(manifest, lease_seconds=args.lease_seconds)
     rows = []
-    for task in manifest["tasks"]:
-        state = task_state(manifest, task, lease_seconds=args.lease_seconds)
-        counts[state] += 1
-        info = ""
-        if args.verbose:
+    if args.verbose:
+        for task in manifest["tasks"]:
+            state = task_state(manifest, task, lease_seconds=args.lease_seconds)
+            info = ""
             if state == "done":
                 try:
                     done = read_json(task_done_path(manifest, task))
@@ -1299,7 +1299,7 @@ def cmd_status(args: argparse.Namespace) -> int:
                     info = str(claim.get("worker") or "")
                 except Exception:
                     pass
-        rows.append((task["id"], state, info))
+            rows.append((task["id"], state, info))
     print(
         f"tasks={len(manifest['tasks'])} done={counts['done']} "
         f"running={counts['running']} claimed={counts['claimed']} stale={counts['stale']} "
@@ -1573,31 +1573,24 @@ def cmd_prepare(args: argparse.Namespace) -> int:
     workers = load_workers(expand_path(args.workers))
     jobs = max(1, int(args.jobs))
     manifest_path = expand_path(args.manifest)
-    semaphore = threading.Semaphore(jobs)
-    lock = threading.Lock()
-    results: list[tuple[int, str, str, subprocess.CompletedProcess[str]]] = []
 
-    def run_worker(index: int, worker: dict[str, Any]) -> None:
+    def run_worker(index: int, worker: dict[str, Any]) -> tuple[int, str, str, subprocess.CompletedProcess[str]]:
         host = str(worker["host"])
         profile = str(worker["profile"])
-        with semaphore:
-            try:
-                bootstrap_worker_runner(worker, manifest_path)
-                script = remote_prepare_worker_command(worker=worker, profile=profile)
-                result = run_worker_shell(worker, script)
-            except Exception as exc:
-                result = subprocess.CompletedProcess(["prepare", host], 1, stdout="", stderr=str(exc))
-        with lock:
-            results.append((index, host, profile, result))
+        try:
+            bootstrap_worker_runner(worker, manifest_path)
+            script = remote_prepare_worker_command(worker=worker, profile=profile)
+            result = run_worker_shell(worker, script)
+        except Exception as exc:
+            result = subprocess.CompletedProcess(["prepare", host], 1, stdout="", stderr=str(exc))
+        return index, host, profile, result
 
-    threads = [
-        threading.Thread(target=run_worker, args=(index, worker), daemon=False)
-        for index, worker in enumerate(workers)
-    ]
-    for thread in threads:
-        thread.start()
-    for thread in threads:
-        thread.join()
+    with concurrent.futures.ThreadPoolExecutor(max_workers=jobs) as executor:
+        futures = [
+            executor.submit(run_worker, index, worker)
+            for index, worker in enumerate(workers)
+        ]
+        results = [future.result() for future in concurrent.futures.as_completed(futures)]
 
     failed = 0
     for _, host, profile, result in sorted(results, key=lambda item: item[0]):
