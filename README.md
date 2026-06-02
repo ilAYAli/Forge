@@ -116,6 +116,23 @@ distrib doctor --manifest run.manifest.json --profile worker-a --role worker
 wrong checkout, missing binary, failed probe, or mismatched input does not claim
 coordinator work.
 
+## All-Worker Setup Example
+
+Claimed shard tasks run once, on whichever worker claims them. To force setup on
+every worker, declare it as a repository requirement and run `sync-repos` on
+each worker before work starts.
+
+Example: ensure Enyo is checked out at a specific commit, built, and deployed as
+the candidate engine:
+
+```sh
+distrib sync-repos --manifest examples/enyo-candidate-deploy.manifest.json --profile pwa-5090
+distrib doctor --manifest examples/enyo-candidate-deploy.manifest.json --profile pwa-5090 --role worker
+```
+
+Run the same two commands on each worker profile. The manifest has no work
+shards; it is an all-worker setup/preflight manifest.
+
 ## Concepts
 
 - A **manifest** is a JSON file with task definitions and prerequisites.
