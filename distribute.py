@@ -133,6 +133,41 @@ def command_output(command: list[str]) -> str:
     return subprocess.check_output(command, text=True, stderr=subprocess.STDOUT).strip()
 
 
+def command_result(command: str | list[str], *, cwd: Path | None = None, timeout: float | None = None) -> subprocess.CompletedProcess[str]:
+    if isinstance(command, str):
+        return subprocess.run(
+            ["bash", "-lc", command],
+            cwd=cwd,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            timeout=timeout,
+            check=False,
+        )
+    return subprocess.run(
+        command,
+        cwd=cwd,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        timeout=timeout,
+        check=False,
+    )
+
+
+def run_checked(command: list[str], *, cwd: Path | None = None) -> None:
+    result = subprocess.run(
+        command,
+        cwd=cwd,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise SystemExit(result.stdout.strip() or f"command failed: {shell_join(command)}")
+
+
 def load_manifest(path: Path) -> dict[str, Any]:
     manifest = read_json(path)
     if manifest.get("schema") != SCHEMA:
@@ -189,6 +224,102 @@ def find_task(manifest: dict[str, Any], *, task_id: str | None, index: int | Non
     return matches[0]
 
 
+def iter_git_requirements(manifest: dict[str, Any], req: dict[str, Any]) -> list[dict[str, Any]]:
+    repos = []
+    git_req = req.get("git")
+    if isinstance(git_req, dict):
+        repos.append({
+            "name": git_req.get("name") or "git",
+            "path": git_req.get("repo") or manifest.get("work_dir") or ".",
+            "commit": git_req.get("commit") or "",
+            "require_clean": bool(git_req.get("require_clean", False)),
+            "remote": git_req.get("remote") or "",
+        })
+    raw_repos = req.get("repos", [])
+    if raw_repos in (None, ""):
+        raw_repos = []
+    if not isinstance(raw_repos, list):
+        raise SystemExit("requirements.repos must be a list")
+    for item in raw_repos:
+        if not isinstance(item, dict):
+            raise SystemExit("requirements.repos entries must be objects")
+        repos.append(item)
+    return repos
+
+
+def check_git_requirement(item: dict[str, Any]) -> None:
+    repo = expand_path(str(item.get("path") or item.get("repo") or "."))
+    label = str(item.get("name") or repo)
+    if not (repo / ".git").exists():
+        raise SystemExit(f"{label}: not a git checkout: {repo}")
+    expected_commit = str(item.get("commit") or "").strip()
+    if expected_commit:
+        actual_commit = git_output(repo, "rev-parse", "HEAD")
+        if actual_commit != expected_commit:
+            raise SystemExit(
+                f"{label}: git commit {actual_commit} != required {expected_commit}"
+            )
+    branch = str(item.get("branch") or "").strip()
+    if branch and not expected_commit:
+        actual_branch = git_output(repo, "rev-parse", "--abbrev-ref", "HEAD")
+        if actual_branch != branch:
+            raise SystemExit(f"{label}: git branch {actual_branch} != required {branch}")
+    if bool(item.get("require_clean", False)):
+        status = git_output(repo, "status", "--porcelain")
+        if status:
+            raise SystemExit(f"{label}: git worktree is not clean")
+
+
+def check_command_requirement(item: dict[str, Any]) -> None:
+    if not isinstance(item, dict):
+        raise SystemExit("requirements.commands entries must be objects")
+    label = str(item.get("name") or item.get("path") or item.get("command") or "command")
+    path = str(item.get("path") or "").strip()
+    if path:
+        resolved = shutil.which(path) if os.path.sep not in path else str(expand_path(path))
+        if not resolved or not Path(resolved).exists():
+            raise SystemExit(f"{label}: required command not found: {path}")
+        if not os.access(resolved, os.X_OK):
+            raise SystemExit(f"{label}: required command is not executable: {resolved}")
+
+    command = item.get("command")
+    if command is None and path and (item.get("contains") or item.get("regex")):
+        command = [path, "--version"]
+    if command is None:
+        return
+    timeout = float(item.get("timeout_s") or 15)
+    result = command_result(command, timeout=timeout)
+    output = result.stdout
+    if result.returncode != int(item.get("rc", 0)):
+        raise SystemExit(f"{label}: command failed rc={result.returncode}: {output.strip()}")
+    contains = str(item.get("contains") or "")
+    if contains and contains not in output:
+        raise SystemExit(f"{label}: output does not contain {contains!r}: {output.strip()}")
+    regex = str(item.get("regex") or "")
+    if regex and not re.search(regex, output):
+        raise SystemExit(f"{label}: output does not match {regex!r}: {output.strip()}")
+
+
+def requirement_commands(value: Any, field: str) -> list[str]:
+    if value in (None, "", []):
+        return []
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, list) and all(isinstance(item, str) for item in value):
+        return list(value)
+    raise SystemExit(f"{field} must be a string or list of strings")
+
+
+def run_repo_hook(item: dict[str, Any], field: str, *, repo: Path) -> None:
+    label = str(item.get("name") or repo)
+    for index, command in enumerate(requirement_commands(item.get(field), f"{label}.{field}"), start=1):
+        result = command_result(command, cwd=repo, timeout=float(item.get(f"{field}_timeout_s") or 0) or None)
+        if result.returncode != 0:
+            raise SystemExit(
+                f"{label}: {field}[{index}] failed rc={result.returncode}: {result.stdout.strip()}"
+            )
+
+
 def check_requirements(manifest: dict[str, Any]) -> None:
     req = manifest.get("requirements", {})
     if not isinstance(req, dict):
@@ -204,20 +335,17 @@ def check_requirements(manifest: dict[str, Any]) -> None:
         actual = command_output(["git", "--version"])
         require_min_version("git", actual, git_min)
 
-    git_req = req.get("git")
-    if isinstance(git_req, dict):
-        repo = expand_path(str(git_req.get("repo") or manifest.get("work_dir") or "."))
-        expected_commit = str(git_req.get("commit") or "").strip()
-        if expected_commit:
-            actual_commit = git_output(repo, "rev-parse", "HEAD")
-            if actual_commit != expected_commit:
-                raise SystemExit(
-                    f"{repo}: git commit {actual_commit} != required {expected_commit}"
-                )
-        if bool(git_req.get("require_clean", False)):
-            status = git_output(repo, "status", "--porcelain")
-            if status:
-                raise SystemExit(f"{repo}: git worktree is not clean")
+    for item in iter_git_requirements(manifest, req):
+        check_git_requirement(item)
+        run_repo_hook(item, "probe", repo=expand_path(str(item.get("path") or item.get("repo") or ".")))
+
+    commands = req.get("commands", [])
+    if commands in (None, ""):
+        commands = []
+    if not isinstance(commands, list):
+        raise SystemExit("requirements.commands must be a list")
+    for item in commands:
+        check_command_requirement(item)
 
     inputs = req.get("inputs", [])
     if not isinstance(inputs, list):
@@ -788,6 +916,80 @@ def cmd_add_input(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_add_repo(args: argparse.Namespace) -> int:
+    path = expand_path(args.manifest)
+    manifest = load_manifest(path)
+    req = manifest.setdefault("requirements", {})
+    if not isinstance(req, dict):
+        raise SystemExit("requirements must be an object")
+    repos = req.setdefault("repos", [])
+    if not isinstance(repos, list):
+        raise SystemExit("requirements.repos must be a list")
+    repo = expand_path(args.path)
+    commit = args.commit or git_output(repo, "rev-parse", "HEAD")
+    record = {
+        "name": args.name or repo.name,
+        "path": str(repo),
+        "commit": commit,
+        "require_clean": args.require_clean,
+    }
+    if args.branch:
+        record["branch"] = args.branch
+    if args.remote:
+        record["remote"] = args.remote
+    repos[:] = [
+        item for item in repos
+        if not isinstance(item, dict) or item.get("path") != str(repo)
+    ]
+    repos.append(record)
+    write_json(path, manifest)
+    print(path)
+    return 0
+
+
+def sync_git_requirement(item: dict[str, Any]) -> None:
+    repo = expand_path(str(item.get("path") or item.get("repo") or "."))
+    label = str(item.get("name") or repo)
+    url = str(item.get("url") or "").strip()
+    if not repo.exists() and url:
+        repo.parent.mkdir(parents=True, exist_ok=True)
+        run_checked(["git", "clone", url, str(repo)])
+    if not (repo / ".git").exists():
+        raise SystemExit(f"{label}: not a git checkout: {repo}")
+    status = git_output(repo, "status", "--porcelain")
+    if status and not bool(item.get("allow_dirty", False)):
+        raise SystemExit(f"{label}: git worktree is not clean")
+    remote = str(item.get("remote") or "").strip()
+    if remote:
+        run_checked(["git", "-C", str(repo), "fetch", remote])
+    branch = str(item.get("branch") or "").strip()
+    commit = str(item.get("commit") or "").strip()
+    if branch:
+        run_checked(["git", "-C", str(repo), "checkout", branch])
+        if remote:
+            run_checked(["git", "-C", str(repo), "pull", "--ff-only", remote, branch])
+    if commit:
+        run_checked(["git", "-C", str(repo), "checkout", commit])
+    run_repo_hook(item, "build", repo=repo)
+    run_repo_hook(item, "install", repo=repo)
+    run_repo_hook(item, "probe", repo=repo)
+    print(f"{label}: {git_output(repo, 'rev-parse', 'HEAD')}")
+
+
+def cmd_sync_repos(args: argparse.Namespace) -> int:
+    manifest = apply_profile(load_manifest(expand_path(args.manifest)), args.profile)
+    req = manifest.get("requirements", {})
+    if not isinstance(req, dict):
+        raise SystemExit("requirements must be an object")
+    repos = iter_git_requirements(manifest, req)
+    if not repos:
+        raise SystemExit("no git repositories declared")
+    for item in repos:
+        sync_git_requirement(item)
+    check_requirements(manifest)
+    return 0
+
+
 def cmd_run(args: argparse.Namespace) -> int:
     manifest = apply_profile(load_manifest(expand_path(args.manifest)), args.profile)
     task = find_task(manifest, task_id=args.task, index=args.index)
@@ -903,6 +1105,7 @@ def heartbeat_loop(
 def cmd_work(args: argparse.Namespace) -> int:
     coordinator_manifest = load_manifest(expand_path(args.manifest))
     local_manifest = apply_profile(copy.deepcopy(coordinator_manifest), args.profile)
+    check_requirements(local_manifest)
     completed = 0
     failed = 0
 
@@ -1182,6 +1385,21 @@ def build_parser() -> argparse.ArgumentParser:
     add_input.add_argument("--manifest", required=True)
     add_input.add_argument("--path", action="append", required=True)
     add_input.set_defaults(func=cmd_add_input)
+
+    add_repo = sub.add_parser("add-repo", help="Record a git checkout requirement.")
+    add_repo.add_argument("--manifest", required=True)
+    add_repo.add_argument("--path", required=True)
+    add_repo.add_argument("--name")
+    add_repo.add_argument("--commit")
+    add_repo.add_argument("--branch")
+    add_repo.add_argument("--remote")
+    add_repo.add_argument("--require-clean", action="store_true")
+    add_repo.set_defaults(func=cmd_add_repo)
+
+    sync_repos = sub.add_parser("sync-repos", help="Fetch and checkout declared git requirements.")
+    sync_repos.add_argument("--manifest", required=True)
+    sync_repos.add_argument("--profile")
+    sync_repos.set_defaults(func=cmd_sync_repos)
 
     run = sub.add_parser("run", help="Run one task by id or index.")
     run.add_argument("--manifest", required=True)

@@ -575,6 +575,194 @@ class DistributeTests(unittest.TestCase):
             self.assertIn("task_1\tclaimed\tworker-claimed", result.stdout)
             self.assertIn("task_2\tfail\thost-fail", result.stdout)
 
+    def test_multi_repo_and_command_requirements(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo_a = root / "repo-a"
+            repo_b = root / "repo-b"
+            for repo in (repo_a, repo_b):
+                subprocess.run(["git", "init", "-b", "main", str(repo)], check=True, stdout=subprocess.DEVNULL)
+                subprocess.run(["git", "config", "user.name", "Petter Wahlman"], cwd=repo, check=True)
+                subprocess.run(["git", "config", "user.email", "petter@wahlman.no"], cwd=repo, check=True)
+                (repo / "file.txt").write_text(repo.name, encoding="utf-8")
+                subprocess.run(["git", "add", "file.txt"], cwd=repo, check=True)
+                subprocess.run(["git", "commit", "-m", "test"], cwd=repo, check=True, stdout=subprocess.DEVNULL)
+            commit_a = subprocess.check_output(["git", "-C", str(repo_a), "rev-parse", "HEAD"], text=True).strip()
+            commit_b = subprocess.check_output(["git", "-C", str(repo_b), "rev-parse", "HEAD"], text=True).strip()
+
+            manifest = {
+                "schema": "distribute.task.v1",
+                "name": "multi-req",
+                "work_dir": str(root),
+                "state_dir": str(root / "state"),
+                "log_dir": str(root / "logs"),
+                "requirements": {
+                    "python_min": "3.11",
+                    "repos": [
+                        {"name": "repo-a", "path": str(repo_a), "commit": commit_a},
+                        {"name": "repo-b", "path": str(repo_b), "commit": commit_b},
+                    ],
+                    "commands": [
+                        {"name": "python", "path": sys.executable},
+                        {
+                            "name": "project-version-probe",
+                            "command": "printf 'Project Tool v.test\\n'",
+                            "contains": "Project Tool",
+                        },
+                    ],
+                },
+                "tasks": [],
+            }
+            manifest_path = root / "manifest.json"
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+            doctor = self.run_cli("doctor", "--manifest", str(manifest_path))
+            self.assertEqual("", doctor.stderr)
+            self.assertEqual(0, doctor.returncode)
+
+            (repo_b / "file.txt").write_text("changed", encoding="utf-8")
+            subprocess.run(["git", "commit", "-am", "change"], cwd=repo_b, check=True, stdout=subprocess.DEVNULL)
+            rejected = self.run_cli("doctor", "--manifest", str(manifest_path))
+            self.assertNotEqual(0, rejected.returncode)
+            self.assertIn("repo-b: git commit", rejected.stderr)
+
+    def test_sync_repos_checks_out_declared_commit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            subprocess.run(["git", "init", "-b", "main", str(repo)], check=True, stdout=subprocess.DEVNULL)
+            subprocess.run(["git", "config", "user.name", "Petter Wahlman"], cwd=repo, check=True)
+            subprocess.run(["git", "config", "user.email", "petter@wahlman.no"], cwd=repo, check=True)
+            (repo / "file.txt").write_text("one", encoding="utf-8")
+            subprocess.run(["git", "add", "file.txt"], cwd=repo, check=True)
+            subprocess.run(["git", "commit", "-m", "one"], cwd=repo, check=True, stdout=subprocess.DEVNULL)
+            first = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
+            (repo / "file.txt").write_text("two", encoding="utf-8")
+            subprocess.run(["git", "commit", "-am", "two"], cwd=repo, check=True, stdout=subprocess.DEVNULL)
+
+            manifest = {
+                "schema": "distribute.task.v1",
+                "name": "sync-repos",
+                "work_dir": str(root),
+                "state_dir": str(root / "state"),
+                "log_dir": str(root / "logs"),
+                "requirements": {
+                    "repos": [{"name": "repo", "path": str(repo), "commit": first}],
+                },
+                "tasks": [],
+            }
+            manifest_path = root / "manifest.json"
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+            sync = self.run_cli("sync-repos", "--manifest", str(manifest_path))
+            self.assertEqual("", sync.stderr)
+            self.assertEqual(0, sync.returncode)
+            head = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
+            self.assertEqual(first, head)
+
+    def test_sync_repos_clones_and_runs_setup_hooks(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "source"
+            subprocess.run(["git", "init", "-b", "main", str(source)], check=True, stdout=subprocess.DEVNULL)
+            subprocess.run(["git", "config", "user.name", "Petter Wahlman"], cwd=source, check=True)
+            subprocess.run(["git", "config", "user.email", "petter@wahlman.no"], cwd=source, check=True)
+            (source / "tool.sh").write_text("#!/bin/sh\nprintf 'tool ok\\n'\n", encoding="utf-8")
+            subprocess.run(["chmod", "+x", "tool.sh"], cwd=source, check=True)
+            subprocess.run(["git", "add", "tool.sh"], cwd=source, check=True)
+            subprocess.run(["git", "commit", "-m", "tool"], cwd=source, check=True, stdout=subprocess.DEVNULL)
+            commit = subprocess.check_output(["git", "-C", str(source), "rev-parse", "HEAD"], text=True).strip()
+
+            checkout = root / "checkout"
+            install_dir = root / "bin"
+            manifest = {
+                "schema": "distribute.task.v1",
+                "name": "clone-setup",
+                "work_dir": str(root),
+                "state_dir": str(root / "state"),
+                "log_dir": str(root / "logs"),
+                "requirements": {
+                    "repos": [{
+                        "name": "tool-repo",
+                        "url": str(source),
+                        "path": str(checkout),
+                        "commit": commit,
+                        "build": "mkdir -p build && cp tool.sh build/tool",
+                        "install": f"mkdir -p {install_dir} && cp build/tool {install_dir}/tool",
+                        "probe": f"{install_dir}/tool | grep 'tool ok'",
+                    }],
+                },
+                "tasks": [],
+            }
+            manifest_path = root / "manifest.json"
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+            sync = self.run_cli("sync-repos", "--manifest", str(manifest_path))
+            self.assertEqual("", sync.stderr)
+            self.assertEqual(0, sync.returncode)
+            self.assertTrue((install_dir / "tool").exists())
+
+            doctor = self.run_cli("doctor", "--manifest", str(manifest_path))
+            self.assertEqual("", doctor.stderr)
+            self.assertEqual(0, doctor.returncode)
+
+    def test_worker_preflight_rejects_before_claiming(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            coordinator = root / "coordinator"
+            subprocess.run(["git", "init", "-b", "main", str(coordinator)], check=True, stdout=subprocess.DEVNULL)
+            subprocess.run(["git", "config", "user.name", "Petter Wahlman"], cwd=coordinator, check=True)
+            subprocess.run(["git", "config", "user.email", "petter@wahlman.no"], cwd=coordinator, check=True)
+            (coordinator / "input.txt").write_text("fixed\n", encoding="utf-8")
+            subprocess.run(["git", "add", "input.txt"], cwd=coordinator, check=True)
+            subprocess.run(["git", "commit", "-m", "test"], cwd=coordinator, check=True, stdout=subprocess.DEVNULL)
+
+            worker = root / "worker"
+            subprocess.run(["git", "clone", str(coordinator), str(worker)], check=True, stdout=subprocess.DEVNULL)
+            wrong_commit = "0" * 40
+            manifest = {
+                "schema": "distribute.task.v1",
+                "name": "preflight",
+                "work_dir": str(coordinator),
+                "state_dir": str(coordinator / "state"),
+                "log_dir": str(coordinator / "logs"),
+                "claim_dir": str(coordinator / "claims"),
+                "path_maps": {
+                    "worker": {
+                        str(coordinator): str(worker),
+                    },
+                },
+                "requirements": {
+                    "repos": [
+                        {"name": "project", "path": str(coordinator), "commit": wrong_commit},
+                    ],
+                },
+                "tasks": [{
+                    "id": "task_0000",
+                    "index": 0,
+                    "command": "printf x > {output}",
+                    "outputs": [str(coordinator / "out.txt")],
+                }],
+            }
+            manifest_path = coordinator / "manifest.json"
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+            work = self.run_cli(
+                "work",
+                "--manifest", str(manifest_path),
+                "--coordinator", str(manifest_path),
+                "--profile", "worker",
+                "--worker", "test-worker",
+                "--max-tasks", "1",
+            )
+            self.assertNotEqual(0, work.returncode)
+            self.assertIn("project: git commit", work.stderr)
+
+            status = self.run_cli("status", "--manifest", str(manifest_path))
+            self.assertEqual(0, status.returncode)
+            self.assertIn("claimed=0", status.stdout)
+            self.assertIn("pending=1", status.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()

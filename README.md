@@ -33,6 +33,11 @@ For NNUE work, the normal coordinator is `pwa-5090`.
   engine binaries, nets, books, source JSONL, or other fixed inputs.
 - `notifai.sh` in `PATH` on the coordinator for long jobs.
 
+`distrib` is deliberately project-agnostic. It does not know about any
+particular repository, binary, or training pipeline. Put project-specific setup
+in the manifest as ordinary repository, command, input, build, install, and
+probe requirements.
+
 Check a worker:
 
 ```sh
@@ -40,6 +45,60 @@ python3 --version
 git --version
 ssh pwa-5090 'python3 --version && git --version'
 ```
+
+## Worker Setup
+
+A manifest can describe the exact repositories and tools a worker must have.
+`sync-repos` mutates the worker by cloning missing repositories, checking out
+the requested branch or commit, running optional build/install hooks, and then
+running probes. `doctor` validates the same manifest without changing it.
+
+Generic repository setup:
+
+```json
+{
+  "requirements": {
+    "repos": [
+      {
+        "name": "project",
+        "url": "git@example.com:owner/project.git",
+        "path": "/home/user/work/project",
+        "commit": "abcdef123456...",
+        "build": [
+          "cmake -S . -B build -DCMAKE_BUILD_TYPE=Release",
+          "cmake --build build -j8"
+        ],
+        "install": [
+          "mkdir -p /home/user/.local/bin",
+          "ln -sf /home/user/work/project/build/project-tool /home/user/.local/bin/project-tool"
+        ],
+        "probe": [
+          "/home/user/.local/bin/project-tool --version | grep 'project-tool'"
+        ]
+      }
+    ],
+    "commands": [
+      {
+        "name": "external-tool",
+        "path": "/home/user/.local/bin/external-tool",
+        "command": "/home/user/.local/bin/external-tool --version",
+        "regex": "External Tool [0-9]+"
+      }
+    ]
+  }
+}
+```
+
+Prepare and validate a worker:
+
+```sh
+distrib sync-repos --manifest run.manifest.json --profile worker-a
+distrib doctor --manifest run.manifest.json --profile worker-a --role worker
+```
+
+`work` also runs the manifest preflight before claiming tasks. A worker with the
+wrong checkout, missing binary, failed probe, or mismatched input does not claim
+coordinator work.
 
 ## Concepts
 
@@ -110,6 +169,10 @@ The worker repeatedly claims an unclaimed coordinator task over SSH, runs it
 locally with the selected profile path map, refreshes a coordinator heartbeat
 while the task runs, pushes declared outputs/log/state back to the coordinator,
 releases the claim, and asks for another task.
+
+Before claiming, the worker validates repository, command, and input
+requirements from the manifest. Run `sync-repos` first when the worker should
+clone or rebuild missing prerequisites.
 
 Run several shards:
 
@@ -188,6 +251,25 @@ Minimal manifest:
       "commit": "abcdef...",
       "require_clean": false
     },
+    "repos": [
+      {
+        "name": "dependency",
+        "url": "git@example.com:owner/dependency.git",
+        "path": "/abs/dependency/root",
+        "commit": "123456...",
+        "build": "make -j8",
+        "install": "ln -sf /abs/dependency/root/bin/tool /home/user/.local/bin/tool",
+        "probe": "tool --version | grep dependency"
+      }
+    ],
+    "commands": [
+      {
+        "name": "tool",
+        "path": "/home/user/.local/bin/tool",
+        "command": "/home/user/.local/bin/tool --version",
+        "contains": "tool"
+      }
+    ],
     "inputs": []
   },
   "tasks": [
