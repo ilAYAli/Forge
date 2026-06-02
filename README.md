@@ -40,7 +40,7 @@ Example `workers.json`:
     "pwa-5090",
     "pwa-rce",
     {
-      "host": "pwa-win",
+      "host": "pwa-wsl",
       "profile": "pwa-wsl"
     },
     {

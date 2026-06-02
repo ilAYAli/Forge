@@ -992,7 +992,7 @@ class CrucibleTests(unittest.TestCase):
                     "schema": "crucible.workers.v1",
                     "workers": [
                         "pwa-5090",
-                        {"host": "pwa-win", "profile": "pwa-wsl"},
+                        {"host": "pwa-wsl", "profile": "pwa-wsl"},
                         {"host": "localhost", "local": True},
                         {"host": "disabled", "enabled": False},
                     ],
@@ -1005,7 +1005,7 @@ class CrucibleTests(unittest.TestCase):
             self.assertEqual(
                 [
                     {"host": "pwa-5090", "profile": "pwa-5090", "local": False},
-                    {"host": "pwa-win", "profile": "pwa-wsl", "local": False},
+                    {"host": "pwa-wsl", "profile": "pwa-wsl", "local": False},
                     {"host": "localhost", "profile": "localhost", "local": True},
                 ],
                 workers,
@@ -1020,7 +1020,7 @@ class CrucibleTests(unittest.TestCase):
 
     def test_worker_label_omits_duplicate_profile(self) -> None:
         self.assertEqual("pwa-5090", crucible.worker_label("pwa-5090", "pwa-5090"))
-        self.assertEqual("pwa-win/pwa-wsl", crucible.worker_label("pwa-win", "pwa-wsl"))
+        self.assertEqual("pwa-wsl", crucible.worker_label("pwa-wsl", "pwa-wsl"))
 
     def test_managed_remote_script_cleans_child_process_group(self) -> None:
         script = crucible.managed_remote_script("sleep 60")
