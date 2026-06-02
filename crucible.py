@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any
 
 
-SCHEMA = "distribute.task.v1"
+SCHEMA = "crucible.task.v1"
 SSH_CONNECT_TIMEOUT_SECONDS = 15
 SSH_SERVER_ALIVE_INTERVAL_SECONDS = 30
 SSH_SERVER_ALIVE_COUNT_MAX = 3
@@ -301,7 +301,7 @@ def run_checked(command: list[str], *, cwd: Path | None = None) -> None:
         raise SystemExit(result.stdout.strip() or f"command failed: {shell_join(command)}")
 
 
-def distrib_version_payload() -> dict[str, Any]:
+def crucible_version_payload() -> dict[str, Any]:
     path = script_path()
     repo = script_repo(path)
     commit = git_output(repo, "rev-parse", "HEAD")
@@ -319,7 +319,7 @@ def distrib_version_payload() -> dict[str, Any]:
         upstream = ""
     return {
         "schema": SCHEMA,
-        "tool": "distrib",
+        "tool": "crucible",
         "path": str(path),
         "repo": str(repo),
         "branch": branch,
@@ -335,7 +335,7 @@ def print_version_payload(payload: dict[str, Any], *, as_json: bool) -> None:
         print(json.dumps(payload, sort_keys=True))
         return
     suffix = " dirty" if payload["dirty"] else ""
-    print(f"distrib {payload['commit']} {payload['branch']}{suffix}")
+    print(f"crucible {payload['commit']} {payload['branch']}{suffix}")
 
 
 def load_manifest(path: Path) -> dict[str, Any]:
@@ -860,12 +860,12 @@ def shell_join(args: list[str]) -> str:
     return " ".join(shlex.quote(item) for item in args)
 
 
-def remote_distrib_command(args: list[str]) -> str:
+def remote_crucible_command(args: list[str]) -> str:
     quoted_args = shell_join(args)
     return (
-        "command -v distrib >/dev/null 2>&1 || "
-        "{ echo 'distrib not found in PATH on coordinator' >&2; exit 127; }; "
-        f"exec distrib {quoted_args}"
+        "command -v crucible >/dev/null 2>&1 || "
+        "{ echo 'crucible not found in PATH on coordinator' >&2; exit 127; }; "
+        f"exec crucible {quoted_args}"
     )
 
 
@@ -874,7 +874,7 @@ def run_coordinator_cli(coordinator: str, args: list[str]) -> subprocess.Complet
     resolved_args = [item.replace("{manifest}", manifest_path) for item in args]
     if host:
         return subprocess.run(
-            ["ssh", *SSH_OPTS, host, remote_distrib_command(resolved_args)],
+            ["ssh", *SSH_OPTS, host, remote_crucible_command(resolved_args)],
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -1307,7 +1307,7 @@ def heartbeat_loop(
 def check_coordinator_cli(coordinator: str) -> None:
     result = run_coordinator_cli(coordinator, ["version", "--json"])
     if result.returncode != 0:
-        detail = result.stderr.strip() or result.stdout.strip() or "coordinator distrib check failed"
+        detail = result.stderr.strip() or result.stdout.strip() or "coordinator crucible check failed"
         raise SystemExit(detail)
 
 
@@ -1569,17 +1569,17 @@ def cmd_self_update(args: argparse.Namespace) -> int:
     current_branch = git_output(repo, "rev-parse", "--abbrev-ref", "HEAD")
     branch = args.branch or current_branch
     if branch == "HEAD":
-        raise SystemExit("distrib is on a detached HEAD; pass --branch explicitly")
+        raise SystemExit("crucible is on a detached HEAD; pass --branch explicitly")
     run_checked(["git", "-C", str(repo), "fetch", args.remote])
     if current_branch != branch:
         run_checked(["git", "-C", str(repo), "checkout", branch])
     run_checked(["git", "-C", str(repo), "pull", "--ff-only", args.remote, branch])
-    print_version_payload(distrib_version_payload(), as_json=args.json)
+    print_version_payload(crucible_version_payload(), as_json=args.json)
     return 0
 
 
 def cmd_version(args: argparse.Namespace) -> int:
-    print_version_payload(distrib_version_payload(), as_json=args.json)
+    print_version_payload(crucible_version_payload(), as_json=args.json)
     return 0
 
 
@@ -1623,7 +1623,7 @@ def parse_worker_record(item: Any) -> dict[str, Any]:
 
 def load_workers(path: Path) -> list[dict[str, Any]]:
     payload = read_json(path)
-    if payload.get("schema") not in (None, "distribute.workers.v1"):
+    if payload.get("schema") not in (None, "crucible.workers.v1"):
         raise SystemExit(f"{path}: unsupported schema {payload.get('schema')!r}")
     raw_workers = payload.get("workers")
     if not isinstance(raw_workers, list):
@@ -1638,8 +1638,8 @@ def worker_cache_dir(worker: dict[str, Any]) -> str:
     if worker.get("cache_dir"):
         return str(worker["cache_dir"])
     if is_local_worker(worker):
-        return str(Path.home() / ".cache/distrib")
-    return ".cache/distrib"
+        return str(Path.home() / ".cache/crucible")
+    return ".cache/crucible"
 
 
 def worker_cache_file(worker: dict[str, Any], name: str) -> str:
@@ -1738,7 +1738,7 @@ def bootstrap_worker_runner(
         result = run_worker_shell(worker, "mkdir -p " + shlex.quote(cache), timeout=timeout, tracker=tracker)
         if result.returncode != 0:
             raise RuntimeError(result.stderr.strip() or result.stdout.strip() or "failed to create worker cache")
-    copy_to_worker(worker, script_path(), worker_cache_file(worker, "distrib.py"), timeout=timeout, tracker=tracker)
+    copy_to_worker(worker, script_path(), worker_cache_file(worker, "crucible.py"), timeout=timeout, tracker=tracker)
     copy_to_worker(worker, manifest_path, worker_cache_file(worker, "manifest.json"), timeout=timeout, tracker=tracker)
 
 
@@ -1762,7 +1762,7 @@ def manifest_has_git_requirements(manifest: dict[str, Any]) -> bool:
 
 
 def deploy_prereq_command(*, worker: dict[str, Any], manifest: dict[str, Any]) -> str:
-    runner = worker_cache_file(worker, "distrib.py")
+    runner = worker_cache_file(worker, "crucible.py")
     manifest_path = worker_cache_file(worker, "manifest.json")
     profile_args = worker_profile_args(manifest, worker)
     commands = ["set -e"]
@@ -1773,7 +1773,7 @@ def deploy_prereq_command(*, worker: dict[str, Any], manifest: dict[str, Any]) -
 
 
 def deploy_work_command(*, worker: dict[str, Any], manifest: dict[str, Any], coordinator: str) -> str:
-    runner = worker_cache_file(worker, "distrib.py")
+    runner = worker_cache_file(worker, "crucible.py")
     manifest_path = worker_cache_file(worker, "manifest.json")
     profile_args = worker_profile_args(manifest, worker)
     return shell_join([
@@ -1921,8 +1921,8 @@ def cmd_deploy(args: argparse.Namespace) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--version", action="store_true", help="Print distrib version and exit.")
-    parser.add_argument("--version-json", action="store_true", help="Print distrib version as JSON and exit.")
+    parser.add_argument("--version", action="store_true", help="Print crucible version and exit.")
+    parser.add_argument("--version-json", action="store_true", help="Print crucible version as JSON and exit.")
     sub = parser.add_subparsers(dest="command")
 
     plan = sub.add_parser("plan", help="Create a numbered shard manifest.")
@@ -2052,14 +2052,14 @@ def build_parser() -> argparse.ArgumentParser:
     merge.add_argument("--profile")
     merge.set_defaults(func=cmd_merge)
 
-    self_update = sub.add_parser("self-update", help="Fast-forward the distrib checkout itself.")
+    self_update = sub.add_parser("self-update", help="Fast-forward the crucible checkout itself.")
     self_update.add_argument("--remote", default="origin")
     self_update.add_argument("--branch")
     self_update.add_argument("--require-clean", action=argparse.BooleanOptionalAction, default=True)
     self_update.add_argument("--json", action="store_true")
     self_update.set_defaults(func=cmd_self_update)
 
-    version = sub.add_parser("version", help="Print distrib version.")
+    version = sub.add_parser("version", help="Print crucible version.")
     version.add_argument("--json", action="store_true")
     version.set_defaults(func=cmd_version)
 

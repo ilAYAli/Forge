@@ -1,8 +1,8 @@
-# Distribute
+# Crucible
 
 Small coordinator/worker runner for deterministic CPU/IO-heavy tasks.
 
-`distrib` is repo-agnostic. A manifest declares prerequisites and optional
+`crucible` is repo-agnostic. A manifest declares prerequisites and optional
 task shards. A workers file declares where to run them.
 
 ## Quick Start
@@ -10,22 +10,22 @@ task shards. A workers file declares where to run them.
 Install on the coordinator:
 
 ```sh
-git clone git@github.com:ilAYAli/distrib.git ~/code/cpp/chess/distrib
+git clone git@github.com:ilAYAli/Crucible.git ~/code/cpp/chess/crucible
 mkdir -p ~/.local/bin
-ln -sf ~/code/cpp/chess/distrib/distrib.py ~/.local/bin/distrib
-distrib --help >/dev/null
+ln -sf ~/code/cpp/chess/crucible/crucible.py ~/.local/bin/crucible
+crucible --help >/dev/null
 ```
 
 Deploy prerequisites to all workers, then run tasks if the manifest has any:
 
 ```sh
-distrib deploy workers.json manifest.json
+crucible deploy workers.json manifest.json
 ```
 
 `deploy` copies the current runner and manifest to each worker, runs repository
 sync/build/install/probe requirements, runs `doctor`, then starts worker loops
 for task shards. Workers need Python, Git, SSH/rsync, and the toolchain required
-by the manifest. Workers do not need `distrib` installed.
+by the manifest. Workers do not need `crucible` installed.
 Default output is an ordered per-worker summary. Use `--verbose` for live phase
 details. TTY output is colored by default; use `--no-color` to disable it.
 
@@ -35,7 +35,7 @@ Example `workers.json`:
 
 ```json
 {
-  "schema": "distribute.workers.v1",
+  "schema": "crucible.workers.v1",
   "workers": [
     "pwa-5090",
     "pwa-rce",
@@ -57,7 +57,7 @@ Example setup-only manifest:
 
 ```json
 {
-  "schema": "distribute.task.v1",
+  "schema": "crucible.task.v1",
   "name": "enyo-candidate-deploy",
   "work_dir": "~/code/cpp/chess/enyo",
   "requirements": {
@@ -97,7 +97,7 @@ prerequisites are verified.
 Use `plan` for simple numbered shards:
 
 ```sh
-distrib plan \
+crucible plan \
   --name score \
   --shards 24 \
   --work-dir ~/work/project \
@@ -109,9 +109,9 @@ distrib plan \
 Useful commands:
 
 ```sh
-distrib status --manifest run.manifest.json
-distrib verify --manifest run.manifest.json
-distrib merge --manifest run.manifest.json --output merged.txt
+crucible status --manifest run.manifest.json
+crucible verify --manifest run.manifest.json
+crucible merge --manifest run.manifest.json --output merged.txt
 ```
 
 Lower-level commands remain available for diagnostics: `sync-repos`, `doctor`,
@@ -122,16 +122,16 @@ Lower-level commands remain available for diagnostics: `sync-repos`, `doctor`,
 Edit the commit SHA and paths first, then run:
 
 ```sh
-distrib deploy examples/workers.json examples/nnue-selfplay.manifest.json
-distrib deploy examples/workers.json examples/nnue-label-stockfish.manifest.json
+crucible deploy examples/workers.json examples/nnue-selfplay.manifest.json
+crucible deploy examples/workers.json examples/nnue-label-stockfish.manifest.json
 ```
 
 Merge labeled shards:
 
 ```sh
-distrib merge \
+crucible merge \
   --manifest examples/nnue-label-stockfish.manifest.json \
-  --output ~/code/cpp/chess/distrib-runs/nnue-label-stockfish/labeled.jsonl
+  --output ~/code/cpp/chess/crucible-runs/nnue-label-stockfish/labeled.jsonl
 ```
 
 ## Failure Model

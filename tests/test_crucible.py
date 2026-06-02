@@ -15,12 +15,12 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-CLI = ROOT / "distrib.py"
+CLI = ROOT / "crucible.py"
 sys.path.insert(0, str(ROOT))
-import distrib  # noqa: E402
+import crucible  # noqa: E402
 
 
-class DistributeTests(unittest.TestCase):
+class CrucibleTests(unittest.TestCase):
     def run_cli(self, *args: str, cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
             [sys.executable, str(CLI), *args],
@@ -40,7 +40,7 @@ class DistributeTests(unittest.TestCase):
             real.mkdir()
             link.symlink_to(real, target_is_directory=True)
 
-            path = distrib.expand_path(link / "manifest.json")
+            path = crucible.expand_path(link / "manifest.json")
 
             self.assertEqual(link / "manifest.json", path)
 
@@ -114,9 +114,9 @@ class DistributeTests(unittest.TestCase):
             self.assertIn("duplicate output path", result.stderr)
 
     def test_negative_timeout_is_not_passed_to_subprocess(self) -> None:
-        self.assertIsNone(distrib.bounded_timeout(-1))
-        self.assertIsNone(distrib.bounded_timeout(0))
-        self.assertEqual(15.0, distrib.bounded_timeout(None, 15.0))
+        self.assertIsNone(crucible.bounded_timeout(-1))
+        self.assertIsNone(crucible.bounded_timeout(0))
+        self.assertEqual(15.0, crucible.bounded_timeout(None, 15.0))
 
     def test_run_task_removes_stale_running_marker(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -161,7 +161,7 @@ class DistributeTests(unittest.TestCase):
             subprocess.run(["git", "add", "input.txt"], cwd=root, check=True)
             subprocess.run(["git", "commit", "-m", "test"], cwd=root, check=True, stdout=subprocess.DEVNULL)
             manifest = {
-                "schema": "distribute.task.v1",
+                "schema": "crucible.task.v1",
                 "name": "bad",
                 "work_dir": str(root),
                 "state_dir": str(root / "state"),
@@ -210,7 +210,7 @@ class DistributeTests(unittest.TestCase):
 
             coordinator_root = "/coordinator/project"
             manifest = {
-                "schema": "distribute.task.v1",
+                "schema": "crucible.task.v1",
                 "name": "mapped",
                 "work_dir": coordinator_root,
                 "state_dir": f"{coordinator_root}/state",
@@ -462,7 +462,7 @@ class DistributeTests(unittest.TestCase):
             subprocess.run(["git", "commit", "-m", "test"], cwd=root, check=True, stdout=subprocess.DEVNULL)
             commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip()
             manifest = {
-                "schema": "distribute.task.v1",
+                "schema": "crucible.task.v1",
                 "name": "no-output",
                 "work_dir": str(root),
                 "state_dir": str(root / "state"),
@@ -510,7 +510,7 @@ class DistributeTests(unittest.TestCase):
             (coordinator / "blocked").write_text("not a directory\n", encoding="utf-8")
 
             manifest = {
-                "schema": "distribute.task.v1",
+                "schema": "crucible.task.v1",
                 "name": "sync-fail",
                 "work_dir": str(coordinator),
                 "state_dir": str(coordinator / "state"),
@@ -594,7 +594,7 @@ class DistributeTests(unittest.TestCase):
             root = Path(tmp)
             manifest_path = root / "manifest.json"
             manifest = {
-                "schema": "distribute.task.v1",
+                "schema": "crucible.task.v1",
                 "name": "test",
                 "work_dir": str(root),
                 "state_dir": str(root / "state"),
@@ -657,7 +657,7 @@ class DistributeTests(unittest.TestCase):
             commit_b = subprocess.check_output(["git", "-C", str(repo_b), "rev-parse", "HEAD"], text=True).strip()
 
             manifest = {
-                "schema": "distribute.task.v1",
+                "schema": "crucible.task.v1",
                 "name": "multi-req",
                 "work_dir": str(root),
                 "state_dir": str(root / "state"),
@@ -707,7 +707,7 @@ class DistributeTests(unittest.TestCase):
             subprocess.run(["git", "commit", "-am", "two"], cwd=repo, check=True, stdout=subprocess.DEVNULL)
 
             manifest = {
-                "schema": "distribute.task.v1",
+                "schema": "crucible.task.v1",
                 "name": "sync-repos",
                 "work_dir": str(root),
                 "state_dir": str(root / "state"),
@@ -741,7 +741,7 @@ class DistributeTests(unittest.TestCase):
             subprocess.run(["git", "commit", "-am", "two"], cwd=repo, check=True, stdout=subprocess.DEVNULL)
 
             manifest = {
-                "schema": "distribute.task.v1",
+                "schema": "crucible.task.v1",
                 "name": "sync-short",
                 "work_dir": str(root),
                 "state_dir": str(root / "state"),
@@ -780,7 +780,7 @@ class DistributeTests(unittest.TestCase):
             checkout = root / "checkout"
             install_dir = root / "bin"
             manifest = {
-                "schema": "distribute.task.v1",
+                "schema": "crucible.task.v1",
                 "name": "clone-setup",
                 "work_dir": str(root),
                 "state_dir": str(root / "state"),
@@ -825,7 +825,7 @@ class DistributeTests(unittest.TestCase):
             subprocess.run(["git", "clone", str(coordinator), str(worker)], check=True, stdout=subprocess.DEVNULL)
             wrong_commit = "0" * 40
             manifest = {
-                "schema": "distribute.task.v1",
+                "schema": "crucible.task.v1",
                 "name": "preflight",
                 "work_dir": str(coordinator),
                 "state_dir": str(coordinator / "state"),
@@ -872,7 +872,7 @@ class DistributeTests(unittest.TestCase):
         self.assertEqual("", result.stderr)
         self.assertEqual(0, result.returncode)
         payload = json.loads(result.stdout)
-        self.assertEqual("distrib", payload["tool"])
+        self.assertEqual("crucible", payload["tool"])
         self.assertIn("commit", payload)
         self.assertIn("repo", payload)
 
@@ -883,21 +883,21 @@ class DistributeTests(unittest.TestCase):
             subprocess.run(["git", "config", "user.name", "Petter Wahlman"], cwd=repo, check=True)
             subprocess.run(["git", "config", "user.email", "petter@wahlman.no"], cwd=repo, check=True)
             subprocess.run(["git", "config", "branch.develop.remote", "origin"], cwd=repo, check=True)
-            (repo / "distrib.py").write_text("#!/usr/bin/env python3\n", encoding="utf-8")
-            subprocess.run(["git", "add", "distrib.py"], cwd=repo, check=True)
+            (repo / "crucible.py").write_text("#!/usr/bin/env python3\n", encoding="utf-8")
+            subprocess.run(["git", "add", "crucible.py"], cwd=repo, check=True)
             subprocess.run(["git", "commit", "-m", "test"], cwd=repo, check=True, stdout=subprocess.DEVNULL)
 
-            original_file = distrib.__file__
+            original_file = crucible.__file__
             try:
-                distrib.__file__ = str(repo / "distrib.py")
-                payload = distrib.distrib_version_payload()
+                crucible.__file__ = str(repo / "crucible.py")
+                payload = crucible.crucible_version_payload()
             finally:
-                distrib.__file__ = original_file
+                crucible.__file__ = original_file
 
             self.assertEqual("develop", payload["branch"])
             self.assertEqual("origin", payload["remote"])
 
-    def test_self_update_fast_forwards_distrib_checkout(self) -> None:
+    def test_self_update_fast_forwards_crucible_checkout(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             source = root / "source"
@@ -905,8 +905,8 @@ class DistributeTests(unittest.TestCase):
             subprocess.run(["git", "init", "-b", "main", str(source)], check=True, stdout=subprocess.DEVNULL)
             subprocess.run(["git", "config", "user.name", "Petter Wahlman"], cwd=source, check=True)
             subprocess.run(["git", "config", "user.email", "petter@wahlman.no"], cwd=source, check=True)
-            (source / "distrib.py").write_text("#!/usr/bin/env python3\n", encoding="utf-8")
-            subprocess.run(["git", "add", "distrib.py"], cwd=source, check=True)
+            (source / "crucible.py").write_text("#!/usr/bin/env python3\n", encoding="utf-8")
+            subprocess.run(["git", "add", "crucible.py"], cwd=source, check=True)
             subprocess.run(["git", "commit", "-m", "one"], cwd=source, check=True, stdout=subprocess.DEVNULL)
             subprocess.run(["git", "clone", str(source), str(clone)], check=True, stdout=subprocess.DEVNULL)
             (source / "marker.txt").write_text("two", encoding="utf-8")
@@ -914,12 +914,12 @@ class DistributeTests(unittest.TestCase):
             subprocess.run(["git", "commit", "-m", "two"], cwd=source, check=True, stdout=subprocess.DEVNULL)
             expected = subprocess.check_output(["git", "-C", str(source), "rev-parse", "HEAD"], text=True).strip()
 
-            original_file = distrib.__file__
+            original_file = crucible.__file__
             try:
-                distrib.__file__ = str(clone / "distrib.py")
+                crucible.__file__ = str(clone / "crucible.py")
                 stdout = io.StringIO()
                 with contextlib.redirect_stdout(stdout):
-                    rc = distrib.cmd_self_update(
+                    rc = crucible.cmd_self_update(
                         argparse.Namespace(
                             remote="origin",
                             branch=None,
@@ -928,25 +928,25 @@ class DistributeTests(unittest.TestCase):
                         )
                     )
             finally:
-                distrib.__file__ = original_file
+                crucible.__file__ = original_file
             self.assertEqual(0, rc)
             head = subprocess.check_output(["git", "-C", str(clone), "rev-parse", "HEAD"], text=True).strip()
             self.assertEqual(expected, head)
 
-    def test_remote_distrib_command_uses_path(self) -> None:
-        command = distrib.remote_distrib_command(["status", "--manifest", "/tmp/run manifest.json"])
+    def test_remote_crucible_command_uses_path(self) -> None:
+        command = crucible.remote_crucible_command(["status", "--manifest", "/tmp/run manifest.json"])
 
-        self.assertIn("command -v distrib", command)
-        self.assertIn("exec distrib status --manifest '/tmp/run manifest.json'", command)
+        self.assertIn("command -v crucible", command)
+        self.assertIn("exec crucible status --manifest '/tmp/run manifest.json'", command)
 
     def test_check_coordinator_cli_fails_early(self) -> None:
-        result = subprocess.CompletedProcess(["ssh"], 127, stdout="", stderr="distrib not found")
+        result = subprocess.CompletedProcess(["ssh"], 127, stdout="", stderr="crucible not found")
 
-        with mock.patch("distrib.run_coordinator_cli", return_value=result):
+        with mock.patch("crucible.run_coordinator_cli", return_value=result):
             with self.assertRaises(SystemExit) as raised:
-                distrib.check_coordinator_cli("pwa-5090:/tmp/manifest.json")
+                crucible.check_coordinator_cli("pwa-5090:/tmp/manifest.json")
 
-        self.assertIn("distrib not found", str(raised.exception))
+        self.assertIn("crucible not found", str(raised.exception))
 
 
     def test_load_workers_reads_workers_json(self) -> None:
@@ -954,7 +954,7 @@ class DistributeTests(unittest.TestCase):
             workers_path = Path(tmp) / "workers.json"
             workers_path.write_text(
                 json.dumps({
-                    "schema": "distribute.workers.v1",
+                    "schema": "crucible.workers.v1",
                     "workers": [
                         "pwa-5090",
                         {"host": "pwa-win", "profile": "pwa-wsl"},
@@ -965,7 +965,7 @@ class DistributeTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            workers = distrib.load_workers(workers_path)
+            workers = crucible.load_workers(workers_path)
 
             self.assertEqual(
                 [
@@ -979,16 +979,16 @@ class DistributeTests(unittest.TestCase):
     def test_example_manifests_parse_and_format_tasks(self) -> None:
         for path in sorted((ROOT / "examples").glob("*.manifest.json")):
             with self.subTest(path=path.name):
-                manifest = distrib.load_manifest(path)
+                manifest = crucible.load_manifest(path)
                 for task in manifest["tasks"]:
-                    self.assertTrue(distrib.format_command(manifest, task))
+                    self.assertTrue(crucible.format_command(manifest, task))
 
     def test_worker_label_omits_duplicate_profile(self) -> None:
-        self.assertEqual("pwa-5090", distrib.worker_label("pwa-5090", "pwa-5090"))
-        self.assertEqual("pwa-win/pwa-wsl", distrib.worker_label("pwa-win", "pwa-wsl"))
+        self.assertEqual("pwa-5090", crucible.worker_label("pwa-5090", "pwa-5090"))
+        self.assertEqual("pwa-win/pwa-wsl", crucible.worker_label("pwa-win", "pwa-wsl"))
 
     def test_managed_remote_script_cleans_child_process_group(self) -> None:
-        script = distrib.managed_remote_script("sleep 60")
+        script = crucible.managed_remote_script("sleep 60")
 
         self.assertIn("setsid sh -lc", script)
         self.assertIn("kill -TERM -$pid", script)
@@ -999,7 +999,7 @@ class DistributeTests(unittest.TestCase):
             workers_path = Path(tmp) / "workers.json"
             workers_path.write_text(
                 json.dumps({
-                    "schema": "distribute.workers.v1",
+                    "schema": "crucible.workers.v1",
                     "workers": [
                         "pwa-5090",
                         {"host": "localhost", "local": True, "cache_dir": str(Path(tmp) / "cache")},
@@ -1013,10 +1013,10 @@ class DistributeTests(unittest.TestCase):
                 commands.append(command)
                 return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
 
-            with mock.patch("distrib.ProcessTracker.run", fake_run):
+            with mock.patch("crucible.ProcessTracker.run", fake_run):
                 stdout = io.StringIO()
                 with contextlib.redirect_stdout(stdout):
-                    rc = distrib.cmd_deploy(
+                    rc = crucible.cmd_deploy(
                         argparse.Namespace(
                             manifest=str(ROOT / "examples/enyo-candidate-deploy.manifest.json"),
                             workers=str(workers_path),
@@ -1036,12 +1036,12 @@ class DistributeTests(unittest.TestCase):
             self.assertNotIn("checking prerequisites", deploy_output)
             self.assertIn("deploy: setup complete", deploy_output)
             self.assertTrue(
-                any(command[0] == "ssh" and command[-2] == "pwa-5090" and "mkdir -p .cache/distrib" in command[-1] for command in commands)
+                any(command[0] == "ssh" and command[-2] == "pwa-5090" and "mkdir -p .cache/crucible" in command[-1] for command in commands)
             )
             self.assertNotIn(["sh", "-lc", "mkdir -p " + str(Path(tmp) / "cache")], commands)
-            self.assertTrue((Path(tmp) / "cache/distrib.py").exists())
+            self.assertTrue((Path(tmp) / "cache/crucible.py").exists())
             self.assertTrue((Path(tmp) / "cache/manifest.json").exists())
-            self.assertTrue(any(command[:4] == ["rsync", "-a", "-e", distrib.RSYNC_SSH] for command in commands))
+            self.assertTrue(any(command[:4] == ["rsync", "-a", "-e", crucible.RSYNC_SSH] for command in commands))
             scripts = [command[-1] for command in commands if command[0] in {"ssh", "sh"}]
             self.assertFalse(any("--profile pwa-5090" in script for script in scripts))
 
@@ -1051,7 +1051,7 @@ class DistributeTests(unittest.TestCase):
             manifest = root / "manifest.json"
             manifest.write_text(
                 json.dumps({
-                    "schema": "distribute.task.v1",
+                    "schema": "crucible.task.v1",
                     "name": "deploy-verbose",
                     "work_dir": str(root),
                     "state_dir": str(root / "state"),
@@ -1067,16 +1067,16 @@ class DistributeTests(unittest.TestCase):
             workers_path = root / "workers.json"
             workers_path.write_text(
                 json.dumps({
-                    "schema": "distribute.workers.v1",
+                    "schema": "crucible.workers.v1",
                     "workers": [{"host": "localhost", "local": True, "cache_dir": str(root / "cache")}],
                 }),
                 encoding="utf-8",
             )
 
-            with mock.patch("distrib.ProcessTracker.run", return_value=subprocess.CompletedProcess(["sh"], 0, stdout="", stderr="")):
+            with mock.patch("crucible.ProcessTracker.run", return_value=subprocess.CompletedProcess(["sh"], 0, stdout="", stderr="")):
                 stdout = io.StringIO()
                 with contextlib.redirect_stdout(stdout):
-                    rc = distrib.cmd_deploy(
+                    rc = crucible.cmd_deploy(
                         argparse.Namespace(
                             manifest=str(manifest),
                             workers=str(workers_path),
@@ -1100,7 +1100,7 @@ class DistributeTests(unittest.TestCase):
             manifest = root / "manifest.json"
             manifest.write_text(
                 json.dumps({
-                    "schema": "distribute.task.v1",
+                    "schema": "crucible.task.v1",
                     "name": "deploy-test",
                     "work_dir": str(root),
                     "state_dir": str(root / "state"),
@@ -1118,7 +1118,7 @@ class DistributeTests(unittest.TestCase):
             workers_path = root / "workers.json"
             workers_path.write_text(
                 json.dumps({
-                    "schema": "distribute.workers.v1",
+                    "schema": "crucible.workers.v1",
                     "workers": [{"host": "localhost", "profile": "worker", "local": True, "cache_dir": str(root / "cache")}],
                 }),
                 encoding="utf-8",
@@ -1129,10 +1129,10 @@ class DistributeTests(unittest.TestCase):
                 commands.append(command)
                 return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
 
-            with mock.patch("distrib.ProcessTracker.run", fake_run):
+            with mock.patch("crucible.ProcessTracker.run", fake_run):
                 stdout = io.StringIO()
                 with contextlib.redirect_stdout(stdout):
-                    rc = distrib.cmd_deploy(
+                    rc = crucible.cmd_deploy(
                         argparse.Namespace(
                             manifest=str(manifest),
                             workers=str(workers_path),
@@ -1154,7 +1154,7 @@ class DistributeTests(unittest.TestCase):
             manifest = root / "manifest.json"
             manifest.write_text(
                 json.dumps({
-                    "schema": "distribute.task.v1",
+                    "schema": "crucible.task.v1",
                     "name": "deploy-pipeline",
                     "work_dir": str(root),
                     "state_dir": str(root / "state"),
@@ -1171,7 +1171,7 @@ class DistributeTests(unittest.TestCase):
             workers_path = root / "workers.json"
             workers_path.write_text(
                 json.dumps({
-                    "schema": "distribute.workers.v1",
+                    "schema": "crucible.workers.v1",
                     "workers": [
                         {"host": "fast", "profile": "fast", "local": True, "cache_dir": str(root / "cache-fast")},
                         {"host": "slow", "profile": "slow", "local": True, "cache_dir": str(root / "cache-slow")},
@@ -1198,10 +1198,10 @@ class DistributeTests(unittest.TestCase):
                     return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
                 return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
 
-            with mock.patch("distrib.ProcessTracker.run", fake_run):
+            with mock.patch("crucible.ProcessTracker.run", fake_run):
                 stdout = io.StringIO()
                 with contextlib.redirect_stdout(stdout):
-                    rc = distrib.cmd_deploy(
+                    rc = crucible.cmd_deploy(
                         argparse.Namespace(
                             manifest=str(manifest),
                             workers=str(workers_path),
@@ -1221,7 +1221,7 @@ class DistributeTests(unittest.TestCase):
             manifest = root / "manifest.json"
             manifest.write_text(
                 json.dumps({
-                    "schema": "distribute.task.v1",
+                    "schema": "crucible.task.v1",
                     "name": "deploy-fail",
                     "work_dir": str(root),
                     "state_dir": str(root / "state"),
@@ -1234,7 +1234,7 @@ class DistributeTests(unittest.TestCase):
             workers_path = root / "workers.json"
             workers_path.write_text(
                 json.dumps({
-                    "schema": "distribute.workers.v1",
+                    "schema": "crucible.workers.v1",
                     "workers": [{"host": "localhost", "local": True, "cache_dir": str(root / "cache")}],
                 }),
                 encoding="utf-8",
@@ -1245,11 +1245,11 @@ class DistributeTests(unittest.TestCase):
                 commands.append(command)
                 return subprocess.CompletedProcess(command, 1, stdout="", stderr="failed")
 
-            with mock.patch("distrib.ProcessTracker.run", fake_run):
+            with mock.patch("crucible.ProcessTracker.run", fake_run):
                 stdout = io.StringIO()
                 stderr = io.StringIO()
                 with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
-                    rc = distrib.cmd_deploy(
+                    rc = crucible.cmd_deploy(
                         argparse.Namespace(
                             manifest=str(manifest),
                             workers=str(workers_path),
@@ -1270,7 +1270,7 @@ class DistributeTests(unittest.TestCase):
             manifest = root / "manifest.json"
             manifest.write_text(
                 json.dumps({
-                    "schema": "distribute.task.v1",
+                    "schema": "crucible.task.v1",
                     "name": "deploy-interrupt",
                     "work_dir": str(root),
                     "state_dir": str(root / "state"),
@@ -1283,21 +1283,21 @@ class DistributeTests(unittest.TestCase):
             workers_path = root / "workers.json"
             workers_path.write_text(
                 json.dumps({
-                    "schema": "distribute.workers.v1",
+                    "schema": "crucible.workers.v1",
                     "workers": ["pwa-5090"],
                 }),
                 encoding="utf-8",
             )
 
             with (
-                mock.patch("distrib.ProcessTracker.run", return_value=subprocess.CompletedProcess(["sh"], 0, stdout="", stderr="")),
-                mock.patch.object(distrib.ProcessTracker, "terminate_all") as terminate_all,
-                mock.patch("distrib.concurrent.futures.as_completed", side_effect=KeyboardInterrupt),
+                mock.patch("crucible.ProcessTracker.run", return_value=subprocess.CompletedProcess(["sh"], 0, stdout="", stderr="")),
+                mock.patch.object(crucible.ProcessTracker, "terminate_all") as terminate_all,
+                mock.patch("crucible.concurrent.futures.as_completed", side_effect=KeyboardInterrupt),
             ):
                 stdout = io.StringIO()
                 stderr = io.StringIO()
                 with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
-                    rc = distrib.cmd_deploy(
+                    rc = crucible.cmd_deploy(
                         argparse.Namespace(
                             manifest=str(manifest),
                             workers=str(workers_path),
