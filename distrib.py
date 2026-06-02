@@ -1555,7 +1555,7 @@ def bootstrap_worker_runner(worker: dict[str, Any], manifest_path: Path) -> None
         result = run_worker_shell(worker, "mkdir -p " + shlex.quote(cache))
         if result.returncode != 0:
             raise RuntimeError(result.stderr.strip() or result.stdout.strip() or "failed to create worker cache")
-    copy_to_worker(worker, script_path(), worker_cache_file(worker, "distribute.py"))
+    copy_to_worker(worker, script_path(), worker_cache_file(worker, "distrib.py"))
     copy_to_worker(worker, manifest_path, worker_cache_file(worker, "manifest.json"))
 
 
@@ -1579,7 +1579,7 @@ def manifest_has_git_requirements(manifest: dict[str, Any]) -> bool:
 
 
 def deploy_prereq_command(*, worker: dict[str, Any], manifest: dict[str, Any]) -> str:
-    runner = worker_cache_file(worker, "distribute.py")
+    runner = worker_cache_file(worker, "distrib.py")
     manifest_path = worker_cache_file(worker, "manifest.json")
     profile_args = worker_profile_args(manifest, worker)
     commands = ["set -e"]
@@ -1590,7 +1590,7 @@ def deploy_prereq_command(*, worker: dict[str, Any], manifest: dict[str, Any]) -
 
 
 def deploy_work_command(*, worker: dict[str, Any], manifest: dict[str, Any], coordinator: str) -> str:
-    runner = worker_cache_file(worker, "distribute.py")
+    runner = worker_cache_file(worker, "distrib.py")
     manifest_path = worker_cache_file(worker, "manifest.json")
     profile_args = worker_profile_args(manifest, worker)
     return shell_join([

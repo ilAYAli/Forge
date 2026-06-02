@@ -14,9 +14,9 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-CLI = ROOT / "distribute.py"
+CLI = ROOT / "distrib.py"
 sys.path.insert(0, str(ROOT))
-import distribute  # noqa: E402
+import distrib  # noqa: E402
 
 
 class DistributeTests(unittest.TestCase):
@@ -39,7 +39,7 @@ class DistributeTests(unittest.TestCase):
             real.mkdir()
             link.symlink_to(real, target_is_directory=True)
 
-            path = distribute.expand_path(link / "manifest.json")
+            path = distrib.expand_path(link / "manifest.json")
 
             self.assertEqual(link / "manifest.json", path)
 
@@ -783,16 +783,16 @@ class DistributeTests(unittest.TestCase):
             subprocess.run(["git", "config", "user.name", "Petter Wahlman"], cwd=repo, check=True)
             subprocess.run(["git", "config", "user.email", "petter@wahlman.no"], cwd=repo, check=True)
             subprocess.run(["git", "config", "branch.develop.remote", "origin"], cwd=repo, check=True)
-            (repo / "distribute.py").write_text("#!/usr/bin/env python3\n", encoding="utf-8")
-            subprocess.run(["git", "add", "distribute.py"], cwd=repo, check=True)
+            (repo / "distrib.py").write_text("#!/usr/bin/env python3\n", encoding="utf-8")
+            subprocess.run(["git", "add", "distrib.py"], cwd=repo, check=True)
             subprocess.run(["git", "commit", "-m", "test"], cwd=repo, check=True, stdout=subprocess.DEVNULL)
 
-            original_file = distribute.__file__
+            original_file = distrib.__file__
             try:
-                distribute.__file__ = str(repo / "distribute.py")
-                payload = distribute.distrib_version_payload()
+                distrib.__file__ = str(repo / "distrib.py")
+                payload = distrib.distrib_version_payload()
             finally:
-                distribute.__file__ = original_file
+                distrib.__file__ = original_file
 
             self.assertEqual("develop", payload["branch"])
             self.assertEqual("origin", payload["remote"])
@@ -805,8 +805,8 @@ class DistributeTests(unittest.TestCase):
             subprocess.run(["git", "init", "-b", "main", str(source)], check=True, stdout=subprocess.DEVNULL)
             subprocess.run(["git", "config", "user.name", "Petter Wahlman"], cwd=source, check=True)
             subprocess.run(["git", "config", "user.email", "petter@wahlman.no"], cwd=source, check=True)
-            (source / "distribute.py").write_text("#!/usr/bin/env python3\n", encoding="utf-8")
-            subprocess.run(["git", "add", "distribute.py"], cwd=source, check=True)
+            (source / "distrib.py").write_text("#!/usr/bin/env python3\n", encoding="utf-8")
+            subprocess.run(["git", "add", "distrib.py"], cwd=source, check=True)
             subprocess.run(["git", "commit", "-m", "one"], cwd=source, check=True, stdout=subprocess.DEVNULL)
             subprocess.run(["git", "clone", str(source), str(clone)], check=True, stdout=subprocess.DEVNULL)
             (source / "marker.txt").write_text("two", encoding="utf-8")
@@ -814,12 +814,12 @@ class DistributeTests(unittest.TestCase):
             subprocess.run(["git", "commit", "-m", "two"], cwd=source, check=True, stdout=subprocess.DEVNULL)
             expected = subprocess.check_output(["git", "-C", str(source), "rev-parse", "HEAD"], text=True).strip()
 
-            original_file = distribute.__file__
+            original_file = distrib.__file__
             try:
-                distribute.__file__ = str(clone / "distribute.py")
+                distrib.__file__ = str(clone / "distrib.py")
                 stdout = io.StringIO()
                 with contextlib.redirect_stdout(stdout):
-                    rc = distribute.cmd_self_update(
+                    rc = distrib.cmd_self_update(
                         argparse.Namespace(
                             remote="origin",
                             branch=None,
@@ -828,13 +828,13 @@ class DistributeTests(unittest.TestCase):
                         )
                     )
             finally:
-                distribute.__file__ = original_file
+                distrib.__file__ = original_file
             self.assertEqual(0, rc)
             head = subprocess.check_output(["git", "-C", str(clone), "rev-parse", "HEAD"], text=True).strip()
             self.assertEqual(expected, head)
 
     def test_remote_distrib_command_uses_path(self) -> None:
-        command = distribute.remote_distrib_command(["status", "--manifest", "/tmp/run manifest.json"])
+        command = distrib.remote_distrib_command(["status", "--manifest", "/tmp/run manifest.json"])
 
         self.assertIn("command -v distrib", command)
         self.assertIn("exec distrib status --manifest '/tmp/run manifest.json'", command)
@@ -842,9 +842,9 @@ class DistributeTests(unittest.TestCase):
     def test_check_coordinator_cli_fails_early(self) -> None:
         result = subprocess.CompletedProcess(["ssh"], 127, stdout="", stderr="distrib not found")
 
-        with mock.patch("distribute.run_coordinator_cli", return_value=result):
+        with mock.patch("distrib.run_coordinator_cli", return_value=result):
             with self.assertRaises(SystemExit) as raised:
-                distribute.check_coordinator_cli("pwa-5090:/tmp/manifest.json")
+                distrib.check_coordinator_cli("pwa-5090:/tmp/manifest.json")
 
         self.assertIn("distrib not found", str(raised.exception))
 
@@ -865,7 +865,7 @@ class DistributeTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            workers = distribute.load_workers(workers_path)
+            workers = distrib.load_workers(workers_path)
 
             self.assertEqual(
                 [
@@ -895,10 +895,10 @@ class DistributeTests(unittest.TestCase):
                 commands.append(command)
                 return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
 
-            with mock.patch("distribute.subprocess.run", fake_run):
+            with mock.patch("distrib.subprocess.run", fake_run):
                 stdout = io.StringIO()
                 with contextlib.redirect_stdout(stdout):
-                    rc = distribute.cmd_deploy(
+                    rc = distrib.cmd_deploy(
                         argparse.Namespace(
                             manifest=str(ROOT / "examples/enyo-candidate-deploy.manifest.json"),
                             workers=str(workers_path),
@@ -912,9 +912,9 @@ class DistributeTests(unittest.TestCase):
                 any(command[0] == "ssh" and command[-2:] == ["pwa-5090", "mkdir -p .cache/distrib"] for command in commands)
             )
             self.assertNotIn(["sh", "-lc", "mkdir -p " + str(Path(tmp) / "cache")], commands)
-            self.assertTrue((Path(tmp) / "cache/distribute.py").exists())
+            self.assertTrue((Path(tmp) / "cache/distrib.py").exists())
             self.assertTrue((Path(tmp) / "cache/manifest.json").exists())
-            self.assertTrue(any(command[:4] == ["rsync", "-a", "-e", distribute.RSYNC_SSH] for command in commands))
+            self.assertTrue(any(command[:4] == ["rsync", "-a", "-e", distrib.RSYNC_SSH] for command in commands))
             scripts = [command[-1] for command in commands if command[0] in {"ssh", "sh"}]
             self.assertFalse(any("--profile pwa-5090" in script for script in scripts))
 
@@ -953,10 +953,10 @@ class DistributeTests(unittest.TestCase):
                 commands.append(command)
                 return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
 
-            with mock.patch("distribute.subprocess.run", fake_run):
+            with mock.patch("distrib.subprocess.run", fake_run):
                 stdout = io.StringIO()
                 with contextlib.redirect_stdout(stdout):
-                    rc = distribute.cmd_deploy(
+                    rc = distrib.cmd_deploy(
                         argparse.Namespace(
                             manifest=str(manifest),
                             workers=str(workers_path),
@@ -1000,10 +1000,10 @@ class DistributeTests(unittest.TestCase):
                 commands.append(command)
                 return subprocess.CompletedProcess(command, 1, stdout="", stderr="failed")
 
-            with mock.patch("distribute.subprocess.run", fake_run):
+            with mock.patch("distrib.subprocess.run", fake_run):
                 stderr = io.StringIO()
                 with contextlib.redirect_stderr(stderr):
-                    rc = distribute.cmd_deploy(
+                    rc = distrib.cmd_deploy(
                         argparse.Namespace(
                             manifest=str(manifest),
                             workers=str(workers_path),

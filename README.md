@@ -12,7 +12,7 @@ Install on the coordinator:
 ```sh
 git clone git@github.com:ilAYAli/distrib.git ~/code/cpp/chess/distrib
 mkdir -p ~/.local/bin
-ln -sf ~/code/cpp/chess/distrib/distribute.py ~/.local/bin/distrib
+ln -sf ~/code/cpp/chess/distrib/distrib.py ~/.local/bin/distrib
 distrib --help >/dev/null
 ```
 
