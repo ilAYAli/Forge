@@ -903,11 +903,18 @@ class DistributeTests(unittest.TestCase):
                             manifest=str(ROOT / "examples/enyo-candidate-deploy.manifest.json"),
                             workers=str(workers_path),
                             jobs=1,
+                            remote_timeout_seconds=1800.0,
                             verbose=False,
                         )
                     )
 
             self.assertEqual(0, rc)
+            deploy_output = stdout.getvalue()
+            self.assertIn("deploy: 2 worker(s), jobs=1", deploy_output)
+            self.assertIn("pwa-5090(pwa-5090): syncing runner and manifest", deploy_output)
+            self.assertIn("pwa-5090(pwa-5090): checking prerequisites", deploy_output)
+            self.assertIn("pwa-5090(pwa-5090): prerequisites OK", deploy_output)
+            self.assertIn("deploy: no tasks declared", deploy_output)
             self.assertTrue(
                 any(command[0] == "ssh" and command[-2:] == ["pwa-5090", "mkdir -p .cache/distrib"] for command in commands)
             )
@@ -961,6 +968,7 @@ class DistributeTests(unittest.TestCase):
                             manifest=str(manifest),
                             workers=str(workers_path),
                             jobs=1,
+                            remote_timeout_seconds=1800.0,
                             verbose=False,
                         )
                     )
@@ -1001,13 +1009,15 @@ class DistributeTests(unittest.TestCase):
                 return subprocess.CompletedProcess(command, 1, stdout="", stderr="failed")
 
             with mock.patch("distrib.subprocess.run", fake_run):
+                stdout = io.StringIO()
                 stderr = io.StringIO()
-                with contextlib.redirect_stderr(stderr):
+                with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
                     rc = distrib.cmd_deploy(
                         argparse.Namespace(
                             manifest=str(manifest),
                             workers=str(workers_path),
                             jobs=1,
+                            remote_timeout_seconds=1800.0,
                             verbose=False,
                         )
                     )

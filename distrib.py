@@ -1508,7 +1508,12 @@ def is_local_worker(worker: dict[str, Any]) -> bool:
     return bool(worker.get("local", False))
 
 
-def run_worker_shell(worker: dict[str, Any], script: str) -> subprocess.CompletedProcess[str]:
+def run_worker_shell(
+    worker: dict[str, Any],
+    script: str,
+    *,
+    timeout: float | None = None,
+) -> subprocess.CompletedProcess[str]:
     if is_local_worker(worker):
         return subprocess.run(
             ["sh", "-lc", script],
@@ -1516,6 +1521,7 @@ def run_worker_shell(worker: dict[str, Any], script: str) -> subprocess.Complete
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             check=False,
+            timeout=timeout,
         )
     return subprocess.run(
         ["ssh", *SSH_OPTS, str(worker["host"]), script],
@@ -1523,6 +1529,7 @@ def run_worker_shell(worker: dict[str, Any], script: str) -> subprocess.Complete
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         check=False,
+        timeout=timeout,
     )
 
 
@@ -1532,7 +1539,7 @@ def worker_rsync_target(worker: dict[str, Any], path: str) -> str:
     return f"{worker['host']}:{path}"
 
 
-def copy_to_worker(worker: dict[str, Any], src: Path, dst: str) -> None:
+def copy_to_worker(worker: dict[str, Any], src: Path, dst: str, *, timeout: float | None = None) -> None:
     if is_local_worker(worker):
         target = expand_path(dst)
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -1544,19 +1551,20 @@ def copy_to_worker(worker: dict[str, Any], src: Path, dst: str) -> None:
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         check=False,
+        timeout=timeout,
     )
     if result.returncode != 0:
         raise RuntimeError(result.stderr.strip() or f"rsync failed for {src}")
 
 
-def bootstrap_worker_runner(worker: dict[str, Any], manifest_path: Path) -> None:
+def bootstrap_worker_runner(worker: dict[str, Any], manifest_path: Path, *, timeout: float | None = None) -> None:
     if not is_local_worker(worker):
         cache = worker_cache_dir(worker)
-        result = run_worker_shell(worker, "mkdir -p " + shlex.quote(cache))
+        result = run_worker_shell(worker, "mkdir -p " + shlex.quote(cache), timeout=timeout)
         if result.returncode != 0:
             raise RuntimeError(result.stderr.strip() or result.stdout.strip() or "failed to create worker cache")
-    copy_to_worker(worker, script_path(), worker_cache_file(worker, "distrib.py"))
-    copy_to_worker(worker, manifest_path, worker_cache_file(worker, "manifest.json"))
+    copy_to_worker(worker, script_path(), worker_cache_file(worker, "distrib.py"), timeout=timeout)
+    copy_to_worker(worker, manifest_path, worker_cache_file(worker, "manifest.json"), timeout=timeout)
 
 
 def worker_profile_args(manifest: dict[str, Any], worker: dict[str, Any]) -> list[str]:
@@ -1609,23 +1617,37 @@ def coordinator_for_worker(worker: dict[str, Any], manifest_path: Path) -> str:
     return f"{socket.gethostname()}:{manifest_path}"
 
 
+def worker_label(host: str, profile: str) -> str:
+    return f"{host}({profile})"
+
+
 def cmd_deploy(args: argparse.Namespace) -> int:
     workers = load_workers(expand_path(args.workers))
     jobs = max(1, int(args.jobs))
+    remote_timeout = max(1.0, float(args.remote_timeout_seconds))
     manifest_path = expand_path(args.manifest)
     manifest = load_manifest(manifest_path)
+    print_lock = threading.Lock()
+
+    def status(message: str, *, error: bool = False) -> None:
+        with print_lock:
+            print(message, file=sys.stderr if error else sys.stdout, flush=True)
 
     def run_prereq(index: int, worker: dict[str, Any]) -> tuple[int, str, str, subprocess.CompletedProcess[str]]:
         host = str(worker["host"])
         profile = str(worker["profile"])
+        label = worker_label(host, profile)
         try:
-            bootstrap_worker_runner(worker, manifest_path)
+            status(f"{label}: syncing runner and manifest")
+            bootstrap_worker_runner(worker, manifest_path, timeout=remote_timeout)
+            status(f"{label}: checking prerequisites")
             script = deploy_prereq_command(worker=worker, manifest=manifest)
-            result = run_worker_shell(worker, script)
+            result = run_worker_shell(worker, script, timeout=remote_timeout)
         except Exception as exc:
             result = subprocess.CompletedProcess(["deploy", host], 1, stdout="", stderr=str(exc))
         return index, host, profile, result
 
+    status(f"deploy: {len(workers)} worker(s), jobs={jobs}")
     with concurrent.futures.ThreadPoolExecutor(max_workers=jobs) as executor:
         futures = [
             executor.submit(run_prereq, index, worker)
@@ -1635,14 +1657,14 @@ def cmd_deploy(args: argparse.Namespace) -> int:
 
     failed = 0
     for _, host, profile, result in sorted(results, key=lambda item: item[0]):
-        label = f"{host}({profile})"
+        label = worker_label(host, profile)
         if result.returncode == 0:
-            print(f"ensuring prerequisites for {label}: OK")
+            status(f"{label}: prerequisites OK")
             if args.verbose and result.stdout.strip():
                 print(result.stdout.strip())
         else:
             failed += 1
-            print(f"ensuring prerequisites for {label}: FAILED rc={result.returncode}", file=sys.stderr)
+            status(f"{label}: prerequisites FAILED rc={result.returncode}", error=True)
             if result.stdout.strip():
                 print(result.stdout.strip(), file=sys.stderr)
             if result.stderr.strip():
@@ -1651,17 +1673,19 @@ def cmd_deploy(args: argparse.Namespace) -> int:
         return 1
 
     if not manifest.get("tasks"):
+        status("deploy: no tasks declared")
         return 0
 
     def run_work(index: int, worker: dict[str, Any]) -> tuple[int, str, str, subprocess.CompletedProcess[str]]:
         host = str(worker["host"])
         profile = str(worker["profile"])
+        status(f"{worker_label(host, profile)}: running tasks")
         script = deploy_work_command(
             worker=worker,
             manifest=manifest,
             coordinator=coordinator_for_worker(worker, manifest_path),
         )
-        return index, host, profile, run_worker_shell(worker, script)
+        return index, host, profile, run_worker_shell(worker, script, timeout=remote_timeout)
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=jobs) as executor:
         futures = [
@@ -1672,14 +1696,14 @@ def cmd_deploy(args: argparse.Namespace) -> int:
 
     failed = 0
     for _, host, profile, result in sorted(work_results, key=lambda item: item[0]):
-        label = f"{host}({profile})"
+        label = worker_label(host, profile)
         if result.returncode == 0:
-            print(f"running tasks on {label}: OK")
+            status(f"{label}: tasks OK")
             if args.verbose and result.stdout.strip():
                 print(result.stdout.strip())
         else:
             failed += 1
-            print(f"running tasks on {label}: FAILED rc={result.returncode}", file=sys.stderr)
+            status(f"{label}: tasks FAILED rc={result.returncode}", error=True)
             if result.stdout.strip():
                 print(result.stdout.strip(), file=sys.stderr)
             if result.stderr.strip():
@@ -1835,6 +1859,7 @@ def build_parser() -> argparse.ArgumentParser:
     deploy.add_argument("workers")
     deploy.add_argument("manifest")
     deploy.add_argument("--jobs", type=int, default=4)
+    deploy.add_argument("--remote-timeout-seconds", type=float, default=1800.0)
     deploy.add_argument("--verbose", action="store_true")
     deploy.set_defaults(func=cmd_deploy)
 
@@ -1851,7 +1876,11 @@ def main() -> int:
         parser.error("a command is required")
     if getattr(args, "command", None) == "run" and args.task is None and args.index is None:
         parser.error("run requires --task or --index")
-    return int(args.func(args))
+    try:
+        return int(args.func(args))
+    except KeyboardInterrupt:
+        print("interrupted", file=sys.stderr, flush=True)
+        return 130
 
 
 if __name__ == "__main__":
