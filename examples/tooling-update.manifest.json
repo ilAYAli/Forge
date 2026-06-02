@@ -1,0 +1,75 @@
+{
+  "schema": "crucible.task.v1",
+  "name": "tooling-update",
+  "work_dir": "~/code/cpp/chess",
+  "state_dir": "~/code/cpp/chess/crucible-runs/tooling-update/state",
+  "log_dir": "~/code/cpp/chess/crucible-runs/tooling-update/logs",
+  "claim_dir": "~/code/cpp/chess/crucible-runs/tooling-update/claims",
+  "requirements": {
+    "python_min": "3.11",
+    "git_min": "2.38",
+    "repos": [
+      {
+        "name": "crucible",
+        "url": "git@github.com:ilAYAli/Crucible.git",
+        "path": "~/code/cpp/chess/crucible",
+        "remote": "origin",
+        "commit": "REPLACE_WITH_CRUCIBLE_COMMIT_SHA",
+        "allow_dirty": false,
+        "install": [
+          "mkdir -p ~/.local/bin",
+          "ln -sf \"$PWD/crucible.py\" ~/.local/bin/crucible"
+        ],
+        "probe": [
+          "~/.local/bin/crucible --version"
+        ]
+      },
+      {
+        "name": "nnue",
+        "url": "git@github.com:ilAYAli/nnue.git",
+        "path": "~/code/cpp/chess/nnue",
+        "remote": "origin",
+        "commit": "REPLACE_WITH_NNUE_COMMIT_SHA",
+        "allow_dirty": false,
+        "probe": [
+          "test -f build.py",
+          "test -f tools/score/score.py",
+          "test -f tools/posgen/selfplay_shards.py"
+        ]
+      },
+      {
+        "name": "enyo",
+        "url": "git@github.com:ilAYAli/enyo_private.git",
+        "path": "~/code/cpp/chess/enyo",
+        "remote": "origin",
+        "commit": "REPLACE_WITH_ENYO_COMMIT_SHA",
+        "allow_dirty": false,
+        "build_timeout_s": 900,
+        "install_timeout_s": 120,
+        "probe_timeout_s": 30,
+        "build": [
+          "cmake -S . -B build -DCMAKE_BUILD_TYPE=Release",
+          "cmake --build build -j8"
+        ],
+        "install": [
+          "scripts/deploy.sh --candidate"
+        ],
+        "probe": [
+          "test -x build/enyo",
+          "test -x ~/assets/engines/candidate"
+        ]
+      }
+    ],
+    "commands": [
+      {
+        "name": "fastchess",
+        "path": "fastchess"
+      },
+      {
+        "name": "stockfish",
+        "path": "~/.local/bin/stockfish"
+      }
+    ]
+  },
+  "tasks": []
+}

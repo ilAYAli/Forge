@@ -21,7 +21,7 @@
     "commands": [
       {
         "name": "stockfish",
-        "path": "stockfish"
+        "path": "~/.local/bin/stockfish"
       }
     ],
     "inputs": [
@@ -32,7 +32,7 @@
   },
   "vars": {
     "input": "~/code/cpp/chess/crucible-runs/nnue-label-stockfish/source/source.jsonl",
-    "engine": "stockfish",
+    "engine": "~/.local/bin/stockfish",
     "depth": "14",
     "threads": "1",
     "hash": "128",

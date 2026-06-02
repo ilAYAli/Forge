@@ -36,18 +36,20 @@
   },
   "vars": {
     "engine": "~/assets/engines/candidate",
+    "nnue_file": "~/code/cpp/chess/nnue/runs/REPLACE_WITH_BASE_RUN/train/REPLACE_WITH_BASE_RUN/model.nn",
     "book": "~/code/cpp/chess/assets/books/UHO_Lichess_4852_v1.epd",
-    "games_per_task": "1000",
+    "total_games": "8000",
     "concurrency": "8",
     "threads": "1",
-    "depth": "12"
+    "depth": "8",
+    "hash": "128",
+    "seed": "2026060200"
   },
   "tasks": [
     {
       "id": "selfplay_0000",
       "index": 0,
-      "seed": 2026060200,
-      "command": "python3 tools/posgen/posgen.py selfplay --engine {engine} --book {book} --output {output} --games {games_per_task} --concurrency {concurrency} --threads {threads} --depth {depth} --srand {seed}",
+      "command": "python3 tools/posgen/selfplay_shards.py generate --runner fastchess --engine {engine} --book {book} --output-pgn {output} --total-games {total_games} --shards {shards} --shard-index {index} --concurrency {concurrency} --threads {threads} --depth {depth} --base-seed {seed} --restart off --nnue-file {nnue_file} --engine-option Hash={hash}",
       "outputs": [
         "~/code/cpp/chess/crucible-runs/nnue-selfplay/pgn/selfplay.0000.pgn"
       ]
@@ -55,8 +57,7 @@
     {
       "id": "selfplay_0001",
       "index": 1,
-      "seed": 2026060201,
-      "command": "python3 tools/posgen/posgen.py selfplay --engine {engine} --book {book} --output {output} --games {games_per_task} --concurrency {concurrency} --threads {threads} --depth {depth} --srand {seed}",
+      "command": "python3 tools/posgen/selfplay_shards.py generate --runner fastchess --engine {engine} --book {book} --output-pgn {output} --total-games {total_games} --shards {shards} --shard-index {index} --concurrency {concurrency} --threads {threads} --depth {depth} --base-seed {seed} --restart off --nnue-file {nnue_file} --engine-option Hash={hash}",
       "outputs": [
         "~/code/cpp/chess/crucible-runs/nnue-selfplay/pgn/selfplay.0001.pgn"
       ]
@@ -64,8 +65,7 @@
     {
       "id": "selfplay_0002",
       "index": 2,
-      "seed": 2026060202,
-      "command": "python3 tools/posgen/posgen.py selfplay --engine {engine} --book {book} --output {output} --games {games_per_task} --concurrency {concurrency} --threads {threads} --depth {depth} --srand {seed}",
+      "command": "python3 tools/posgen/selfplay_shards.py generate --runner fastchess --engine {engine} --book {book} --output-pgn {output} --total-games {total_games} --shards {shards} --shard-index {index} --concurrency {concurrency} --threads {threads} --depth {depth} --base-seed {seed} --restart off --nnue-file {nnue_file} --engine-option Hash={hash}",
       "outputs": [
         "~/code/cpp/chess/crucible-runs/nnue-selfplay/pgn/selfplay.0002.pgn"
       ]
@@ -73,8 +73,7 @@
     {
       "id": "selfplay_0003",
       "index": 3,
-      "seed": 2026060203,
-      "command": "python3 tools/posgen/posgen.py selfplay --engine {engine} --book {book} --output {output} --games {games_per_task} --concurrency {concurrency} --threads {threads} --depth {depth} --srand {seed}",
+      "command": "python3 tools/posgen/selfplay_shards.py generate --runner fastchess --engine {engine} --book {book} --output-pgn {output} --total-games {total_games} --shards {shards} --shard-index {index} --concurrency {concurrency} --threads {threads} --depth {depth} --base-seed {seed} --restart off --nnue-file {nnue_file} --engine-option Hash={hash}",
       "outputs": [
         "~/code/cpp/chess/crucible-runs/nnue-selfplay/pgn/selfplay.0003.pgn"
       ]
