@@ -1,0 +1,16 @@
+{
+  "schema": "distribute.workers.v1",
+  "workers": [
+    "pwa-5090",
+    "pwa-rce",
+    {
+      "host": "pwa-win",
+      "profile": "pwa-wsl"
+    },
+    {
+      "host": "localhost",
+      "local": true,
+      "enabled": false
+    }
+  ]
+}

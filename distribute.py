@@ -1418,6 +1418,176 @@ def cmd_version(args: argparse.Namespace) -> int:
     return 0
 
 
+def parse_worker_spec(value: str) -> tuple[str, str]:
+    if "=" in value:
+        host, profile = value.split("=", 1)
+    else:
+        host, profile = value, value
+    host = host.strip()
+    profile = profile.strip()
+    if not host:
+        raise SystemExit("worker host must not be empty")
+    if not profile:
+        raise SystemExit(f"{host}: worker profile must not be empty")
+    return host, profile
+
+
+def parse_worker_record(item: Any) -> dict[str, Any]:
+    if isinstance(item, str):
+        host, profile = parse_worker_spec(item)
+        return {"host": host, "profile": profile, "local": host in ("localhost", "127.0.0.1")}
+    if not isinstance(item, dict):
+        raise SystemExit("workers entries must be strings or objects")
+    if not bool(item.get("enabled", True)):
+        return {}
+    host = str(item.get("host") or "").strip()
+    if not host:
+        raise SystemExit("workers entries must include host")
+    profile = str(item.get("profile") or host).strip()
+    if not profile:
+        raise SystemExit(f"{host}: worker profile must not be empty")
+    record = {
+        "host": host,
+        "profile": profile,
+        "local": bool(item.get("local", host in ("localhost", "127.0.0.1"))),
+    }
+    if item.get("cache_dir"):
+        record["cache_dir"] = str(item["cache_dir"])
+    return record
+
+
+def load_workers(path: Path) -> list[dict[str, Any]]:
+    payload = read_json(path)
+    if payload.get("schema") not in (None, "distribute.workers.v1"):
+        raise SystemExit(f"{path}: unsupported schema {payload.get('schema')!r}")
+    raw_workers = payload.get("workers")
+    if not isinstance(raw_workers, list):
+        raise SystemExit(f"{path}: workers must be a list")
+    workers = [worker for worker in (parse_worker_record(item) for item in raw_workers) if worker]
+    if not workers:
+        raise SystemExit(f"{path}: no enabled workers")
+    return workers
+
+
+def worker_cache_dir(worker: dict[str, Any]) -> str:
+    if worker.get("cache_dir"):
+        return str(worker["cache_dir"])
+    if bool(worker.get("local", False)):
+        return str(Path.home() / ".cache/distrib")
+    return ".cache/distrib"
+
+
+def worker_cache_file(worker: dict[str, Any], name: str) -> str:
+    return worker_cache_dir(worker).rstrip("/") + "/" + name
+
+
+def run_worker_shell(worker: dict[str, Any], script: str) -> subprocess.CompletedProcess[str]:
+    if bool(worker.get("local", False)):
+        return subprocess.run(
+            ["sh", "-lc", script],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+    return subprocess.run(
+        ["ssh", str(worker["host"]), script],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+
+
+def worker_rsync_target(worker: dict[str, Any], path: str) -> str:
+    if bool(worker.get("local", False)):
+        return str(expand_path(path))
+    return f"{worker['host']}:{path}"
+
+
+def copy_to_worker(worker: dict[str, Any], src: Path, dst: str) -> None:
+    if bool(worker.get("local", False)):
+        target = expand_path(dst)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, target)
+        return
+    result = subprocess.run(
+        ["rsync", "-a", str(src), worker_rsync_target(worker, dst)],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.strip() or f"rsync failed for {src}")
+
+
+def bootstrap_worker_runner(worker: dict[str, Any], manifest_path: Path) -> None:
+    cache = worker_cache_dir(worker)
+    result = run_worker_shell(worker, "mkdir -p " + shlex.quote(cache))
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.strip() or result.stdout.strip() or "failed to create worker cache")
+    copy_to_worker(worker, script_path(), worker_cache_file(worker, "distribute.py"))
+    copy_to_worker(worker, manifest_path, worker_cache_file(worker, "manifest.json"))
+
+
+def remote_prepare_worker_command(*, worker: dict[str, Any], profile: str) -> str:
+    runner = worker_cache_file(worker, "distribute.py")
+    manifest = worker_cache_file(worker, "manifest.json")
+    return "\n".join([
+        "set -e",
+        shell_join(["python3", runner, "sync-repos", "--manifest", manifest, "--profile", profile]),
+        shell_join(["python3", runner, "doctor", "--manifest", manifest, "--profile", profile, "--role", "worker"]),
+    ])
+
+
+def cmd_prepare(args: argparse.Namespace) -> int:
+    workers = load_workers(expand_path(args.workers))
+    jobs = max(1, int(args.jobs))
+    manifest_path = expand_path(args.manifest)
+    semaphore = threading.Semaphore(jobs)
+    lock = threading.Lock()
+    results: list[tuple[int, str, str, subprocess.CompletedProcess[str]]] = []
+
+    def run_worker(index: int, worker: dict[str, Any]) -> None:
+        host = str(worker["host"])
+        profile = str(worker["profile"])
+        with semaphore:
+            try:
+                bootstrap_worker_runner(worker, manifest_path)
+                script = remote_prepare_worker_command(worker=worker, profile=profile)
+                result = run_worker_shell(worker, script)
+            except Exception as exc:
+                result = subprocess.CompletedProcess(["prepare", host], 1, stdout="", stderr=str(exc))
+        with lock:
+            results.append((index, host, profile, result))
+
+    threads = [
+        threading.Thread(target=run_worker, args=(index, worker), daemon=False)
+        for index, worker in enumerate(workers)
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    failed = 0
+    for _, host, profile, result in sorted(results, key=lambda item: item[0]):
+        label = f"{host}({profile})"
+        if result.returncode == 0:
+            print(f"{label}: ok")
+            if args.verbose and result.stdout.strip():
+                print(result.stdout.strip())
+        else:
+            failed += 1
+            print(f"{label}: failed rc={result.returncode}", file=sys.stderr)
+            if result.stdout.strip():
+                print(result.stdout.strip(), file=sys.stderr)
+            if result.stderr.strip():
+                print(result.stderr.strip(), file=sys.stderr)
+    return 1 if failed else 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--version", action="store_true", help="Print distrib version and exit.")
@@ -1561,6 +1731,13 @@ def build_parser() -> argparse.ArgumentParser:
     version = sub.add_parser("version", help="Print distrib version.")
     version.add_argument("--json", action="store_true")
     version.set_defaults(func=cmd_version)
+
+    prepare = sub.add_parser("prepare", help="Run sync-repos and doctor for workers from workers.json.")
+    prepare.add_argument("manifest")
+    prepare.add_argument("--workers", default="workers.json")
+    prepare.add_argument("--jobs", type=int, default=4)
+    prepare.add_argument("--verbose", action="store_true")
+    prepare.set_defaults(func=cmd_prepare)
 
     return parser
 

@@ -126,12 +126,37 @@ Example: ensure Enyo is checked out at a specific commit, built, and deployed as
 the candidate engine:
 
 ```sh
-distrib sync-repos --manifest examples/enyo-candidate-deploy.manifest.json --profile pwa-5090
-distrib doctor --manifest examples/enyo-candidate-deploy.manifest.json --profile pwa-5090 --role worker
+distrib prepare examples/enyo-candidate-deploy.manifest.json
 ```
 
-Run the same two commands on each worker profile. The manifest has no work
-shards; it is an all-worker setup/preflight manifest.
+`prepare` reads `workers.json` on the coordinator, copies the current
+`distrib` runner and manifest to each worker cache, then runs `sync-repos` and
+`doctor` there. Workers need Python, Git, SSH/rsync access, and the project
+toolchain, but they do not need `distrib` installed.
+
+Example `workers.json`:
+
+```json
+{
+  "schema": "distribute.workers.v1",
+  "workers": [
+    "pwa-5090",
+    "pwa-rce",
+    {
+      "host": "pwa-win",
+      "profile": "pwa-wsl"
+    },
+    {
+      "host": "localhost",
+      "local": true
+    }
+  ]
+}
+```
+
+Use `--workers path/to/workers.json` for a different worker list.
+
+The manifest has no work shards; it is an all-worker setup/preflight manifest.
 
 ## Concepts
 

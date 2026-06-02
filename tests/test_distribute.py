@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 
@@ -815,6 +816,69 @@ class DistributeTests(unittest.TestCase):
         command = distribute.remote_distrib_command(["status", "--manifest", "/tmp/run manifest.json"])
 
         self.assertEqual("exec distrib status --manifest '/tmp/run manifest.json'", command)
+
+    def test_load_workers_reads_workers_json(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workers_path = Path(tmp) / "workers.json"
+            workers_path.write_text(
+                json.dumps({
+                    "schema": "distribute.workers.v1",
+                    "workers": [
+                        "pwa-5090",
+                        {"host": "pwa-win", "profile": "pwa-wsl"},
+                        {"host": "localhost", "local": True},
+                        {"host": "disabled", "enabled": False},
+                    ],
+                }),
+                encoding="utf-8",
+            )
+
+            workers = distribute.load_workers(workers_path)
+
+            self.assertEqual(
+                [
+                    {"host": "pwa-5090", "profile": "pwa-5090", "local": False},
+                    {"host": "pwa-win", "profile": "pwa-wsl", "local": False},
+                    {"host": "localhost", "profile": "localhost", "local": True},
+                ],
+                workers,
+            )
+
+    def test_prepare_uses_workers_json(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workers_path = Path(tmp) / "workers.json"
+            workers_path.write_text(
+                json.dumps({
+                    "schema": "distribute.workers.v1",
+                    "workers": [
+                        "pwa-5090",
+                        {"host": "localhost", "local": True, "cache_dir": str(Path(tmp) / "cache")},
+                    ],
+                }),
+                encoding="utf-8",
+            )
+            commands = []
+
+            def fake_run(command, **kwargs):
+                commands.append(command)
+                return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+            with mock.patch("distribute.subprocess.run", fake_run):
+                stdout = io.StringIO()
+                with contextlib.redirect_stdout(stdout):
+                    rc = distribute.cmd_prepare(
+                        argparse.Namespace(
+                            manifest="examples/enyo-candidate-deploy.manifest.json",
+                            workers=str(workers_path),
+                            jobs=1,
+                            verbose=False,
+                        )
+                    )
+
+            self.assertEqual(0, rc)
+            self.assertIn(["ssh", "pwa-5090", "mkdir -p .cache/distrib"], commands)
+            self.assertIn(["sh", "-lc", "mkdir -p " + str(Path(tmp) / "cache")], commands)
+            self.assertTrue(any(command[:2] == ["rsync", "-a"] for command in commands))
 
 
 if __name__ == "__main__":
