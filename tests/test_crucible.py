@@ -54,7 +54,8 @@ class CrucibleTests(unittest.TestCase):
             subprocess.run(["git", "add", "input.txt"], cwd=root, check=True)
             subprocess.run(["git", "commit", "-m", "test"], cwd=root, check=True, stdout=subprocess.DEVNULL)
 
-            manifest = root / "manifest.json"
+            run_dir = root / "runs" / "test"
+            manifest = run_dir / "manifest.json"
             out_template = str(root / "out" / "shard.{index}.txt")
             result = self.run_cli(
                 "plan",
@@ -76,14 +77,13 @@ class CrucibleTests(unittest.TestCase):
                 self.assertEqual("", run.stderr)
                 self.assertEqual(0, run.returncode)
 
-            status = self.run_cli("status", "--manifest", str(manifest))
+            status = self.run_cli("status", str(run_dir))
             self.assertEqual(0, status.returncode)
             self.assertIn("done=3", status.stdout)
 
             merged = root / "merged.txt"
             merge = self.run_cli(
-                "merge",
-                "--manifest", str(manifest),
+                "merge", str(run_dir),
                 "--output", str(merged),
                 "--newline-between",
             )
@@ -337,11 +337,11 @@ class CrucibleTests(unittest.TestCase):
             self.assertEqual("", work.stderr)
             self.assertEqual(0, work.returncode)
 
-            status = self.run_cli("status", "--manifest", str(manifest))
+            status = self.run_cli("status", str(coordinator))
             self.assertEqual(0, status.returncode)
             self.assertIn("done=2", status.stdout)
 
-            verify = self.run_cli("verify", "--manifest", str(manifest))
+            verify = self.run_cli("verify", str(coordinator))
             self.assertEqual("", verify.stderr)
             self.assertEqual(0, verify.returncode)
             self.assertEqual("0\n", (coordinator / "out" / "shard.0.txt").read_text(encoding="utf-8"))
@@ -438,7 +438,7 @@ class CrucibleTests(unittest.TestCase):
             self.assertEqual(0, second.returncode)
             self.assertIsNone(json.loads(second.stdout)["task"])
 
-            status = self.run_cli("status", "--manifest", str(manifest))
+            status = self.run_cli("status", str(root))
             self.assertEqual(0, status.returncode)
             self.assertIn("claimed=1", status.stdout)
 
@@ -478,7 +478,7 @@ class CrucibleTests(unittest.TestCase):
                 "--claim-id", "not-the-claim",
             )
             self.assertNotEqual(0, wrong_release.returncode)
-            status = self.run_cli("status", "--manifest", str(manifest))
+            status = self.run_cli("status", str(root))
             self.assertIn("claimed=1", status.stdout)
 
             release = self.run_cli(
@@ -489,7 +489,7 @@ class CrucibleTests(unittest.TestCase):
                 "--claim-id", claim_id,
             )
             self.assertEqual(0, release.returncode)
-            status = self.run_cli("status", "--manifest", str(manifest))
+            status = self.run_cli("status", str(root))
             self.assertIn("pending=1", status.stdout)
 
     def test_verify_rejects_done_task_without_outputs(self) -> None:
@@ -530,7 +530,7 @@ class CrucibleTests(unittest.TestCase):
 
             run = self.run_cli("run", "--manifest", str(manifest_path), "--index", "0")
             self.assertEqual(0, run.returncode)
-            verify = self.run_cli("verify", "--manifest", str(manifest_path))
+            verify = self.run_cli("verify", str(root))
             self.assertNotEqual(0, verify.returncode)
             self.assertIn("no outputs declared", verify.stderr)
 
@@ -593,7 +593,7 @@ class CrucibleTests(unittest.TestCase):
             self.assertNotEqual(0, work.returncode)
             self.assertIn("sync failed", work.stderr)
 
-            status = self.run_cli("status", "--manifest", str(manifest_path))
+            status = self.run_cli("status", str(coordinator))
             self.assertEqual(0, status.returncode)
             self.assertIn("claimed=0", status.stdout)
             self.assertIn("pending=1", status.stdout)
@@ -690,7 +690,7 @@ class CrucibleTests(unittest.TestCase):
             }
             (state_dir / "task_2.fail.json").write_text(json.dumps(fail_payload))
 
-            compact = self.run_cli("status", "--manifest", str(manifest_path))
+            compact = self.run_cli("status", str(root))
             self.assertEqual(1, compact.returncode)
             self.assertIn(
                 "tasks: 4  done=1 active=1 running=1 claimed=0 pending=1 fail=1 stale=0",
@@ -701,7 +701,7 @@ class CrucibleTests(unittest.TestCase):
             self.assertIn("host-fail [1]: 2", compact.stdout)
             self.assertIn("pending:\n  3", compact.stdout)
 
-            result = self.run_cli("status", "--manifest", str(manifest_path), "--verbose")
+            result = self.run_cli("status", str(root), "--verbose")
             self.assertEqual(1, result.returncode)
             self.assertIn("host-done [1]: 0", result.stdout)
             self.assertIn("task_0\tdone\thost-done", result.stdout)
@@ -709,11 +709,11 @@ class CrucibleTests(unittest.TestCase):
             self.assertIn("task_2\tfail\thost-fail", result.stdout)
             self.assertIn("task_3\tpending\t", result.stdout)
 
-            show_done = self.run_cli("status", "--manifest", str(manifest_path), "--show-done")
+            show_done = self.run_cli("status", str(root), "--show-done")
             self.assertEqual(1, show_done.returncode)
             self.assertIn("host-done [1]: 0", show_done.stdout)
 
-            result_json = self.run_cli("status", "--manifest", str(manifest_path), "--json")
+            result_json = self.run_cli("status", str(root), "--json")
             self.assertEqual(1, result_json.returncode)
             payload = json.loads(result_json.stdout)
             self.assertEqual(4, payload["tasks"])
@@ -722,11 +722,12 @@ class CrucibleTests(unittest.TestCase):
             self.assertEqual([0], payload["groups"]["done"]["host-done"])
             self.assertEqual("42/1000", payload["active"][0]["progress"])
 
-    def test_status_discovers_manifests_under_directory(self) -> None:
+    def test_status_uses_runs_directory(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
+            runs = root / "runs"
             for name in ("main", "bonus"):
-                run = root / name
+                run = runs / name
                 manifest = run / "manifest.json"
                 manifest.parent.mkdir(parents=True)
                 manifest.write_text(
@@ -763,36 +764,81 @@ class CrucibleTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            status = self.run_cli("status", str(root), cwd=root)
-            self.assertEqual(0, status.returncode)
-            self.assertIn("== main/manifest.json ==", status.stdout)
-            self.assertIn("== bonus/manifest.json ==", status.stdout)
-            self.assertNotIn("setup.manifest.json", status.stdout)
-            self.assertNotIn("nnue-selfplay.manifest.json", status.stdout)
-            self.assertEqual(2, status.stdout.count("tasks: 1"))
+            with mock.patch("crucible.runs_dir", return_value=runs):
+                stdout = io.StringIO()
+                with contextlib.redirect_stdout(stdout):
+                    rc = crucible.cmd_status(
+                        argparse.Namespace(
+                            run=None,
+                            json=False,
+                            no_color=True,
+                            lease_seconds=600,
+                            show_done=False,
+                            verbose=False,
+                        )
+                    )
+                self.assertEqual(0, rc)
+                status_text = stdout.getvalue()
+                self.assertIn("main", status_text)
+                self.assertIn("bonus", status_text)
+                self.assertNotIn("setup", status_text)
+                self.assertNotIn("nnue-selfplay", status_text)
 
-            default_status = self.run_cli("status", cwd=root)
-            self.assertEqual(1, default_status.returncode)
-            self.assertIn("no Crucible manifests found", default_status.stderr)
+                one_run = self.run_cli("status", str(runs / "main"), cwd=root)
+                self.assertEqual(0, one_run.returncode)
+                self.assertIn("tasks: 1", one_run.stdout)
 
-            status_all = self.run_cli("status", str(root), "--all", cwd=root)
-            self.assertEqual(0, status_all.returncode)
-            self.assertIn("== examples/setup.manifest.json ==", status_all.stdout)
-            self.assertIn("== examples/nnue-selfplay.manifest.json ==", status_all.stdout)
-            self.assertEqual(1, status_all.stdout.count("tasks: 0"))
+    def test_stop_prevents_new_claims(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            runs = root / "runs"
+            run_dir = runs / "active"
+            run_dir.mkdir(parents=True)
+            manifest = {
+                "schema": "crucible.task.v1",
+                "name": "active",
+                "work_dir": str(root),
+                "state_dir": str(run_dir / "state"),
+                "log_dir": str(run_dir / "logs"),
+                "claim_dir": str(run_dir / "claims"),
+                "tasks": [{"id": "task_0", "index": 0, "command": "true", "outputs": [str(run_dir / "outputs/out.txt")]}],
+            }
+            (run_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
 
-            explicit = self.run_cli("status", "--manifest", str(setup_manifest), cwd=root)
-            self.assertEqual(0, explicit.returncode)
-            self.assertIn("tasks: 0", explicit.stdout)
+            with mock.patch("crucible.runs_dir", return_value=runs):
+                stop = crucible.cmd_stop(argparse.Namespace(run="active", all=False, lease_seconds=600))
+                self.assertEqual(0, stop)
+                result = crucible.claim_task(
+                    crucible.load_manifest(run_dir / "manifest.json"),
+                    worker="worker",
+                    profile=None,
+                    lease_seconds=600,
+                    retry_failed=False,
+                )
+                self.assertIsNone(result)
 
-            explicit_example = self.run_cli("status", "--manifest", str(example_task_manifest), cwd=root)
-            self.assertEqual(0, explicit_example.returncode)
-            self.assertIn("tasks: 1", explicit_example.stdout)
+    def test_delete_done_runs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            runs = root / "runs"
+            run_dir = runs / "finished"
+            run_dir.mkdir(parents=True)
+            manifest = {
+                "schema": "crucible.task.v1",
+                "name": "finished",
+                "work_dir": str(root),
+                "state_dir": str(run_dir / "state"),
+                "log_dir": str(run_dir / "logs"),
+                "claim_dir": str(run_dir / "claims"),
+                "tasks": [],
+            }
+            (run_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
 
-            status_json = self.run_cli("status", str(root), "--json", cwd=root)
-            self.assertEqual(0, status_json.returncode)
-            payload = json.loads(status_json.stdout)
-            self.assertEqual(2, len(payload["manifests"]))
+            with mock.patch("crucible.runs_dir", return_value=runs):
+                rc = crucible.cmd_del(argparse.Namespace(run=None, done=True, force=True, lease_seconds=600))
+
+            self.assertEqual(0, rc)
+            self.assertFalse(run_dir.exists())
 
     def test_multi_repo_and_command_requirements(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1015,7 +1061,7 @@ class CrucibleTests(unittest.TestCase):
             self.assertNotEqual(0, work.returncode)
             self.assertIn("project: git commit", work.stderr)
 
-            status = self.run_cli("status", "--manifest", str(manifest_path))
+            status = self.run_cli("status", str(coordinator))
             self.assertEqual(0, status.returncode)
             self.assertIn("claimed=0", status.stdout)
             self.assertIn("pending=1", status.stdout)
@@ -1087,10 +1133,10 @@ class CrucibleTests(unittest.TestCase):
             self.assertEqual(expected, head)
 
     def test_remote_crucible_command_uses_path(self) -> None:
-        command = crucible.remote_crucible_command(["status", "--manifest", "/tmp/run manifest.json"])
+        command = crucible.remote_crucible_command(["status", "run name"])
 
         self.assertIn("command -v crucible", command)
-        self.assertIn("exec crucible status --manifest '/tmp/run manifest.json'", command)
+        self.assertIn("exec crucible status 'run name'", command)
 
     def test_check_coordinator_cli_fails_early(self) -> None:
         result = subprocess.CompletedProcess(["ssh"], 127, stdout="", stderr="crucible not found")
@@ -1214,6 +1260,73 @@ class CrucibleTests(unittest.TestCase):
         self.assertIn("/opt/homebrew/bin/python3 .cache/crucible/crucible.py doctor", prereq)
         self.assertIn("/opt/homebrew/bin/python3 .cache/crucible/crucible.py work", work)
 
+    def test_deploy_materializes_contained_run(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            runs = root / "runs"
+            template = root / "template.manifest.json"
+            template.write_text(
+                json.dumps({
+                    "schema": "crucible.task.v1",
+                    "name": "template",
+                    "work_dir": str(root),
+                    "requirements": {"python_min": "3.11", "git_min": "2.38"},
+                    "tasks": [{
+                        "id": "task_0000",
+                        "index": 0,
+                        "command": "printf x > {output}",
+                        "outputs": ["{output_dir}/out.txt"],
+                    }],
+                }),
+                encoding="utf-8",
+            )
+            workers = root / "workers.json"
+            workers.write_text(
+                json.dumps({
+                    "schema": "crucible.workers.v1",
+                    "workers": [{"host": "localhost", "local": True, "cache_dir": str(root / "cache")}],
+                }),
+                encoding="utf-8",
+            )
+
+            args = argparse.Namespace(
+                manifest=str(template),
+                workers=str(workers),
+                jobs=1,
+                run="contained",
+                resume=False,
+                replace=False,
+                remote_timeout_seconds=1800.0,
+                no_color=True,
+                verbose=False,
+            )
+            with (
+                mock.patch("crucible.runs_dir", return_value=runs),
+                mock.patch("crucible.ProcessTracker.run", return_value=subprocess.CompletedProcess(["sh"], 0, stdout="", stderr="")),
+            ):
+                stdout = io.StringIO()
+                with contextlib.redirect_stdout(stdout):
+                    rc = crucible.cmd_deploy(args)
+                self.assertEqual(0, rc)
+
+                run_dir = runs / "contained"
+                materialized = crucible.load_manifest(run_dir / "manifest.json")
+                self.assertTrue((run_dir / "workers.json").exists())
+                self.assertTrue((run_dir / "state").is_dir())
+                self.assertTrue((run_dir / "logs").is_dir())
+                self.assertTrue((run_dir / "claims").is_dir())
+                self.assertTrue((run_dir / "outputs").is_dir())
+                self.assertEqual(str(run_dir / "state"), materialized["state_dir"])
+                self.assertEqual(str(run_dir / "logs"), materialized["log_dir"])
+                self.assertEqual(str(run_dir / "claims"), materialized["claim_dir"])
+                self.assertEqual(str(run_dir), materialized["vars"]["run_dir"])
+                self.assertEqual(str(run_dir / "outputs"), materialized["vars"]["output_dir"])
+                self.assertEqual([str(run_dir / "outputs" / "out.txt")], materialized["tasks"][0]["outputs"])
+
+                with self.assertRaises(SystemExit) as raised:
+                    crucible.cmd_deploy(args)
+                self.assertIn("run already exists", str(raised.exception))
+
     def test_example_manifests_parse_and_format_tasks(self) -> None:
         for path in sorted((ROOT / "examples").glob("*.manifest.json")):
             with self.subTest(path=path.name):
@@ -1260,6 +1373,9 @@ class CrucibleTests(unittest.TestCase):
                             manifest=str(ROOT / "examples/enyo-candidate-deploy.manifest.json"),
                             workers=str(workers_path),
                             jobs=1,
+                            run="enyo-candidate-deploy-test",
+                            resume=False,
+                            replace=True,
                             remote_timeout_seconds=1800.0,
                             no_color=True,
                             verbose=False,
@@ -1268,7 +1384,7 @@ class CrucibleTests(unittest.TestCase):
 
             self.assertEqual(0, rc)
             deploy_output = stdout.getvalue()
-            self.assertIn("deploy: 2 worker(s), jobs=1", deploy_output)
+            self.assertIn("deploy: run=enyo-candidate-deploy-test workers=2 jobs=1", deploy_output)
             self.assertIn("  OK     pwa-5090: setup", deploy_output)
             self.assertIn("  OK     localhost: setup", deploy_output)
             self.assertNotIn("syncing runner", deploy_output)
@@ -1320,6 +1436,9 @@ class CrucibleTests(unittest.TestCase):
                             manifest=str(manifest),
                             workers=str(workers_path),
                             jobs=1,
+                            run="deploy-verbose-test",
+                            resume=False,
+                            replace=True,
                             remote_timeout_seconds=1800.0,
                             no_color=True,
                             verbose=True,
@@ -1382,6 +1501,9 @@ class CrucibleTests(unittest.TestCase):
                             manifest=str(manifest),
                             workers=str(workers_path),
                             jobs=1,
+                            run="deploy-input-sync-test",
+                            resume=False,
+                            replace=True,
                             remote_timeout_seconds=1800.0,
                             no_color=True,
                             verbose=True,
@@ -1435,6 +1557,9 @@ class CrucibleTests(unittest.TestCase):
                             manifest=str(manifest),
                             workers=str(workers_path),
                             jobs=1,
+                            run="deploy-profile-test",
+                            resume=False,
+                            replace=True,
                             remote_timeout_seconds=1800.0,
                             no_color=True,
                             verbose=False,
@@ -1489,6 +1614,9 @@ class CrucibleTests(unittest.TestCase):
                             manifest=str(manifest),
                             workers=str(workers_path),
                             jobs=2,
+                            run="deploy-slots-test",
+                            resume=False,
+                            replace=True,
                             remote_timeout_seconds=1800.0,
                             no_color=True,
                             verbose=False,
@@ -1497,7 +1625,7 @@ class CrucibleTests(unittest.TestCase):
 
             self.assertEqual(0, rc)
             output = stdout.getvalue()
-            self.assertIn("deploy: 2 worker(s), jobs=2", output)
+            self.assertIn("deploy: run=deploy-slots-test workers=2 jobs=2", output)
             self.assertIn("  OK     localhost#1: tasks", output)
             self.assertIn("  OK     localhost#2: tasks", output)
             work_scripts = [command[-1] for command in commands if command[0] == "sh" and " work " in command[-1]]
@@ -1564,6 +1692,9 @@ class CrucibleTests(unittest.TestCase):
                             manifest=str(manifest),
                             workers=str(workers_path),
                             jobs=2,
+                            run="deploy-pipeline-test",
+                            resume=False,
+                            replace=True,
                             remote_timeout_seconds=1800.0,
                             no_color=True,
                             verbose=False,
@@ -1612,6 +1743,9 @@ class CrucibleTests(unittest.TestCase):
                             manifest=str(manifest),
                             workers=str(workers_path),
                             jobs=1,
+                            run="deploy-fail-test",
+                            resume=False,
+                            replace=True,
                             remote_timeout_seconds=1800.0,
                             no_color=True,
                             verbose=False,
@@ -1660,6 +1794,9 @@ class CrucibleTests(unittest.TestCase):
                             manifest=str(manifest),
                             workers=str(workers_path),
                             jobs=1,
+                            run="deploy-interrupt-test",
+                            resume=False,
+                            replace=True,
                             remote_timeout_seconds=1800.0,
                             no_color=True,
                             verbose=False,

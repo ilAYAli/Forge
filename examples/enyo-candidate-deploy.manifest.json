@@ -2,9 +2,6 @@
   "schema": "crucible.task.v1",
   "name": "enyo-candidate-deploy",
   "work_dir": "~/code/cpp/chess/enyo",
-  "state_dir": "~/code/cpp/chess/crucible-runs/enyo-candidate-deploy/state",
-  "log_dir": "~/code/cpp/chess/crucible-runs/enyo-candidate-deploy/logs",
-  "claim_dir": "~/code/cpp/chess/crucible-runs/enyo-candidate-deploy/claims",
   "path_maps": {},
   "requirements": {
     "python_min": "3.11",

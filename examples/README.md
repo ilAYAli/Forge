@@ -8,7 +8,7 @@ before use.
 Sync and verify common chess tooling on all workers:
 
 ```sh
-crucible deploy examples/workers.json examples/tooling-update.manifest.json
+crucible deploy examples/workers.json examples/tooling-update.manifest.json --run tooling-update
 ```
 
 This is setup-only. It updates Crucible, NNUE, and Enyo checkouts, builds Enyo,
@@ -20,8 +20,8 @@ the candidate engine.
 Run self-play shards:
 
 ```sh
-crucible deploy examples/workers.json examples/nnue-selfplay.manifest.json
-crucible status examples/nnue-selfplay.manifest.json
+crucible deploy examples/workers.json examples/nnue-selfplay.manifest.json --run nnue-selfplay
+crucible status nnue-selfplay
 ```
 
 Use workers with few slots for this. Each self-play shard already runs several
@@ -32,11 +32,11 @@ engine games concurrently.
 Label a sampled source JSONL:
 
 ```sh
-crucible deploy examples/workers.json examples/nnue-label-stockfish.manifest.json
-crucible status examples/nnue-label-stockfish.manifest.json
+crucible deploy examples/workers.json examples/nnue-label-stockfish.manifest.json --run nnue-label-stockfish
+crucible status nnue-label-stockfish
 crucible merge \
-  --manifest examples/nnue-label-stockfish.manifest.json \
-  --output ~/code/cpp/chess/crucible-runs/nnue-label-stockfish/labeled.jsonl
+  nnue-label-stockfish \
+  --output runs/nnue-label-stockfish/outputs/labeled.jsonl
 ```
 
 Use worker `slots` for labeling. Each shard owns one Stockfish process, so

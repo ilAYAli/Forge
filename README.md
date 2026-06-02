@@ -19,14 +19,15 @@ crucible --help >/dev/null
 Deploy prerequisites to all workers, then run tasks if the manifest has any:
 
 ```sh
-crucible deploy workers.json manifest.json
+crucible deploy workers.json manifest.json --run my-run
 ```
 
-`deploy` copies the current runner, manifest, and declared input files to each
-worker, runs repository sync/build/install/probe requirements, runs `doctor`,
-then starts worker loops for task shards. Workers need Python, Git, SSH/rsync,
-and the toolchain required by the manifest. Workers do not need `crucible`
-installed.
+`deploy` creates `runs/<run>/`, writes the materialized `manifest.json` and
+`workers.json` there, copies the current runner and declared input files to
+each worker, runs repository sync/build/install/probe requirements, runs
+`doctor`, then starts worker loops for task shards. Workers need Python, Git,
+SSH/rsync, and the toolchain required by the manifest. Workers do not need
+`crucible` installed.
 Default output is an ordered per-worker summary. Use `--verbose` for live phase
 details. TTY output is colored by default; use `--no-color` to disable it.
 
@@ -119,25 +120,25 @@ crucible plan \
   --output-template '~/work/project/out/shard.{index}.txt'
 ```
 
-Useful commands:
+Useful run commands:
 
 ```sh
 crucible status
-crucible status ~/runs/my-run
-crucible status --manifest run.manifest.json
-crucible status --manifest run.manifest.json --verbose
-crucible status --manifest run.manifest.json --show-done
-crucible status --manifest run.manifest.json --json
-crucible verify --manifest run.manifest.json
-crucible merge --manifest run.manifest.json --output merged.txt
+crucible status my-run
+crucible list
+crucible list --current
+crucible list --done
+crucible verify my-run
+crucible merge my-run --output merged.txt
+crucible stop my-run
+crucible del my-run
 ```
 
-`status` checks the current directory by default. Pass a run directory to scan
-that run recursively, or use `--manifest` for one explicit manifest. Template
-manifests under `examples/` are hidden unless `--all` is passed. The default
-view shows counts, active shards, failed/stale shards, and compressed pending
-ranges. Use `--show-done` for completed shard breakdowns by worker, or
-`--verbose` for the full task table.
+`status` without a run name summarizes `runs/`. `status <run>` shows detailed
+task state for one run. Template manifests under `examples/` are deploy inputs,
+not runnable jobs. The default view shows counts, active shards, failed/stale
+shards, and compressed pending ranges. Use `--show-done` for completed shard
+breakdowns by worker, or `--verbose` for the full task table.
 
 Lower-level commands remain available for diagnostics: `sync-repos`, `doctor`,
 `work`, `claim`, `release`, `heartbeat`, and `run`.
@@ -147,8 +148,8 @@ Lower-level commands remain available for diagnostics: `sync-repos`, `doctor`,
 Edit the commit SHA and paths first, then run:
 
 ```sh
-crucible deploy examples/workers.json examples/nnue-selfplay.manifest.json
-crucible deploy examples/workers.json examples/nnue-label-stockfish.manifest.json
+crucible deploy examples/workers.json examples/nnue-selfplay.manifest.json --run nnue-selfplay-test
+crucible deploy examples/workers.json examples/nnue-label-stockfish.manifest.json --run nnue-label-test
 ```
 
 Use `examples/workers-linux.json` when the coordinator cannot directly enter
@@ -158,8 +159,8 @@ Merge labeled shards:
 
 ```sh
 crucible merge \
-  --manifest examples/nnue-label-stockfish.manifest.json \
-  --output ~/code/cpp/chess/crucible-runs/nnue-label-stockfish/labeled.jsonl
+  nnue-label-test \
+  --output runs/nnue-label-test/outputs/labeled.jsonl
 ```
 
 ## Failure Model

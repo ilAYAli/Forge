@@ -2,9 +2,6 @@
   "schema": "crucible.task.v1",
   "name": "nnue-selfplay",
   "work_dir": "~/code/cpp/chess/nnue",
-  "state_dir": "~/code/cpp/chess/crucible-runs/nnue-selfplay/state",
-  "log_dir": "~/code/cpp/chess/crucible-runs/nnue-selfplay/logs",
-  "claim_dir": "~/code/cpp/chess/crucible-runs/nnue-selfplay/claims",
   "requirements": {
     "python_min": "3.11",
     "git_min": "2.38",
@@ -51,7 +48,7 @@
       "index": 0,
       "command": "python3 tools/posgen/selfplay_shards.py generate --runner fastchess --engine {engine} --book {book} --output-pgn {output} --total-games {total_games} --shards {shards} --shard-index {index} --concurrency {concurrency} --threads {threads} --depth {depth} --base-seed {seed} --restart off --nnue-file {nnue_file} --engine-option Hash={hash}",
       "outputs": [
-        "~/code/cpp/chess/crucible-runs/nnue-selfplay/pgn/selfplay.0000.pgn"
+        "{output_dir}/pgn/selfplay.0000.pgn"
       ]
     },
     {
@@ -59,7 +56,7 @@
       "index": 1,
       "command": "python3 tools/posgen/selfplay_shards.py generate --runner fastchess --engine {engine} --book {book} --output-pgn {output} --total-games {total_games} --shards {shards} --shard-index {index} --concurrency {concurrency} --threads {threads} --depth {depth} --base-seed {seed} --restart off --nnue-file {nnue_file} --engine-option Hash={hash}",
       "outputs": [
-        "~/code/cpp/chess/crucible-runs/nnue-selfplay/pgn/selfplay.0001.pgn"
+        "{output_dir}/pgn/selfplay.0001.pgn"
       ]
     },
     {
@@ -67,7 +64,7 @@
       "index": 2,
       "command": "python3 tools/posgen/selfplay_shards.py generate --runner fastchess --engine {engine} --book {book} --output-pgn {output} --total-games {total_games} --shards {shards} --shard-index {index} --concurrency {concurrency} --threads {threads} --depth {depth} --base-seed {seed} --restart off --nnue-file {nnue_file} --engine-option Hash={hash}",
       "outputs": [
-        "~/code/cpp/chess/crucible-runs/nnue-selfplay/pgn/selfplay.0002.pgn"
+        "{output_dir}/pgn/selfplay.0002.pgn"
       ]
     },
     {
@@ -75,7 +72,7 @@
       "index": 3,
       "command": "python3 tools/posgen/selfplay_shards.py generate --runner fastchess --engine {engine} --book {book} --output-pgn {output} --total-games {total_games} --shards {shards} --shard-index {index} --concurrency {concurrency} --threads {threads} --depth {depth} --base-seed {seed} --restart off --nnue-file {nnue_file} --engine-option Hash={hash}",
       "outputs": [
-        "~/code/cpp/chess/crucible-runs/nnue-selfplay/pgn/selfplay.0003.pgn"
+        "{output_dir}/pgn/selfplay.0003.pgn"
       ]
     }
   ]

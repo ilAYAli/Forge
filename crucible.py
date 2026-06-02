@@ -24,6 +24,10 @@ from typing import Any
 
 
 SCHEMA = "crucible.task.v1"
+RUNS_DIR_NAME = "runs"
+RUN_MANIFEST_NAME = "manifest.json"
+RUN_WORKERS_NAME = "workers.json"
+RUN_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 SSH_CONNECT_TIMEOUT_SECONDS = 15
 SSH_SERVER_ALIVE_INTERVAL_SECONDS = 30
 SSH_SERVER_ALIVE_COUNT_MAX = 3
@@ -63,6 +67,38 @@ def expand_path(value: str | Path) -> Path:
     if path.is_absolute():
         return path
     return Path.cwd() / path
+
+
+def runs_dir() -> Path:
+    return script_repo() / RUNS_DIR_NAME
+
+
+def validate_run_name(name: str) -> str:
+    run_name = name.strip()
+    if not RUN_NAME_RE.fullmatch(run_name):
+        raise SystemExit(
+            f"{name!r}: invalid run name; use letters, numbers, dot, underscore, or dash"
+        )
+    return run_name
+
+
+def run_dir_for_name(name: str) -> Path:
+    return runs_dir() / validate_run_name(name)
+
+
+def run_dir_from_arg(value: str | Path) -> Path:
+    raw = str(value)
+    path = Path(raw)
+    if not path.is_absolute() and len(path.parts) == 1:
+        return run_dir_for_name(raw)
+    if not path.is_absolute() and path.parts and path.parts[0] == RUNS_DIR_NAME:
+        return script_repo() / path
+    return expand_path(raw)
+
+
+def run_manifest_path(run: str | Path) -> Path:
+    path = run_dir_from_arg(run)
+    return path / RUN_MANIFEST_NAME
 
 
 def now() -> str:
@@ -386,35 +422,81 @@ def print_version_payload(payload: dict[str, Any], *, as_json: bool) -> None:
     print(f"crucible {payload['commit']} {payload['branch']}{suffix}")
 
 
-def load_manifest(path: Path) -> dict[str, Any]:
-    manifest = read_json(path)
+def validate_manifest_payload(manifest: dict[str, Any], *, label: str) -> None:
     if manifest.get("schema") != SCHEMA:
-        raise SystemExit(f"{path}: unsupported schema {manifest.get('schema')!r}")
+        raise SystemExit(f"{label}: unsupported schema {manifest.get('schema')!r}")
     tasks = manifest.get("tasks")
     if not isinstance(tasks, list):
-        raise SystemExit(f"{path}: tasks must be a list")
+        raise SystemExit(f"{label}: tasks must be a list")
     seen: set[str] = set()
     seen_outputs: dict[str, str] = {}
     for task in tasks:
         if not isinstance(task, dict):
-            raise SystemExit(f"{path}: each task must be an object")
+            raise SystemExit(f"{label}: each task must be an object")
         task_id = str(task.get("id", ""))
         if not task_id:
-            raise SystemExit(f"{path}: task is missing id")
+            raise SystemExit(f"{label}: task is missing id")
         if task_id in seen:
-            raise SystemExit(f"{path}: duplicate task id {task_id}")
+            raise SystemExit(f"{label}: duplicate task id {task_id}")
         seen.add(task_id)
         outputs = task.get("outputs", [])
         if not isinstance(outputs, list):
-            raise SystemExit(f"{path}: {task_id}: outputs must be a list")
+            raise SystemExit(f"{label}: {task_id}: outputs must be a list")
         for output in outputs:
             output_key = str(output)
             other_task = seen_outputs.get(output_key)
             if other_task is not None:
                 raise SystemExit(
-                    f"{path}: duplicate output path {output_key!r} in "
+                    f"{label}: duplicate output path {output_key!r} in "
                     f"{other_task} and {task_id}")
             seen_outputs[output_key] = task_id
+
+
+def load_manifest(path: Path) -> dict[str, Any]:
+    manifest = read_json(path)
+    validate_manifest_payload(manifest, label=str(path))
+    return manifest
+
+
+def task_template_values(manifest: dict[str, Any], task: dict[str, Any]) -> dict[str, Any]:
+    vars_obj = manifest.get("vars", {})
+    if not isinstance(vars_obj, dict):
+        raise SystemExit("vars must be an object")
+    values: dict[str, Any] = {
+        "task_id": task["id"],
+        "index": task.get("index", ""),
+        "shards": len(manifest["tasks"]),
+    }
+    values.update({str(k): v for k, v in vars_obj.items()})
+    values.update({str(k): v for k, v in task.items() if k not in {"command", "outputs"}})
+    return values
+
+
+def materialize_manifest(template: dict[str, Any], *, run_name: str, run_dir: Path) -> dict[str, Any]:
+    manifest = copy.deepcopy(template)
+    manifest["name"] = run_name
+    manifest["state_dir"] = str(run_dir / "state")
+    manifest["log_dir"] = str(run_dir / "logs")
+    manifest["claim_dir"] = str(run_dir / "claims")
+    vars_obj = manifest.get("vars", {})
+    if vars_obj in (None, ""):
+        vars_obj = {}
+    if not isinstance(vars_obj, dict):
+        raise SystemExit("vars must be an object")
+    vars_obj = dict(vars_obj)
+    vars_obj["run_dir"] = str(run_dir)
+    vars_obj["output_dir"] = str(run_dir / "outputs")
+    manifest["vars"] = vars_obj
+    for task in manifest["tasks"]:
+        outputs = task.get("outputs", [])
+        if not isinstance(outputs, list):
+            raise SystemExit(f"{task['id']}: outputs must be a list")
+        values = task_template_values(manifest, task)
+        task["outputs"] = [
+            str(expand_path(str(output).format(**values)))
+            for output in outputs
+        ]
+    validate_manifest_payload(manifest, label=f"run {run_name}")
     return manifest
 
 
@@ -646,6 +728,14 @@ def task_log_path(manifest: dict[str, Any], task: dict[str, Any]) -> Path:
     return log_dir(manifest) / f"{task['id']}.log"
 
 
+def stop_request_path(manifest: dict[str, Any]) -> Path:
+    return state_dir(manifest) / "stop.json"
+
+
+def stop_requested(manifest: dict[str, Any]) -> bool:
+    return stop_request_path(manifest).exists()
+
+
 def task_outputs(task: dict[str, Any]) -> list[Path]:
     outputs = task.get("outputs", [])
     if not isinstance(outputs, list):
@@ -654,18 +744,9 @@ def task_outputs(task: dict[str, Any]) -> list[Path]:
 
 
 def format_command(manifest: dict[str, Any], task: dict[str, Any]) -> str:
-    vars_obj = manifest.get("vars", {})
-    if not isinstance(vars_obj, dict):
-        raise SystemExit("vars must be an object")
     outputs = task_outputs(task)
-    values: dict[str, Any] = {
-        "task_id": task["id"],
-        "index": task.get("index", ""),
-        "shards": len(manifest["tasks"]),
-        "output": str(outputs[0]) if outputs else "",
-    }
-    values.update({str(k): v for k, v in vars_obj.items()})
-    values.update({str(k): v for k, v in task.items() if k not in {"command"}})
+    values = task_template_values(manifest, task)
+    values["output"] = str(outputs[0]) if outputs else ""
     command = str(task.get("command") or "")
     if not command:
         raise SystemExit(f"{task['id']}: missing command")
@@ -818,6 +899,8 @@ def claim_task(
     lease_seconds: int,
     retry_failed: bool,
 ) -> dict[str, Any] | None:
+    if stop_requested(manifest):
+        return None
     claim_dir(manifest).mkdir(parents=True, exist_ok=True)
     digest = manifest_checksum(manifest)
     for task in sorted(manifest["tasks"], key=lambda item: int(item.get("index", 0))):
@@ -1483,93 +1566,215 @@ def cmd_heartbeat(args: argparse.Namespace) -> int:
 
 
 def cmd_status(args: argparse.Namespace) -> int:
-    paths = status_manifest_paths(args)
-    summaries: list[dict[str, Any]] = []
     color_enabled = not bool(args.no_color) and sys.stdout.isatty()
-    for path in paths:
-        manifest = apply_profile(load_manifest(path), args.profile)
-        summary = status_summary(manifest, lease_seconds=args.lease_seconds)
-        summary["manifest"] = str(path)
-        summaries.append(summary)
+    if args.run is None:
+        summaries = load_run_summaries(lease_seconds=args.lease_seconds)
+        return print_run_list(
+            summaries,
+            color_enabled=color_enabled,
+            as_json=args.json,
+            filter_name=None,
+        )
 
+    manifest_path = run_manifest_path(args.run)
+    manifest = load_manifest(manifest_path)
+    summary = status_summary(manifest, lease_seconds=args.lease_seconds)
+    summary["manifest"] = str(manifest_path)
+    summary["run"] = manifest_path.parent.name
     if args.json:
-        payload: dict[str, Any] | list[dict[str, Any]]
-        payload = summaries[0] if len(summaries) == 1 else {"manifests": summaries}
-        print(json.dumps(payload, sort_keys=True))
-    else:
-        for index, summary in enumerate(summaries):
-            if len(summaries) > 1:
-                if index:
-                    print()
-                print(colorize(f"== {format_manifest_path(Path(summary['manifest']))} ==", "cyan", enabled=color_enabled))
-            print_compact_status(
-                summary,
-                color_enabled=color_enabled,
-                show_done=args.show_done or args.verbose,
-            )
-            if args.verbose:
-                for row in summary["rows"]:
-                    print(f"{row['id']}\t{row['state']}\t{row['worker']}")
-    return 0 if all(item["counts"]["fail"] == 0 for item in summaries) else 1
-
-
-def status_manifest_paths(args: argparse.Namespace) -> list[Path]:
-    if args.manifest:
-        return [expand_path(args.manifest)]
-    explicit_path = args.path is not None
-    root = expand_path(args.path or ".")
-    paths = discover_manifest_paths(
-        root,
-        include_taskless=bool(args.all),
-        include_examples=bool(args.all),
-        recursive=explicit_path or bool(args.all),
+        print(json.dumps(summary, sort_keys=True))
+        return 0 if summary["counts"]["fail"] == 0 else 1
+    print(colorize(f"== {format_manifest_path(manifest_path)} ==", "cyan", enabled=color_enabled))
+    print_compact_status(
+        summary,
+        color_enabled=color_enabled,
+        show_done=args.show_done or args.verbose,
     )
-    if not paths:
-        hint = "pass a run directory, --manifest, or --all for recursive discovery"
-        raise SystemExit(f"{root}: no Crucible manifests found; {hint}")
-    return paths
+    if args.verbose:
+        for row in summary["rows"]:
+            print(f"{row['id']}\t{row['state']}\t{row['worker']}")
+    return 0 if summary["counts"]["fail"] == 0 else 1
 
 
-def discover_manifest_paths(
-    root: Path,
-    *,
-    include_taskless: bool = True,
-    include_examples: bool = True,
-    recursive: bool = True,
-) -> list[Path]:
-    if root.is_file():
-        return [root]
+def run_manifest_paths() -> list[Path]:
+    root = runs_dir()
     if not root.exists():
-        raise SystemExit(f"{root}: no such file or directory")
-
-    paths: list[Path] = []
-    seen: set[Path] = set()
-    for pattern in ("manifest.json", "*.manifest.json"):
-        candidates = root.rglob(pattern) if recursive else root.glob(pattern)
-        for path in candidates:
-            if path in seen or ignored_manifest_path(path, root, include_examples=include_examples):
-                continue
-            seen.add(path)
-            try:
-                payload = read_json(path)
-            except SystemExit:
-                continue
-            if payload.get("schema") == SCHEMA:
-                if not include_taskless and not payload.get("tasks"):
-                    continue
-                paths.append(path)
-    return sorted(paths, key=lambda item: str(item))
+        return []
+    return sorted(
+        path / RUN_MANIFEST_NAME
+        for path in root.iterdir()
+        if path.is_dir() and (path / RUN_MANIFEST_NAME).is_file()
+    )
 
 
-def ignored_manifest_path(path: Path, root: Path, *, include_examples: bool) -> bool:
-    try:
-        parts = path.relative_to(root).parts[:-1]
-    except ValueError:
-        parts = path.parts[:-1]
-    ignored = {".git", ".cache", "__pycache__"}
-    if not include_examples:
-        ignored.add("examples")
-    return any(part in ignored for part in parts)
+def load_run_summaries(*, lease_seconds: int) -> list[dict[str, Any]]:
+    summaries = []
+    for path in run_manifest_paths():
+        manifest = load_manifest(path)
+        summary = status_summary(manifest, lease_seconds=lease_seconds)
+        summary["manifest"] = str(path)
+        summary["run"] = path.parent.name
+        summaries.append(summary)
+    return summaries
+
+
+def run_done(summary: dict[str, Any]) -> bool:
+    counts = summary["counts"]
+    return (
+        counts["done"] == summary["tasks"]
+        and counts["fail"] == 0
+        and counts["running"] == 0
+        and counts["claimed"] == 0
+        and counts["stale"] == 0
+        and counts["pending"] == 0
+    )
+
+
+def run_failed(summary: dict[str, Any]) -> bool:
+    return summary["counts"]["fail"] > 0
+
+
+def run_current(summary: dict[str, Any]) -> bool:
+    counts = summary["counts"]
+    return counts["running"] + counts["claimed"] + counts["stale"] + counts["pending"] > 0
+
+
+def run_state(summary: dict[str, Any]) -> str:
+    if run_failed(summary):
+        return "failed"
+    if run_current(summary):
+        return "current"
+    if run_done(summary):
+        return "done"
+    return "empty"
+
+
+def filtered_run_summaries(summaries: list[dict[str, Any]], filter_name: str | None) -> list[dict[str, Any]]:
+    if filter_name == "done":
+        return [item for item in summaries if run_done(item)]
+    if filter_name == "current":
+        return [item for item in summaries if run_current(item)]
+    if filter_name == "failed":
+        return [item for item in summaries if run_failed(item)]
+    return summaries
+
+
+def print_run_list(
+    summaries: list[dict[str, Any]],
+    *,
+    color_enabled: bool,
+    as_json: bool,
+    filter_name: str | None,
+) -> int:
+    filtered = filtered_run_summaries(summaries, filter_name)
+    if as_json:
+        print(json.dumps({"runs": filtered}, sort_keys=True))
+        return 0 if all(item["counts"]["fail"] == 0 for item in filtered) else 1
+    if not filtered:
+        print(f"no Crucible runs found in {runs_dir()}")
+        return 0
+    for summary in filtered:
+        counts = summary["counts"]
+        active = counts["running"] + counts["claimed"] + counts["stale"]
+        state = run_state(summary)
+        state_color = "red" if state == "failed" else "yellow" if state == "current" else "green"
+        print(
+            f"{summary['run']:<36} "
+            f"{colorize(state, state_color, enabled=color_enabled):<8} "
+            f"done={counts['done']}/{summary['tasks']} "
+            f"active={active} fail={counts['fail']} "
+            f"pending={counts['pending']} stale={counts['stale']}"
+        )
+    return 0 if all(item["counts"]["fail"] == 0 for item in filtered) else 1
+
+
+def cmd_list(args: argparse.Namespace) -> int:
+    selected = [name for name in ("done", "current", "failed") if bool(getattr(args, name))]
+    if len(selected) > 1:
+        raise SystemExit("choose only one of --done, --current, or --failed")
+    summaries = load_run_summaries(lease_seconds=args.lease_seconds)
+    return print_run_list(
+        summaries,
+        color_enabled=not bool(args.no_color) and sys.stdout.isatty(),
+        as_json=args.json,
+        filter_name=selected[0] if selected else None,
+    )
+
+
+def load_run_manifest(run: str | Path) -> tuple[Path, dict[str, Any]]:
+    path = run_manifest_path(run)
+    if not path.exists():
+        raise SystemExit(f"{run}: no Crucible run manifest found at {path}")
+    return path, load_manifest(path)
+
+
+def run_summary_for(run: str | Path, *, lease_seconds: int) -> dict[str, Any]:
+    path, manifest = load_run_manifest(run)
+    summary = status_summary(manifest, lease_seconds=lease_seconds)
+    summary["manifest"] = str(path)
+    summary["run"] = path.parent.name
+    return summary
+
+
+def cmd_stop(args: argparse.Namespace) -> int:
+    if not args.all and not args.run:
+        raise SystemExit("stop requires a run name or --all")
+    targets = (
+        [Path(item["manifest"]) for item in load_run_summaries(lease_seconds=args.lease_seconds) if run_current(item)]
+        if args.all else
+        [run_manifest_path(args.run)]
+    )
+    stopped = 0
+    for path in targets:
+        manifest = load_manifest(path)
+        payload = {
+            "schema": SCHEMA,
+            "run": path.parent.name,
+            "requested_at": now(),
+            "requested_epoch": epoch(),
+            "host": socket.gethostname(),
+        }
+        write_json(stop_request_path(manifest), payload)
+        stopped += 1
+        print(f"stop requested: {path.parent.name}")
+    if stopped == 0:
+        print("no current runs to stop")
+    return 0
+
+
+def confirm_delete(paths: list[Path], *, force: bool) -> None:
+    if force:
+        return
+    if not sys.stdin.isatty():
+        raise SystemExit("pass --force to delete runs non-interactively")
+    names = ", ".join(path.name for path in paths)
+    answer = input(f"delete Crucible run(s) {names}? type 'yes' to confirm: ")
+    if answer != "yes":
+        raise SystemExit("delete cancelled")
+
+
+def cmd_del(args: argparse.Namespace) -> int:
+    if args.done and args.run:
+        raise SystemExit("del accepts either a run name or --done")
+    if not args.done and not args.run:
+        raise SystemExit("del requires a run name or --done")
+    summaries = load_run_summaries(lease_seconds=args.lease_seconds)
+    targets: list[Path] = []
+    if args.done:
+        targets = [Path(item["manifest"]).parent for item in summaries if run_done(item)]
+    else:
+        summary = run_summary_for(args.run, lease_seconds=args.lease_seconds)
+        if run_current(summary) and not args.force:
+            raise SystemExit(f"{args.run}: run is active; stop it first or pass --force")
+        targets = [Path(summary["manifest"]).parent]
+    if not targets:
+        print("no runs matched")
+        return 0
+    confirm_delete(targets, force=bool(args.force))
+    for path in targets:
+        shutil.rmtree(path)
+        print(f"deleted: {path.name}")
+    return 0
 
 
 def format_manifest_path(path: Path) -> str:
@@ -1822,7 +2027,7 @@ def verify_manifest(manifest: dict[str, Any]) -> None:
 
 
 def cmd_verify(args: argparse.Namespace) -> int:
-    manifest = apply_profile(load_manifest(expand_path(args.manifest)), args.profile)
+    _, manifest = load_run_manifest(args.run)
     verify_manifest(manifest)
     print("ok")
     return 0
@@ -1836,7 +2041,7 @@ def append_file(src: Path, dst: Path, *, newline_between: bool) -> None:
 
 
 def cmd_merge(args: argparse.Namespace) -> int:
-    manifest = apply_profile(load_manifest(expand_path(args.manifest)), args.profile)
+    manifest_path, manifest = load_run_manifest(args.run)
     verify_manifest(manifest)
     output = expand_path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -1854,7 +2059,7 @@ def cmd_merge(args: argparse.Namespace) -> int:
     write_json(sidecar, {
         "schema": SCHEMA,
         "merged_at": now(),
-        "manifest": str(expand_path(args.manifest)),
+        "manifest": str(manifest_path),
         "tasks": merged,
         "output": file_record(output),
     })
@@ -2236,11 +2441,67 @@ def colorize(text: str, color: str, *, enabled: bool) -> str:
     return f"\033[{colors[color]}m{text}\033[0m"
 
 
+def default_run_name(template_path: Path, manifest: dict[str, Any]) -> str:
+    name = str(manifest.get("name") or "").strip()
+    if name:
+        return validate_run_name(name)
+    stem = template_path.name
+    for suffix in (".manifest.json", ".json"):
+        if stem.endswith(suffix):
+            stem = stem[:-len(suffix)]
+            break
+    return validate_run_name(stem)
+
+
+def materialize_run(
+    *,
+    template_path: Path,
+    workers_path: Path,
+    run_name_arg: str | None,
+    resume: bool,
+    replace: bool,
+) -> tuple[Path, Path, Path]:
+    template = load_manifest(template_path)
+    run_name = validate_run_name(run_name_arg) if run_name_arg else default_run_name(template_path, template)
+    run_dir = run_dir_for_name(run_name)
+    manifest_path = run_dir / RUN_MANIFEST_NAME
+    workers_snapshot = run_dir / RUN_WORKERS_NAME
+
+    if resume and replace:
+        raise SystemExit("--resume and --replace are mutually exclusive")
+    if resume:
+        if not manifest_path.exists() or not workers_snapshot.exists():
+            raise SystemExit(f"{run_name}: cannot resume; run manifest or workers file is missing")
+        return run_dir, manifest_path, workers_snapshot
+    if run_dir.exists():
+        if not replace:
+            raise SystemExit(f"{run_name}: run already exists; pass --resume or --replace")
+        shutil.rmtree(run_dir)
+
+    run_dir.mkdir(parents=True)
+    materialized = materialize_manifest(template, run_name=run_name, run_dir=run_dir)
+    state_dir(materialized).mkdir(parents=True)
+    log_dir(materialized).mkdir(parents=True)
+    claim_dir(materialized).mkdir(parents=True)
+    (run_dir / "outputs").mkdir(parents=True)
+    write_json(manifest_path, materialized)
+    shutil.copy2(workers_path, workers_snapshot)
+    return run_dir, manifest_path, workers_snapshot
+
+
 def cmd_deploy(args: argparse.Namespace) -> int:
-    workers = load_workers(expand_path(args.workers))
+    workers_arg = expand_path(args.workers)
+    template_path = expand_path(args.manifest)
+    run_dir, manifest_path, workers_path = materialize_run(
+        template_path=template_path,
+        workers_path=workers_arg,
+        run_name_arg=getattr(args, "run", None),
+        resume=bool(getattr(args, "resume", False)),
+        replace=bool(getattr(args, "replace", False)),
+    )
+    workers = load_workers(workers_path)
     jobs = max(1, int(args.jobs))
     remote_timeout = max(1.0, float(args.remote_timeout_seconds))
-    manifest_path = expand_path(args.manifest)
     manifest = load_manifest(manifest_path)
     has_tasks = bool(manifest.get("tasks"))
     color_enabled = not bool(args.no_color) and sys.stdout.isatty()
@@ -2332,7 +2593,7 @@ def cmd_deploy(args: argparse.Namespace) -> int:
         verbose_status(f"{label}: tasks FAILED rc={result.returncode}", error=True)
         return result_payload("tasks", result)
 
-    status(colorize(f"deploy: {len(workers)} worker(s), jobs={jobs}", "cyan", enabled=color_enabled))
+    status(colorize(f"deploy: run={run_dir.name} workers={len(workers)} jobs={jobs}", "cyan", enabled=color_enabled))
     executor = concurrent.futures.ThreadPoolExecutor(max_workers=jobs)
     interrupted = False
     futures: list[concurrent.futures.Future[dict[str, Any]]] = []
@@ -2485,17 +2746,23 @@ def build_parser() -> argparse.ArgumentParser:
     doctor.add_argument("--notify-command")
     doctor.set_defaults(func=cmd_doctor)
 
-    status = sub.add_parser("status", help="Show task status.")
-    status.add_argument("path", nargs="?", default=None, help="Manifest file or run directory to scan.")
-    status.add_argument("--manifest", help="Explicit manifest file. Overrides path discovery.")
+    status = sub.add_parser("status", help="Show run or task status.")
+    status.add_argument("run", nargs="?", help="Run name or run directory.")
     status.add_argument("-v", "--verbose", action="store_true")
     status.add_argument("--show-done", action="store_true", help="Show completed shard breakdown.")
-    status.add_argument("--all", action="store_true", help="Include example and setup-only manifests during directory discovery.")
     status.add_argument("--json", action="store_true")
-    status.add_argument("--profile")
     status.add_argument("--no-color", action="store_true")
     status.add_argument("--lease-seconds", type=int, default=600)
     status.set_defaults(func=cmd_status)
+
+    list_runs = sub.add_parser("list", help="List Crucible runs.")
+    list_runs.add_argument("--done", action="store_true")
+    list_runs.add_argument("--current", action="store_true")
+    list_runs.add_argument("--failed", action="store_true")
+    list_runs.add_argument("--json", action="store_true")
+    list_runs.add_argument("--no-color", action="store_true")
+    list_runs.add_argument("--lease-seconds", type=int, default=600)
+    list_runs.set_defaults(func=cmd_list)
 
     wait = sub.add_parser("wait", help="Wait until coordinator tasks finish.")
     wait.add_argument("--manifest", required=True)
@@ -2506,18 +2773,29 @@ def build_parser() -> argparse.ArgumentParser:
     wait.add_argument("--fail-on-fail", action=argparse.BooleanOptionalAction, default=True)
     wait.set_defaults(func=cmd_wait)
 
-    verify = sub.add_parser("verify", help="Verify all tasks are complete.")
-    verify.add_argument("--manifest", required=True)
-    verify.add_argument("--profile")
+    verify = sub.add_parser("verify", help="Verify all run tasks are complete.")
+    verify.add_argument("run")
     verify.set_defaults(func=cmd_verify)
 
     merge = sub.add_parser("merge", help="Concatenate first output from each task.")
-    merge.add_argument("--manifest", required=True)
+    merge.add_argument("run")
     merge.add_argument("--output", required=True)
     merge.add_argument("--force", action="store_true")
     merge.add_argument("--newline-between", action="store_true")
-    merge.add_argument("--profile")
     merge.set_defaults(func=cmd_merge)
+
+    stop = sub.add_parser("stop", help="Request a run stop.")
+    stop.add_argument("run", nargs="?")
+    stop.add_argument("--all", action="store_true")
+    stop.add_argument("--lease-seconds", type=int, default=600)
+    stop.set_defaults(func=cmd_stop)
+
+    delete = sub.add_parser("del", help="Delete run directories.")
+    delete.add_argument("run", nargs="?")
+    delete.add_argument("--done", action="store_true")
+    delete.add_argument("--force", action="store_true")
+    delete.add_argument("--lease-seconds", type=int, default=600)
+    delete.set_defaults(func=cmd_del)
 
     self_update = sub.add_parser("self-update", help="Fast-forward the crucible checkout itself.")
     self_update.add_argument("--remote", default="origin")
@@ -2534,6 +2812,9 @@ def build_parser() -> argparse.ArgumentParser:
     deploy.add_argument("workers")
     deploy.add_argument("manifest")
     deploy.add_argument("--jobs", type=int, default=4)
+    deploy.add_argument("--run")
+    deploy.add_argument("--resume", action="store_true")
+    deploy.add_argument("--replace", action="store_true")
     deploy.add_argument("--remote-timeout-seconds", type=float, default=1800.0)
     deploy.add_argument("--no-color", action="store_true")
     deploy.add_argument("--verbose", action="store_true")

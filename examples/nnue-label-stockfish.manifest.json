@@ -2,9 +2,6 @@
   "schema": "crucible.task.v1",
   "name": "nnue-label-stockfish",
   "work_dir": "~/code/cpp/chess/nnue",
-  "state_dir": "~/code/cpp/chess/crucible-runs/nnue-label-stockfish/state",
-  "log_dir": "~/code/cpp/chess/crucible-runs/nnue-label-stockfish/logs",
-  "claim_dir": "~/code/cpp/chess/crucible-runs/nnue-label-stockfish/claims",
   "requirements": {
     "python_min": "3.11",
     "git_min": "2.38",
@@ -26,12 +23,12 @@
     ],
     "inputs": [
       {
-        "path": "~/code/cpp/chess/crucible-runs/nnue-label-stockfish/source/source.jsonl"
+        "path": "REPLACE_WITH_SOURCE_JSONL"
       }
     ]
   },
   "vars": {
-    "input": "~/code/cpp/chess/crucible-runs/nnue-label-stockfish/source/source.jsonl",
+    "input": "REPLACE_WITH_SOURCE_JSONL",
     "engine": "~/.local/bin/stockfish",
     "depth": "14",
     "threads": "1",
@@ -45,7 +42,7 @@
       "index": 0,
       "command": "python3 tools/score/score.py uci --input {input} --output {output} --engine {engine} --depth {depth} --threads {threads} --hash {hash} --shard-count {shards} --shard-index {index} --max-abs-cp {max_abs_cp} --progress {progress}",
       "outputs": [
-        "~/code/cpp/chess/crucible-runs/nnue-label-stockfish/shards/label.0000.jsonl"
+        "{output_dir}/shards/label.0000.jsonl"
       ]
     },
     {
@@ -53,7 +50,7 @@
       "index": 1,
       "command": "python3 tools/score/score.py uci --input {input} --output {output} --engine {engine} --depth {depth} --threads {threads} --hash {hash} --shard-count {shards} --shard-index {index} --max-abs-cp {max_abs_cp} --progress {progress}",
       "outputs": [
-        "~/code/cpp/chess/crucible-runs/nnue-label-stockfish/shards/label.0001.jsonl"
+        "{output_dir}/shards/label.0001.jsonl"
       ]
     },
     {
@@ -61,7 +58,7 @@
       "index": 2,
       "command": "python3 tools/score/score.py uci --input {input} --output {output} --engine {engine} --depth {depth} --threads {threads} --hash {hash} --shard-count {shards} --shard-index {index} --max-abs-cp {max_abs_cp} --progress {progress}",
       "outputs": [
-        "~/code/cpp/chess/crucible-runs/nnue-label-stockfish/shards/label.0002.jsonl"
+        "{output_dir}/shards/label.0002.jsonl"
       ]
     },
     {
@@ -69,7 +66,7 @@
       "index": 3,
       "command": "python3 tools/score/score.py uci --input {input} --output {output} --engine {engine} --depth {depth} --threads {threads} --hash {hash} --shard-count {shards} --shard-index {index} --max-abs-cp {max_abs_cp} --progress {progress}",
       "outputs": [
-        "~/code/cpp/chess/crucible-runs/nnue-label-stockfish/shards/label.0003.jsonl"
+        "{output_dir}/shards/label.0003.jsonl"
       ]
     }
   ]
