@@ -36,8 +36,8 @@ def script_path() -> Path:
     return Path(__file__).resolve()
 
 
-def script_repo() -> Path:
-    path = script_path()
+def script_repo(path: Path | None = None) -> Path:
+    path = path or script_path()
     try:
         root = subprocess.check_output(
             ["git", "-C", str(path.parent), "rev-parse", "--show-toplevel"],
@@ -193,7 +193,8 @@ def run_checked(command: list[str], *, cwd: Path | None = None) -> None:
 
 
 def distrib_version_payload() -> dict[str, Any]:
-    repo = script_repo()
+    path = script_path()
+    repo = script_repo(path)
     commit = git_output(repo, "rev-parse", "HEAD")
     branch = git_output(repo, "rev-parse", "--abbrev-ref", "HEAD")
     dirty = bool(git_output(repo, "status", "--porcelain"))
@@ -210,7 +211,7 @@ def distrib_version_payload() -> dict[str, Any]:
     return {
         "schema": SCHEMA,
         "tool": "distrib",
-        "path": str(script_path()),
+        "path": str(path),
         "repo": str(repo),
         "branch": branch,
         "commit": commit,
@@ -1494,17 +1495,21 @@ def load_workers(path: Path) -> list[dict[str, Any]]:
 def worker_cache_dir(worker: dict[str, Any]) -> str:
     if worker.get("cache_dir"):
         return str(worker["cache_dir"])
-    if bool(worker.get("local", False)):
+    if is_local_worker(worker):
         return str(Path.home() / ".cache/distrib")
     return ".cache/distrib"
 
 
 def worker_cache_file(worker: dict[str, Any], name: str) -> str:
-    return worker_cache_dir(worker).rstrip("/") + "/" + name
+    return str(Path(worker_cache_dir(worker)) / name)
+
+
+def is_local_worker(worker: dict[str, Any]) -> bool:
+    return bool(worker.get("local", False))
 
 
 def run_worker_shell(worker: dict[str, Any], script: str) -> subprocess.CompletedProcess[str]:
-    if bool(worker.get("local", False)):
+    if is_local_worker(worker):
         return subprocess.run(
             ["sh", "-lc", script],
             text=True,
@@ -1522,13 +1527,13 @@ def run_worker_shell(worker: dict[str, Any], script: str) -> subprocess.Complete
 
 
 def worker_rsync_target(worker: dict[str, Any], path: str) -> str:
-    if bool(worker.get("local", False)):
+    if is_local_worker(worker):
         return str(expand_path(path))
     return f"{worker['host']}:{path}"
 
 
 def copy_to_worker(worker: dict[str, Any], src: Path, dst: str) -> None:
-    if bool(worker.get("local", False)):
+    if is_local_worker(worker):
         target = expand_path(dst)
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(src, target)
@@ -1545,10 +1550,11 @@ def copy_to_worker(worker: dict[str, Any], src: Path, dst: str) -> None:
 
 
 def bootstrap_worker_runner(worker: dict[str, Any], manifest_path: Path) -> None:
-    cache = worker_cache_dir(worker)
-    result = run_worker_shell(worker, "mkdir -p " + shlex.quote(cache))
-    if result.returncode != 0:
-        raise RuntimeError(result.stderr.strip() or result.stdout.strip() or "failed to create worker cache")
+    if not is_local_worker(worker):
+        cache = worker_cache_dir(worker)
+        result = run_worker_shell(worker, "mkdir -p " + shlex.quote(cache))
+        if result.returncode != 0:
+            raise RuntimeError(result.stderr.strip() or result.stdout.strip() or "failed to create worker cache")
     copy_to_worker(worker, script_path(), worker_cache_file(worker, "distribute.py"))
     copy_to_worker(worker, manifest_path, worker_cache_file(worker, "manifest.json"))
 

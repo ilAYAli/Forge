@@ -911,7 +911,9 @@ class DistributeTests(unittest.TestCase):
             self.assertTrue(
                 any(command[0] == "ssh" and command[-2:] == ["pwa-5090", "mkdir -p .cache/distrib"] for command in commands)
             )
-            self.assertIn(["sh", "-lc", "mkdir -p " + str(Path(tmp) / "cache")], commands)
+            self.assertNotIn(["sh", "-lc", "mkdir -p " + str(Path(tmp) / "cache")], commands)
+            self.assertTrue((Path(tmp) / "cache/distribute.py").exists())
+            self.assertTrue((Path(tmp) / "cache/manifest.json").exists())
             self.assertTrue(any(command[:4] == ["rsync", "-a", "-e", distribute.RSYNC_SSH] for command in commands))
 
 
