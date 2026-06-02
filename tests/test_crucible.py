@@ -740,12 +740,33 @@ class CrucibleTests(unittest.TestCase):
                     }),
                     encoding="utf-8",
                 )
+            setup_manifest = root / "examples" / "setup.manifest.json"
+            setup_manifest.parent.mkdir(parents=True)
+            setup_manifest.write_text(
+                json.dumps({
+                    "schema": "crucible.task.v1",
+                    "name": "setup",
+                    "work_dir": str(root / "examples"),
+                    "tasks": [],
+                }),
+                encoding="utf-8",
+            )
 
             status = self.run_cli("status", str(root), cwd=root)
             self.assertEqual(0, status.returncode)
             self.assertIn("== main/manifest.json ==", status.stdout)
             self.assertIn("== bonus/manifest.json ==", status.stdout)
+            self.assertNotIn("setup.manifest.json", status.stdout)
             self.assertEqual(2, status.stdout.count("tasks: 1"))
+
+            status_all = self.run_cli("status", str(root), "--all", cwd=root)
+            self.assertEqual(0, status_all.returncode)
+            self.assertIn("== examples/setup.manifest.json ==", status_all.stdout)
+            self.assertEqual(1, status_all.stdout.count("tasks: 0"))
+
+            explicit = self.run_cli("status", "--manifest", str(setup_manifest), cwd=root)
+            self.assertEqual(0, explicit.returncode)
+            self.assertIn("tasks: 0", explicit.stdout)
 
             status_json = self.run_cli("status", str(root), "--json", cwd=root)
             self.assertEqual(0, status_json.returncode)

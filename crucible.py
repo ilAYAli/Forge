@@ -1516,13 +1516,13 @@ def cmd_status(args: argparse.Namespace) -> int:
 def status_manifest_paths(args: argparse.Namespace) -> list[Path]:
     if args.manifest:
         return [expand_path(args.manifest)]
-    paths = discover_manifest_paths(expand_path(args.path))
+    paths = discover_manifest_paths(expand_path(args.path), include_taskless=bool(args.all))
     if not paths:
         raise SystemExit(f"{args.path}: no Crucible manifests found")
     return paths
 
 
-def discover_manifest_paths(root: Path) -> list[Path]:
+def discover_manifest_paths(root: Path, *, include_taskless: bool = True) -> list[Path]:
     if root.is_file():
         return [root]
     if not root.exists():
@@ -1540,6 +1540,8 @@ def discover_manifest_paths(root: Path) -> list[Path]:
             except SystemExit:
                 continue
             if payload.get("schema") == SCHEMA:
+                if not include_taskless and not payload.get("tasks"):
+                    continue
                 paths.append(path)
     return sorted(paths, key=lambda item: str(item))
 
@@ -2470,6 +2472,7 @@ def build_parser() -> argparse.ArgumentParser:
     status.add_argument("--manifest", help="Explicit manifest file. Overrides path discovery.")
     status.add_argument("-v", "--verbose", action="store_true")
     status.add_argument("--show-done", action="store_true", help="Show completed shard breakdown.")
+    status.add_argument("--all", action="store_true", help="Include setup-only manifests during directory discovery.")
     status.add_argument("--json", action="store_true")
     status.add_argument("--profile")
     status.add_argument("--no-color", action="store_true")
