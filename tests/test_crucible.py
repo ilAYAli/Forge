@@ -1089,6 +1089,65 @@ class CrucibleTests(unittest.TestCase):
                 workers,
             )
 
+    def test_load_workers_expands_slots(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cache_dir = Path(tmp) / "cache"
+            workers_path = Path(tmp) / "workers.json"
+            workers_path.write_text(
+                json.dumps({
+                    "schema": "crucible.workers.v1",
+                    "workers": [
+                        {
+                            "host": "pwa-5090",
+                            "profile": "linux",
+                            "cache_dir": str(cache_dir),
+                            "slots": 2,
+                        },
+                    ],
+                }),
+                encoding="utf-8",
+            )
+
+            workers = crucible.load_workers(workers_path)
+
+            self.assertEqual(
+                [
+                    {
+                        "host": "pwa-5090",
+                        "profile": "linux",
+                        "local": False,
+                        "cache_dir": str(cache_dir),
+                        "_slot": 1,
+                        "_slots": 2,
+                    },
+                    {
+                        "host": "pwa-5090",
+                        "profile": "linux",
+                        "local": False,
+                        "cache_dir": str(cache_dir),
+                        "_slot": 2,
+                        "_slots": 2,
+                    },
+                ],
+                workers,
+            )
+
+    def test_load_workers_rejects_invalid_slots(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workers_path = Path(tmp) / "workers.json"
+            workers_path.write_text(
+                json.dumps({
+                    "schema": "crucible.workers.v1",
+                    "workers": [{"host": "pwa-5090", "slots": 0}],
+                }),
+                encoding="utf-8",
+            )
+
+            with self.assertRaises(SystemExit) as raised:
+                crucible.load_workers(workers_path)
+
+            self.assertIn("pwa-5090: worker slots", str(raised.exception))
+
     def test_deploy_commands_use_worker_python(self) -> None:
         worker = {
             "host": "pwa-mbp",
@@ -1118,6 +1177,7 @@ class CrucibleTests(unittest.TestCase):
     def test_worker_label_omits_duplicate_profile(self) -> None:
         self.assertEqual("pwa-5090", crucible.worker_label("pwa-5090", "pwa-5090"))
         self.assertEqual("pwa-wsl", crucible.worker_label("pwa-wsl", "pwa-wsl"))
+        self.assertEqual("pwa-5090#2", crucible.worker_label("pwa-5090", "pwa-5090", 2, 4))
 
     def test_managed_remote_script_cleans_child_process_group(self) -> None:
         script = crucible.managed_remote_script("sleep 60")
@@ -1279,6 +1339,64 @@ class CrucibleTests(unittest.TestCase):
             scripts = [command[-1] for command in commands if command[0] == "sh"]
             self.assertTrue(any("sync-repos" in script and "--profile worker" in script for script in scripts))
             self.assertTrue(any(" work " in script and "--profile worker" in script for script in scripts))
+
+    def test_deploy_runs_one_worker_loop_per_slot(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest = root / "manifest.json"
+            manifest.write_text(
+                json.dumps({
+                    "schema": "crucible.task.v1",
+                    "name": "deploy-slots",
+                    "work_dir": str(root),
+                    "state_dir": str(root / "state"),
+                    "log_dir": str(root / "logs"),
+                    "requirements": {"python_min": "3.11", "git_min": "2.38"},
+                    "tasks": [{"id": "task_0000", "index": 0, "command": "true", "outputs": []}],
+                }),
+                encoding="utf-8",
+            )
+            workers_path = root / "workers.json"
+            workers_path.write_text(
+                json.dumps({
+                    "schema": "crucible.workers.v1",
+                    "workers": [{
+                        "host": "localhost",
+                        "local": True,
+                        "cache_dir": str(root / "cache"),
+                        "slots": 2,
+                    }],
+                }),
+                encoding="utf-8",
+            )
+            commands = []
+
+            def fake_run(self, command, **kwargs):
+                commands.append(command)
+                return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+            with mock.patch("crucible.ProcessTracker.run", fake_run):
+                stdout = io.StringIO()
+                with contextlib.redirect_stdout(stdout):
+                    rc = crucible.cmd_deploy(
+                        argparse.Namespace(
+                            manifest=str(manifest),
+                            workers=str(workers_path),
+                            jobs=2,
+                            remote_timeout_seconds=1800.0,
+                            no_color=True,
+                            verbose=False,
+                        )
+                    )
+
+            self.assertEqual(0, rc)
+            output = stdout.getvalue()
+            self.assertIn("deploy: 2 worker(s), jobs=2", output)
+            self.assertIn("  OK     localhost#1: tasks", output)
+            self.assertIn("  OK     localhost#2: tasks", output)
+            work_scripts = [command[-1] for command in commands if command[0] == "sh" and " work " in command[-1]]
+            self.assertEqual(2, len(work_scripts))
+            self.assertTrue(all("--worker localhost" in script for script in work_scripts))
 
     def test_deploy_starts_ready_worker_before_all_prereqs_finish(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

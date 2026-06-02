@@ -46,7 +46,8 @@ Example `workers.json`:
     {
       "host": "pwa-mbp",
       "profile": "mac",
-      "python": "/opt/homebrew/bin/python3"
+      "python": "/opt/homebrew/bin/python3",
+      "slots": 2
     },
     {
       "host": "localhost",
@@ -57,7 +58,10 @@ Example `workers.json`:
 ```
 
 A string worker uses the same value as host and profile. Object workers support
-`host`, `profile`, `python`, `local`, `cache_dir`, and `enabled`.
+`host`, `profile`, `python`, `local`, `cache_dir`, `slots`, and `enabled`.
+`slots` starts multiple worker loops on the same host; use it for
+one-shard-at-a-time tasks such as labeling, not for commands that already
+saturate the machine.
 
 ## Manifest
 

@@ -1876,11 +1876,39 @@ def parse_worker_record(item: Any) -> dict[str, Any]:
         "profile": profile,
         "local": bool(item.get("local", host in ("localhost", "127.0.0.1"))),
     }
+    slots = parse_worker_slots(item.get("slots", 1), label=host)
+    if slots != 1:
+        record["slots"] = slots
     if item.get("cache_dir"):
         record["cache_dir"] = str(item["cache_dir"])
     if item.get("python"):
         record["python"] = str(item["python"])
     return record
+
+
+def parse_worker_slots(value: Any, *, label: str) -> int:
+    if isinstance(value, bool):
+        raise SystemExit(f"{label}: worker slots must be a positive integer")
+    try:
+        slots = int(value)
+    except (TypeError, ValueError) as exc:
+        raise SystemExit(f"{label}: worker slots must be a positive integer") from exc
+    if slots < 1:
+        raise SystemExit(f"{label}: worker slots must be a positive integer")
+    return slots
+
+
+def expand_worker_record(worker: dict[str, Any]) -> list[dict[str, Any]]:
+    slots = int(worker.pop("slots", 1))
+    if slots == 1:
+        return [worker]
+    workers = []
+    for slot in range(1, slots + 1):
+        expanded = dict(worker)
+        expanded["_slot"] = slot
+        expanded["_slots"] = slots
+        workers.append(expanded)
+    return workers
 
 
 def load_workers(path: Path) -> list[dict[str, Any]]:
@@ -1890,7 +1918,11 @@ def load_workers(path: Path) -> list[dict[str, Any]]:
     raw_workers = payload.get("workers")
     if not isinstance(raw_workers, list):
         raise SystemExit(f"{path}: workers must be a list")
-    workers = [worker for worker in (parse_worker_record(item) for item in raw_workers) if worker]
+    workers: list[dict[str, Any]] = []
+    for item in raw_workers:
+        worker = parse_worker_record(item)
+        if worker:
+            workers.extend(expand_worker_record(worker))
     if not workers:
         raise SystemExit(f"{path}: no enabled workers")
     return workers
@@ -2060,8 +2092,16 @@ def coordinator_for_worker(worker: dict[str, Any], manifest_path: Path) -> str:
     return f"{socket.gethostname()}:{manifest_path}"
 
 
-def worker_label(host: str, profile: str) -> str:
-    return host if profile == host else f"{host}/{profile}"
+def worker_label(host: str, profile: str, slot: Any = None, slots: Any = None) -> str:
+    label = host if profile == host else f"{host}/{profile}"
+    try:
+        slot_index = int(slot or 0)
+        slot_count = int(slots or 0)
+    except (TypeError, ValueError):
+        return label
+    if slot_index > 0 and slot_count > 1:
+        return f"{label}#{slot_index}"
+    return label
 
 
 def colorize(text: str, color: str, *, enabled: bool) -> str:
@@ -2098,13 +2138,15 @@ def cmd_deploy(args: argparse.Namespace) -> int:
     def run_worker(index: int, worker: dict[str, Any]) -> dict[str, Any]:
         host = str(worker["host"])
         profile = str(worker["profile"])
-        label = worker_label(host, profile)
+        label = worker_label(host, profile, worker.get("_slot"), worker.get("_slots"))
 
         def result_payload(stage: str, result: subprocess.CompletedProcess[str]) -> dict[str, Any]:
             return {
                 "index": index,
                 "host": host,
                 "profile": profile,
+                "slot": worker.get("_slot"),
+                "slots": worker.get("_slots"),
                 "stage": stage,
                 "ok": result.returncode == 0,
                 "rc": result.returncode,
@@ -2129,7 +2171,7 @@ def cmd_deploy(args: argparse.Namespace) -> int:
         if not has_tasks:
             return result_payload("setup", prereq)
 
-        verbose_status(f"{worker_label(host, profile)}: running tasks")
+        verbose_status(f"{label}: running tasks")
         script = deploy_work_command(
             worker=worker,
             manifest=manifest,
@@ -2171,7 +2213,11 @@ def cmd_deploy(args: argparse.Namespace) -> int:
         marker_color = "green" if ok else "red"
         marker = colorize(f"{marker_text:<6}", marker_color, enabled=color_enabled)
         suffix = "" if ok else f" rc={item['rc']}"
-        status(f"  {marker} {worker_label(str(item['host']), str(item['profile']))}: {stage}{suffix}")
+        status(
+            f"  {marker} "
+            f"{worker_label(str(item['host']), str(item['profile']), item.get('slot'), item.get('slots'))}: "
+            f"{stage}{suffix}"
+        )
         output = "\n".join(
             part.strip()
             for part in (str(item.get("stdout") or ""), str(item.get("stderr") or ""))
