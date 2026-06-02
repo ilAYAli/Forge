@@ -44,6 +44,11 @@ Example `workers.json`:
       "profile": "pwa-wsl"
     },
     {
+      "host": "pwa-mbp",
+      "profile": "mac",
+      "python": "/opt/homebrew/bin/python3"
+    },
+    {
       "host": "localhost",
       "local": true
     }
@@ -52,7 +57,7 @@ Example `workers.json`:
 ```
 
 A string worker uses the same value as host and profile. Object workers support
-`host`, `profile`, `local`, `cache_dir`, and `enabled`.
+`host`, `profile`, `python`, `local`, `cache_dir`, and `enabled`.
 
 ## Manifest
 

@@ -993,6 +993,7 @@ class CrucibleTests(unittest.TestCase):
                     "workers": [
                         "pwa-5090",
                         {"host": "pwa-wsl", "profile": "pwa-wsl"},
+                        {"host": "pwa-mbp", "profile": "mac", "python": "/opt/homebrew/bin/python3"},
                         {"host": "localhost", "local": True},
                         {"host": "disabled", "enabled": False},
                     ],
@@ -1006,10 +1007,35 @@ class CrucibleTests(unittest.TestCase):
                 [
                     {"host": "pwa-5090", "profile": "pwa-5090", "local": False},
                     {"host": "pwa-wsl", "profile": "pwa-wsl", "local": False},
+                    {
+                        "host": "pwa-mbp",
+                        "profile": "mac",
+                        "local": False,
+                        "python": "/opt/homebrew/bin/python3",
+                    },
                     {"host": "localhost", "profile": "localhost", "local": True},
                 ],
                 workers,
             )
+
+    def test_deploy_commands_use_worker_python(self) -> None:
+        worker = {
+            "host": "pwa-mbp",
+            "profile": "pwa-mbp",
+            "local": False,
+            "python": "/opt/homebrew/bin/python3",
+        }
+        manifest = {"tasks": [{"id": "task_0000"}]}
+
+        prereq = crucible.deploy_prereq_command(worker=worker, manifest=manifest)
+        work = crucible.deploy_work_command(
+            worker=worker,
+            manifest=manifest,
+            coordinator="pwa-5090:/tmp/manifest.json",
+        )
+
+        self.assertIn("/opt/homebrew/bin/python3 .cache/crucible/crucible.py doctor", prereq)
+        self.assertIn("/opt/homebrew/bin/python3 .cache/crucible/crucible.py work", work)
 
     def test_example_manifests_parse_and_format_tasks(self) -> None:
         for path in sorted((ROOT / "examples").glob("*.manifest.json")):

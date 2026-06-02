@@ -1750,6 +1750,8 @@ def parse_worker_record(item: Any) -> dict[str, Any]:
     }
     if item.get("cache_dir"):
         record["cache_dir"] = str(item["cache_dir"])
+    if item.get("python"):
+        record["python"] = str(item["python"])
     return record
 
 
@@ -1780,6 +1782,10 @@ def worker_cache_file(worker: dict[str, Any], name: str) -> str:
 
 def is_local_worker(worker: dict[str, Any]) -> bool:
     return bool(worker.get("local", False))
+
+
+def worker_python(worker: dict[str, Any]) -> str:
+    return str(worker.get("python") or "python3")
 
 
 def managed_remote_script(script: str) -> str:
@@ -1897,10 +1903,11 @@ def deploy_prereq_command(*, worker: dict[str, Any], manifest: dict[str, Any]) -
     runner = worker_cache_file(worker, "crucible.py")
     manifest_path = worker_cache_file(worker, "manifest.json")
     profile_args = worker_profile_args(manifest, worker)
+    python = worker_python(worker)
     commands = ["set -e"]
     if manifest_has_git_requirements(manifest):
-        commands.append(shell_join(["python3", runner, "sync-repos", "--manifest", manifest_path, *profile_args]))
-    commands.append(shell_join(["python3", runner, "doctor", "--manifest", manifest_path, *profile_args, "--role", "worker"]))
+        commands.append(shell_join([python, runner, "sync-repos", "--manifest", manifest_path, *profile_args]))
+    commands.append(shell_join([python, runner, "doctor", "--manifest", manifest_path, *profile_args, "--role", "worker"]))
     return "\n".join(commands)
 
 
@@ -1908,8 +1915,9 @@ def deploy_work_command(*, worker: dict[str, Any], manifest: dict[str, Any], coo
     runner = worker_cache_file(worker, "crucible.py")
     manifest_path = worker_cache_file(worker, "manifest.json")
     profile_args = worker_profile_args(manifest, worker)
+    python = worker_python(worker)
     return shell_join([
-        "python3", runner,
+        python, runner,
         "work",
         "--manifest", manifest_path,
         "--coordinator", coordinator,
