@@ -1,0 +1,7 @@
+{
+  "schema": "crucible.workers.v1",
+  "workers": [
+    "pwa-5090",
+    "pwa-rce"
+  ]
+}

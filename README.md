@@ -129,6 +129,9 @@ crucible deploy examples/workers.json examples/nnue-selfplay.manifest.json
 crucible deploy examples/workers.json examples/nnue-label-stockfish.manifest.json
 ```
 
+Use `examples/workers-linux.json` when the coordinator cannot directly enter
+the WSL worker shell.
+
 Merge labeled shards:
 
 ```sh
