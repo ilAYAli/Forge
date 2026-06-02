@@ -140,14 +140,14 @@ Example: ensure Enyo is checked out at a specific commit, built, and deployed as
 the candidate engine:
 
 ```sh
-distrib deploy examples/enyo-candidate-deploy.manifest.json
+distrib deploy examples/workers.json examples/enyo-candidate-deploy.manifest.json
 ```
 
-`deploy` reads `workers.json` on the coordinator, copies the current `distrib`
-runner and manifest to each worker cache, then runs `sync-repos` and `doctor`
-there. If the manifest declares tasks, `deploy` starts worker loops and waits
-for them to finish. Workers need Python, Git, SSH/rsync access, and the project
-toolchain, but they do not need `distrib` installed.
+`deploy` reads the workers file on the coordinator, copies the current
+`distrib` runner and manifest to each worker cache, then runs `sync-repos` and
+`doctor` there. If the manifest declares tasks, `deploy` starts worker loops
+and waits for them to finish. Workers need Python, Git, SSH/rsync access, and
+the project toolchain, but they do not need `distrib` installed.
 
 Example `workers.json`:
 
@@ -165,8 +165,6 @@ Example `workers.json`:
   ]
 }
 ```
-
-Use `--workers path/to/workers.json` for a different worker list.
 
 The manifest has no work shards; it is an all-worker setup/preflight manifest.
 

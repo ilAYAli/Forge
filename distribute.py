@@ -1832,8 +1832,8 @@ def build_parser() -> argparse.ArgumentParser:
     version.set_defaults(func=cmd_version)
 
     deploy = sub.add_parser("deploy", help="Verify workers and run manifest tasks.")
+    deploy.add_argument("workers")
     deploy.add_argument("manifest")
-    deploy.add_argument("--workers", default="workers.json")
     deploy.add_argument("--jobs", type=int, default=4)
     deploy.add_argument("--verbose", action="store_true")
     deploy.set_defaults(func=cmd_deploy)

@@ -1020,6 +1020,13 @@ class DistributeTests(unittest.TestCase):
         result = self.run_cli("prepare", "manifest.json")
         self.assertNotEqual(0, result.returncode)
 
+    def test_deploy_cli_takes_workers_then_manifest(self) -> None:
+        result = self.run_cli("deploy", "--help")
+        self.assertEqual(0, result.returncode)
+        self.assertIn("workers", result.stdout)
+        self.assertIn("manifest", result.stdout)
+        self.assertNotIn("--workers", result.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()
