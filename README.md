@@ -89,7 +89,8 @@ Example setup-only manifest:
 ```
 
 If workers use different paths, add `path_maps` and set matching worker
-profiles. If `tasks` is empty, `deploy` stops after prerequisites are verified.
+profiles. If `tasks` is empty, `deploy` reports `setup complete` after
+prerequisites are verified.
 
 ## Shard Tasks
 

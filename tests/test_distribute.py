@@ -953,7 +953,7 @@ class DistributeTests(unittest.TestCase):
             self.assertIn("pwa-5090(pwa-5090): syncing runner and manifest", deploy_output)
             self.assertIn("pwa-5090(pwa-5090): checking prerequisites", deploy_output)
             self.assertIn("pwa-5090(pwa-5090): prerequisites OK", deploy_output)
-            self.assertIn("deploy: no tasks declared", deploy_output)
+            self.assertIn("deploy: setup complete", deploy_output)
             self.assertTrue(
                 any(command[0] == "ssh" and command[-2:] == ["pwa-5090", "mkdir -p .cache/distrib"] for command in commands)
             )

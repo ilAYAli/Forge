@@ -1726,7 +1726,7 @@ def cmd_deploy(args: argparse.Namespace) -> int:
 
     failed = sum(1 for _, ok in results if not ok)
     if not has_tasks:
-        status("deploy: no tasks declared")
+        status("deploy: setup complete")
     return 1 if failed else 0
 
 
