@@ -126,16 +126,17 @@ crucible status
 crucible status ~/runs/my-run
 crucible status --manifest run.manifest.json
 crucible status --manifest run.manifest.json --verbose
+crucible status --manifest run.manifest.json --show-done
 crucible status --manifest run.manifest.json --json
 crucible verify --manifest run.manifest.json
 crucible merge --manifest run.manifest.json --output merged.txt
 ```
 
 `status` scans the current directory by default. Pass a run directory to show
-all manifests below it, or use `--manifest` for one explicit manifest. It groups
-completed shards by worker, shows active shards with parsed progress when
-available, and compresses pending ranges. Use `--verbose` for the full task
-table.
+all manifests below it, or use `--manifest` for one explicit manifest. The
+default view shows counts, active shards, failed/stale shards, and compressed
+pending ranges. Use `--show-done` for completed shard breakdowns by worker, or
+`--verbose` for the full task table.
 
 Lower-level commands remain available for diagnostics: `sync-repos`, `doctor`,
 `work`, `claim`, `release`, `heartbeat`, and `run`.

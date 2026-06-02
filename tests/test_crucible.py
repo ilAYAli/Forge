@@ -696,17 +696,22 @@ class CrucibleTests(unittest.TestCase):
                 "tasks: 4  done=1 active=1 running=1 claimed=0 pending=1 fail=1 stale=0",
                 compact.stdout,
             )
-            self.assertIn("host-done [1]: 0", compact.stdout)
+            self.assertNotIn("host-done [1]: 0", compact.stdout)
             self.assertIn("worker-claimed running: 1 [42/1000]", compact.stdout)
             self.assertIn("host-fail [1]: 2", compact.stdout)
             self.assertIn("pending:\n  3", compact.stdout)
 
             result = self.run_cli("status", "--manifest", str(manifest_path), "--verbose")
             self.assertEqual(1, result.returncode)
+            self.assertIn("host-done [1]: 0", result.stdout)
             self.assertIn("task_0\tdone\thost-done", result.stdout)
             self.assertIn("task_1\trunning\tworker-claimed", result.stdout)
             self.assertIn("task_2\tfail\thost-fail", result.stdout)
             self.assertIn("task_3\tpending\t", result.stdout)
+
+            show_done = self.run_cli("status", "--manifest", str(manifest_path), "--show-done")
+            self.assertEqual(1, show_done.returncode)
+            self.assertIn("host-done [1]: 0", show_done.stdout)
 
             result_json = self.run_cli("status", "--manifest", str(manifest_path), "--json")
             self.assertEqual(1, result_json.returncode)

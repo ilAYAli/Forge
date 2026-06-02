@@ -1502,7 +1502,11 @@ def cmd_status(args: argparse.Namespace) -> int:
                 if index:
                     print()
                 print(colorize(f"== {format_manifest_path(Path(summary['manifest']))} ==", "cyan", enabled=color_enabled))
-            print_compact_status(summary, color_enabled=color_enabled)
+            print_compact_status(
+                summary,
+                color_enabled=color_enabled,
+                show_done=args.show_done or args.verbose,
+            )
             if args.verbose:
                 for row in summary["rows"]:
                     print(f"{row['id']}\t{row['state']}\t{row['worker']}")
@@ -1707,7 +1711,12 @@ def print_status_group(title: str, groups: dict[str, list[int | str]], *, color_
         print(f"  {worker} [{len(values)}]: {format_status_values(values)}")
 
 
-def print_compact_status(summary: dict[str, Any], *, color_enabled: bool = False) -> None:
+def print_compact_status(
+    summary: dict[str, Any],
+    *,
+    color_enabled: bool = False,
+    show_done: bool = False,
+) -> None:
     counts = summary["counts"]
     print(
         f"tasks: {summary['tasks']}  done={counts['done']} "
@@ -1715,7 +1724,8 @@ def print_compact_status(summary: dict[str, Any], *, color_enabled: bool = False
         f"claimed={counts['claimed']} pending={counts['pending']} "
         f"fail={counts['fail']} stale={counts['stale']}"
     )
-    print_status_group("done", summary["groups"]["done"], color_enabled=color_enabled)
+    if show_done:
+        print_status_group("done", summary["groups"]["done"], color_enabled=color_enabled)
     if summary["active"]:
         print(colorize("active:", "yellow", enabled=color_enabled))
         for row in sorted(summary["active"], key=lambda item: status_value_key(item["index"])):
@@ -2459,6 +2469,7 @@ def build_parser() -> argparse.ArgumentParser:
     status.add_argument("path", nargs="?", default=".", help="Manifest file or directory to scan.")
     status.add_argument("--manifest", help="Explicit manifest file. Overrides path discovery.")
     status.add_argument("-v", "--verbose", action="store_true")
+    status.add_argument("--show-done", action="store_true", help="Show completed shard breakdown.")
     status.add_argument("--json", action="store_true")
     status.add_argument("--profile")
     status.add_argument("--no-color", action="store_true")
