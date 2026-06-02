@@ -212,6 +212,66 @@ def command_result(command: str | list[str], *, cwd: Path | None = None, timeout
     )
 
 
+class ProcessTracker:
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._processes: set[subprocess.Popen[str]] = set()
+
+    def run(self, command: list[str], *, timeout: float | None = None) -> subprocess.CompletedProcess[str]:
+        proc = subprocess.Popen(
+            command,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=True,
+        )
+        with self._lock:
+            self._processes.add(proc)
+        try:
+            try:
+                stdout, stderr = proc.communicate(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                self._terminate(proc, signal.SIGTERM)
+                try:
+                    stdout, stderr = proc.communicate(timeout=2)
+                except subprocess.TimeoutExpired:
+                    self._terminate(proc, signal.SIGKILL)
+                    stdout, stderr = proc.communicate()
+                    return subprocess.CompletedProcess(command, 124, stdout=stdout, stderr=stderr)
+                return subprocess.CompletedProcess(command, 124, stdout=stdout, stderr=stderr)
+            return subprocess.CompletedProcess(command, proc.returncode, stdout=stdout, stderr=stderr)
+        finally:
+            with self._lock:
+                self._processes.discard(proc)
+
+    def terminate_all(self) -> None:
+        with self._lock:
+            processes = list(self._processes)
+        for proc in processes:
+            self._terminate(proc, signal.SIGTERM)
+        deadline = time.monotonic() + 2
+        for proc in processes:
+            remaining = max(0.0, deadline - time.monotonic())
+            try:
+                proc.wait(timeout=remaining)
+            except subprocess.TimeoutExpired:
+                self._terminate(proc, signal.SIGKILL)
+
+    @staticmethod
+    def _terminate(proc: subprocess.Popen[str], sig: signal.Signals) -> None:
+        if proc.poll() is not None:
+            return
+        try:
+            os.killpg(proc.pid, sig)
+        except ProcessLookupError:
+            return
+        except OSError:
+            if sig == signal.SIGKILL:
+                proc.kill()
+            else:
+                proc.terminate()
+
+
 def run_checked(command: list[str], *, cwd: Path | None = None) -> None:
     result = subprocess.run(
         command,
@@ -1543,15 +1603,31 @@ def is_local_worker(worker: dict[str, Any]) -> bool:
     return bool(worker.get("local", False))
 
 
+def managed_remote_script(script: str) -> str:
+    quoted = shlex.quote(script)
+    cleanup = "kill -TERM -$pid 2>/dev/null; sleep 1; kill -KILL -$pid 2>/dev/null"
+    return (
+        "if command -v setsid >/dev/null 2>&1; then "
+        f"setsid sh -lc {quoted} & pid=$!; "
+        f"trap '{cleanup}' INT TERM HUP; "
+        "wait $pid; rc=$?; trap - INT TERM HUP; exit $rc; "
+        f"else sh -lc {quoted}; fi"
+    )
+
+
 def run_worker_shell(
     worker: dict[str, Any],
     script: str,
     *,
     timeout: float | None = None,
+    tracker: ProcessTracker | None = None,
 ) -> subprocess.CompletedProcess[str]:
+    command = ["sh", "-lc", script] if is_local_worker(worker) else ["ssh", *SSH_OPTS, str(worker["host"]), managed_remote_script(script)]
+    if tracker is not None:
+        return tracker.run(command, timeout=timeout)
     if is_local_worker(worker):
         return subprocess.run(
-            ["sh", "-lc", script],
+            command,
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -1559,7 +1635,7 @@ def run_worker_shell(
             timeout=timeout,
         )
     return subprocess.run(
-        ["ssh", *SSH_OPTS, str(worker["host"]), script],
+        command,
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -1574,32 +1650,49 @@ def worker_rsync_target(worker: dict[str, Any], path: str) -> str:
     return f"{worker['host']}:{path}"
 
 
-def copy_to_worker(worker: dict[str, Any], src: Path, dst: str, *, timeout: float | None = None) -> None:
+def copy_to_worker(
+    worker: dict[str, Any],
+    src: Path,
+    dst: str,
+    *,
+    timeout: float | None = None,
+    tracker: ProcessTracker | None = None,
+) -> None:
     if is_local_worker(worker):
         target = expand_path(dst)
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(src, target)
         return
-    result = subprocess.run(
-        ["rsync", "-a", "-e", RSYNC_SSH, str(src), worker_rsync_target(worker, dst)],
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        check=False,
-        timeout=timeout,
-    )
+    command = ["rsync", "-a", "-e", RSYNC_SSH, str(src), worker_rsync_target(worker, dst)]
+    if tracker is not None:
+        result = tracker.run(command, timeout=timeout)
+    else:
+        result = subprocess.run(
+            command,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+            timeout=timeout,
+        )
     if result.returncode != 0:
         raise RuntimeError(result.stderr.strip() or f"rsync failed for {src}")
 
 
-def bootstrap_worker_runner(worker: dict[str, Any], manifest_path: Path, *, timeout: float | None = None) -> None:
+def bootstrap_worker_runner(
+    worker: dict[str, Any],
+    manifest_path: Path,
+    *,
+    timeout: float | None = None,
+    tracker: ProcessTracker | None = None,
+) -> None:
     if not is_local_worker(worker):
         cache = worker_cache_dir(worker)
-        result = run_worker_shell(worker, "mkdir -p " + shlex.quote(cache), timeout=timeout)
+        result = run_worker_shell(worker, "mkdir -p " + shlex.quote(cache), timeout=timeout, tracker=tracker)
         if result.returncode != 0:
             raise RuntimeError(result.stderr.strip() or result.stdout.strip() or "failed to create worker cache")
-    copy_to_worker(worker, script_path(), worker_cache_file(worker, "distrib.py"), timeout=timeout)
-    copy_to_worker(worker, manifest_path, worker_cache_file(worker, "manifest.json"), timeout=timeout)
+    copy_to_worker(worker, script_path(), worker_cache_file(worker, "distrib.py"), timeout=timeout, tracker=tracker)
+    copy_to_worker(worker, manifest_path, worker_cache_file(worker, "manifest.json"), timeout=timeout, tracker=tracker)
 
 
 def worker_profile_args(manifest: dict[str, Any], worker: dict[str, Any]) -> list[str]:
@@ -1653,7 +1746,7 @@ def coordinator_for_worker(worker: dict[str, Any], manifest_path: Path) -> str:
 
 
 def worker_label(host: str, profile: str) -> str:
-    return f"{host}({profile})"
+    return host if profile == host else f"{host}/{profile}"
 
 
 def colorize(text: str, color: str, *, enabled: bool) -> str:
@@ -1677,6 +1770,7 @@ def cmd_deploy(args: argparse.Namespace) -> int:
     has_tasks = bool(manifest.get("tasks"))
     color_enabled = not bool(args.no_color) and sys.stdout.isatty()
     print_lock = threading.Lock()
+    tracker = ProcessTracker()
 
     def status(message: str, *, error: bool = False) -> None:
         with print_lock:
@@ -1705,10 +1799,10 @@ def cmd_deploy(args: argparse.Namespace) -> int:
 
         try:
             verbose_status(f"{label}: syncing runner and manifest")
-            bootstrap_worker_runner(worker, manifest_path, timeout=remote_timeout)
+            bootstrap_worker_runner(worker, manifest_path, timeout=remote_timeout, tracker=tracker)
             verbose_status(f"{label}: checking prerequisites")
             script = deploy_prereq_command(worker=worker, manifest=manifest)
-            prereq = run_worker_shell(worker, script, timeout=remote_timeout)
+            prereq = run_worker_shell(worker, script, timeout=remote_timeout, tracker=tracker)
         except Exception as exc:
             prereq = subprocess.CompletedProcess(["deploy", host], 1, stdout="", stderr=str(exc))
 
@@ -1726,7 +1820,7 @@ def cmd_deploy(args: argparse.Namespace) -> int:
             manifest=manifest,
             coordinator=coordinator_for_worker(worker, manifest_path),
         )
-        result = run_worker_shell(worker, script, timeout=remote_timeout)
+        result = run_worker_shell(worker, script, timeout=remote_timeout, tracker=tracker)
         if result.returncode == 0:
             verbose_status(f"{label}: tasks OK")
             return result_payload("tasks", result)
@@ -1734,12 +1828,25 @@ def cmd_deploy(args: argparse.Namespace) -> int:
         return result_payload("tasks", result)
 
     status(colorize(f"deploy: {len(workers)} worker(s), jobs={jobs}", "cyan", enabled=color_enabled))
-    with concurrent.futures.ThreadPoolExecutor(max_workers=jobs) as executor:
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=jobs)
+    interrupted = False
+    futures: list[concurrent.futures.Future[dict[str, Any]]] = []
+    try:
         futures = [
             executor.submit(run_worker, index, worker)
             for index, worker in enumerate(workers)
         ]
         results = [future.result() for future in concurrent.futures.as_completed(futures)]
+    except KeyboardInterrupt:
+        interrupted = True
+        status(colorize("deploy: interrupted; stopping active worker commands", "yellow", enabled=color_enabled), error=True)
+        tracker.terminate_all()
+        concurrent.futures.wait(futures, timeout=2)
+        for future in futures:
+            future.cancel()
+        return 130
+    finally:
+        executor.shutdown(wait=not interrupted, cancel_futures=interrupted)
 
     failed = sum(1 for item in results if not item["ok"])
     stage = "setup" if not has_tasks else "tasks"

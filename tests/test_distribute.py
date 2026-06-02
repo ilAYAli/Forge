@@ -915,6 +915,24 @@ class DistributeTests(unittest.TestCase):
                 workers,
             )
 
+    def test_example_manifests_parse_and_format_tasks(self) -> None:
+        for path in sorted((ROOT / "examples").glob("*.manifest.json")):
+            with self.subTest(path=path.name):
+                manifest = distrib.load_manifest(path)
+                for task in manifest["tasks"]:
+                    self.assertTrue(distrib.format_command(manifest, task))
+
+    def test_worker_label_omits_duplicate_profile(self) -> None:
+        self.assertEqual("pwa-5090", distrib.worker_label("pwa-5090", "pwa-5090"))
+        self.assertEqual("pwa-win/pwa-wsl", distrib.worker_label("pwa-win", "pwa-wsl"))
+
+    def test_managed_remote_script_cleans_child_process_group(self) -> None:
+        script = distrib.managed_remote_script("sleep 60")
+
+        self.assertIn("setsid sh -lc", script)
+        self.assertIn("kill -TERM -$pid", script)
+        self.assertIn("kill -KILL -$pid", script)
+
     def test_deploy_uses_workers_json_without_unknown_profiles(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             workers_path = Path(tmp) / "workers.json"
@@ -930,11 +948,11 @@ class DistributeTests(unittest.TestCase):
             )
             commands = []
 
-            def fake_run(command, **kwargs):
+            def fake_run(self, command, **kwargs):
                 commands.append(command)
                 return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
 
-            with mock.patch("distrib.subprocess.run", fake_run):
+            with mock.patch("distrib.ProcessTracker.run", fake_run):
                 stdout = io.StringIO()
                 with contextlib.redirect_stdout(stdout):
                     rc = distrib.cmd_deploy(
@@ -951,13 +969,13 @@ class DistributeTests(unittest.TestCase):
             self.assertEqual(0, rc)
             deploy_output = stdout.getvalue()
             self.assertIn("deploy: 2 worker(s), jobs=1", deploy_output)
-            self.assertIn("  OK     pwa-5090(pwa-5090): setup", deploy_output)
-            self.assertIn("  OK     localhost(localhost): setup", deploy_output)
+            self.assertIn("  OK     pwa-5090: setup", deploy_output)
+            self.assertIn("  OK     localhost: setup", deploy_output)
             self.assertNotIn("syncing runner", deploy_output)
             self.assertNotIn("checking prerequisites", deploy_output)
             self.assertIn("deploy: setup complete", deploy_output)
             self.assertTrue(
-                any(command[0] == "ssh" and command[-2:] == ["pwa-5090", "mkdir -p .cache/distrib"] for command in commands)
+                any(command[0] == "ssh" and command[-2] == "pwa-5090" and "mkdir -p .cache/distrib" in command[-1] for command in commands)
             )
             self.assertNotIn(["sh", "-lc", "mkdir -p " + str(Path(tmp) / "cache")], commands)
             self.assertTrue((Path(tmp) / "cache/distrib.py").exists())
@@ -994,7 +1012,7 @@ class DistributeTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            with mock.patch("distrib.subprocess.run", return_value=subprocess.CompletedProcess(["sh"], 0, stdout="", stderr="")):
+            with mock.patch("distrib.ProcessTracker.run", return_value=subprocess.CompletedProcess(["sh"], 0, stdout="", stderr="")):
                 stdout = io.StringIO()
                 with contextlib.redirect_stdout(stdout):
                     rc = distrib.cmd_deploy(
@@ -1010,10 +1028,10 @@ class DistributeTests(unittest.TestCase):
 
             self.assertEqual(0, rc)
             deploy_output = stdout.getvalue()
-            self.assertIn("localhost(localhost): syncing runner and manifest", deploy_output)
-            self.assertIn("localhost(localhost): checking prerequisites", deploy_output)
-            self.assertIn("localhost(localhost): prerequisites OK", deploy_output)
-            self.assertIn("  OK     localhost(localhost): setup", deploy_output)
+            self.assertIn("localhost: syncing runner and manifest", deploy_output)
+            self.assertIn("localhost: checking prerequisites", deploy_output)
+            self.assertIn("localhost: prerequisites OK", deploy_output)
+            self.assertIn("  OK     localhost: setup", deploy_output)
 
     def test_deploy_passes_matching_profile_and_runs_tasks(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1046,11 +1064,11 @@ class DistributeTests(unittest.TestCase):
             )
             commands = []
 
-            def fake_run(command, **kwargs):
+            def fake_run(self, command, **kwargs):
                 commands.append(command)
                 return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
 
-            with mock.patch("distrib.subprocess.run", fake_run):
+            with mock.patch("distrib.ProcessTracker.run", fake_run):
                 stdout = io.StringIO()
                 with contextlib.redirect_stdout(stdout):
                     rc = distrib.cmd_deploy(
@@ -1103,7 +1121,7 @@ class DistributeTests(unittest.TestCase):
             events: list[str] = []
             allow_slow = threading.Event()
 
-            def fake_run(command, **kwargs):
+            def fake_run(self, command, **kwargs):
                 script = command[-1]
                 if "doctor" in script and "--profile slow" in script:
                     events.append("slow_prereq_start")
@@ -1119,7 +1137,7 @@ class DistributeTests(unittest.TestCase):
                     return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
                 return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
 
-            with mock.patch("distrib.subprocess.run", fake_run):
+            with mock.patch("distrib.ProcessTracker.run", fake_run):
                 stdout = io.StringIO()
                 with contextlib.redirect_stdout(stdout):
                     rc = distrib.cmd_deploy(
@@ -1162,11 +1180,11 @@ class DistributeTests(unittest.TestCase):
             )
             commands = []
 
-            def fake_run(command, **kwargs):
+            def fake_run(self, command, **kwargs):
                 commands.append(command)
                 return subprocess.CompletedProcess(command, 1, stdout="", stderr="failed")
 
-            with mock.patch("distrib.subprocess.run", fake_run):
+            with mock.patch("distrib.ProcessTracker.run", fake_run):
                 stdout = io.StringIO()
                 stderr = io.StringIO()
                 with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
@@ -1184,6 +1202,54 @@ class DistributeTests(unittest.TestCase):
             self.assertEqual(1, rc)
             scripts = [command[-1] for command in commands if command[0] == "sh"]
             self.assertFalse(any(" work " in script for script in scripts))
+
+    def test_deploy_interrupt_terminates_active_worker_commands(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest = root / "manifest.json"
+            manifest.write_text(
+                json.dumps({
+                    "schema": "distribute.task.v1",
+                    "name": "deploy-interrupt",
+                    "work_dir": str(root),
+                    "state_dir": str(root / "state"),
+                    "log_dir": str(root / "logs"),
+                    "requirements": {"python_min": "3.11", "git_min": "2.38"},
+                    "tasks": [],
+                }),
+                encoding="utf-8",
+            )
+            workers_path = root / "workers.json"
+            workers_path.write_text(
+                json.dumps({
+                    "schema": "distribute.workers.v1",
+                    "workers": ["pwa-5090"],
+                }),
+                encoding="utf-8",
+            )
+
+            with (
+                mock.patch("distrib.ProcessTracker.run", return_value=subprocess.CompletedProcess(["sh"], 0, stdout="", stderr="")),
+                mock.patch.object(distrib.ProcessTracker, "terminate_all") as terminate_all,
+                mock.patch("distrib.concurrent.futures.as_completed", side_effect=KeyboardInterrupt),
+            ):
+                stdout = io.StringIO()
+                stderr = io.StringIO()
+                with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                    rc = distrib.cmd_deploy(
+                        argparse.Namespace(
+                            manifest=str(manifest),
+                            workers=str(workers_path),
+                            jobs=1,
+                            remote_timeout_seconds=1800.0,
+                            no_color=True,
+                            verbose=False,
+                        )
+                    )
+
+            self.assertEqual(130, rc)
+            terminate_all.assert_called_once()
+            self.assertIn("deploy: interrupted; stopping active worker commands", stderr.getvalue())
 
     def test_prepare_command_is_removed(self) -> None:
         result = self.run_cli("prepare", "manifest.json")
