@@ -1,0 +1,76 @@
+{
+  "schema": "distribute.task.v1",
+  "name": "nnue-label-stockfish",
+  "work_dir": "~/code/cpp/chess/nnue",
+  "state_dir": "~/code/cpp/chess/distrib-runs/nnue-label-stockfish/state",
+  "log_dir": "~/code/cpp/chess/distrib-runs/nnue-label-stockfish/logs",
+  "claim_dir": "~/code/cpp/chess/distrib-runs/nnue-label-stockfish/claims",
+  "requirements": {
+    "python_min": "3.11",
+    "git_min": "2.38",
+    "repos": [
+      {
+        "name": "nnue",
+        "url": "git@github.com:ilAYAli/nnue.git",
+        "path": "~/code/cpp/chess/nnue",
+        "remote": "origin",
+        "commit": "REPLACE_WITH_NNUE_COMMIT_SHA",
+        "allow_dirty": false
+      }
+    ],
+    "commands": [
+      {
+        "name": "stockfish",
+        "path": "stockfish"
+      }
+    ],
+    "inputs": [
+      {
+        "path": "~/code/cpp/chess/distrib-runs/nnue-label-stockfish/source/source.jsonl"
+      }
+    ]
+  },
+  "vars": {
+    "input": "~/code/cpp/chess/distrib-runs/nnue-label-stockfish/source/source.jsonl",
+    "engine": "stockfish",
+    "depth": "14",
+    "threads": "1",
+    "hash": "128",
+    "max_abs_cp": "1600",
+    "progress": "1000"
+  },
+  "tasks": [
+    {
+      "id": "label_0000",
+      "index": 0,
+      "command": "python3 tools/score/score.py uci --input {input} --output {output} --engine {engine} --depth {depth} --threads {threads} --hash {hash} --shard-count {shards} --shard-index {index} --max-abs-cp {max_abs_cp} --progress {progress}",
+      "outputs": [
+        "~/code/cpp/chess/distrib-runs/nnue-label-stockfish/shards/label.0000.jsonl"
+      ]
+    },
+    {
+      "id": "label_0001",
+      "index": 1,
+      "command": "python3 tools/score/score.py uci --input {input} --output {output} --engine {engine} --depth {depth} --threads {threads} --hash {hash} --shard-count {shards} --shard-index {index} --max-abs-cp {max_abs_cp} --progress {progress}",
+      "outputs": [
+        "~/code/cpp/chess/distrib-runs/nnue-label-stockfish/shards/label.0001.jsonl"
+      ]
+    },
+    {
+      "id": "label_0002",
+      "index": 2,
+      "command": "python3 tools/score/score.py uci --input {input} --output {output} --engine {engine} --depth {depth} --threads {threads} --hash {hash} --shard-count {shards} --shard-index {index} --max-abs-cp {max_abs_cp} --progress {progress}",
+      "outputs": [
+        "~/code/cpp/chess/distrib-runs/nnue-label-stockfish/shards/label.0002.jsonl"
+      ]
+    },
+    {
+      "id": "label_0003",
+      "index": 3,
+      "command": "python3 tools/score/score.py uci --input {input} --output {output} --engine {engine} --depth {depth} --threads {threads} --hash {hash} --shard-count {shards} --shard-index {index} --max-abs-cp {max_abs_cp} --progress {progress}",
+      "outputs": [
+        "~/code/cpp/chess/distrib-runs/nnue-label-stockfish/shards/label.0003.jsonl"
+      ]
+    }
+  ]
+}

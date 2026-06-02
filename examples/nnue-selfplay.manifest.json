@@ -1,0 +1,83 @@
+{
+  "schema": "distribute.task.v1",
+  "name": "nnue-selfplay",
+  "work_dir": "~/code/cpp/chess/nnue",
+  "state_dir": "~/code/cpp/chess/distrib-runs/nnue-selfplay/state",
+  "log_dir": "~/code/cpp/chess/distrib-runs/nnue-selfplay/logs",
+  "claim_dir": "~/code/cpp/chess/distrib-runs/nnue-selfplay/claims",
+  "requirements": {
+    "python_min": "3.11",
+    "git_min": "2.38",
+    "repos": [
+      {
+        "name": "nnue",
+        "url": "git@github.com:ilAYAli/nnue.git",
+        "path": "~/code/cpp/chess/nnue",
+        "remote": "origin",
+        "commit": "REPLACE_WITH_NNUE_COMMIT_SHA",
+        "allow_dirty": false
+      }
+    ],
+    "commands": [
+      {
+        "name": "fastchess",
+        "path": "fastchess"
+      },
+      {
+        "name": "candidate-engine",
+        "path": "~/assets/engines/candidate"
+      }
+    ],
+    "inputs": [
+      {
+        "path": "~/code/cpp/chess/assets/books/UHO_Lichess_4852_v1.epd"
+      }
+    ]
+  },
+  "vars": {
+    "engine": "~/assets/engines/candidate",
+    "book": "~/code/cpp/chess/assets/books/UHO_Lichess_4852_v1.epd",
+    "games_per_task": "1000",
+    "concurrency": "8",
+    "threads": "1",
+    "depth": "12"
+  },
+  "tasks": [
+    {
+      "id": "selfplay_0000",
+      "index": 0,
+      "seed": 2026060200,
+      "command": "python3 tools/posgen/posgen.py selfplay --engine {engine} --book {book} --output {output} --games {games_per_task} --concurrency {concurrency} --threads {threads} --depth {depth} --srand {seed}",
+      "outputs": [
+        "~/code/cpp/chess/distrib-runs/nnue-selfplay/pgn/selfplay.0000.pgn"
+      ]
+    },
+    {
+      "id": "selfplay_0001",
+      "index": 1,
+      "seed": 2026060201,
+      "command": "python3 tools/posgen/posgen.py selfplay --engine {engine} --book {book} --output {output} --games {games_per_task} --concurrency {concurrency} --threads {threads} --depth {depth} --srand {seed}",
+      "outputs": [
+        "~/code/cpp/chess/distrib-runs/nnue-selfplay/pgn/selfplay.0001.pgn"
+      ]
+    },
+    {
+      "id": "selfplay_0002",
+      "index": 2,
+      "seed": 2026060202,
+      "command": "python3 tools/posgen/posgen.py selfplay --engine {engine} --book {book} --output {output} --games {games_per_task} --concurrency {concurrency} --threads {threads} --depth {depth} --srand {seed}",
+      "outputs": [
+        "~/code/cpp/chess/distrib-runs/nnue-selfplay/pgn/selfplay.0002.pgn"
+      ]
+    },
+    {
+      "id": "selfplay_0003",
+      "index": 3,
+      "seed": 2026060203,
+      "command": "python3 tools/posgen/posgen.py selfplay --engine {engine} --book {book} --output {output} --games {games_per_task} --concurrency {concurrency} --threads {threads} --depth {depth} --srand {seed}",
+      "outputs": [
+        "~/code/cpp/chess/distrib-runs/nnue-selfplay/pgn/selfplay.0003.pgn"
+      ]
+    }
+  ]
+}

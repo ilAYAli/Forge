@@ -117,6 +117,23 @@ distrib merge --manifest run.manifest.json --output merged.txt
 Lower-level commands remain available for diagnostics: `sync-repos`, `doctor`,
 `work`, `claim`, `release`, `heartbeat`, and `run`.
 
+## NNUE Examples
+
+Edit the commit SHA and paths first, then run:
+
+```sh
+distrib deploy examples/workers.json examples/nnue-selfplay.manifest.json
+distrib deploy examples/workers.json examples/nnue-label-stockfish.manifest.json
+```
+
+Merge labeled shards:
+
+```sh
+distrib merge \
+  --manifest examples/nnue-label-stockfish.manifest.json \
+  --output ~/code/cpp/chess/distrib-runs/nnue-label-stockfish/labeled.jsonl
+```
+
 ## Failure Model
 
 - A task is complete only when its `done.json` and declared outputs exist.
@@ -126,3 +143,5 @@ Lower-level commands remain available for diagnostics: `sync-repos`, `doctor`,
 - Stale claims can be reclaimed after their lease expires.
 - Wrong Git commits, missing commands, or mismatched input checksums fail before
   a task command starts.
+- Ctrl+C in `deploy` signals active SSH/rsync commands and wraps remote commands
+  so worker child processes are also terminated.
