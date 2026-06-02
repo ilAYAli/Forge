@@ -554,6 +554,23 @@ def run_repo_hook(item: dict[str, Any], field: str, *, repo: Path) -> None:
             )
 
 
+def input_requirement_items(manifest: dict[str, Any]) -> list[dict[str, Any]]:
+    req = manifest.get("requirements", {})
+    if not isinstance(req, dict):
+        raise SystemExit("requirements must be an object")
+    inputs = req.get("inputs", [])
+    if not isinstance(inputs, list):
+        raise SystemExit("requirements.inputs must be a list")
+    active_profile = str(manifest.get("_active_profile") or "").strip() or None
+    items = []
+    for item in inputs:
+        if not isinstance(item, dict):
+            raise SystemExit("requirements.inputs entries must be objects")
+        if item_matches_profile(item, active_profile, field="requirements.inputs"):
+            items.append(item)
+    return items
+
+
 def check_requirements(manifest: dict[str, Any]) -> None:
     req = manifest.get("requirements", {})
     if not isinstance(req, dict):
@@ -588,14 +605,7 @@ def check_requirements(manifest: dict[str, Any]) -> None:
             continue
         check_command_requirement(item)
 
-    inputs = req.get("inputs", [])
-    if not isinstance(inputs, list):
-        raise SystemExit("requirements.inputs must be a list")
-    for item in inputs:
-        if not isinstance(item, dict):
-            raise SystemExit("requirements.inputs entries must be objects")
-        if not item_matches_profile(item, active_profile, field="requirements.inputs"):
-            continue
+    for item in input_requirement_items(manifest):
         path = expand_path(str(item.get("path", "")))
         if not path.exists():
             raise SystemExit(f"required input missing: {path}")
@@ -2040,16 +2050,86 @@ def bootstrap_worker_runner(
     copy_to_worker(worker, manifest_path, worker_cache_file(worker, "manifest.json"), timeout=timeout, tracker=tracker)
 
 
-def worker_profile_args(manifest: dict[str, Any], worker: dict[str, Any]) -> list[str]:
+def active_worker_profile(manifest: dict[str, Any], worker: dict[str, Any]) -> str | None:
     profile = str(worker.get("profile") or "").strip()
     if not profile:
-        return []
-    path_maps = manifest.get("path_maps", {})
-    if not isinstance(path_maps, dict):
-        raise SystemExit("path_maps must be an object")
+        return None
     if profile not in manifest_profile_names(manifest):
+        return None
+    return profile
+
+
+def worker_profile_args(manifest: dict[str, Any], worker: dict[str, Any]) -> list[str]:
+    profile = active_worker_profile(manifest, worker)
+    if not profile:
         return []
     return ["--profile", profile]
+
+
+def worker_manifest(manifest: dict[str, Any], worker: dict[str, Any]) -> dict[str, Any]:
+    profile = active_worker_profile(manifest, worker)
+    if profile:
+        return apply_profile(manifest, profile)
+    return manifest
+
+
+def local_manifest_for_worker(manifest: dict[str, Any], worker: dict[str, Any]) -> dict[str, Any]:
+    profile = active_worker_profile(manifest, worker)
+    local_manifest = copy.deepcopy(manifest)
+    if profile:
+        local_manifest["_active_profile"] = profile
+    return local_manifest
+
+
+def current_host_names() -> set[str]:
+    return {socket.gethostname(), socket.getfqdn(), "localhost", "127.0.0.1"}
+
+
+def worker_is_current_host(worker: dict[str, Any]) -> bool:
+    return str(worker.get("host") or "") in current_host_names()
+
+
+def make_parent_command(worker: dict[str, Any], path: str) -> str:
+    code = (
+        "from pathlib import Path; "
+        f"Path({json.dumps(path)}).expanduser().parent.mkdir(parents=True, exist_ok=True)"
+    )
+    return shell_join([worker_python(worker), "-c", code])
+
+
+def sync_inputs_to_worker(
+    worker: dict[str, Any],
+    manifest: dict[str, Any],
+    *,
+    timeout: float | None = None,
+    tracker: ProcessTracker | None = None,
+) -> int:
+    local_inputs = input_requirement_items(local_manifest_for_worker(manifest, worker))
+    remote_inputs = input_requirement_items(worker_manifest(manifest, worker))
+    if len(local_inputs) != len(remote_inputs):
+        raise RuntimeError("profile input mapping changed input count")
+
+    synced = 0
+    for local_item, remote_item in zip(local_inputs, remote_inputs, strict=True):
+        src = expand_path(str(local_item.get("path") or ""))
+        dst = str(remote_item.get("path") or "")
+        if not src.exists():
+            raise RuntimeError(f"input does not exist: {src}")
+        if is_local_worker(worker):
+            target = expand_path(dst)
+            if src.resolve() == target.resolve():
+                continue
+            copy_to_worker(worker, src, dst, timeout=timeout, tracker=tracker)
+            synced += 1
+            continue
+        if worker_is_current_host(worker) and src.resolve() == expand_path(dst).resolve():
+            continue
+        mkdir = run_worker_shell(worker, make_parent_command(worker, dst), timeout=timeout, tracker=tracker)
+        if mkdir.returncode != 0:
+            raise RuntimeError(mkdir.stderr.strip() or mkdir.stdout.strip() or f"failed to create parent for {dst}")
+        copy_to_worker(worker, src, dst, timeout=timeout, tracker=tracker)
+        synced += 1
+    return synced
 
 
 def manifest_has_git_requirements(manifest: dict[str, Any]) -> bool:
@@ -2157,6 +2237,9 @@ def cmd_deploy(args: argparse.Namespace) -> int:
         try:
             verbose_status(f"{label}: syncing runner and manifest")
             bootstrap_worker_runner(worker, manifest_path, timeout=remote_timeout, tracker=tracker)
+            synced_inputs = sync_inputs_to_worker(worker, manifest, timeout=remote_timeout, tracker=tracker)
+            if synced_inputs:
+                verbose_status(f"{label}: synced {synced_inputs} input file(s)")
             verbose_status(f"{label}: checking prerequisites")
             script = deploy_prereq_command(worker=worker, manifest=manifest)
             prereq = run_worker_shell(worker, script, timeout=remote_timeout, tracker=tracker)

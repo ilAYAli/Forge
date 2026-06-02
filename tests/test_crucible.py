@@ -1286,6 +1286,65 @@ class CrucibleTests(unittest.TestCase):
             self.assertIn("localhost: prerequisites OK", deploy_output)
             self.assertIn("  OK     localhost: setup", deploy_output)
 
+    def test_deploy_syncs_declared_inputs_to_worker_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            coordinator = root / "coordinator"
+            worker_root = root / "worker"
+            coordinator.mkdir()
+            worker_root.mkdir()
+            source = coordinator / "source.jsonl"
+            source.write_text("{\"x\":1}\n", encoding="utf-8")
+            manifest = coordinator / "manifest.json"
+            manifest.write_text(
+                json.dumps({
+                    "schema": "crucible.task.v1",
+                    "name": "deploy-input-sync",
+                    "work_dir": str(coordinator),
+                    "state_dir": str(coordinator / "state"),
+                    "log_dir": str(coordinator / "logs"),
+                    "path_maps": {"worker": {str(coordinator): str(worker_root)}},
+                    "requirements": {
+                        "python_min": "3.11",
+                        "git_min": "2.38",
+                        "inputs": [crucible.file_record(source)],
+                    },
+                    "tasks": [],
+                }),
+                encoding="utf-8",
+            )
+            workers_path = root / "workers.json"
+            workers_path.write_text(
+                json.dumps({
+                    "schema": "crucible.workers.v1",
+                    "workers": [{
+                        "host": "localhost",
+                        "profile": "worker",
+                        "local": True,
+                        "cache_dir": str(root / "cache"),
+                    }],
+                }),
+                encoding="utf-8",
+            )
+
+            with mock.patch("crucible.ProcessTracker.run", return_value=subprocess.CompletedProcess(["sh"], 0, stdout="", stderr="")):
+                stdout = io.StringIO()
+                with contextlib.redirect_stdout(stdout):
+                    rc = crucible.cmd_deploy(
+                        argparse.Namespace(
+                            manifest=str(manifest),
+                            workers=str(workers_path),
+                            jobs=1,
+                            remote_timeout_seconds=1800.0,
+                            no_color=True,
+                            verbose=True,
+                        )
+                    )
+
+            self.assertEqual(0, rc)
+            self.assertEqual(source.read_text(encoding="utf-8"), (worker_root / "source.jsonl").read_text(encoding="utf-8"))
+            self.assertIn("localhost/worker: synced 1 input file(s)", stdout.getvalue())
+
     def test_deploy_passes_matching_profile_and_runs_tasks(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
