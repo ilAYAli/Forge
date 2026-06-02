@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import os
+import argparse
 import subprocess
 import sys
 import tempfile
@@ -762,6 +765,56 @@ class DistributeTests(unittest.TestCase):
             self.assertEqual(0, status.returncode)
             self.assertIn("claimed=0", status.stdout)
             self.assertIn("pending=1", status.stdout)
+
+    def test_version_reports_current_checkout(self) -> None:
+        result = self.run_cli("version", "--json")
+        self.assertEqual("", result.stderr)
+        self.assertEqual(0, result.returncode)
+        payload = json.loads(result.stdout)
+        self.assertEqual("distrib", payload["tool"])
+        self.assertIn("commit", payload)
+        self.assertIn("repo", payload)
+
+    def test_self_update_fast_forwards_distrib_checkout(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "source"
+            clone = root / "clone"
+            subprocess.run(["git", "init", "-b", "main", str(source)], check=True, stdout=subprocess.DEVNULL)
+            subprocess.run(["git", "config", "user.name", "Petter Wahlman"], cwd=source, check=True)
+            subprocess.run(["git", "config", "user.email", "petter@wahlman.no"], cwd=source, check=True)
+            (source / "distribute.py").write_text("#!/usr/bin/env python3\n", encoding="utf-8")
+            subprocess.run(["git", "add", "distribute.py"], cwd=source, check=True)
+            subprocess.run(["git", "commit", "-m", "one"], cwd=source, check=True, stdout=subprocess.DEVNULL)
+            subprocess.run(["git", "clone", str(source), str(clone)], check=True, stdout=subprocess.DEVNULL)
+            (source / "marker.txt").write_text("two", encoding="utf-8")
+            subprocess.run(["git", "add", "marker.txt"], cwd=source, check=True)
+            subprocess.run(["git", "commit", "-m", "two"], cwd=source, check=True, stdout=subprocess.DEVNULL)
+            expected = subprocess.check_output(["git", "-C", str(source), "rev-parse", "HEAD"], text=True).strip()
+
+            original_file = distribute.__file__
+            try:
+                distribute.__file__ = str(clone / "distribute.py")
+                stdout = io.StringIO()
+                with contextlib.redirect_stdout(stdout):
+                    rc = distribute.cmd_self_update(
+                        argparse.Namespace(
+                            remote="origin",
+                            branch="main",
+                            require_clean=True,
+                            json=True,
+                        )
+                    )
+            finally:
+                distribute.__file__ = original_file
+            self.assertEqual(0, rc)
+            head = subprocess.check_output(["git", "-C", str(clone), "rev-parse", "HEAD"], text=True).strip()
+            self.assertEqual(expected, head)
+
+    def test_remote_distrib_command_uses_path(self) -> None:
+        command = distribute.remote_distrib_command(["status", "--manifest", "/tmp/run manifest.json"])
+
+        self.assertEqual("exec distrib status --manifest '/tmp/run manifest.json'", command)
 
 
 if __name__ == "__main__":

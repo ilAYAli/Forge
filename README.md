@@ -25,7 +25,7 @@ For NNUE work, the normal coordinator is `pwa-5090`.
 - Python 3.11 or newer.
 - Git 2.38 or newer.
 - `ssh` and `rsync` for moving manifests and shard outputs between hosts.
-- `distrib` installed as `~/.local/bin/distrib` on each worker.
+- `distrib` available in `PATH` on each participating host.
 - The same project checkout on every worker, at the same Git commit.
 - Use `~` or `$HOME` for worker-local paths when possible. They are expanded
   on the host running the command.
@@ -54,7 +54,8 @@ Bootstrap a worker:
 git clone git@github.com:ilAYAli/distrib.git ~/code/cpp/chess/distrib
 mkdir -p ~/.local/bin
 ln -sf ~/code/cpp/chess/distrib/distribute.py ~/.local/bin/distrib
-~/.local/bin/distrib --help >/dev/null
+command -v distrib
+distrib --help >/dev/null
 ```
 
 After this bootstrap, manifests should declare everything else the worker

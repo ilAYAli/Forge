@@ -25,6 +25,23 @@ from typing import Any
 SCHEMA = "distribute.task.v1"
 
 
+def script_path() -> Path:
+    return Path(__file__).resolve()
+
+
+def script_repo() -> Path:
+    path = script_path()
+    try:
+        root = subprocess.check_output(
+            ["git", "-C", str(path.parent), "rev-parse", "--show-toplevel"],
+            text=True,
+            stderr=subprocess.STDOUT,
+        ).strip()
+    except subprocess.CalledProcessError as exc:
+        raise SystemExit(exc.output.strip() or f"{path}: not inside a git checkout") from exc
+    return Path(root)
+
+
 def expand_path(value: str | Path) -> Path:
     path = Path(os.path.expandvars(str(value))).expanduser()
     if path.is_absolute():
@@ -166,6 +183,34 @@ def run_checked(command: list[str], *, cwd: Path | None = None) -> None:
     )
     if result.returncode != 0:
         raise SystemExit(result.stdout.strip() or f"command failed: {shell_join(command)}")
+
+
+def distrib_version_payload() -> dict[str, Any]:
+    repo = script_repo()
+    commit = git_output(repo, "rev-parse", "HEAD")
+    branch = git_output(repo, "rev-parse", "--abbrev-ref", "HEAD")
+    dirty = bool(git_output(repo, "status", "--porcelain"))
+    remote = ""
+    upstream = ""
+    try:
+        remote = git_output(repo, "config", "--get", "branch.main.remote")
+    except subprocess.CalledProcessError:
+        remote = ""
+    try:
+        upstream = git_output(repo, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}")
+    except subprocess.CalledProcessError:
+        upstream = ""
+    return {
+        "schema": SCHEMA,
+        "tool": "distrib",
+        "path": str(script_path()),
+        "repo": str(repo),
+        "branch": branch,
+        "commit": commit,
+        "dirty": dirty,
+        "remote": remote,
+        "upstream": upstream,
+    }
 
 
 def load_manifest(path: Path) -> dict[str, Any]:
@@ -675,13 +720,7 @@ def shell_join(args: list[str]) -> str:
 
 def remote_distrib_command(args: list[str]) -> str:
     quoted_args = shell_join(args)
-    return (
-        "if command -v distrib >/dev/null 2>&1; then "
-        f"exec distrib {quoted_args}; "
-        "else "
-        f'exec "$HOME/.local/bin/distrib" {quoted_args}; '
-        "fi"
-    )
+    return f"exec distrib {quoted_args}"
 
 
 def run_coordinator_cli(coordinator: str, args: list[str]) -> subprocess.CompletedProcess[str]:
@@ -695,7 +734,7 @@ def run_coordinator_cli(coordinator: str, args: list[str]) -> subprocess.Complet
             stderr=subprocess.PIPE,
             check=False,
         )
-    script = str(Path(__file__).resolve())
+    script = str(script_path())
     local_args = [sys.executable, script, *resolved_args]
     return subprocess.run(
         local_args,
@@ -1353,9 +1392,37 @@ def cmd_merge(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_self_update(args: argparse.Namespace) -> int:
+    repo = script_repo()
+    if args.require_clean and git_output(repo, "status", "--porcelain"):
+        raise SystemExit(f"{repo}: git worktree is not clean")
+    run_checked(["git", "-C", str(repo), "fetch", args.remote])
+    run_checked(["git", "-C", str(repo), "checkout", args.branch])
+    run_checked(["git", "-C", str(repo), "pull", "--ff-only", args.remote, args.branch])
+    payload = distrib_version_payload()
+    if args.json:
+        print(json.dumps(payload, sort_keys=True))
+    else:
+        suffix = " dirty" if payload["dirty"] else ""
+        print(f"distrib {payload['commit']} {payload['branch']}{suffix}")
+    return 0
+
+
+def cmd_version(args: argparse.Namespace) -> int:
+    payload = distrib_version_payload()
+    if args.json:
+        print(json.dumps(payload, sort_keys=True))
+    else:
+        suffix = " dirty" if payload["dirty"] else ""
+        print(f"distrib {payload['commit']} {payload['branch']}{suffix}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    sub = parser.add_subparsers(dest="command", required=True)
+    parser.add_argument("--version", action="store_true", help="Print distrib version and exit.")
+    parser.add_argument("--version-json", action="store_true", help="Print distrib version as JSON and exit.")
+    sub = parser.add_subparsers(dest="command")
 
     plan = sub.add_parser("plan", help="Create a numbered shard manifest.")
     plan.add_argument("--name", required=True)
@@ -1484,12 +1551,28 @@ def build_parser() -> argparse.ArgumentParser:
     merge.add_argument("--profile")
     merge.set_defaults(func=cmd_merge)
 
+    self_update = sub.add_parser("self-update", help="Fast-forward the distrib checkout itself.")
+    self_update.add_argument("--remote", default="origin")
+    self_update.add_argument("--branch", default="main")
+    self_update.add_argument("--require-clean", action=argparse.BooleanOptionalAction, default=True)
+    self_update.add_argument("--json", action="store_true")
+    self_update.set_defaults(func=cmd_self_update)
+
+    version = sub.add_parser("version", help="Print distrib version.")
+    version.add_argument("--json", action="store_true")
+    version.set_defaults(func=cmd_version)
+
     return parser
 
 
 def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
+    if args.version or args.version_json:
+        args.json = bool(args.version_json)
+        return cmd_version(args)
+    if getattr(args, "command", None) is None:
+        parser.error("a command is required")
     if getattr(args, "command", None) == "run" and args.task is None and args.index is None:
         parser.error("run requires --task or --index")
     return int(args.func(args))
