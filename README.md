@@ -22,10 +22,11 @@ Deploy prerequisites to all workers, then run tasks if the manifest has any:
 crucible deploy workers.json manifest.json
 ```
 
-`deploy` copies the current runner and manifest to each worker, runs repository
-sync/build/install/probe requirements, runs `doctor`, then starts worker loops
-for task shards. Workers need Python, Git, SSH/rsync, and the toolchain required
-by the manifest. Workers do not need `crucible` installed.
+`deploy` copies the current runner, manifest, and declared input files to each
+worker, runs repository sync/build/install/probe requirements, runs `doctor`,
+then starts worker loops for task shards. Workers need Python, Git, SSH/rsync,
+and the toolchain required by the manifest. Workers do not need `crucible`
+installed.
 Default output is an ordered per-worker summary. Use `--verbose` for live phase
 details. TTY output is colored by default; use `--no-color` to disable it.
 
