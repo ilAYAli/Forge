@@ -163,7 +163,15 @@ def read_json(path: Path) -> dict[str, Any]:
 
 def write_json(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
+    try:
+        tmp.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        os.replace(tmp, path)
+    finally:
+        try:
+            tmp.unlink()
+        except FileNotFoundError:
+            pass
 
 
 def translate_string(value: str, path_map: dict[str, str]) -> str:
@@ -2857,12 +2865,13 @@ def parse_worker_slots(value: Any, *, label: str) -> int:
 
 
 def expand_worker_record(worker: dict[str, Any]) -> list[dict[str, Any]]:
-    slots = int(worker.pop("slots", 1))
+    record = dict(worker)
+    slots = int(record.pop("slots", 1))
     if slots == 1:
-        return [worker]
+        return [record]
     workers = []
     for slot in range(1, slots + 1):
-        expanded = dict(worker)
+        expanded = dict(record)
         expanded["_slot"] = slot
         expanded["_slots"] = slots
         workers.append(expanded)
@@ -3114,10 +3123,11 @@ def deploy_work_command(*, worker: dict[str, Any], manifest: dict[str, Any], coo
     ])
 
 
-def coordinator_for_worker(worker: dict[str, Any], manifest_path: Path) -> str:
+def coordinator_for_worker(worker: dict[str, Any], manifest_path: Path, coordinator_host: str | None = None) -> str:
     if is_local_worker(worker):
         return str(manifest_path)
-    return f"{socket.gethostname()}:{manifest_path}"
+    host = coordinator_host or socket.gethostname()
+    return f"{host}:{manifest_path}"
 
 
 def worker_label(host: str, profile: str, slot: Any = None, slots: Any = None) -> str:
@@ -3259,7 +3269,15 @@ def cmd_deploy(args: argparse.Namespace) -> int:
                     setup_lock.wait()
                 return setup_results[key]
 
-        result = run_worker_setup(worker)
+        try:
+            result = run_worker_setup(worker)
+        except BaseException as exc:
+            result = subprocess.CompletedProcess(
+                ["deploy", str(worker.get("host", "worker"))],
+                1,
+                stdout="",
+                stderr=f"internal setup error: {type(exc).__name__}: {exc}",
+            )
         with setup_lock:
             setup_results[key] = result
             setup_lock.notify_all()
@@ -3297,7 +3315,7 @@ def cmd_deploy(args: argparse.Namespace) -> int:
         script = deploy_work_command(
             worker=worker,
             manifest=manifest,
-            coordinator=coordinator_for_worker(worker, manifest_path),
+            coordinator=coordinator_for_worker(worker, manifest_path, getattr(args, "coordinator_host", None)),
         )
         result = run_worker_shell(worker, script, timeout=remote_timeout, tracker=tracker)
         if result.returncode == 0:
@@ -3695,6 +3713,7 @@ def build_parser() -> argparse.ArgumentParser:
     deploy.add_argument("--run", help="Run directory name under runs/. Defaults to manifest name.")
     deploy.add_argument("--resume", action="store_true", help="Resume an existing materialized run.")
     deploy.add_argument("--replace", action="store_true", help="Delete and recreate an existing run.")
+    deploy.add_argument("--coordinator-host", help="Coordinator hostname workers should SSH back to.")
     deploy.add_argument("--remote-timeout-seconds", type=float, default=1800.0, help="Timeout for remote setup/work commands.")
     deploy.add_argument("--no-color", action="store_true", help="Disable ANSI color output.")
     deploy.add_argument("--verbose", action="store_true", help="Print setup and worker phase details.")

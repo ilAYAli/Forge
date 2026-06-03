@@ -143,6 +143,16 @@ class CrucibleTests(unittest.TestCase):
             self.assertNotEqual(0, result.returncode)
             self.assertIn("duplicate output path", result.stderr)
 
+    def test_write_json_replaces_existing_file_without_temp_leftover(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "state.json"
+            crucible.write_json(path, {"old": True})
+
+            crucible.write_json(path, {"new": True})
+
+            self.assertEqual({"new": True}, json.loads(path.read_text(encoding="utf-8")))
+            self.assertEqual([], list(path.parent.glob(f".{path.name}.*.tmp")))
+
     def test_plan_declares_progress_metadata_from_line_count(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -1866,6 +1876,15 @@ class CrucibleTests(unittest.TestCase):
                 workers,
             )
 
+    def test_expand_worker_record_does_not_mutate_input(self) -> None:
+        worker = {"host": "pwa-5090", "profile": "linux", "local": False, "slots": 2}
+
+        workers = crucible.expand_worker_record(worker)
+
+        self.assertEqual({"host": "pwa-5090", "profile": "linux", "local": False, "slots": 2}, worker)
+        self.assertEqual([1, 2], [item["_slot"] for item in workers])
+        self.assertTrue(all("slots" not in item for item in workers))
+
     def test_load_workers_rejects_invalid_slots(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             workers_path = Path(tmp) / "workers.json"
@@ -1900,6 +1919,23 @@ class CrucibleTests(unittest.TestCase):
 
         self.assertIn("/opt/homebrew/bin/python3 .cache/crucible/crucible.py doctor", prereq)
         self.assertIn("/opt/homebrew/bin/python3 .cache/crucible/crucible.py work", work)
+
+    def test_coordinator_host_override_is_used_for_remote_workers(self) -> None:
+        manifest = Path("/tmp/run/manifest.json")
+
+        remote = crucible.coordinator_for_worker(
+            {"host": "pwa-rce", "profile": "pwa-rce", "local": False},
+            manifest,
+            "pwa-5090.local",
+        )
+        local = crucible.coordinator_for_worker(
+            {"host": "localhost", "profile": "localhost", "local": True},
+            manifest,
+            "pwa-5090.local",
+        )
+
+        self.assertEqual("pwa-5090.local:/tmp/run/manifest.json", remote)
+        self.assertEqual("/tmp/run/manifest.json", local)
 
     def test_deploy_materializes_contained_run(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
