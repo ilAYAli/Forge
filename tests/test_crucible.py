@@ -925,6 +925,65 @@ class CrucibleTests(unittest.TestCase):
                 self.assertEqual(0, one_run.returncode)
                 self.assertIn("tasks=0/1", one_run.stdout)
 
+    def test_status_uses_runs_dir_env(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            runs = root / "custom-runs"
+            run = runs / "main"
+            manifest = run / "manifest.json"
+            manifest.parent.mkdir(parents=True)
+            manifest.write_text(
+                json.dumps({
+                    "schema": "crucible.task.v1",
+                    "name": "main",
+                    "work_dir": str(run),
+                    "state_dir": str(run / "state"),
+                    "log_dir": str(run / "logs"),
+                    "tasks": [{"id": "task_0", "index": 0, "command": "true", "outputs": []}],
+                }),
+                encoding="utf-8",
+            )
+
+            with mock.patch.dict(os.environ, {"CRUCIBLE_RUNS_DIR": str(runs)}):
+                result = self.run_cli("status", cwd=root)
+            self.assertEqual(0, result.returncode)
+            self.assertIn("main", result.stdout)
+
+    def test_status_delegates_to_coordinator_runs_env(self) -> None:
+        remote_result = subprocess.CompletedProcess(
+            args=["ssh"],
+            returncode=0,
+            stdout="remote status\n",
+            stderr="",
+        )
+        with mock.patch.dict(
+            os.environ,
+            {"CRUCIBLE_COORDINATOR_RUNS": "pwa-5090:/home/petter/code/cpp/chess/crucible/runs"},
+        ), mock.patch("crucible.subprocess.run", return_value=remote_result) as run_mock:
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout):
+                rc = crucible.cmd_status(
+                    argparse.Namespace(
+                        run=None,
+                        all=False,
+                        done=False,
+                        failed=False,
+                        json=False,
+                        no_color=True,
+                        lease_seconds=600,
+                        show_done=False,
+                        verbose=False,
+                    )
+                )
+
+        self.assertEqual(0, rc)
+        self.assertEqual("remote status\n", stdout.getvalue())
+        command = run_mock.call_args.args[0]
+        self.assertEqual("ssh", command[0])
+        self.assertIn("pwa-5090", command)
+        self.assertIn("CRUCIBLE_RUNS_DIR=/home/petter/code/cpp/chess/crucible/runs", command[-1])
+        self.assertIn("env -u CRUCIBLE_COORDINATOR_RUNS", command[-1])
+
     def test_status_shows_declared_progress(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

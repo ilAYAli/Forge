@@ -27,6 +27,8 @@ SCHEMA = "crucible.task.v1"
 RUNS_DIR_NAME = "runs"
 RUN_MANIFEST_NAME = "manifest.json"
 RUN_WORKERS_NAME = "workers.json"
+RUNS_DIR_ENV = "CRUCIBLE_RUNS_DIR"
+COORDINATOR_RUNS_ENV = "CRUCIBLE_COORDINATOR_RUNS"
 RUN_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 SSH_CONNECT_TIMEOUT_SECONDS = 15
 SSH_SERVER_ALIVE_INTERVAL_SECONDS = 30
@@ -70,6 +72,9 @@ def expand_path(value: str | Path) -> Path:
 
 
 def runs_dir() -> Path:
+    override = os.environ.get(RUNS_DIR_ENV)
+    if override:
+        return expand_path(override)
     return script_repo() / RUNS_DIR_NAME
 
 
@@ -1648,6 +1653,9 @@ def cmd_status(args: argparse.Namespace) -> int:
     selected = [name for name in ("all", "done", "failed") if bool(getattr(args, name))]
     if len(selected) > 1:
         raise SystemExit("choose only one of --all, --done, or --failed")
+    coordinator_runs = os.environ.get(COORDINATOR_RUNS_ENV)
+    if coordinator_runs and status_can_delegate(args.run):
+        return run_status_on_coordinator(args, coordinator_runs)
     filter_name = selected[0] if selected else None
     if args.run is None:
         summaries = load_run_summaries(lease_seconds=args.lease_seconds)
@@ -1678,6 +1686,61 @@ def cmd_status(args: argparse.Namespace) -> int:
         for row in summary["rows"]:
             print(f"{row['id']}\t{row['state']}\t{row['worker']}")
     return 0 if summary["counts"]["fail"] == 0 else 1
+
+
+def status_can_delegate(run: str | None) -> bool:
+    if run is None:
+        return True
+    path = Path(str(run))
+    return not path.is_absolute() and len(path.parts) == 1
+
+
+def status_command_args(args: argparse.Namespace) -> list[str]:
+    command = ["status"]
+    if args.run is not None:
+        command.append(str(args.run))
+    for name in ("verbose", "show_done", "all", "done", "failed", "json", "no_color"):
+        if bool(getattr(args, name)):
+            command.append("--" + name.replace("_", "-"))
+    command.extend(["--lease-seconds", str(args.lease_seconds)])
+    return command
+
+
+def run_status_on_coordinator(args: argparse.Namespace, coordinator_runs: str) -> int:
+    host, runs_path = parse_coordinator(coordinator_runs)
+    command = status_command_args(args)
+    if host:
+        remote = (
+            "command -v crucible >/dev/null 2>&1 || "
+            "{ echo 'crucible not found in PATH on coordinator' >&2; exit 127; }; "
+            f"exec env -u {shlex.quote(COORDINATOR_RUNS_ENV)} "
+            f"{shlex.quote(RUNS_DIR_ENV)}={shlex.quote(runs_path)} "
+            f"crucible {shell_join(command)}"
+        )
+        result = subprocess.run(
+            ["ssh", *SSH_OPTS, host, remote],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+    else:
+        env = os.environ.copy()
+        env.pop(COORDINATOR_RUNS_ENV, None)
+        env[RUNS_DIR_ENV] = runs_path
+        result = subprocess.run(
+            [sys.executable, str(script_path()), *command],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+            env=env,
+        )
+    if result.stdout:
+        print(result.stdout, end="")
+    if result.stderr:
+        print(result.stderr, end="", file=sys.stderr)
+    return result.returncode
 
 
 def run_manifest_paths() -> list[Path]:
