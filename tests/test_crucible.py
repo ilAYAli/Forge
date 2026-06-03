@@ -36,7 +36,7 @@ class CrucibleTests(unittest.TestCase):
             "plan", "add-input", "add-repo", "sync-repos", "run", "claim",
             "release", "heartbeat", "work", "doctor", "status",
             "wait", "verify", "merge", "stop", "del", "self-update",
-            "version", "deploy",
+            "update", "version", "deploy",
         ]
         for command in commands:
             with self.subTest(command=command):
@@ -47,6 +47,7 @@ class CrucibleTests(unittest.TestCase):
         self.assertIn("--progress-log-regex", self.run_cli("plan", "--help").stdout)
         self.assertIn("Coordinator manifest", self.run_cli("claim", "--help").stdout)
         self.assertIn("workers.json", self.run_cli("deploy", "--help").stdout)
+        self.assertIn("workers.json", self.run_cli("update", "--help").stdout)
 
     def test_list_subcommand_is_not_supported(self) -> None:
         result = self.run_cli("list", "--help")
@@ -1461,6 +1462,86 @@ class CrucibleTests(unittest.TestCase):
             self.assertEqual(0, rc)
             head = subprocess.check_output(["git", "-C", str(clone), "rev-parse", "HEAD"], text=True).strip()
             self.assertEqual(expected, head)
+
+    def test_update_matches_workers_to_coordinator_commit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            workers = root / "workers.json"
+            workers.write_text(
+                json.dumps({
+                    "schema": "crucible.workers.v1",
+                    "workers": [
+                        {"host": "localhost", "local": True, "name": "local-a"},
+                        {"host": "remote-a"},
+                    ],
+                }),
+                encoding="utf-8",
+            )
+            result = subprocess.CompletedProcess(
+                args=["sh"],
+                returncode=0,
+                stdout="crucible abc main\n",
+                stderr="",
+            )
+            with mock.patch("crucible.run_worker_shell", return_value=result) as run_mock:
+                stdout = io.StringIO()
+                with contextlib.redirect_stdout(stdout):
+                    rc = crucible.cmd_update(
+                        argparse.Namespace(
+                            workers=str(workers),
+                            all=False,
+                            remote="origin",
+                            branch="main",
+                            require_clean=True,
+                            timeout_seconds=30.0,
+                        )
+                    )
+
+            self.assertEqual(0, rc)
+            self.assertEqual(2, run_mock.call_count)
+            first_script = run_mock.call_args_list[0].args[1]
+            self.assertIn("git -C \"$repo\" fetch origin main", first_script)
+            self.assertIn("git -C \"$repo\" merge --ff-only", first_script)
+            self.assertIn("test \"$(git -C \"$repo\" rev-parse HEAD)\" =", first_script)
+            self.assertIn("localhost: OK crucible abc main", stdout.getvalue())
+            self.assertIn("remote-a: OK crucible abc main", stdout.getvalue())
+
+    def test_update_uses_default_workers_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            runs = root / "runs"
+            runs.mkdir()
+            workers = runs / "workers.json"
+            workers.write_text(
+                json.dumps({
+                    "schema": "crucible.workers.v1",
+                    "workers": [{"host": "localhost", "local": True}],
+                }),
+                encoding="utf-8",
+            )
+            result = subprocess.CompletedProcess(
+                args=["sh"],
+                returncode=0,
+                stdout="crucible abc main\n",
+                stderr="",
+            )
+            with (
+                mock.patch("crucible.runs_dir", return_value=runs),
+                mock.patch("crucible.run_worker_shell", return_value=result) as run_mock,
+            ):
+                rc = crucible.cmd_update(
+                    argparse.Namespace(
+                        workers=None,
+                        all=False,
+                        remote="origin",
+                        branch="main",
+                        require_clean=True,
+                        timeout_seconds=30.0,
+                    )
+                )
+
+            self.assertEqual(0, rc)
+            self.assertEqual(1, run_mock.call_count)
 
     def test_remote_crucible_command_uses_path(self) -> None:
         command = crucible.remote_crucible_command(["status", "run name"])

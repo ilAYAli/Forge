@@ -2527,6 +2527,103 @@ def cmd_version(args: argparse.Namespace) -> int:
     return 0
 
 
+def update_worker_label(worker: dict[str, Any]) -> str:
+    return str(worker.get("name") or worker.get("host") or "local")
+
+
+def default_workers_path() -> Path:
+    candidates = [
+        runs_dir() / RUN_WORKERS_NAME,
+        expand_path(RUN_WORKERS_NAME),
+    ]
+    for path in candidates:
+        if path.exists():
+            return path
+    raise SystemExit(
+        f"no workers file found; pass workers path or create {runs_dir() / RUN_WORKERS_NAME}"
+    )
+
+
+def worker_update_script(*, commit: str, remote: str, branch: str, require_clean: bool) -> str:
+    clean_check = (
+        "if [ -n \"$(git -C \"$repo\" status --porcelain)\" ]; then "
+        "echo \"$repo: git worktree is not clean\" >&2; exit 1; fi; "
+        if require_clean else ""
+    )
+    return (
+        "set -e; "
+        "bin=$(command -v crucible); "
+        "repo=$(python3 - \"$bin\" <<'PY'\n"
+        "import pathlib, subprocess, sys\n"
+        "path = pathlib.Path(sys.argv[1]).resolve()\n"
+        "print(subprocess.check_output(['git', '-C', str(path.parent), "
+        "'rev-parse', '--show-toplevel'], text=True).strip())\n"
+        "PY\n"
+        "); "
+        f"{clean_check}"
+        f"git -C \"$repo\" fetch {shlex.quote(remote)} {shlex.quote(branch)}; "
+        f"if git -C \"$repo\" show-ref --verify --quiet refs/heads/{shlex.quote(branch)}; then "
+        f"git -C \"$repo\" checkout {shlex.quote(branch)}; "
+        f"git -C \"$repo\" merge --ff-only {shlex.quote(commit)}; "
+        "else "
+        f"git -C \"$repo\" checkout -B {shlex.quote(branch)} {shlex.quote(commit)}; "
+        "fi; "
+        f"test \"$(git -C \"$repo\" rev-parse HEAD)\" = {shlex.quote(commit)}; "
+        "mkdir -p \"$HOME/.local/bin\"; "
+        "ln -sf \"$repo/crucible.py\" \"$HOME/.local/bin/crucible\"; "
+        "crucible version"
+    )
+
+
+def cmd_update(args: argparse.Namespace) -> int:
+    remote = str(args.remote)
+    branch = str(args.branch or "main")
+    timeout = max(0.0, float(args.timeout_seconds))
+    workers_path = expand_path(args.workers) if args.workers else default_workers_path()
+    workers = load_workers(workers_path)
+    failed = 0
+
+    if args.all:
+        try:
+            rc = cmd_self_update(
+                argparse.Namespace(
+                    remote=remote,
+                    branch=branch,
+                    require_clean=args.require_clean,
+                    json=False,
+                )
+            )
+        except SystemExit as exc:
+            rc = int(exc.code) if isinstance(exc.code, int) else 1
+        if rc == 0:
+            print("coordinator: OK")
+        else:
+            print(f"coordinator: FAILED rc={rc}", file=sys.stderr)
+            failed += 1
+    commit = git_output(script_repo(), "rev-parse", "HEAD")
+    print(f"target: {commit}")
+    update_command = worker_update_script(
+        commit=commit,
+        remote=remote,
+        branch=branch,
+        require_clean=bool(args.require_clean),
+    )
+
+    for worker in workers:
+        label = update_worker_label(worker)
+        result = run_worker_shell(worker, update_command, timeout=timeout)
+        if result.returncode == 0:
+            summary = result.stdout.strip().splitlines()[-1:] or ["OK"]
+            print(f"{label}: OK {summary[0]}")
+            continue
+        failed += 1
+        detail = (result.stderr.strip() or result.stdout.strip()).splitlines()
+        print(f"{label}: FAILED rc={result.returncode}", file=sys.stderr)
+        if detail:
+            print(f"  {detail[-1]}", file=sys.stderr)
+    return 1 if failed else 0
+
+
 def parse_worker_spec(value: str) -> tuple[str, str]:
     if "=" in value:
         host, profile = value.split("=", 1)
@@ -3349,6 +3446,19 @@ def build_parser() -> argparse.ArgumentParser:
     self_update.add_argument("--require-clean", action=argparse.BooleanOptionalAction, default=True, help="Require clean worktree before updating.")
     self_update.add_argument("--json", action="store_true", help="Print version payload as JSON after updating.")
     self_update.set_defaults(func=cmd_self_update)
+
+    update = sub.add_parser(
+        "update",
+        help="Update Crucible on workers.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    update.add_argument("workers", nargs="?", help="workers.json file. Defaults to runs/workers.json, then ./workers.json.")
+    update.add_argument("--all", action="store_true", help="Also update the coordinator.")
+    update.add_argument("--remote", default="origin", help="Git remote to pull from.")
+    update.add_argument("--branch", default="main", help="Branch to update.")
+    update.add_argument("--require-clean", action=argparse.BooleanOptionalAction, default=True, help="Require clean worktrees before updating.")
+    update.add_argument("--timeout-seconds", type=float, default=300.0, help="Timeout per worker update.")
+    update.set_defaults(func=cmd_update)
 
     version = sub.add_parser(
         "version",

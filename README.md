@@ -132,6 +132,8 @@ crucible status my-run -v     # one row per task
 crucible verify my-run        # require every task to be done
 crucible merge my-run --output merged.txt
 crucible stop my-run          # ask workers to stop this run
+crucible update               # update workers to this coordinator commit
+crucible update --all         # update coordinator, then workers
 crucible del my-run           # delete one run directory
 crucible del --done           # delete completed run directories
 ```
@@ -154,6 +156,11 @@ printf '%s\n' 'pwa-5090:/home/petter/code/cpp/chess/crucible/runs' > runs/coordi
 Set `CRUCIBLE_RUNS_DIR` to use a different local run root, or
 `CRUCIBLE_COORDINATOR_RUNS=host:/path/to/crucible/runs` to override
 `runs/coordinator`. Explicit run paths remain local diagnostics.
+
+`update` uses `runs/workers.json` by default, falling back to `./workers.json`.
+It updates workers to the coordinator's exact current Crucible commit. With
+`--all`, the coordinator fast-forwards first, then workers are matched to the
+new coordinator commit.
 
 Lower-level commands remain available for diagnostics: `sync-repos`, `doctor`,
 `work`, `claim`, `release`, `heartbeat`, and `run`.
