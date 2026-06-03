@@ -996,10 +996,13 @@ def update_claim_heartbeat(
     *,
     worker: str,
     claim_id: str | None,
+    progress_data: dict[str, Any] | None = None,
 ) -> None:
     payload = check_claim_owner(manifest, task, worker=worker, claim_id=claim_id)
     payload["heartbeat_at"] = now()
     payload["heartbeat_epoch"] = epoch()
+    if progress_data is not None:
+        payload["progress_data"] = progress_data
     write_json(task_heartbeat_path(manifest, task), payload)
 
 
@@ -1462,10 +1465,16 @@ def heartbeat_on_coordinator(
     task_id: str,
     worker: str,
     claim_id: str | None,
+    progress_data: dict[str, Any] | None = None,
 ) -> None:
     command = ["heartbeat", "--manifest", "{manifest}", "--task", task_id, "--worker", worker]
     if claim_id:
         command.extend(["--claim-id", claim_id])
+    if progress_data:
+        command.extend([
+            "--progress-json",
+            json.dumps(progress_data, separators=(",", ":"), sort_keys=True),
+        ])
     result = run_coordinator_cli(
         coordinator,
         command,
@@ -1480,6 +1489,8 @@ def heartbeat_loop(
     task_id: str,
     worker: str,
     claim_id: str | None,
+    local_manifest: dict[str, Any],
+    local_task: dict[str, Any],
     lease_seconds: int,
     stop: threading.Event,
 ) -> None:
@@ -1491,11 +1502,18 @@ def heartbeat_loop(
             else HEARTBEAT_DEFAULT_INTERVAL_SECONDS,
         ),
     )
-    while not stop.wait(interval):
+    while not stop.is_set():
         try:
-            heartbeat_on_coordinator(coordinator, task_id, worker, claim_id)
+            heartbeat_on_coordinator(
+                coordinator,
+                task_id,
+                worker,
+                claim_id,
+                task_log_progress_data(local_manifest, local_task),
+            )
         except Exception as exc:
             print(f"{task_id}: heartbeat failed: {exc}", file=sys.stderr)
+        stop.wait(interval)
 
 
 def check_coordinator_cli(coordinator: str) -> None:
@@ -1530,6 +1548,8 @@ def cmd_work(args: argparse.Namespace) -> int:
                 "task_id": task_id,
                 "worker": args.worker,
                 "claim_id": claim_id,
+                "local_manifest": local_manifest,
+                "local_task": local_task,
                 "lease_seconds": args.lease_seconds,
                 "stop": stop_heartbeat,
             },
@@ -1604,7 +1624,21 @@ def cmd_doctor(args: argparse.Namespace) -> int:
 def cmd_heartbeat(args: argparse.Namespace) -> int:
     manifest = load_manifest(expand_path(args.manifest))
     task = find_task(manifest, task_id=args.task, index=None)
-    update_claim_heartbeat(manifest, task, worker=args.worker, claim_id=args.claim_id)
+    progress_data = None
+    if args.progress_json:
+        try:
+            progress_data = json.loads(args.progress_json)
+        except json.JSONDecodeError as exc:
+            raise SystemExit(f"--progress-json is not valid JSON: {exc}") from exc
+        if not isinstance(progress_data, dict):
+            raise SystemExit("--progress-json must be a JSON object")
+    update_claim_heartbeat(
+        manifest,
+        task,
+        worker=args.worker,
+        claim_id=args.claim_id,
+        progress_data=progress_data,
+    )
     print(task["id"])
     return 0
 
@@ -1715,6 +1749,13 @@ def compact_count(value: int) -> str:
 
 
 def progress_text(data: dict[str, Any]) -> str:
+    if data.get("kind") == "subtask":
+        done = data.get("done")
+        total = data.get("total")
+        done_text = str(done) if isinstance(done, int) else "?"
+        total_text = str(total) if isinstance(total, int) and total > 0 else "?"
+        return f"subtask={done_text}/{total_text}"
+
     done = data.get("done")
     total = data.get("total")
     unit = str(data.get("unit") or "").strip()
@@ -1737,8 +1778,9 @@ def progress_text(data: dict[str, Any]) -> str:
 
 
 def summary_progress(summary: dict[str, Any]) -> str:
-    fraction_done = 0
-    fraction_total = 0
+    subtask_done = 0
+    subtask_total = 0
+    subtask_known_total = True
     by_unit: dict[str, dict[str, Any]] = {}
     outputs: dict[str, int] = {}
     for row in summary["active"]:
@@ -1759,23 +1801,27 @@ def summary_progress(summary: dict[str, Any]) -> str:
                 output_unit = str(data.get("output_unit") or "output")
                 outputs[output_unit] = outputs.get(output_unit, 0) + output
             continue
-        if isinstance(data, dict):
+        if isinstance(data, dict) and data.get("kind") == "subtask":
             done = data.get("done")
             total = data.get("total")
-            if isinstance(done, int) and isinstance(total, int):
-                fraction_done += done
-                fraction_total += total
+            if isinstance(done, int):
+                subtask_done += done
+                if isinstance(total, int) and total > 0:
+                    subtask_total += total
+                else:
+                    subtask_known_total = False
                 continue
 
         progress = str(row.get("progress") or "")
         fraction_match = re.fullmatch(r"(\d+)/(\d+)", progress)
         if fraction_match:
-            fraction_done += int(fraction_match.group(1))
-            fraction_total += int(fraction_match.group(2))
+            subtask_done += int(fraction_match.group(1))
+            subtask_total += int(fraction_match.group(2))
 
     parts: list[str] = []
-    if fraction_total:
-        parts.append(f"{fraction_done}/{fraction_total}")
+    if subtask_done or subtask_total:
+        total = str(subtask_total) if subtask_known_total and subtask_total > 0 else "?"
+        parts.append(f"subtask={subtask_done}/{total}")
     for unit, bucket in sorted(by_unit.items()):
         done = int(bucket["done"])
         total = int(bucket["total"])
@@ -2005,6 +2051,37 @@ def parse_int(value: str | None) -> int | None:
         return None
 
 
+def normalize_progress_data(raw: Any) -> dict[str, Any] | None:
+    if not isinstance(raw, dict):
+        return None
+    data = dict(raw)
+    done = data.get("done")
+    if not isinstance(done, int):
+        done = parse_int(str(done)) if done is not None else None
+    if done is None:
+        return None
+    data["done"] = done
+
+    total = data.get("total")
+    if not isinstance(total, int):
+        total = parse_int(str(total)) if total is not None else None
+    if total is not None:
+        data["total"] = total
+
+    output = data.get("output")
+    if not isinstance(output, int):
+        output = parse_int(str(output)) if output is not None else None
+    if output is not None:
+        data["output"] = output
+
+    kind = str(data.get("kind") or "").strip()
+    if kind not in {"metadata", "subtask"}:
+        kind = "metadata" if data.get("unit") else "subtask"
+    data["kind"] = kind
+    data["text"] = progress_text(data)
+    return data
+
+
 def task_log_progress_data(manifest: dict[str, Any], task: dict[str, Any]) -> dict[str, Any] | None:
     path = task_log_path(manifest, task)
     try:
@@ -2049,8 +2126,18 @@ def task_log_progress_data(manifest: dict[str, Any], task: dict[str, Any]) -> di
         if match:
             done = int(match.group(1))
             total = int(match.group(2))
-            return {"kind": "fraction", "done": done, "total": total, "text": f"{done}/{total}"}
+            data = {"kind": "subtask", "done": done, "total": total}
+            data["text"] = progress_text(data)
+            return data
     return None
+
+
+def task_heartbeat_progress_data(manifest: dict[str, Any], task: dict[str, Any]) -> dict[str, Any] | None:
+    try:
+        payload = read_json(task_heartbeat_path(manifest, task))
+    except Exception:
+        return None
+    return normalize_progress_data(payload.get("progress_data"))
 
 
 def status_summary(manifest: dict[str, Any], *, lease_seconds: int) -> dict[str, Any]:
@@ -2070,6 +2157,8 @@ def status_summary(manifest: dict[str, Any], *, lease_seconds: int) -> dict[str,
         worker = status_worker(manifest, task, state)
         index = task_display_index(task)
         progress_data = task_log_progress_data(manifest, task) if state == "running" else None
+        if progress_data is None and state in {"running", "claimed", "stale"}:
+            progress_data = task_heartbeat_progress_data(manifest, task)
         progress = str(progress_data.get("text") or "") if isinstance(progress_data, dict) else ""
         row = {
             "id": task["id"],
@@ -2992,6 +3081,7 @@ def build_parser() -> argparse.ArgumentParser:
     heartbeat.add_argument("--task", required=True, help="Task id to refresh.")
     heartbeat.add_argument("--worker", required=True, help="Expected worker owner.")
     heartbeat.add_argument("--claim-id", help="Expected claim id.")
+    heartbeat.add_argument("--progress-json", help="Optional JSON progress object to store with the heartbeat.")
     heartbeat.set_defaults(func=cmd_heartbeat)
 
     work = sub.add_parser(

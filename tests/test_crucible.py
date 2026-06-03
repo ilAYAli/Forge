@@ -495,9 +495,27 @@ class CrucibleTests(unittest.TestCase):
                 "--manifest", str(manifest),
                 "--task", "task_0000",
                 "--worker", "worker-a",
+                "--progress-json", '{"done":42,"total":1000}',
             )
             self.assertEqual("", heartbeat.stderr)
             self.assertEqual(0, heartbeat.returncode)
+
+            status_with_progress = self.run_cli("status", str(root))
+            self.assertEqual(0, status_with_progress.returncode)
+            self.assertIn("worker-a claimed: 0 [subtask=42/1000]", status_with_progress.stdout)
+
+            unknown_total = self.run_cli(
+                "heartbeat",
+                "--manifest", str(manifest),
+                "--task", "task_0000",
+                "--worker", "worker-a",
+                "--progress-json", '{"done":43}',
+            )
+            self.assertEqual("", unknown_total.stderr)
+            self.assertEqual(0, unknown_total.returncode)
+            status_unknown_total = self.run_cli("status", str(root))
+            self.assertEqual(0, status_unknown_total.returncode)
+            self.assertIn("worker-a claimed: 0 [subtask=43/?]", status_unknown_total.stdout)
 
             wrong_claim = self.run_cli(
                 "heartbeat",
@@ -745,7 +763,7 @@ class CrucibleTests(unittest.TestCase):
                 compact.stdout,
             )
             self.assertNotIn("host-done [1]: 0", compact.stdout)
-            self.assertIn("worker-claimed running: 1 [42/1000]", compact.stdout)
+            self.assertIn("worker-claimed running: 1 [subtask=42/1000]", compact.stdout)
             self.assertIn("host-fail [1]: 2", compact.stdout)
             self.assertIn("pending:\n  3", compact.stdout)
 
@@ -768,7 +786,7 @@ class CrucibleTests(unittest.TestCase):
             self.assertEqual(1, payload["counts"]["done"])
             self.assertEqual(1, payload["active_count"])
             self.assertEqual([0], payload["groups"]["done"]["host-done"])
-            self.assertEqual("42/1000", payload["active"][0]["progress"])
+            self.assertEqual("subtask=42/1000", payload["active"][0]["progress"])
 
     def test_status_uses_runs_directory(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
