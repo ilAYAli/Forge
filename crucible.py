@@ -749,6 +749,20 @@ def task_log_path(manifest: dict[str, Any], task: dict[str, Any]) -> Path:
     return log_dir(manifest) / f"{task['id']}.log"
 
 
+def path_epoch(path: Path) -> float:
+    try:
+        return path.stat().st_mtime
+    except OSError:
+        return 0.0
+
+
+def marker_is_stale(path: Path, *, lease_seconds: int) -> bool:
+    if lease_seconds <= 0:
+        return False
+    marker_epoch = path_epoch(path)
+    return bool(marker_epoch and epoch() - marker_epoch > lease_seconds)
+
+
 def stop_request_path(manifest: dict[str, Any]) -> Path:
     return state_dir(manifest) / "stop.json"
 
@@ -781,12 +795,15 @@ def task_complete(manifest: dict[str, Any], task: dict[str, Any]) -> bool:
 
 
 def task_claim_state(manifest: dict[str, Any], task: dict[str, Any], *, lease_seconds: int) -> str | None:
-    path = task_claim_path(manifest, task)
-    if not path.exists():
+    claim = task_claim_dir(manifest, task)
+    if not claim.exists():
         return None
+    path = task_claim_path(manifest, task)
     try:
         payload = read_json(path)
     except (OSError, json.JSONDecodeError):
+        if marker_is_stale(claim, lease_seconds=lease_seconds):
+            return "stale"
         return "claimed"
     heartbeat = task_heartbeat_path(manifest, task)
     heartbeat_epoch = float(payload.get("heartbeat_epoch") or payload.get("claimed_epoch") or 0)
@@ -801,13 +818,28 @@ def task_claim_state(manifest: dict[str, Any], task: dict[str, Any], *, lease_se
     return "claimed"
 
 
+def task_running_state(manifest: dict[str, Any], task: dict[str, Any], *, lease_seconds: int) -> str | None:
+    running = task_running_path(manifest, task)
+    if not running.exists():
+        return None
+    claim_state = task_claim_state(manifest, task, lease_seconds=lease_seconds)
+    if claim_state == "stale":
+        return "stale"
+    if claim_state == "claimed":
+        return "running"
+    if marker_is_stale(running, lease_seconds=lease_seconds):
+        return "stale"
+    return "running"
+
+
 def task_state(manifest: dict[str, Any], task: dict[str, Any], *, lease_seconds: int = 600) -> str:
     if task_complete(manifest, task):
         return "done"
     if task_fail_path(manifest, task).exists():
         return "fail"
-    if task_running_path(manifest, task).exists():
-        return "running"
+    running_state = task_running_state(manifest, task, lease_seconds=lease_seconds)
+    if running_state:
+        return running_state
     claim_state = task_claim_state(manifest, task, lease_seconds=lease_seconds)
     if claim_state:
         return claim_state
@@ -929,6 +961,11 @@ def claim_task(
             continue
         if task_fail_path(manifest, task).exists() and not retry_failed:
             continue
+        running_state = task_running_state(manifest, task, lease_seconds=lease_seconds)
+        if running_state == "running":
+            continue
+        if running_state == "stale":
+            task_running_path(manifest, task).unlink(missing_ok=True)
         claim_state = task_claim_state(manifest, task, lease_seconds=lease_seconds)
         task_claim = task_claim_dir(manifest, task)
         if claim_state == "claimed":

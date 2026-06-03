@@ -564,6 +564,69 @@ class CrucibleTests(unittest.TestCase):
             status = self.run_cli("status", str(root))
             self.assertIn("pending=1", status.stdout)
 
+    def test_zombie_claim_expires_and_can_be_reclaimed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest = {
+                "schema": "crucible.task.v1",
+                "name": "zombie-claim",
+                "work_dir": str(root),
+                "state_dir": str(root / "state"),
+                "log_dir": str(root / "logs"),
+                "claim_dir": str(root / "claims"),
+                "tasks": [{"id": "task_0000", "index": 0, "command": "true", "outputs": []}],
+            }
+            task = manifest["tasks"][0]
+            claim = crucible.task_claim_dir(manifest, task)
+            claim.mkdir(parents=True)
+            old = crucible.epoch() - 30
+            os.utime(claim, (old, old))
+
+            self.assertEqual("stale", crucible.task_state(manifest, task, lease_seconds=1))
+            reclaimed = crucible.claim_task(
+                manifest,
+                worker="worker-b",
+                profile=None,
+                lease_seconds=1,
+                retry_failed=False,
+            )
+
+            self.assertIsNotNone(reclaimed)
+            self.assertEqual("task_0000", reclaimed["task"])
+            payload = crucible.read_json(crucible.task_claim_path(manifest, task))
+            self.assertEqual("worker-b", payload["worker"])
+
+    def test_stale_running_marker_does_not_block_reclaim(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest = {
+                "schema": "crucible.task.v1",
+                "name": "stale-running",
+                "work_dir": str(root),
+                "state_dir": str(root / "state"),
+                "log_dir": str(root / "logs"),
+                "claim_dir": str(root / "claims"),
+                "tasks": [{"id": "task_0000", "index": 0, "command": "true", "outputs": []}],
+            }
+            task = manifest["tasks"][0]
+            running = crucible.task_running_path(manifest, task)
+            running.parent.mkdir(parents=True)
+            running.write_text(json.dumps({"task": "task_0000"}), encoding="utf-8")
+            old = crucible.epoch() - 30
+            os.utime(running, (old, old))
+
+            self.assertEqual("stale", crucible.task_state(manifest, task, lease_seconds=1))
+            reclaimed = crucible.claim_task(
+                manifest,
+                worker="worker-b",
+                profile=None,
+                lease_seconds=1,
+                retry_failed=False,
+            )
+
+            self.assertIsNotNone(reclaimed)
+            self.assertFalse(running.exists())
+
     def test_verify_rejects_done_task_without_outputs(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
