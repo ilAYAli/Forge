@@ -525,7 +525,7 @@ class CrucibleTests(unittest.TestCase):
 
             status_with_progress = self.run_cli("status", str(root))
             self.assertEqual(0, status_with_progress.returncode)
-            self.assertIn("worker-a claimed: 0 [subtask=42/1000, eta=7m59s]", status_with_progress.stdout)
+            self.assertIn("worker-a claimed: task=0 [subtask=42/1000, eta=7m59s]", status_with_progress.stdout)
 
             unknown_total = self.run_cli(
                 "heartbeat",
@@ -538,7 +538,7 @@ class CrucibleTests(unittest.TestCase):
             self.assertEqual(0, unknown_total.returncode)
             status_unknown_total = self.run_cli("status", str(root))
             self.assertEqual(0, status_unknown_total.returncode)
-            self.assertIn("worker-a claimed: 0 [subtask=43/?]", status_unknown_total.stdout)
+            self.assertIn("worker-a claimed: task=0 [subtask=43/?]", status_unknown_total.stdout)
 
             wrong_claim = self.run_cli(
                 "heartbeat",
@@ -849,7 +849,7 @@ class CrucibleTests(unittest.TestCase):
                 compact.stdout,
             )
             self.assertNotIn("host-done [1]: 0", compact.stdout)
-            self.assertIn("worker-claimed running: 1 [subtask=42/1000]", compact.stdout)
+            self.assertIn("worker-claimed running: task=1 [subtask=42/1000]", compact.stdout)
             self.assertIn("host-fail [1]: 2", compact.stdout)
             self.assertIn("pending:\n  3", compact.stdout)
 
@@ -956,7 +956,7 @@ class CrucibleTests(unittest.TestCase):
                 self.assertNotIn("bonus", status_text)
                 self.assertNotIn("setup", status_text)
                 self.assertNotIn("nnue-selfplay", status_text)
-                self.assertNotIn("worker-main running: 0", status_text)
+                self.assertNotIn("worker-main running: task=0", status_text)
 
                 stdout = io.StringIO()
                 with contextlib.redirect_stdout(stdout):
@@ -1016,7 +1016,7 @@ class CrucibleTests(unittest.TestCase):
                 all_text = stdout.getvalue()
                 self.assertIn("main", all_text)
                 self.assertIn("bonus", all_text)
-                self.assertIn("worker-main running: 0", all_text)
+                self.assertIn("worker-main running: task=0", all_text)
 
                 stdout = io.StringIO()
                 with contextlib.redirect_stdout(stdout):

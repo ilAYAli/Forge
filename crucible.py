@@ -2565,7 +2565,7 @@ def print_status_details(
             progress = f" [{row['progress']}]" if row.get("progress") else ""
             worker = row["worker"] or "unknown"
             state = colorize(str(row["state"]), status_color(str(row["state"])), enabled=color_enabled)
-            print(f"  {worker} {state}: {row['index']}{progress}")
+            print(f"  {worker} {state}: task={row['index']}{progress}")
     print_status_group("fail", summary["groups"]["fail"], color_enabled=color_enabled)
     print_status_group("stale", summary["groups"]["stale"], color_enabled=color_enabled)
     if summary["pending"]:
