@@ -2669,6 +2669,74 @@ def cmd_wait(args: argparse.Namespace) -> int:
         time.sleep(max(0.1, args.interval_seconds))
 
 
+def run_notify_command(command_text: str | None, payload: dict[str, Any]) -> int:
+    if not command_text:
+        return 0
+    command = shlex.split(command_text)
+    if not command:
+        return 0
+    data = json.dumps(payload, sort_keys=True)
+    env = os.environ.copy()
+    env["CRUCIBLE_EVENT_JSON"] = data
+    result = subprocess.run(
+        command,
+        input=data + "\n",
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=env,
+        check=False,
+    )
+    if result.returncode != 0:
+        detail = result.stderr.strip() or result.stdout.strip() or "notification command failed"
+        print(f"notify failed rc={result.returncode}: {detail}", file=sys.stderr)
+    return int(result.returncode)
+
+
+def deploy_event_payload(
+    *,
+    run_dir: Path,
+    manifest_path: Path,
+    workers_path: Path,
+    manifest: dict[str, Any],
+    results: list[dict[str, Any]],
+    failed: int,
+    has_tasks: bool,
+    elapsed_seconds: float,
+    lease_seconds: int = 600,
+) -> dict[str, Any]:
+    summary = status_summary(manifest, lease_seconds=lease_seconds)
+    metadata = manifest_metadata(manifest)
+    payload: dict[str, Any] = {
+        "event": "deploy_fail" if failed else "deploy_done",
+        "run": str(run_dir.name),
+        "run_dir": str(run_dir),
+        "manifest": str(manifest_path),
+        "workers": str(workers_path),
+        "state": "failed" if failed else "ok",
+        "rc": 1 if failed else 0,
+        "has_tasks": has_tasks,
+        "elapsed_seconds": round(elapsed_seconds, 3),
+        "tasks": summary["tasks"],
+        "counts": summary["counts"],
+        "active_count": summary["active_count"],
+        "worker_results": [
+            {
+                "host": str(item.get("host") or ""),
+                "profile": str(item.get("profile") or ""),
+                "slot": item.get("slot"),
+                "slots": item.get("slots"),
+                "stage": str(item.get("stage") or ""),
+                "ok": bool(item.get("ok")),
+                "rc": int(item.get("rc") or 0),
+            }
+            for item in sorted(results, key=lambda entry: int(entry["index"]))
+        ],
+    }
+    payload.update(metadata)
+    return payload
+
+
 def verify_manifest(manifest: dict[str, Any]) -> None:
     check_requirements(manifest)
     failures = []
@@ -3267,6 +3335,7 @@ def materialize_run(
 
 
 def cmd_deploy(args: argparse.Namespace) -> int:
+    started_at = time.monotonic()
     workers_arg = expand_path(args.workers)
     template_path = expand_path(args.manifest)
     run_dir, manifest_path, workers_path = materialize_run(
@@ -3435,6 +3504,21 @@ def cmd_deploy(args: argparse.Namespace) -> int:
         status(colorize("deploy: setup complete", "green", enabled=color_enabled) if failed == 0 else colorize("deploy: setup failed", "red", enabled=color_enabled))
     else:
         status(colorize("deploy: tasks complete", "green", enabled=color_enabled) if failed == 0 else colorize("deploy: tasks failed", "red", enabled=color_enabled))
+    notify_command = getattr(args, "notify_command", None) or os.environ.get("CRUCIBLE_NOTIFY_COMMAND")
+    if notify_command:
+        run_notify_command(
+            notify_command,
+            deploy_event_payload(
+                run_dir=run_dir,
+                manifest_path=manifest_path,
+                workers_path=workers_path,
+                manifest=manifest,
+                results=results,
+                failed=failed,
+                has_tasks=has_tasks,
+                elapsed_seconds=time.monotonic() - started_at,
+            ),
+        )
     return 1 if failed else 0
 
 
@@ -3771,6 +3855,10 @@ def build_parser() -> argparse.ArgumentParser:
     deploy.add_argument("--replace", action="store_true", help="Delete and recreate an existing run.")
     deploy.add_argument("--coordinator-host", help="Coordinator hostname workers should SSH back to.")
     deploy.add_argument("--remote-timeout-seconds", type=float, default=1800.0, help="Timeout for remote setup/work commands.")
+    deploy.add_argument(
+        "--notify-command",
+        help="Command run on completion with CRUCIBLE_EVENT_JSON and JSON on stdin.",
+    )
     deploy.add_argument("--no-color", action="store_true", help="Disable ANSI color output.")
     deploy.add_argument("--verbose", action="store_true", help="Print setup and worker phase details.")
     deploy.set_defaults(func=cmd_deploy)

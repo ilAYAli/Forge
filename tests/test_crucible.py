@@ -2011,6 +2011,68 @@ class CrucibleTests(unittest.TestCase):
                     crucible.cmd_deploy(args)
                 self.assertIn("run already exists", str(raised.exception))
 
+    def test_deploy_sends_completion_notification_payload(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            runs = root / "runs"
+            template = root / "template.manifest.json"
+            template.write_text(
+                json.dumps({
+                    "schema": "crucible.task.v1",
+                    "name": "notify-template",
+                    "kind": "smoke",
+                    "description": "notify check",
+                    "work_dir": str(root),
+                    "requirements": {"python_min": "3.11", "git_min": "2.38"},
+                    "tasks": [],
+                }),
+                encoding="utf-8",
+            )
+            workers = root / "workers.json"
+            workers.write_text(
+                json.dumps({
+                    "schema": "crucible.workers.v1",
+                    "workers": [{"host": "localhost", "local": True, "cache_dir": str(root / "cache")}],
+                }),
+                encoding="utf-8",
+            )
+            payloads: list[dict[str, object]] = []
+
+            def capture_notify(command: str | None, payload: dict[str, object]) -> int:
+                payloads.append(payload)
+                return 0
+
+            args = argparse.Namespace(
+                manifest=str(template),
+                workers=str(workers),
+                jobs=1,
+                run="notify-run",
+                resume=False,
+                replace=False,
+                remote_timeout_seconds=1800.0,
+                notify_command="notify-me",
+                no_color=True,
+                verbose=False,
+            )
+            with (
+                mock.patch("crucible.runs_dir", return_value=runs),
+                mock.patch("crucible.ProcessTracker.run", return_value=subprocess.CompletedProcess(["sh"], 0, stdout="", stderr="")),
+                mock.patch("crucible.run_notify_command", capture_notify),
+            ):
+                stdout = io.StringIO()
+                with contextlib.redirect_stdout(stdout):
+                    rc = crucible.cmd_deploy(args)
+
+            self.assertEqual(0, rc)
+            self.assertEqual(1, len(payloads))
+            payload = payloads[0]
+            self.assertEqual("deploy_done", payload["event"])
+            self.assertEqual("notify-run", payload["run"])
+            self.assertEqual("ok", payload["state"])
+            self.assertEqual("smoke", payload["kind"])
+            self.assertEqual("notify check", payload["description"])
+            self.assertEqual(0, payload["tasks"])
+
     def test_example_manifests_parse_and_format_tasks(self) -> None:
         for path in sorted((ROOT / "examples").glob("*.manifest.json")):
             with self.subTest(path=path.name):
