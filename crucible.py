@@ -2057,7 +2057,7 @@ def print_run_status(
         progress = summary_progress(summary)
         fields = [
             f"{summary['run']:<36} "
-            f"{colorize(state, state_color, enabled=color_enabled):<8}",
+            f"{colorize(state, state_color, enabled=color_enabled)}",
             f"tasks={counts['done']}/{summary['tasks']}",
             f"active={active}",
             f"running={counts['running']}",
