@@ -1699,7 +1699,8 @@ def print_run_list(
             f"{summary['run']:<36} "
             f"{colorize(state, state_color, enabled=color_enabled):<8} "
             f"done={counts['done']}/{summary['tasks']} "
-            f"active={active} fail={counts['fail']} "
+            f"active={active} running={counts['running']} claimed={counts['claimed']} "
+            f"fail={counts['fail']} "
             f"pending={counts['pending']} stale={counts['stale']}"
         )
     return 0 if all(item["counts"]["fail"] == 0 for item in filtered) else 1

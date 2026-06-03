@@ -791,6 +791,22 @@ class CrucibleTests(unittest.TestCase):
                             done=False,
                             current=False,
                             failed=False,
+                            json=False,
+                            no_color=True,
+                            lease_seconds=600,
+                        )
+                    )
+                self.assertEqual(0, rc)
+                list_text = stdout.getvalue()
+                self.assertIn("running=0 claimed=0", list_text)
+
+                stdout = io.StringIO()
+                with contextlib.redirect_stdout(stdout):
+                    rc = crucible.cmd_list(
+                        argparse.Namespace(
+                            done=False,
+                            current=False,
+                            failed=False,
                             json=True,
                             no_color=True,
                             lease_seconds=600,
