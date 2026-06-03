@@ -2188,7 +2188,15 @@ def print_run_status(
         print(json.dumps({"runs": [run_status_payload(item) for item in filtered]}, sort_keys=True))
         return 0 if all(item["counts"]["fail"] == 0 for item in filtered) else 1
     if not filtered:
-        print(f"no Crucible runs found in {runs_dir()}")
+        labels = {
+            None: "active",
+            "all": "",
+            "done": "completed",
+            "failed": "failed",
+        }
+        label = labels.get(filter_name, "")
+        qualifier = f"{label} " if label else ""
+        print(f"no {qualifier}Crucible runs found in {runs_dir()}")
         return 0
     for summary in filtered:
         counts = summary["counts"]

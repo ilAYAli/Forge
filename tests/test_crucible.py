@@ -1047,6 +1047,67 @@ class CrucibleTests(unittest.TestCase):
                 self.assertEqual(0, one_run.returncode)
                 self.assertIn("tasks=0/1", one_run.stdout)
 
+    def test_status_empty_active_message_is_specific(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            runs = root / "runs"
+            run = runs / "done-run"
+            manifest = run / "manifest.json"
+            manifest.parent.mkdir(parents=True)
+            manifest.write_text(
+                json.dumps({
+                    "schema": "crucible.task.v1",
+                    "name": "done-run",
+                    "work_dir": str(run),
+                    "state_dir": str(run / "state"),
+                    "tasks": [{"id": "task_0", "index": 0, "command": "true", "outputs": []}],
+                }),
+                encoding="utf-8",
+            )
+            state = run / "state"
+            state.mkdir(parents=True)
+            (state / "task_0.done.json").write_text(
+                json.dumps({"task": "task_0", "host": "worker"}),
+                encoding="utf-8",
+            )
+
+            with mock.patch("crucible.runs_dir", return_value=runs):
+                stdout = io.StringIO()
+                with contextlib.redirect_stdout(stdout):
+                    rc = crucible.cmd_status(
+                        argparse.Namespace(
+                            run=None,
+                            all=False,
+                            done=False,
+                            failed=False,
+                            json=False,
+                            no_color=True,
+                            lease_seconds=600,
+                            show_done=False,
+                            verbose=False,
+                        )
+                    )
+                self.assertEqual(0, rc)
+                self.assertIn("no active Crucible runs found", stdout.getvalue())
+
+                stdout = io.StringIO()
+                with contextlib.redirect_stdout(stdout):
+                    rc = crucible.cmd_status(
+                        argparse.Namespace(
+                            run=None,
+                            all=True,
+                            done=False,
+                            failed=False,
+                            json=False,
+                            no_color=True,
+                            lease_seconds=600,
+                            show_done=False,
+                            verbose=False,
+                        )
+                    )
+                self.assertEqual(0, rc)
+                self.assertIn("done-run", stdout.getvalue())
+
     def test_status_uses_runs_dir_env(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
