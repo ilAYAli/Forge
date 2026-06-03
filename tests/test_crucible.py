@@ -90,6 +90,8 @@ class CrucibleTests(unittest.TestCase):
             result = self.run_cli(
                 "plan",
                 "--name", "test",
+                "--kind", "sprt",
+                "--description", "native check",
                 "--shards", "3",
                 "--work-dir", str(root),
                 "--out", str(manifest),
@@ -98,6 +100,9 @@ class CrucibleTests(unittest.TestCase):
             )
             self.assertEqual("", result.stderr)
             self.assertEqual(0, result.returncode)
+            manifest_payload = json.loads(manifest.read_text(encoding="utf-8"))
+            self.assertEqual("sprt", manifest_payload["kind"])
+            self.assertEqual("native check", manifest_payload["description"])
 
             add = self.run_cli("add-input", "--manifest", str(manifest), "--path", str(root / "input.txt"))
             self.assertEqual(0, add.returncode)
@@ -110,6 +115,8 @@ class CrucibleTests(unittest.TestCase):
             status = self.run_cli("status", str(run_dir))
             self.assertEqual(0, status.returncode)
             self.assertIn("tasks=3/3", status.stdout)
+            self.assertIn("kind=sprt", status.stdout)
+            self.assertIn("desc=native check", status.stdout)
 
             merged = root / "merged.txt"
             merge = self.run_cli(

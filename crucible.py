@@ -98,6 +98,28 @@ def validate_run_name(name: str) -> str:
     return run_name
 
 
+def clean_manifest_text(value: str | None, *, label: str) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    if any(char in text for char in "\r\n\t"):
+        raise SystemExit(f"{label} must be single-line text")
+    return text
+
+
+def manifest_metadata(manifest: dict[str, Any]) -> dict[str, str]:
+    metadata: dict[str, str] = {}
+    kind = clean_manifest_text(manifest.get("kind"), label="kind")
+    description = clean_manifest_text(manifest.get("description"), label="description")
+    if kind:
+        metadata["kind"] = kind
+    if description:
+        metadata["description"] = description
+    return metadata
+
+
 def run_dir_for_name(name: str) -> Path:
     return runs_dir() / validate_run_name(name)
 
@@ -1296,6 +1318,8 @@ def cmd_plan(args: argparse.Namespace) -> int:
     out = expand_path(args.out)
     state = expand_path(args.state_dir) if args.state_dir else out.parent / "state"
     logs = expand_path(args.log_dir) if args.log_dir else out.parent / "logs"
+    kind = clean_manifest_text(args.kind, label="--kind")
+    description = clean_manifest_text(args.description, label="--description")
     vars_obj: dict[str, str] = {}
     for item in args.var:
         key, sep, value = item.partition("=")
@@ -1397,6 +1421,10 @@ def cmd_plan(args: argparse.Namespace) -> int:
         },
         "tasks": tasks,
     }
+    if kind:
+        manifest["kind"] = kind
+    if description:
+        manifest["description"] = description
     write_json(out, manifest)
     print(out)
     return 0
@@ -1817,6 +1845,7 @@ def cmd_status(args: argparse.Namespace) -> int:
     summary = status_summary(manifest, lease_seconds=args.lease_seconds)
     summary["manifest"] = str(manifest_path)
     summary["run"] = manifest_path.parent.name
+    summary["metadata"] = manifest_metadata(manifest)
     if args.json:
         print(json.dumps(summary, sort_keys=True))
         return 0 if summary["counts"]["fail"] == 0 else 1
@@ -1905,6 +1934,7 @@ def load_run_summaries(*, lease_seconds: int) -> list[dict[str, Any]]:
         summary = status_summary(manifest, lease_seconds=lease_seconds)
         summary["manifest"] = str(path)
         summary["run"] = path.parent.name
+        summary["metadata"] = manifest_metadata(manifest)
         summaries.append(summary)
     return summaries
 
@@ -2121,10 +2151,27 @@ def run_status_payload(summary: dict[str, Any]) -> dict[str, Any]:
         "fail": counts["fail"],
         "stale": counts["stale"],
     }
+    metadata = summary.get("metadata")
+    if isinstance(metadata, dict):
+        payload.update(metadata)
     progress = summary_progress(summary)
     if progress:
         payload["progress"] = progress
     return payload
+
+
+def run_metadata_fields(summary: dict[str, Any]) -> list[str]:
+    metadata = summary.get("metadata")
+    if not isinstance(metadata, dict):
+        return []
+    fields: list[str] = []
+    kind = metadata.get("kind")
+    description = metadata.get("description")
+    if kind:
+        fields.append(f"kind={kind}")
+    if description:
+        fields.append(f"desc={description}")
+    return fields
 
 
 def print_run_status(
@@ -2152,6 +2199,7 @@ def print_run_status(
         fields = [
             f"{summary['run']:<36} "
             f"{colorize(state, state_color, enabled=color_enabled)}",
+            *run_metadata_fields(summary),
             f"tasks={counts['done']}/{summary['tasks']}",
             f"active={active}",
             f"running={counts['running']}",
@@ -2182,6 +2230,7 @@ def run_summary_for(run: str | Path, *, lease_seconds: int) -> dict[str, Any]:
     summary = status_summary(manifest, lease_seconds=lease_seconds)
     summary["manifest"] = str(path)
     summary["run"] = path.parent.name
+    summary["metadata"] = manifest_metadata(manifest)
     return summary
 
 
@@ -2580,12 +2629,17 @@ def print_compact_status(
     show_done: bool = False,
 ) -> None:
     counts = summary["counts"]
-    print(
-        f"tasks={counts['done']}/{summary['tasks']} "
-        f"active={summary['active_count']} running={counts['running']} "
-        f"claimed={counts['claimed']} pending={counts['pending']} "
-        f"fail={counts['fail']} stale={counts['stale']}"
-    )
+    fields = [
+        *run_metadata_fields(summary),
+        f"tasks={counts['done']}/{summary['tasks']}",
+        f"active={summary['active_count']}",
+        f"running={counts['running']}",
+        f"claimed={counts['claimed']}",
+        f"pending={counts['pending']}",
+        f"fail={counts['fail']}",
+        f"stale={counts['stale']}",
+    ]
+    print(" ".join(fields))
     print_status_details(summary, color_enabled=color_enabled, show_done=show_done)
 
 
@@ -3399,6 +3453,8 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     plan.add_argument("--name", required=True, help="Run name stored in the manifest.")
+    plan.add_argument("--kind", help="Short run type shown in status, for example sprt or selfplay.")
+    plan.add_argument("--description", help="Short single-line run description shown in status.")
     plan.add_argument(
         "--tasks", "--shards",
         dest="shards",
