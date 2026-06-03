@@ -3554,6 +3554,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> int:
     parser = build_parser()
+    if len(sys.argv) == 1:
+        parser.print_help()
+        return 0
     args = parser.parse_args()
     if args.version or args.version_json:
         args.json = bool(args.version_json)

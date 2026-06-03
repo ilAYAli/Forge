@@ -31,6 +31,13 @@ class CrucibleTests(unittest.TestCase):
             check=False,
         )
 
+    def test_no_arguments_prints_help(self) -> None:
+        result = self.run_cli()
+        self.assertEqual("", result.stderr)
+        self.assertEqual(0, result.returncode)
+        self.assertIn("usage:", result.stdout)
+        self.assertIn("status", result.stdout)
+
     def test_subcommand_help_is_available(self) -> None:
         commands = [
             "plan", "add-input", "add-repo", "sync-repos", "run", "claim",
