@@ -784,6 +784,25 @@ class CrucibleTests(unittest.TestCase):
                 self.assertNotIn("setup", status_text)
                 self.assertNotIn("nnue-selfplay", status_text)
 
+                stdout = io.StringIO()
+                with contextlib.redirect_stdout(stdout):
+                    rc = crucible.cmd_list(
+                        argparse.Namespace(
+                            done=False,
+                            current=False,
+                            failed=False,
+                            json=True,
+                            no_color=True,
+                            lease_seconds=600,
+                        )
+                    )
+                self.assertEqual(0, rc)
+                payload = json.loads(stdout.getvalue())
+                self.assertEqual(["bonus", "main"], sorted(item["run"] for item in payload["runs"]))
+                self.assertNotIn("rows", payload["runs"][0])
+                self.assertNotIn("groups", payload["runs"][0])
+                self.assertIn("state", payload["runs"][0])
+
                 one_run = self.run_cli("status", str(runs / "main"), cwd=root)
                 self.assertEqual(0, one_run.returncode)
                 self.assertIn("tasks: 1", one_run.stdout)

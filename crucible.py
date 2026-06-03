@@ -1659,6 +1659,23 @@ def filtered_run_summaries(summaries: list[dict[str, Any]], filter_name: str | N
     return summaries
 
 
+def list_run_payload(summary: dict[str, Any]) -> dict[str, Any]:
+    counts = summary["counts"]
+    return {
+        "run": summary["run"],
+        "state": run_state(summary),
+        "manifest": summary["manifest"],
+        "tasks": summary["tasks"],
+        "done": counts["done"],
+        "active": counts["running"] + counts["claimed"] + counts["stale"],
+        "running": counts["running"],
+        "claimed": counts["claimed"],
+        "pending": counts["pending"],
+        "fail": counts["fail"],
+        "stale": counts["stale"],
+    }
+
+
 def print_run_list(
     summaries: list[dict[str, Any]],
     *,
@@ -1668,7 +1685,7 @@ def print_run_list(
 ) -> int:
     filtered = filtered_run_summaries(summaries, filter_name)
     if as_json:
-        print(json.dumps({"runs": filtered}, sort_keys=True))
+        print(json.dumps({"runs": [list_run_payload(item) for item in filtered]}, sort_keys=True))
         return 0 if all(item["counts"]["fail"] == 0 for item in filtered) else 1
     if not filtered:
         print(f"no Crucible runs found in {runs_dir()}")
