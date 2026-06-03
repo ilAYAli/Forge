@@ -297,6 +297,34 @@ def git_output(repo: Path, *args: str) -> str:
     ).strip()
 
 
+def git_output_or_empty(repo: Path, *args: str) -> str:
+    try:
+        return git_output(repo, *args)
+    except subprocess.CalledProcessError:
+        return ""
+
+
+def git_requirement_record(repo: Path, commit: str, *, require_clean: bool) -> dict[str, Any]:
+    record: dict[str, Any] = {
+        "repo": str(repo),
+        "commit": commit,
+        "require_clean": require_clean,
+    }
+    branch = git_output_or_empty(repo, "rev-parse", "--abbrev-ref", "HEAD")
+    if branch and branch != "HEAD":
+        record["branch"] = branch
+        remote = git_output_or_empty(repo, "config", "--get", f"branch.{branch}.remote")
+    else:
+        remote = git_output_or_empty(repo, "remote").splitlines()[0:1]
+        remote = remote[0] if remote else ""
+    if remote:
+        record["remote"] = remote
+        url = git_output_or_empty(repo, "remote", "get-url", remote)
+        if url:
+            record["url"] = url
+    return record
+
+
 def resolve_git_commit(repo: Path, commit: str, *, label: str) -> str:
     try:
         return git_output(repo, "rev-parse", "--verify", f"{commit}^{{commit}}")
@@ -597,6 +625,8 @@ def iter_git_requirements(manifest: dict[str, Any], req: dict[str, Any]) -> list
             "commit": git_req.get("commit") or "",
             "require_clean": bool(git_req.get("require_clean", False)),
             "remote": git_req.get("remote") or "",
+            "branch": git_req.get("branch") or "",
+            "url": git_req.get("url") or "",
         })
     raw_repos = req.get("repos", [])
     if raw_repos in (None, ""):
@@ -1399,6 +1429,8 @@ def cmd_plan(args: argparse.Namespace) -> int:
             task["progress"] = progress
         tasks.append(task)
 
+    git_repo = expand_path(args.git_repo or args.work_dir)
+    git_commit = args.git_commit or git_output(git_repo, "rev-parse", "HEAD")
     manifest = {
         "schema": SCHEMA,
         "name": args.name,
@@ -1412,11 +1444,7 @@ def cmd_plan(args: argparse.Namespace) -> int:
         "requirements": {
             "python_min": args.python_min,
             "git_min": args.git_min,
-            "git": {
-                "repo": str(expand_path(args.git_repo or args.work_dir)),
-                "commit": args.git_commit or git_output(expand_path(args.git_repo or args.work_dir), "rev-parse", "HEAD"),
-                "require_clean": args.require_clean_git,
-            },
+            "git": git_requirement_record(git_repo, git_commit, require_clean=args.require_clean_git),
             "inputs": [],
         },
         "tasks": tasks,
@@ -3414,34 +3442,42 @@ def cmd_deploy(args: argparse.Namespace) -> int:
             setup_lock.notify_all()
         return result
 
+    def result_payload(
+        index: int,
+        worker: dict[str, Any],
+        stage: str,
+        result: subprocess.CompletedProcess[str],
+    ) -> dict[str, Any]:
+        host = str(worker["host"])
+        profile = str(worker["profile"])
+        return {
+            "index": index,
+            "host": host,
+            "profile": profile,
+            "slot": worker.get("_slot"),
+            "slots": worker.get("_slots"),
+            "stage": stage,
+            "ok": result.returncode == 0,
+            "rc": result.returncode,
+            "stdout": result.stdout,
+            "stderr": result.stderr,
+        }
+
+    def setup_worker(index: int, worker: dict[str, Any]) -> dict[str, Any]:
+        host = str(worker["host"])
+        profile = str(worker["profile"])
+        label = worker_label(host, profile, worker.get("_slot"), worker.get("_slots"))
+        prereq = ensure_worker_setup(worker)
+        if prereq.returncode != 0:
+            verbose_status(f"{label}: prerequisites FAILED rc={prereq.returncode}", error=True)
+        else:
+            verbose_status(f"{label}: prerequisites OK")
+        return result_payload(index, worker, "setup", prereq)
+
     def run_worker(index: int, worker: dict[str, Any]) -> dict[str, Any]:
         host = str(worker["host"])
         profile = str(worker["profile"])
         label = worker_label(host, profile, worker.get("_slot"), worker.get("_slots"))
-
-        def result_payload(stage: str, result: subprocess.CompletedProcess[str]) -> dict[str, Any]:
-            return {
-                "index": index,
-                "host": host,
-                "profile": profile,
-                "slot": worker.get("_slot"),
-                "slots": worker.get("_slots"),
-                "stage": stage,
-                "ok": result.returncode == 0,
-                "rc": result.returncode,
-                "stdout": result.stdout,
-                "stderr": result.stderr,
-            }
-
-        prereq = ensure_worker_setup(worker)
-        if prereq.returncode != 0:
-            verbose_status(f"{label}: prerequisites FAILED rc={prereq.returncode}", error=True)
-            return result_payload("setup", prereq)
-
-        verbose_status(f"{label}: prerequisites OK")
-        if not has_tasks:
-            return result_payload("setup", prereq)
-
         verbose_status(f"{label}: running tasks")
         script = deploy_work_command(
             worker=worker,
@@ -3451,9 +3487,30 @@ def cmd_deploy(args: argparse.Namespace) -> int:
         result = run_worker_shell(worker, script, timeout=remote_timeout, tracker=tracker)
         if result.returncode == 0:
             verbose_status(f"{label}: tasks OK")
-            return result_payload("tasks", result)
+            return result_payload(index, worker, "tasks", result)
         verbose_status(f"{label}: tasks FAILED rc={result.returncode}", error=True)
-        return result_payload("tasks", result)
+        return result_payload(index, worker, "tasks", result)
+
+    def print_results(items: list[dict[str, Any]]) -> None:
+        for item in sorted(items, key=lambda entry: int(entry["index"])):
+            ok = bool(item["ok"])
+            marker_text = "OK" if ok else "FAILED"
+            marker_color = "green" if ok else "red"
+            marker = colorize(f"{marker_text:<6}", marker_color, enabled=color_enabled)
+            suffix = "" if ok else f" rc={item['rc']}"
+            status(
+                f"  {marker} "
+                f"{worker_label(str(item['host']), str(item['profile']), item.get('slot'), item.get('slots'))}: "
+                f"{item['stage']}{suffix}"
+            )
+            output = "\n".join(
+                part.strip()
+                for part in (str(item.get("stdout") or ""), str(item.get("stderr") or ""))
+                if part.strip()
+            )
+            if output and (args.verbose or not ok):
+                for line in output.splitlines():
+                    status(f"         {line}")
 
     status(colorize(f"deploy: run={run_dir.name} workers={len(workers)} jobs={jobs}", "cyan", enabled=color_enabled))
     task_count = len(manifest.get("tasks") or [])
@@ -3472,10 +3529,22 @@ def cmd_deploy(args: argparse.Namespace) -> int:
     futures: list[concurrent.futures.Future[dict[str, Any]]] = []
     try:
         futures = [
-            executor.submit(run_worker, index, worker)
+            executor.submit(setup_worker, index, worker)
             for index, worker in enumerate(workers)
         ]
-        results = [future.result() for future in concurrent.futures.as_completed(futures)]
+        setup_results_list = [future.result() for future in concurrent.futures.as_completed(futures)]
+        print_results(setup_results_list)
+        setup_failed = sum(1 for item in setup_results_list if not item["ok"])
+        if setup_failed or not has_tasks:
+            results = setup_results_list
+        else:
+            status(colorize("deploy: setup complete; starting tasks", "green", enabled=color_enabled))
+            futures = [
+                executor.submit(run_worker, index, worker)
+                for index, worker in enumerate(workers)
+            ]
+            results = [future.result() for future in concurrent.futures.as_completed(futures)]
+            print_results(results)
     except KeyboardInterrupt:
         interrupted = True
         status(colorize("deploy: interrupted; stopping active worker commands", "yellow", enabled=color_enabled), error=True)
@@ -3488,28 +3557,10 @@ def cmd_deploy(args: argparse.Namespace) -> int:
         executor.shutdown(wait=not interrupted, cancel_futures=interrupted)
 
     failed = sum(1 for item in results if not item["ok"])
-    stage = "setup" if not has_tasks else "tasks"
-    for item in sorted(results, key=lambda entry: int(entry["index"])):
-        ok = bool(item["ok"])
-        marker_text = "OK" if ok else "FAILED"
-        marker_color = "green" if ok else "red"
-        marker = colorize(f"{marker_text:<6}", marker_color, enabled=color_enabled)
-        suffix = "" if ok else f" rc={item['rc']}"
-        status(
-            f"  {marker} "
-            f"{worker_label(str(item['host']), str(item['profile']), item.get('slot'), item.get('slots'))}: "
-            f"{stage}{suffix}"
-        )
-        output = "\n".join(
-            part.strip()
-            for part in (str(item.get("stdout") or ""), str(item.get("stderr") or ""))
-            if part.strip()
-        )
-        if output and (args.verbose or not ok):
-            for line in output.splitlines():
-                status(f"         {line}")
     if not has_tasks:
         status(colorize("deploy: setup complete", "green", enabled=color_enabled) if failed == 0 else colorize("deploy: setup failed", "red", enabled=color_enabled))
+    elif any(item["stage"] == "setup" for item in results):
+        status(colorize("deploy: setup failed; no tasks started", "red", enabled=color_enabled))
     else:
         status(colorize("deploy: tasks complete", "green", enabled=color_enabled) if failed == 0 else colorize("deploy: tasks failed", "red", enabled=color_enabled))
     notify_command = getattr(args, "notify_command", None) or os.environ.get("CRUCIBLE_NOTIFY_COMMAND")

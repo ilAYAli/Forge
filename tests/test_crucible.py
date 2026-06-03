@@ -2441,7 +2441,7 @@ class CrucibleTests(unittest.TestCase):
             self.assertEqual(2, len(work_scripts))
             self.assertTrue(all("--worker localhost" in script for script in work_scripts))
 
-    def test_deploy_starts_ready_worker_before_all_prereqs_finish(self) -> None:
+    def test_deploy_waits_for_all_prereqs_before_work(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             manifest = root / "manifest.json"
@@ -2489,6 +2489,9 @@ class CrucibleTests(unittest.TestCase):
                     events.append("fast_work_start")
                     allow_slow.set()
                     return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+                if " work " in script and "--profile slow" in script:
+                    events.append("slow_work_start")
+                    return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
                 return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
 
             with mock.patch("crucible.ProcessTracker.run", fake_run):
@@ -2509,7 +2512,8 @@ class CrucibleTests(unittest.TestCase):
                     )
 
             self.assertEqual(0, rc)
-            self.assertLess(events.index("fast_work_start"), events.index("slow_prereq_done"))
+            self.assertLess(events.index("slow_prereq_done"), events.index("fast_work_start"))
+            self.assertLess(events.index("slow_prereq_done"), events.index("slow_work_start"))
 
     def test_deploy_stops_when_prerequisites_fail(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
