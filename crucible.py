@@ -1687,10 +1687,10 @@ def summary_progress(summary: dict[str, Any]) -> str:
 
     parts: list[str] = []
     if fraction_total:
-        parts.append(f"progress={fraction_done}/{fraction_total}")
+        parts.append(f"{fraction_done}/{fraction_total}")
     if labels:
-        parts.append(f"labels~{compact_count(labels)}")
-    return " ".join(parts)
+        parts.append(f"~{compact_count(labels)} labels")
+    return f"progress={', '.join(parts)}" if parts else ""
 
 
 def list_run_payload(summary: dict[str, Any]) -> dict[str, Any]:

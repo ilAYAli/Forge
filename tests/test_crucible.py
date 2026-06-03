@@ -886,7 +886,7 @@ class CrucibleTests(unittest.TestCase):
                         )
                     )
                 self.assertEqual(0, rc)
-                self.assertIn("labels~48k", stdout.getvalue())
+                self.assertIn("progress=~48k labels", stdout.getvalue())
 
     def test_stop_prevents_new_claims(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
