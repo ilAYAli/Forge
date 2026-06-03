@@ -771,6 +771,19 @@ def stop_requested(manifest: dict[str, Any]) -> bool:
     return stop_request_path(manifest).exists()
 
 
+def drain_dir(manifest: dict[str, Any]) -> Path:
+    return state_dir(manifest) / "drain"
+
+
+def worker_drain_path(manifest: dict[str, Any], worker: str) -> Path:
+    digest = hashlib.sha256(worker.encode("utf-8")).hexdigest()[:16]
+    return drain_dir(manifest) / f"{digest}.json"
+
+
+def worker_drained(manifest: dict[str, Any], worker: str) -> bool:
+    return worker_drain_path(manifest, worker).exists()
+
+
 def task_outputs(task: dict[str, Any]) -> list[Path]:
     outputs = task.get("outputs", [])
     if not isinstance(outputs, list):
@@ -954,6 +967,8 @@ def claim_task(
 ) -> dict[str, Any] | None:
     if stop_requested(manifest):
         return None
+    if worker_drained(manifest, worker):
+        return None
     claim_dir(manifest).mkdir(parents=True, exist_ok=True)
     digest = manifest_checksum(manifest)
     for task in sorted(manifest["tasks"], key=lambda item: int(item.get("index", 0))):
@@ -1041,6 +1056,38 @@ def release_claim(
     if worker or claim_id:
         check_claim_owner(manifest, task, worker=worker, claim_id=claim_id)
     shutil.rmtree(task_claim_dir(manifest, task), ignore_errors=True)
+    task_running_path(manifest, task).unlink(missing_ok=True)
+
+
+def claim_payload_worker(payload: dict[str, Any]) -> str:
+    worker = payload.get("worker")
+    if isinstance(worker, dict):
+        worker = worker.get("host")
+    return str(worker or payload.get("host") or "")
+
+
+def release_worker_claims(
+    manifest: dict[str, Any],
+    *,
+    worker: str,
+    count: int,
+    lease_seconds: int,
+) -> list[str]:
+    released: list[str] = []
+    for task in sorted(manifest["tasks"], key=lambda item: int(item.get("index", 0))):
+        if count > 0 and len(released) >= count:
+            break
+        if task_state(manifest, task, lease_seconds=lease_seconds) != "claimed":
+            continue
+        try:
+            payload = read_json(task_claim_path(manifest, task))
+        except Exception:
+            continue
+        if claim_payload_worker(payload) != worker:
+            continue
+        shutil.rmtree(task_claim_dir(manifest, task), ignore_errors=True)
+        released.append(str(task["id"]))
+    return released
 
 
 def update_claim_heartbeat(
@@ -1050,6 +1097,7 @@ def update_claim_heartbeat(
     worker: str,
     claim_id: str | None,
     progress_data: dict[str, Any] | None = None,
+    running: bool = False,
 ) -> None:
     payload = check_claim_owner(manifest, task, worker=worker, claim_id=claim_id)
     payload["heartbeat_at"] = now()
@@ -1057,6 +1105,17 @@ def update_claim_heartbeat(
     if progress_data is not None:
         payload["progress_data"] = progress_data
     write_json(task_heartbeat_path(manifest, task), payload)
+    if running:
+        running_payload = {
+            "schema": SCHEMA,
+            "task": task["id"],
+            "index": task.get("index"),
+            "worker": worker,
+            "claim_id": claim_id,
+            "started_at": payload["heartbeat_at"],
+            "started_epoch": payload["heartbeat_epoch"],
+        }
+        write_json(task_running_path(manifest, task), running_payload)
 
 
 def parse_coordinator(value: str) -> tuple[str | None, str]:
@@ -1461,9 +1520,25 @@ def cmd_claim(args: argparse.Namespace) -> int:
 
 def cmd_release(args: argparse.Namespace) -> int:
     manifest = load_manifest(expand_path(args.manifest))
-    task = find_task(manifest, task_id=args.task, index=None)
-    release_claim(manifest, task, worker=args.worker, claim_id=args.claim_id)
-    print(task["id"])
+    if args.task:
+        task = find_task(manifest, task_id=args.task, index=None)
+        release_claim(manifest, task, worker=args.worker, claim_id=args.claim_id)
+        print(task["id"])
+        return 0
+    if not args.worker:
+        raise SystemExit("release requires --task or --worker")
+    if args.claim_id:
+        raise SystemExit("--claim-id requires --task")
+    released = release_worker_claims(
+        manifest,
+        worker=args.worker,
+        count=max(0, int(args.count)),
+        lease_seconds=args.lease_seconds,
+    )
+    if released:
+        print("\n".join(released))
+    else:
+        print("no reserved claims released")
     return 0
 
 
@@ -1519,10 +1594,13 @@ def heartbeat_on_coordinator(
     worker: str,
     claim_id: str | None,
     progress_data: dict[str, Any] | None = None,
+    running: bool = False,
 ) -> None:
     command = ["heartbeat", "--manifest", "{manifest}", "--task", task_id, "--worker", worker]
     if claim_id:
         command.extend(["--claim-id", claim_id])
+    if running:
+        command.append("--running")
     if progress_data:
         command.extend([
             "--progress-json",
@@ -1612,6 +1690,13 @@ def cmd_work(args: argparse.Namespace) -> int:
         sync_failed = False
         error_rc = 1
         try:
+            heartbeat_on_coordinator(
+                args.coordinator,
+                task_id,
+                args.worker,
+                claim_id,
+                running=True,
+            )
             rc = run_task(local_manifest, local_task, force=args.force)
             sync_task_result(
                 coordinator=args.coordinator,
@@ -1691,6 +1776,7 @@ def cmd_heartbeat(args: argparse.Namespace) -> int:
         worker=args.worker,
         claim_id=args.claim_id,
         progress_data=progress_data,
+        running=bool(args.running),
     )
     print(task["id"])
     return 0
@@ -2114,6 +2200,45 @@ def cmd_stop(args: argparse.Namespace) -> int:
         print(f"stop requested: {path.parent.name}")
     if stopped == 0:
         print("no current runs to stop")
+    return 0
+
+
+def cmd_drain(args: argparse.Namespace) -> int:
+    if not args.all and not args.run:
+        raise SystemExit("drain requires a run name or --all")
+    worker = str(args.worker or "").strip()
+    if not worker:
+        raise SystemExit("drain requires --worker")
+    targets = (
+        [Path(item["manifest"]) for item in load_run_summaries(lease_seconds=args.lease_seconds) if run_current(item)]
+        if args.all else
+        [run_manifest_path(args.run)]
+    )
+    changed = 0
+    for path in targets:
+        manifest = load_manifest(path)
+        marker = worker_drain_path(manifest, worker)
+        if args.clear:
+            if marker.exists():
+                marker.unlink()
+                changed += 1
+                print(f"drain cleared: {path.parent.name} {worker}")
+            continue
+        drain_dir(manifest).mkdir(parents=True, exist_ok=True)
+        payload = {
+            "schema": SCHEMA,
+            "run": path.parent.name,
+            "worker": worker,
+            "requested_at": now(),
+            "requested_epoch": epoch(),
+            "host": socket.gethostname(),
+        }
+        write_json(marker, payload)
+        changed += 1
+        print(f"drain requested: {path.parent.name} {worker}")
+    if changed == 0:
+        action = "cleared" if args.clear else "requested"
+        print(f"no drains {action}")
     return 0
 
 
@@ -3182,6 +3307,17 @@ def cmd_deploy(args: argparse.Namespace) -> int:
         return result_payload("tasks", result)
 
     status(colorize(f"deploy: run={run_dir.name} workers={len(workers)} jobs={jobs}", "cyan", enabled=color_enabled))
+    task_count = len(manifest.get("tasks") or [])
+    if has_tasks and len(workers) > 1 and task_count < len(workers) * 4:
+        status(
+            colorize(
+                f"deploy: warning: {task_count} task(s) for {len(workers)} worker slot(s); "
+                "long tasks balance better with at least 4x more tasks than slots",
+                "yellow",
+                enabled=color_enabled,
+            ),
+            error=True,
+        )
     executor = concurrent.futures.ThreadPoolExecutor(max_workers=jobs)
     interrupted = False
     futures: list[concurrent.futures.Future[dict[str, Any]]] = []
@@ -3353,13 +3489,15 @@ def build_parser() -> argparse.ArgumentParser:
 
     release = sub.add_parser(
         "release",
-        help="Release a coordinator task claim.",
+        help="Release coordinator task claims.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     release.add_argument("--manifest", required=True, help="Coordinator manifest.")
-    release.add_argument("--task", required=True, help="Task id whose claim should be released.")
-    release.add_argument("--worker", help="Expected worker owner.")
+    release.add_argument("--task", help="Task id whose claim should be released.")
+    release.add_argument("--worker", help="Expected worker owner, or worker whose reserved claims should be released.")
     release.add_argument("--claim-id", help="Expected claim id.")
+    release.add_argument("--count", type=int, default=0, help="Maximum worker claims to release; 0 releases all reserved claims.")
+    release.add_argument("--lease-seconds", type=int, default=600, help="Claim lease duration before stale.")
     release.set_defaults(func=cmd_release)
 
     heartbeat = sub.add_parser(
@@ -3372,6 +3510,7 @@ def build_parser() -> argparse.ArgumentParser:
     heartbeat.add_argument("--worker", required=True, help="Expected worker owner.")
     heartbeat.add_argument("--claim-id", help="Expected claim id.")
     heartbeat.add_argument("--progress-json", help="Optional JSON progress object to store with the heartbeat.")
+    heartbeat.add_argument("--running", action="store_true", help="Mark the task as running on the coordinator.")
     heartbeat.set_defaults(func=cmd_heartbeat)
 
     work = sub.add_parser(
@@ -3471,6 +3610,18 @@ def build_parser() -> argparse.ArgumentParser:
     stop.add_argument("--all", action="store_true", help="Request stop for all current runs.")
     stop.add_argument("--lease-seconds", type=int, default=600, help="Claim lease duration before stale.")
     stop.set_defaults(func=cmd_stop)
+
+    drain = sub.add_parser(
+        "drain",
+        help="Stop a worker from claiming more tasks.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    drain.add_argument("run", nargs="?", help="Run name or run directory to drain.")
+    drain.add_argument("--all", action="store_true", help="Drain worker from all current runs.")
+    drain.add_argument("--worker", required=True, help="Worker name to drain.")
+    drain.add_argument("--clear", action="store_true", help="Clear the drain marker and allow new claims.")
+    drain.add_argument("--lease-seconds", type=int, default=600, help="Claim lease duration before stale.")
+    drain.set_defaults(func=cmd_drain)
 
     delete = sub.add_parser(
         "del",

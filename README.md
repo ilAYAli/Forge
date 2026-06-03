@@ -132,6 +132,12 @@ crucible status my-run -v     # one row per task
 crucible verify my-run        # require every task to be done
 crucible merge my-run --output merged.txt
 crucible stop my-run          # ask workers to stop this run
+crucible drain my-run --worker pwa-5090
+                              # let current task finish, then stop new claims
+crucible drain my-run --worker pwa-5090 --clear
+                              # allow that worker to claim again
+crucible release --manifest runs/my-run/manifest.json --worker pwa-5090
+                              # release that worker's reserved, non-running claims
 crucible update               # update workers to this coordinator commit
 crucible update --all         # update coordinator, then workers
 crucible del my-run           # delete one run directory
@@ -164,6 +170,10 @@ new coordinator commit.
 
 Lower-level commands remain available for diagnostics: `sync-repos`, `doctor`,
 `work`, `claim`, `release`, `heartbeat`, and `run`.
+
+For long tasks, create more tasks than worker slots. `deploy` warns when a run
+has fewer than four tasks per worker slot, because that can leave fast workers
+idle behind a slow tail.
 
 ## NNUE Examples
 

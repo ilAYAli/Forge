@@ -42,7 +42,7 @@ class CrucibleTests(unittest.TestCase):
         commands = [
             "plan", "add-input", "add-repo", "sync-repos", "run", "claim",
             "release", "heartbeat", "work", "doctor", "status",
-            "wait", "verify", "merge", "stop", "del", "self-update",
+            "wait", "verify", "merge", "stop", "drain", "del", "self-update",
             "update", "version", "deploy",
         ]
         for command in commands:
@@ -1251,6 +1251,132 @@ class CrucibleTests(unittest.TestCase):
                     retry_failed=False,
                 )
                 self.assertIsNone(result)
+
+    def test_drain_prevents_worker_claims_until_cleared(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            runs = root / "runs"
+            run_dir = runs / "active"
+            run_dir.mkdir(parents=True)
+            manifest = {
+                "schema": "crucible.task.v1",
+                "name": "active",
+                "work_dir": str(root),
+                "state_dir": str(run_dir / "state"),
+                "log_dir": str(run_dir / "logs"),
+                "claim_dir": str(run_dir / "claims"),
+                "tasks": [
+                    {"id": "task_0", "index": 0, "command": "true", "outputs": [str(run_dir / "outputs/0.txt")]},
+                    {"id": "task_1", "index": 1, "command": "true", "outputs": [str(run_dir / "outputs/1.txt")]},
+                ],
+            }
+            (run_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+            with mock.patch("crucible.runs_dir", return_value=runs):
+                drain = crucible.cmd_drain(
+                    argparse.Namespace(run="active", all=False, worker="worker-a", clear=False, lease_seconds=600)
+                )
+                self.assertEqual(0, drain)
+                loaded = crucible.load_manifest(run_dir / "manifest.json")
+                self.assertIsNone(crucible.claim_task(
+                    loaded,
+                    worker="worker-a",
+                    profile=None,
+                    lease_seconds=600,
+                    retry_failed=False,
+                ))
+                self.assertEqual("task_0", crucible.claim_task(
+                    loaded,
+                    worker="worker-b",
+                    profile=None,
+                    lease_seconds=600,
+                    retry_failed=False,
+                )["task"])
+
+                clear = crucible.cmd_drain(
+                    argparse.Namespace(run="active", all=False, worker="worker-a", clear=True, lease_seconds=600)
+                )
+                self.assertEqual(0, clear)
+                self.assertEqual("task_1", crucible.claim_task(
+                    loaded,
+                    worker="worker-a",
+                    profile=None,
+                    lease_seconds=600,
+                    retry_failed=False,
+                )["task"])
+
+    def test_release_worker_claims_skips_running_tasks(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            subprocess.run(["git", "init", "-b", "main"], cwd=root, check=True, stdout=subprocess.DEVNULL)
+            subprocess.run(["git", "config", "user.name", "Petter Wahlman"], cwd=root, check=True)
+            subprocess.run(["git", "config", "user.email", "petter@wahlman.no"], cwd=root, check=True)
+            (root / "input.txt").write_text("fixed\n", encoding="utf-8")
+            subprocess.run(["git", "add", "input.txt"], cwd=root, check=True)
+            subprocess.run(["git", "commit", "-m", "test"], cwd=root, check=True, stdout=subprocess.DEVNULL)
+            manifest = root / "manifest.json"
+            plan = self.run_cli(
+                "plan",
+                "--name", "release-worker",
+                "--tasks", "3",
+                "--work-dir", str(root),
+                "--out", str(manifest),
+                "--command-template", "printf x > {output}",
+                "--output-template", str(root / "out.{index}.txt"),
+            )
+            self.assertEqual(0, plan.returncode)
+            loaded = crucible.load_manifest(manifest)
+
+            first = crucible.claim_task(
+                loaded,
+                worker="worker-a",
+                profile=None,
+                lease_seconds=600,
+                retry_failed=False,
+            )
+            second = crucible.claim_task(
+                loaded,
+                worker="worker-a",
+                profile=None,
+                lease_seconds=600,
+                retry_failed=False,
+            )
+            third = crucible.claim_task(
+                loaded,
+                worker="worker-b",
+                profile=None,
+                lease_seconds=600,
+                retry_failed=False,
+            )
+            self.assertEqual("task_0000", first["task"])
+            self.assertEqual("task_0001", second["task"])
+            self.assertEqual("task_0002", third["task"])
+
+            running = self.run_cli(
+                "heartbeat",
+                "--manifest", str(manifest),
+                "--task", "task_0001",
+                "--worker", "worker-a",
+                "--claim-id", second["claim"]["claim_id"],
+                "--running",
+            )
+            self.assertEqual("", running.stderr)
+            self.assertEqual(0, running.returncode)
+
+            release = self.run_cli(
+                "release",
+                "--manifest", str(manifest),
+                "--worker", "worker-a",
+            )
+            self.assertEqual("", release.stderr)
+            self.assertEqual(0, release.returncode)
+            self.assertEqual("task_0000\n", release.stdout)
+
+            status = self.run_cli("status", str(root))
+            self.assertEqual(0, status.returncode)
+            self.assertIn("running=1", status.stdout)
+            self.assertIn("claimed=1", status.stdout)
+            self.assertIn("pending=1", status.stdout)
 
     def test_delete_done_runs(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
