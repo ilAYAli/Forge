@@ -123,15 +123,17 @@ crucible plan \
 Useful run commands:
 
 ```sh
-crucible status
-crucible status my-run
-crucible list
-crucible list --current
-crucible list --done
-crucible verify my-run
+crucible list                 # all runs in runs/
+crucible list --current       # runs with pending/running/claimed/stale tasks
+crucible list --done          # completed runs
+crucible status               # compact summary of all runs
+crucible status my-run        # detailed status for one run
+crucible status my-run -v     # one row per task
+crucible verify my-run        # require every task to be done
 crucible merge my-run --output merged.txt
-crucible stop my-run
-crucible del my-run
+crucible stop my-run          # ask workers to stop this run
+crucible del my-run           # delete one run directory
+crucible del --done           # delete completed run directories
 ```
 
 `status` without a run name summarizes `runs/`. `status <run>` shows detailed

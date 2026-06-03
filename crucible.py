@@ -2747,21 +2747,39 @@ def build_parser() -> argparse.ArgumentParser:
     doctor.set_defaults(func=cmd_doctor)
 
     status = sub.add_parser("status", help="Show run or task status.")
-    status.add_argument("run", nargs="?", help="Run name or run directory.")
-    status.add_argument("-v", "--verbose", action="store_true")
+    status.add_argument(
+        "run",
+        nargs="?",
+        help="Run name or run directory. Omit to summarize all runs.",
+    )
+    status.add_argument("-v", "--verbose", action="store_true", help="Show one row per task.")
     status.add_argument("--show-done", action="store_true", help="Show completed shard breakdown.")
-    status.add_argument("--json", action="store_true")
-    status.add_argument("--no-color", action="store_true")
-    status.add_argument("--lease-seconds", type=int, default=600)
+    status.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    status.add_argument("--no-color", action="store_true", help="Disable ANSI color output.")
+    status.add_argument(
+        "--lease-seconds",
+        type=int,
+        default=600,
+        help="Seconds before a claimed task is considered stale. Default: 600.",
+    )
     status.set_defaults(func=cmd_status)
 
     list_runs = sub.add_parser("list", help="List Crucible runs.")
-    list_runs.add_argument("--done", action="store_true")
-    list_runs.add_argument("--current", action="store_true")
-    list_runs.add_argument("--failed", action="store_true")
-    list_runs.add_argument("--json", action="store_true")
-    list_runs.add_argument("--no-color", action="store_true")
-    list_runs.add_argument("--lease-seconds", type=int, default=600)
+    list_runs.add_argument("--done", action="store_true", help="Show completed runs only.")
+    list_runs.add_argument(
+        "--current",
+        action="store_true",
+        help="Show runs with pending, running, claimed, or stale tasks only.",
+    )
+    list_runs.add_argument("--failed", action="store_true", help="Show runs with failed tasks only.")
+    list_runs.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    list_runs.add_argument("--no-color", action="store_true", help="Disable ANSI color output.")
+    list_runs.add_argument(
+        "--lease-seconds",
+        type=int,
+        default=600,
+        help="Seconds before a claimed task is considered stale. Default: 600.",
+    )
     list_runs.set_defaults(func=cmd_list)
 
     wait = sub.add_parser("wait", help="Wait until coordinator tasks finish.")
@@ -2791,10 +2809,15 @@ def build_parser() -> argparse.ArgumentParser:
     stop.set_defaults(func=cmd_stop)
 
     delete = sub.add_parser("del", help="Delete run directories.")
-    delete.add_argument("run", nargs="?")
-    delete.add_argument("--done", action="store_true")
-    delete.add_argument("--force", action="store_true")
-    delete.add_argument("--lease-seconds", type=int, default=600)
+    delete.add_argument("run", nargs="?", help="Run name or run directory to delete.")
+    delete.add_argument("--done", action="store_true", help="Delete all completed runs.")
+    delete.add_argument("--force", action="store_true", help="Do not prompt before deleting.")
+    delete.add_argument(
+        "--lease-seconds",
+        type=int,
+        default=600,
+        help="Seconds before a claimed task is considered stale. Default: 600.",
+    )
     delete.set_defaults(func=cmd_del)
 
     self_update = sub.add_parser("self-update", help="Fast-forward the crucible checkout itself.")
