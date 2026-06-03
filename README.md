@@ -5,6 +5,22 @@ Small coordinator/worker runner for deterministic CPU/IO-heavy tasks.
 `crucible` is repo-agnostic. A manifest declares prerequisites and optional
 task shards. A workers file declares where to run them.
 
+## Suitable Use
+
+Crucible is meant for private, deterministic fan-out across machines you
+control. It is a good fit for:
+
+- self-play generation;
+- oracle labeling or scoring;
+- fixed-size SPRT/checkpoint batches;
+- repository/toolchain sync before distributed work;
+- CPU/IO-heavy tasks with declared inputs and outputs.
+
+It is not a replacement for public test infrastructure when you need community
+workers, long-term public result history, or standardized tournament
+administration. For engine development, Crucible is the fast private loop;
+OpenBench or similar infrastructure is still useful for public-scale validation.
+
 ## Quick Start
 
 Install on the coordinator:
