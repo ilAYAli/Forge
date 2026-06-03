@@ -7,3 +7,4 @@ state/
 logs/
 out/
 runs/
+config.json
