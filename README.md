@@ -123,8 +123,8 @@ crucible plan \
 Useful run commands:
 
 ```sh
-crucible list                 # all runs in runs/
-crucible list --current       # runs with pending/running/claimed/stale tasks
+crucible list                 # active runs in runs/
+crucible list --all           # all runs, including completed runs
 crucible list --done          # completed runs
 crucible status               # compact summary of all runs
 crucible status my-run        # detailed status for one run

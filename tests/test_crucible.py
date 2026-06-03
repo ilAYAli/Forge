@@ -741,6 +741,12 @@ class CrucibleTests(unittest.TestCase):
                     }),
                     encoding="utf-8",
                 )
+            bonus_state = runs / "bonus" / "state"
+            bonus_state.mkdir(parents=True)
+            (bonus_state / "bonus_0.done.json").write_text(
+                json.dumps({"task": "bonus_0", "host": "host-done"}),
+                encoding="utf-8",
+            )
             setup_manifest = root / "examples" / "setup.manifest.json"
             setup_manifest.parent.mkdir(parents=True)
             setup_manifest.write_text(
@@ -788,8 +794,8 @@ class CrucibleTests(unittest.TestCase):
                 with contextlib.redirect_stdout(stdout):
                     rc = crucible.cmd_list(
                         argparse.Namespace(
+                            all=False,
                             done=False,
-                            current=False,
                             failed=False,
                             json=False,
                             no_color=True,
@@ -798,14 +804,16 @@ class CrucibleTests(unittest.TestCase):
                     )
                 self.assertEqual(0, rc)
                 list_text = stdout.getvalue()
+                self.assertIn("main", list_text)
+                self.assertNotIn("bonus", list_text)
                 self.assertIn("running=0 claimed=0", list_text)
 
                 stdout = io.StringIO()
                 with contextlib.redirect_stdout(stdout):
                     rc = crucible.cmd_list(
                         argparse.Namespace(
+                            all=True,
                             done=False,
-                            current=False,
                             failed=False,
                             json=True,
                             no_color=True,
@@ -819,9 +827,66 @@ class CrucibleTests(unittest.TestCase):
                 self.assertNotIn("groups", payload["runs"][0])
                 self.assertIn("state", payload["runs"][0])
 
+                stdout = io.StringIO()
+                with contextlib.redirect_stdout(stdout):
+                    rc = crucible.cmd_list(
+                        argparse.Namespace(
+                            all=False,
+                            done=True,
+                            failed=False,
+                            json=False,
+                            no_color=True,
+                            lease_seconds=600,
+                        )
+                    )
+                self.assertEqual(0, rc)
+                done_text = stdout.getvalue()
+                self.assertIn("bonus", done_text)
+                self.assertNotIn("main", done_text)
+
                 one_run = self.run_cli("status", str(runs / "main"), cwd=root)
                 self.assertEqual(0, one_run.returncode)
                 self.assertIn("tasks: 1", one_run.stdout)
+
+    def test_list_shows_score_progress(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            runs = root / "runs"
+            run = runs / "score"
+            state = run / "state"
+            logs = run / "logs"
+            state.mkdir(parents=True)
+            logs.mkdir(parents=True)
+            manifest = {
+                "schema": "crucible.task.v1",
+                "name": "score",
+                "work_dir": str(run),
+                "state_dir": str(state),
+                "log_dir": str(logs),
+                "tasks": [{"id": "task_0", "index": 0, "command": "true", "outputs": []}],
+            }
+            (run / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+            (state / "task_0.running.json").write_text(json.dumps({"task": "task_0", "host": "worker"}))
+            (logs / "task_0.log").write_text(
+                "shard 0/24: selected=50000 written=48010 rate=6.7/s\n",
+                encoding="utf-8",
+            )
+
+            with mock.patch("crucible.runs_dir", return_value=runs):
+                stdout = io.StringIO()
+                with contextlib.redirect_stdout(stdout):
+                    rc = crucible.cmd_list(
+                        argparse.Namespace(
+                            all=False,
+                            done=False,
+                            failed=False,
+                            json=False,
+                            no_color=True,
+                            lease_seconds=600,
+                        )
+                    )
+                self.assertEqual(0, rc)
+                self.assertIn("labels~48k", stdout.getvalue())
 
     def test_stop_prevents_new_claims(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

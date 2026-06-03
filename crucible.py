@@ -1573,7 +1573,7 @@ def cmd_status(args: argparse.Namespace) -> int:
             summaries,
             color_enabled=color_enabled,
             as_json=args.json,
-            filter_name=None,
+            filter_name="all",
         )
 
     manifest_path = run_manifest_path(args.run)
@@ -1652,16 +1652,50 @@ def run_state(summary: dict[str, Any]) -> str:
 def filtered_run_summaries(summaries: list[dict[str, Any]], filter_name: str | None) -> list[dict[str, Any]]:
     if filter_name == "done":
         return [item for item in summaries if run_done(item)]
-    if filter_name == "current":
+    if filter_name in {None, "current"}:
         return [item for item in summaries if run_current(item)]
+    if filter_name == "all":
+        return summaries
     if filter_name == "failed":
         return [item for item in summaries if run_failed(item)]
     return summaries
 
 
+def compact_count(value: int) -> str:
+    if value >= 1_000_000:
+        text = f"{value / 1_000_000:.1f}".rstrip("0").rstrip(".")
+        return f"{text}m"
+    if value >= 10_000:
+        return f"{value // 1000}k"
+    return str(value)
+
+
+def summary_progress(summary: dict[str, Any]) -> str:
+    fraction_done = 0
+    fraction_total = 0
+    labels = 0
+    for row in summary["active"]:
+        progress = str(row.get("progress") or "")
+        fraction_match = re.fullmatch(r"(\d+)/(\d+)", progress)
+        if fraction_match:
+            fraction_done += int(fraction_match.group(1))
+            fraction_total += int(fraction_match.group(2))
+            continue
+        label_match = re.fullmatch(r"written=(\d+)", progress)
+        if label_match:
+            labels += int(label_match.group(1))
+
+    parts: list[str] = []
+    if fraction_total:
+        parts.append(f"progress={fraction_done}/{fraction_total}")
+    if labels:
+        parts.append(f"labels~{compact_count(labels)}")
+    return " ".join(parts)
+
+
 def list_run_payload(summary: dict[str, Any]) -> dict[str, Any]:
     counts = summary["counts"]
-    return {
+    payload = {
         "run": summary["run"],
         "state": run_state(summary),
         "manifest": summary["manifest"],
@@ -1674,6 +1708,10 @@ def list_run_payload(summary: dict[str, Any]) -> dict[str, Any]:
         "fail": counts["fail"],
         "stale": counts["stale"],
     }
+    progress = summary_progress(summary)
+    if progress:
+        payload["progress"] = progress
+    return payload
 
 
 def print_run_list(
@@ -1695,21 +1733,30 @@ def print_run_list(
         active = counts["running"] + counts["claimed"] + counts["stale"]
         state = run_state(summary)
         state_color = "red" if state == "failed" else "yellow" if state == "current" else "green"
-        print(
+        progress = summary_progress(summary)
+        fields = [
             f"{summary['run']:<36} "
-            f"{colorize(state, state_color, enabled=color_enabled):<8} "
-            f"done={counts['done']}/{summary['tasks']} "
-            f"active={active} running={counts['running']} claimed={counts['claimed']} "
-            f"fail={counts['fail']} "
-            f"pending={counts['pending']} stale={counts['stale']}"
-        )
+            f"{colorize(state, state_color, enabled=color_enabled):<8}",
+            f"done={counts['done']}/{summary['tasks']}",
+            f"active={active}",
+            f"running={counts['running']}",
+            f"claimed={counts['claimed']}",
+        ]
+        if progress:
+            fields.append(progress)
+        fields.extend([
+            f"fail={counts['fail']}",
+            f"pending={counts['pending']}",
+            f"stale={counts['stale']}",
+        ])
+        print(" ".join(fields))
     return 0 if all(item["counts"]["fail"] == 0 for item in filtered) else 1
 
 
 def cmd_list(args: argparse.Namespace) -> int:
-    selected = [name for name in ("done", "current", "failed") if bool(getattr(args, name))]
+    selected = [name for name in ("all", "done", "failed") if bool(getattr(args, name))]
     if len(selected) > 1:
-        raise SystemExit("choose only one of --done, --current, or --failed")
+        raise SystemExit("choose only one of --all, --done, or --failed")
     summaries = load_run_summaries(lease_seconds=args.lease_seconds)
     return print_run_list(
         summaries,
@@ -1858,10 +1905,14 @@ def task_log_progress(manifest: dict[str, Any], task: dict[str, Any]) -> str:
         return ""
 
     progress_re = re.compile(r"\[\s*\d+/\d+\s+(\d+)\s*/\s*(\d+)\]")
+    score_re = re.compile(r"\bselected=(\d+)\s+written=(\d+)\b")
     for line in reversed(text.splitlines()):
         match = progress_re.search(line)
         if match:
             return f"{match.group(1)}/{match.group(2)}"
+        match = score_re.search(line)
+        if match:
+            return f"written={match.group(2)}"
     return ""
 
 
@@ -2783,12 +2834,8 @@ def build_parser() -> argparse.ArgumentParser:
     status.set_defaults(func=cmd_status)
 
     list_runs = sub.add_parser("list", help="List Crucible runs.")
+    list_runs.add_argument("--all", action="store_true", help="Show all runs, including completed runs.")
     list_runs.add_argument("--done", action="store_true", help="Show completed runs only.")
-    list_runs.add_argument(
-        "--current",
-        action="store_true",
-        help="Show runs with pending, running, claimed, or stale tasks only.",
-    )
     list_runs.add_argument("--failed", action="store_true", help="Show runs with failed tasks only.")
     list_runs.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
     list_runs.add_argument("--no-color", action="store_true", help="Disable ANSI color output.")
