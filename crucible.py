@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import concurrent.futures
 import copy
+import datetime
 import hashlib
 import json
 import os
@@ -2041,6 +2042,52 @@ def progress_eta_text(done: Any, total: Any, rate: Any) -> str:
     return f"eta={compact_duration((total - done) / float(rate))}"
 
 
+def parse_timestamp_epoch(value: Any) -> float | None:
+    if isinstance(value, (int, float)):
+        return float(value)
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        return datetime.datetime.strptime(value, "%Y-%m-%dT%H:%M:%S%z").timestamp()
+    except ValueError:
+        return None
+
+
+def task_running_payload(manifest: dict[str, Any], task: dict[str, Any]) -> dict[str, Any] | None:
+    try:
+        payload = read_json(task_running_path(manifest, task))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def infer_progress_rate(
+    progress_data: dict[str, Any] | None,
+    running_payload: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    if not isinstance(progress_data, dict):
+        return None
+    if isinstance(progress_data.get("rate"), (int, float)) and float(progress_data["rate"]) > 0:
+        return progress_data
+    done = progress_data.get("done")
+    if not isinstance(done, int) or done <= 0:
+        return progress_data
+    started_epoch = None
+    if isinstance(running_payload, dict):
+        started_epoch = parse_timestamp_epoch(running_payload.get("started_epoch"))
+        if started_epoch is None:
+            started_epoch = parse_timestamp_epoch(running_payload.get("started_at"))
+    if started_epoch is None:
+        return progress_data
+    elapsed = epoch() - started_epoch
+    if elapsed <= 0:
+        return progress_data
+    inferred = dict(progress_data)
+    inferred["rate"] = done / elapsed
+    inferred["text"] = progress_text(inferred)
+    return inferred
+
+
 def progress_text(data: dict[str, Any]) -> str:
     if data.get("kind") == "subtask":
         done = data.get("done")
@@ -2144,20 +2191,30 @@ def summary_progress(summary: dict[str, Any]) -> str:
                 etas.append(eta)
         parts.append(text)
     for unit, bucket in sorted(by_unit.items()):
-        done = int(bucket["done"])
-        total = int(bucket["total"])
-        if bucket["all_total"] and total > 0:
-            text = f"{compact_count(done)}/{compact_count(total)} {unit}"
+        active_done = int(bucket["done"])
+        active_total = int(bucket["total"])
+        total_work = summary.get("progress_totals", {}).get(unit)
+        done_work = summary.get("progress_done", {}).get(unit, 0)
+        if isinstance(total_work, int) and total_work > 0:
+            done = min(total_work, int(done_work) + active_done)
+            text = f"{compact_count(done)}/{compact_count(total_work)} {unit}"
+            if bucket["rate"] > 0:
+                eta = progress_eta_text(done, total_work, bucket["rate"])
+                if eta:
+                    etas.append(eta)
+            parts.append(text)
+        elif bucket["all_total"] and active_total > 0:
+            text = f"{compact_count(active_done)}/{compact_count(active_total)} {unit}"
             if (
                 bucket["all_rate"] and bucket["count"] == summary["active_count"]
                 and summary["counts"]["pending"] == 0
             ):
-                eta = progress_eta_text(done, total, bucket["rate"])
+                eta = progress_eta_text(active_done, active_total, bucket["rate"])
                 if eta:
                     etas.append(eta)
             parts.append(text)
         else:
-            parts.append(f"~{compact_count(done)} {unit}")
+            parts.append(f"~{compact_count(active_done)} {unit}")
     for output_unit, value in sorted(outputs.items()):
         parts.append(f"{output_unit}={compact_count(value)}")
     parts.extend(etas)
@@ -2552,15 +2609,28 @@ def status_summary(manifest: dict[str, Any], *, lease_seconds: int) -> dict[str,
     }
     active: list[dict[str, Any]] = []
     pending: list[int | str] = []
+    progress_totals: dict[str, int] = {}
+    progress_done: dict[str, int] = {}
 
     for task in manifest["tasks"]:
         state = task_state(manifest, task, lease_seconds=lease_seconds)
         counts[state] += 1
         worker = status_worker(manifest, task, state)
         index = task_display_index(task)
+        progress_config = task.get("progress")
+        if isinstance(progress_config, dict):
+            unit = str(progress_config.get("unit") or "").strip()
+            total = progress_config.get("total")
+            if unit and isinstance(total, int) and total > 0:
+                progress_totals[unit] = progress_totals.get(unit, 0) + total
+                if state == "done":
+                    progress_done[unit] = progress_done.get(unit, 0) + total
         progress_data = task_log_progress_data(manifest, task) if state == "running" else None
         if progress_data is None and state in {"running", "claimed", "stale"}:
             progress_data = task_heartbeat_progress_data(manifest, task)
+        running_payload = task_running_payload(manifest, task) if state in {"running", "claimed", "stale"} else None
+        if isinstance(progress_config, dict):
+            progress_data = infer_progress_rate(progress_data, running_payload)
         progress = str(progress_data.get("text") or "") if isinstance(progress_data, dict) else ""
         row = {
             "id": task["id"],
@@ -2589,6 +2659,8 @@ def status_summary(manifest: dict[str, Any], *, lease_seconds: int) -> dict[str,
         "active": active,
         "pending": pending,
         "rows": rows,
+        "progress_totals": progress_totals,
+        "progress_done": progress_done,
     }
 
 
