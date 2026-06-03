@@ -1645,14 +1645,20 @@ def cmd_heartbeat(args: argparse.Namespace) -> int:
 
 def cmd_status(args: argparse.Namespace) -> int:
     color_enabled = not bool(args.no_color) and sys.stdout.isatty()
+    selected = [name for name in ("all", "done", "failed") if bool(getattr(args, name))]
+    if len(selected) > 1:
+        raise SystemExit("choose only one of --all, --done, or --failed")
+    filter_name = selected[0] if selected else None
     if args.run is None:
         summaries = load_run_summaries(lease_seconds=args.lease_seconds)
-        return print_run_list(
+        return print_run_status(
             summaries,
             color_enabled=color_enabled,
             as_json=args.json,
-            filter_name="all",
+            filter_name=filter_name,
         )
+    if selected:
+        raise SystemExit("--all, --done, and --failed cannot be used with a run name")
 
     manifest_path = run_manifest_path(args.run)
     manifest = load_manifest(manifest_path)
@@ -1893,7 +1899,7 @@ def summary_progress(summary: dict[str, Any]) -> str:
     return f"progress={', '.join(parts)}" if parts else ""
 
 
-def list_run_payload(summary: dict[str, Any]) -> dict[str, Any]:
+def run_status_payload(summary: dict[str, Any]) -> dict[str, Any]:
     counts = summary["counts"]
     payload = {
         "run": summary["run"],
@@ -1914,7 +1920,7 @@ def list_run_payload(summary: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
-def print_run_list(
+def print_run_status(
     summaries: list[dict[str, Any]],
     *,
     color_enabled: bool,
@@ -1923,7 +1929,7 @@ def print_run_list(
 ) -> int:
     filtered = filtered_run_summaries(summaries, filter_name)
     if as_json:
-        print(json.dumps({"runs": [list_run_payload(item) for item in filtered]}, sort_keys=True))
+        print(json.dumps({"runs": [run_status_payload(item) for item in filtered]}, sort_keys=True))
         return 0 if all(item["counts"]["fail"] == 0 for item in filtered) else 1
     if not filtered:
         print(f"no Crucible runs found in {runs_dir()}")
@@ -1951,19 +1957,6 @@ def print_run_list(
         ])
         print(" ".join(fields))
     return 0 if all(item["counts"]["fail"] == 0 for item in filtered) else 1
-
-
-def cmd_list(args: argparse.Namespace) -> int:
-    selected = [name for name in ("all", "done", "failed") if bool(getattr(args, name))]
-    if len(selected) > 1:
-        raise SystemExit("choose only one of --all, --done, or --failed")
-    summaries = load_run_summaries(lease_seconds=args.lease_seconds)
-    return print_run_list(
-        summaries,
-        color_enabled=not bool(args.no_color) and sys.stdout.isatty(),
-        as_json=args.json,
-        filter_name=selected[0] if selected else None,
-    )
 
 
 def load_run_manifest(run: str | Path) -> tuple[Path, dict[str, Any]]:
@@ -3197,10 +3190,13 @@ def build_parser() -> argparse.ArgumentParser:
     status.add_argument(
         "run",
         nargs="?",
-        help="Run name or run directory. Omit to summarize all runs.",
+        help="Run name or run directory. Omit to show active runs.",
     )
     status.add_argument("-v", "--verbose", action="store_true", help="Show one row per task.")
-    status.add_argument("--show-done", action="store_true", help="Show completed shard breakdown.")
+    status.add_argument("--show-done", action="store_true", help="Show completed task breakdown for one run.")
+    status.add_argument("--all", action="store_true", help="Show all runs, including completed runs.")
+    status.add_argument("--done", action="store_true", help="Show completed runs only.")
+    status.add_argument("--failed", action="store_true", help="Show runs with failed tasks only.")
     status.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
     status.add_argument("--no-color", action="store_true", help="Disable ANSI color output.")
     status.add_argument(
@@ -3210,24 +3206,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="Seconds before a claimed task is considered stale. Default: 600.",
     )
     status.set_defaults(func=cmd_status)
-
-    list_runs = sub.add_parser(
-        "list",
-        help="List Crucible runs.",
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
-    )
-    list_runs.add_argument("--all", action="store_true", help="Show all runs, including completed runs.")
-    list_runs.add_argument("--done", action="store_true", help="Show completed runs only.")
-    list_runs.add_argument("--failed", action="store_true", help="Show runs with failed tasks only.")
-    list_runs.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
-    list_runs.add_argument("--no-color", action="store_true", help="Disable ANSI color output.")
-    list_runs.add_argument(
-        "--lease-seconds",
-        type=int,
-        default=600,
-        help="Seconds before a claimed task is considered stale. Default: 600.",
-    )
-    list_runs.set_defaults(func=cmd_list)
 
     wait = sub.add_parser(
         "wait",

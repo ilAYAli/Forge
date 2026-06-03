@@ -34,7 +34,7 @@ class CrucibleTests(unittest.TestCase):
     def test_subcommand_help_is_available(self) -> None:
         commands = [
             "plan", "add-input", "add-repo", "sync-repos", "run", "claim",
-            "release", "heartbeat", "work", "doctor", "status", "list",
+            "release", "heartbeat", "work", "doctor", "status",
             "wait", "verify", "merge", "stop", "del", "self-update",
             "version", "deploy",
         ]
@@ -47,6 +47,11 @@ class CrucibleTests(unittest.TestCase):
         self.assertIn("--progress-log-regex", self.run_cli("plan", "--help").stdout)
         self.assertIn("Coordinator manifest", self.run_cli("claim", "--help").stdout)
         self.assertIn("workers.json", self.run_cli("deploy", "--help").stdout)
+
+    def test_list_subcommand_is_not_supported(self) -> None:
+        result = self.run_cli("list", "--help")
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("invalid choice", result.stderr)
 
     @unittest.skipIf(not hasattr(os, "symlink"), "symlink support required")
     def test_expand_path_preserves_symlink_text(self) -> None:
@@ -842,6 +847,9 @@ class CrucibleTests(unittest.TestCase):
                     rc = crucible.cmd_status(
                         argparse.Namespace(
                             run=None,
+                            all=False,
+                            done=False,
+                            failed=False,
                             json=False,
                             no_color=True,
                             lease_seconds=600,
@@ -852,14 +860,15 @@ class CrucibleTests(unittest.TestCase):
                 self.assertEqual(0, rc)
                 status_text = stdout.getvalue()
                 self.assertIn("main", status_text)
-                self.assertIn("bonus", status_text)
+                self.assertNotIn("bonus", status_text)
                 self.assertNotIn("setup", status_text)
                 self.assertNotIn("nnue-selfplay", status_text)
 
                 stdout = io.StringIO()
                 with contextlib.redirect_stdout(stdout):
-                    rc = crucible.cmd_list(
+                    rc = crucible.cmd_status(
                         argparse.Namespace(
+                            run=None,
                             all=False,
                             done=False,
                             failed=False,
@@ -869,15 +878,16 @@ class CrucibleTests(unittest.TestCase):
                         )
                     )
                 self.assertEqual(0, rc)
-                list_text = stdout.getvalue()
-                self.assertIn("main", list_text)
-                self.assertNotIn("bonus", list_text)
-                self.assertIn("running=0 claimed=0", list_text)
+                active_text = stdout.getvalue()
+                self.assertIn("main", active_text)
+                self.assertNotIn("bonus", active_text)
+                self.assertIn("running=0 claimed=0", active_text)
 
                 stdout = io.StringIO()
                 with contextlib.redirect_stdout(stdout):
-                    rc = crucible.cmd_list(
+                    rc = crucible.cmd_status(
                         argparse.Namespace(
+                            run=None,
                             all=True,
                             done=False,
                             failed=False,
@@ -895,8 +905,9 @@ class CrucibleTests(unittest.TestCase):
 
                 stdout = io.StringIO()
                 with contextlib.redirect_stdout(stdout):
-                    rc = crucible.cmd_list(
+                    rc = crucible.cmd_status(
                         argparse.Namespace(
+                            run=None,
                             all=False,
                             done=True,
                             failed=False,
@@ -914,7 +925,7 @@ class CrucibleTests(unittest.TestCase):
                 self.assertEqual(0, one_run.returncode)
                 self.assertIn("tasks=0/1", one_run.stdout)
 
-    def test_list_shows_declared_progress(self) -> None:
+    def test_status_shows_declared_progress(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             runs = root / "runs"
@@ -952,8 +963,9 @@ class CrucibleTests(unittest.TestCase):
             with mock.patch("crucible.runs_dir", return_value=runs):
                 stdout = io.StringIO()
                 with contextlib.redirect_stdout(stdout):
-                    rc = crucible.cmd_list(
+                    rc = crucible.cmd_status(
                         argparse.Namespace(
+                            run=None,
                             all=False,
                             done=False,
                             failed=False,
@@ -965,7 +977,7 @@ class CrucibleTests(unittest.TestCase):
                 self.assertEqual(0, rc)
                 self.assertIn("progress=50k/125k rows, output=48k, eta=3h06m", stdout.getvalue())
 
-    def test_list_ignores_undeclared_domain_progress(self) -> None:
+    def test_status_ignores_undeclared_domain_progress(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             runs = root / "runs"
@@ -992,8 +1004,9 @@ class CrucibleTests(unittest.TestCase):
             with mock.patch("crucible.runs_dir", return_value=runs):
                 stdout = io.StringIO()
                 with contextlib.redirect_stdout(stdout):
-                    rc = crucible.cmd_list(
+                    rc = crucible.cmd_status(
                         argparse.Namespace(
+                            run=None,
                             all=False,
                             done=False,
                             failed=False,

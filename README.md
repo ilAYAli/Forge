@@ -123,10 +123,10 @@ crucible plan \
 Useful run commands:
 
 ```sh
-crucible list                 # active runs in runs/
-crucible list --all           # all runs, including completed runs
-crucible list --done          # completed runs
-crucible status               # compact summary of all runs
+crucible status               # active runs in runs/
+crucible status --all         # all runs, including completed runs
+crucible status --done        # completed runs
+crucible status --failed      # failed runs
 crucible status my-run        # detailed status for one run
 crucible status my-run -v     # one row per task
 crucible verify my-run        # require every task to be done
@@ -136,10 +136,11 @@ crucible del my-run           # delete one run directory
 crucible del --done           # delete completed run directories
 ```
 
-`status` without a run name summarizes `runs/`. `status <run>` shows detailed
+`status` without a run name summarizes active runs in `runs/`. `status <run>` shows detailed
 task state for one run. Template manifests under `examples/` are deploy inputs,
-not runnable jobs. The default view shows counts, active shards, failed/stale
-shards, and compressed pending ranges. Use `--show-done` for completed shard
+not runnable jobs. The default view shows counts, active tasks, failed/stale
+tasks, and compressed pending ranges. Use `--all`, `--done`, or `--failed` to
+change the run filter. Use `--show-done` for completed task
 breakdowns by worker, or `--verbose` for the full task table.
 
 Lower-level commands remain available for diagnostics: `sync-repos`, `doctor`,
