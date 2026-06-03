@@ -2061,6 +2061,14 @@ def task_running_payload(manifest: dict[str, Any], task: dict[str, Any]) -> dict
     return payload if isinstance(payload, dict) else None
 
 
+def task_done_payload(manifest: dict[str, Any], task: dict[str, Any]) -> dict[str, Any] | None:
+    try:
+        payload = read_json(task_done_path(manifest, task))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
 def infer_progress_rate(
     progress_data: dict[str, Any] | None,
     running_payload: dict[str, Any] | None,
@@ -2086,6 +2094,29 @@ def infer_progress_rate(
     inferred["rate"] = done / elapsed
     inferred["text"] = progress_text(inferred)
     return inferred
+
+
+def progress_config_unit_total(task: dict[str, Any]) -> tuple[str, int] | None:
+    progress_config = task.get("progress")
+    if not isinstance(progress_config, dict):
+        return None
+    unit = str(progress_config.get("unit") or "").strip()
+    total = progress_config.get("total")
+    if not unit or not isinstance(total, int) or total <= 0:
+        return None
+    return unit, total
+
+
+def fallback_progress_data(unit: str, total: int, rate: float | None) -> dict[str, Any] | None:
+    if not rate or rate <= 0:
+        return None
+    return normalize_progress_data({
+        "kind": "metadata",
+        "done": 0,
+        "total": total,
+        "unit": unit,
+        "rate": rate,
+    })
 
 
 def progress_text(data: dict[str, Any]) -> str:
@@ -2611,26 +2642,46 @@ def status_summary(manifest: dict[str, Any], *, lease_seconds: int) -> dict[str,
     pending: list[int | str] = []
     progress_totals: dict[str, int] = {}
     progress_done: dict[str, int] = {}
+    completed_units: dict[str, int] = {}
+    completed_elapsed: dict[str, float] = {}
+
+    for task in manifest["tasks"]:
+        config_progress = progress_config_unit_total(task)
+        if config_progress is None or not task_complete(manifest, task):
+            continue
+        unit, total = config_progress
+        payload = task_done_payload(manifest, task)
+        elapsed = payload.get("elapsed_s") if isinstance(payload, dict) else None
+        if isinstance(elapsed, (int, float)) and elapsed > 0:
+            completed_units[unit] = completed_units.get(unit, 0) + total
+            completed_elapsed[unit] = completed_elapsed.get(unit, 0.0) + float(elapsed)
+    fallback_rates = {
+        unit: completed_units[unit] / completed_elapsed[unit]
+        for unit in completed_units
+        if completed_elapsed.get(unit, 0.0) > 0
+    }
 
     for task in manifest["tasks"]:
         state = task_state(manifest, task, lease_seconds=lease_seconds)
         counts[state] += 1
         worker = status_worker(manifest, task, state)
         index = task_display_index(task)
+        config_progress = progress_config_unit_total(task)
         progress_config = task.get("progress")
-        if isinstance(progress_config, dict):
-            unit = str(progress_config.get("unit") or "").strip()
-            total = progress_config.get("total")
-            if unit and isinstance(total, int) and total > 0:
-                progress_totals[unit] = progress_totals.get(unit, 0) + total
-                if state == "done":
-                    progress_done[unit] = progress_done.get(unit, 0) + total
+        if config_progress is not None:
+            unit, total = config_progress
+            progress_totals[unit] = progress_totals.get(unit, 0) + total
+            if state == "done":
+                progress_done[unit] = progress_done.get(unit, 0) + total
         progress_data = task_log_progress_data(manifest, task) if state == "running" else None
         if progress_data is None and state in {"running", "claimed", "stale"}:
             progress_data = task_heartbeat_progress_data(manifest, task)
         running_payload = task_running_payload(manifest, task) if state in {"running", "claimed", "stale"} else None
         if isinstance(progress_config, dict):
             progress_data = infer_progress_rate(progress_data, running_payload)
+        if progress_data is None and config_progress is not None and state in {"running", "claimed", "stale"}:
+            unit, total = config_progress
+            progress_data = fallback_progress_data(unit, total, fallback_rates.get(unit))
         progress = str(progress_data.get("text") or "") if isinstance(progress_data, dict) else ""
         row = {
             "id": task["id"],
