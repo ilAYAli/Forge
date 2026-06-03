@@ -982,7 +982,48 @@ class CrucibleTests(unittest.TestCase):
         self.assertEqual("ssh", command[0])
         self.assertIn("pwa-5090", command)
         self.assertIn("CRUCIBLE_RUNS_DIR=/home/petter/code/cpp/chess/crucible/runs", command[-1])
-        self.assertIn("env -u CRUCIBLE_COORDINATOR_RUNS", command[-1])
+        self.assertIn("CRUCIBLE_COORDINATOR_RUNS=", command[-1])
+
+    def test_status_delegates_to_runs_coordinator_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            runs = root / "runs"
+            runs.mkdir()
+            (runs / "coordinator").write_text(
+                "pwa-5090:/home/petter/code/cpp/chess/crucible/runs\n",
+                encoding="utf-8",
+            )
+            remote_result = subprocess.CompletedProcess(
+                args=["ssh"],
+                returncode=0,
+                stdout="remote status\n",
+                stderr="",
+            )
+            with (
+                mock.patch("crucible.runs_dir", return_value=runs),
+                mock.patch("crucible.subprocess.run", return_value=remote_result) as run_mock,
+            ):
+                stdout = io.StringIO()
+                with contextlib.redirect_stdout(stdout):
+                    rc = crucible.cmd_status(
+                        argparse.Namespace(
+                            run=None,
+                            all=False,
+                            done=False,
+                            failed=False,
+                            json=False,
+                            no_color=True,
+                            lease_seconds=600,
+                            show_done=False,
+                            verbose=False,
+                        )
+                    )
+
+            self.assertEqual(0, rc)
+            self.assertEqual("remote status\n", stdout.getvalue())
+            command = run_mock.call_args.args[0]
+            self.assertEqual("ssh", command[0])
+            self.assertIn("pwa-5090", command)
 
     def test_status_shows_declared_progress(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

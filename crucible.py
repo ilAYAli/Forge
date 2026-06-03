@@ -29,6 +29,7 @@ RUN_MANIFEST_NAME = "manifest.json"
 RUN_WORKERS_NAME = "workers.json"
 RUNS_DIR_ENV = "CRUCIBLE_RUNS_DIR"
 COORDINATOR_RUNS_ENV = "CRUCIBLE_COORDINATOR_RUNS"
+COORDINATOR_RUNS_FILE = "coordinator"
 RUN_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 SSH_CONNECT_TIMEOUT_SECONDS = 15
 SSH_SERVER_ALIVE_INTERVAL_SECONDS = 30
@@ -76,6 +77,16 @@ def runs_dir() -> Path:
     if override:
         return expand_path(override)
     return script_repo() / RUNS_DIR_NAME
+
+
+def configured_coordinator_runs() -> str | None:
+    if COORDINATOR_RUNS_ENV in os.environ:
+        return os.environ[COORDINATOR_RUNS_ENV].strip() or None
+    path = runs_dir() / COORDINATOR_RUNS_FILE
+    if not path.exists():
+        return None
+    value = path.read_text(encoding="utf-8").strip()
+    return value or None
 
 
 def validate_run_name(name: str) -> str:
@@ -1653,7 +1664,7 @@ def cmd_status(args: argparse.Namespace) -> int:
     selected = [name for name in ("all", "done", "failed") if bool(getattr(args, name))]
     if len(selected) > 1:
         raise SystemExit("choose only one of --all, --done, or --failed")
-    coordinator_runs = os.environ.get(COORDINATOR_RUNS_ENV)
+    coordinator_runs = configured_coordinator_runs()
     if coordinator_runs and status_can_delegate(args.run):
         return run_status_on_coordinator(args, coordinator_runs)
     filter_name = selected[0] if selected else None
@@ -1713,7 +1724,7 @@ def run_status_on_coordinator(args: argparse.Namespace, coordinator_runs: str) -
         remote = (
             "command -v crucible >/dev/null 2>&1 || "
             "{ echo 'crucible not found in PATH on coordinator' >&2; exit 127; }; "
-            f"exec env -u {shlex.quote(COORDINATOR_RUNS_ENV)} "
+            f"exec env {shlex.quote(COORDINATOR_RUNS_ENV)}= "
             f"{shlex.quote(RUNS_DIR_ENV)}={shlex.quote(runs_path)} "
             f"crucible {shell_join(command)}"
         )
@@ -1726,7 +1737,7 @@ def run_status_on_coordinator(args: argparse.Namespace, coordinator_runs: str) -
         )
     else:
         env = os.environ.copy()
-        env.pop(COORDINATOR_RUNS_ENV, None)
+        env[COORDINATOR_RUNS_ENV] = ""
         env[RUNS_DIR_ENV] = runs_path
         result = subprocess.run(
             [sys.executable, str(script_path()), *command],

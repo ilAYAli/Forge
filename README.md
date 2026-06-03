@@ -143,10 +143,17 @@ tasks, and compressed pending ranges. Use `--all`, `--done`, or `--failed` to
 change the run filter. Use `--show-done` for completed task
 breakdowns by worker, or `--verbose` for the full task table.
 
-Set `CRUCIBLE_RUNS_DIR` to use a different local run root. Set
-`CRUCIBLE_COORDINATOR_RUNS=host:/path/to/crucible/runs` on non-coordinator
-hosts to make `crucible status` read the coordinator's run state by default.
-Explicit run paths remain local diagnostics.
+Put a coordinator pointer in `runs/coordinator` on non-coordinator hosts to make
+`crucible status` read the coordinator's run state by default:
+
+```sh
+mkdir -p runs
+printf '%s\n' 'pwa-5090:/home/petter/code/cpp/chess/crucible/runs' > runs/coordinator
+```
+
+Set `CRUCIBLE_RUNS_DIR` to use a different local run root, or
+`CRUCIBLE_COORDINATOR_RUNS=host:/path/to/crucible/runs` to override
+`runs/coordinator`. Explicit run paths remain local diagnostics.
 
 Lower-level commands remain available for diagnostics: `sync-repos`, `doctor`,
 `work`, `claim`, `release`, `heartbeat`, and `run`.
