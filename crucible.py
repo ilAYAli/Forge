@@ -1776,9 +1776,11 @@ def progress_text(data: dict[str, Any]) -> str:
         total = data.get("total")
         done_text = str(done) if isinstance(done, int) else "?"
         total_text = str(total) if isinstance(total, int) and total > 0 else "?"
+        parts = [f"subtask={done_text}/{total_text}"]
         eta = progress_eta_text(done, total, data.get("rate"))
-        suffix = f" {eta}" if eta else ""
-        return f"subtask={done_text}/{total_text}{suffix}"
+        if eta:
+            parts.append(eta)
+        return ", ".join(parts)
 
     done = data.get("done")
     total = data.get("total")
@@ -1794,13 +1796,13 @@ def progress_text(data: dict[str, Any]) -> str:
         main = ""
     if main and unit:
         main = f"{main} {unit}"
-    eta = progress_eta_text(done, total, data.get("rate"))
-    if main and eta:
-        main = f"{main} {eta}"
 
     parts = [main] if main else []
     if isinstance(output, int):
         parts.append(f"{output_unit}={compact_count(output)}")
+    eta = progress_eta_text(done, total, data.get("rate"))
+    if eta:
+        parts.append(eta)
     return ", ".join(parts)
 
 
@@ -1813,6 +1815,7 @@ def summary_progress(summary: dict[str, Any]) -> str:
     subtask_known_rate = True
     by_unit: dict[str, dict[str, Any]] = {}
     outputs: dict[str, int] = {}
+    etas: list[str] = []
     for row in summary["active"]:
         data = row.get("progress_data")
         if isinstance(data, dict) and data.get("kind") == "metadata":
@@ -1867,7 +1870,7 @@ def summary_progress(summary: dict[str, Any]) -> str:
         ):
             eta = progress_eta_text(subtask_done, subtask_total, subtask_rate)
             if eta:
-                text = f"{text} {eta}"
+                etas.append(eta)
         parts.append(text)
     for unit, bucket in sorted(by_unit.items()):
         done = int(bucket["done"])
@@ -1880,12 +1883,13 @@ def summary_progress(summary: dict[str, Any]) -> str:
             ):
                 eta = progress_eta_text(done, total, bucket["rate"])
                 if eta:
-                    text = f"{text} {eta}"
+                    etas.append(eta)
             parts.append(text)
         else:
             parts.append(f"~{compact_count(done)} {unit}")
     for output_unit, value in sorted(outputs.items()):
         parts.append(f"{output_unit}={compact_count(value)}")
+    parts.extend(etas)
     return f"progress={', '.join(parts)}" if parts else ""
 
 
