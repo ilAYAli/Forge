@@ -122,6 +122,11 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def count_file_lines(path: Path) -> int:
+    with path.open("rb") as handle:
+        return sum(1 for _ in handle)
+
+
 def file_record(path: Path) -> dict[str, Any]:
     return {
         "path": str(path),
@@ -1188,10 +1193,31 @@ def cmd_plan(args: argparse.Namespace) -> int:
     tasks = []
     generated_outputs: dict[str, str] = {}
     width = max(4, len(str(args.shards - 1)))
+    progress_enabled = any([
+        args.progress_unit,
+        args.progress_total,
+        args.progress_total_lines,
+        args.progress_log_regex,
+        args.progress_output_unit,
+    ])
+    if args.progress_total and args.progress_total_lines:
+        raise SystemExit("choose only one of --progress-total or --progress-total-lines")
+    if progress_enabled and not args.progress_log_regex:
+        raise SystemExit("--progress-log-regex is required when progress metadata is set")
+    progress_line_totals: list[int] | None = None
+    if args.progress_total_lines:
+        total_lines = count_file_lines(expand_path(str(args.progress_total_lines).format(**vars_obj)))
+        base = total_lines // args.shards
+        extra = total_lines % args.shards
+        progress_line_totals = [
+            base + (1 if index < extra else 0)
+            for index in range(args.shards)
+        ]
     for index in range(args.shards):
         task_id = f"{args.task_prefix}_{index:0{width}d}"
+        format_vars = {"index": index, "shard": index, "task_id": task_id, "shards": args.shards, **vars_obj}
         outputs = [
-            template.format(index=index, shard=index, task_id=task_id, shards=args.shards, **vars_obj)
+            template.format(**format_vars)
             for template in args.output_template
         ]
         for output in outputs:
@@ -1201,12 +1227,30 @@ def cmd_plan(args: argparse.Namespace) -> int:
                     f"{out}: duplicate output path {output!r} in "
                     f"{other_task} and {task_id}")
             generated_outputs[output] = task_id
-        tasks.append({
+        task = {
             "id": task_id,
             "index": index,
             "command": args.command_template,
             "outputs": outputs,
-        })
+        }
+        if progress_enabled:
+            progress: dict[str, Any] = {
+                "log_regex": str(args.progress_log_regex),
+            }
+            if args.progress_unit:
+                progress["unit"] = str(args.progress_unit)
+            if args.progress_output_unit:
+                progress["output_unit"] = str(args.progress_output_unit)
+            if args.progress_total:
+                total = str(args.progress_total).format(**format_vars)
+                try:
+                    progress["total"] = int(total)
+                except ValueError:
+                    progress["total"] = total
+            elif progress_line_totals is not None:
+                progress["total"] = progress_line_totals[index]
+            task["progress"] = progress
+        tasks.append(task)
 
     manifest = {
         "schema": SCHEMA,
@@ -1670,26 +1714,77 @@ def compact_count(value: int) -> str:
     return str(value)
 
 
+def progress_text(data: dict[str, Any]) -> str:
+    done = data.get("done")
+    total = data.get("total")
+    unit = str(data.get("unit") or "").strip()
+    output = data.get("output")
+    output_unit = str(data.get("output_unit") or "output").strip() or "output"
+
+    if isinstance(done, int) and isinstance(total, int) and total > 0:
+        main = f"{compact_count(done)}/{compact_count(total)}"
+    elif isinstance(done, int):
+        main = f"~{compact_count(done)}"
+    else:
+        main = ""
+    if main and unit:
+        main = f"{main} {unit}"
+
+    parts = [main] if main else []
+    if isinstance(output, int):
+        parts.append(f"{output_unit}={compact_count(output)}")
+    return ", ".join(parts)
+
+
 def summary_progress(summary: dict[str, Any]) -> str:
     fraction_done = 0
     fraction_total = 0
-    labels = 0
+    by_unit: dict[str, dict[str, Any]] = {}
+    outputs: dict[str, int] = {}
     for row in summary["active"]:
+        data = row.get("progress_data")
+        if isinstance(data, dict) and data.get("kind") == "metadata":
+            done = data.get("done")
+            if isinstance(done, int):
+                unit = str(data.get("unit") or "items")
+                bucket = by_unit.setdefault(unit, {"done": 0, "total": 0, "all_total": True})
+                bucket["done"] += done
+                total = data.get("total")
+                if isinstance(total, int) and total > 0:
+                    bucket["total"] += total
+                else:
+                    bucket["all_total"] = False
+            output = data.get("output")
+            if isinstance(output, int):
+                output_unit = str(data.get("output_unit") or "output")
+                outputs[output_unit] = outputs.get(output_unit, 0) + output
+            continue
+        if isinstance(data, dict):
+            done = data.get("done")
+            total = data.get("total")
+            if isinstance(done, int) and isinstance(total, int):
+                fraction_done += done
+                fraction_total += total
+                continue
+
         progress = str(row.get("progress") or "")
         fraction_match = re.fullmatch(r"(\d+)/(\d+)", progress)
         if fraction_match:
             fraction_done += int(fraction_match.group(1))
             fraction_total += int(fraction_match.group(2))
-            continue
-        label_match = re.fullmatch(r"written=(\d+)", progress)
-        if label_match:
-            labels += int(label_match.group(1))
 
     parts: list[str] = []
     if fraction_total:
         parts.append(f"{fraction_done}/{fraction_total}")
-    if labels:
-        parts.append(f"~{compact_count(labels)} labels")
+    for unit, bucket in sorted(by_unit.items()):
+        done = int(bucket["done"])
+        total = int(bucket["total"])
+        if bucket["all_total"] and total > 0:
+            parts.append(f"{compact_count(done)}/{compact_count(total)} {unit}")
+        else:
+            parts.append(f"~{compact_count(done)} {unit}")
+    for output_unit, value in sorted(outputs.items()):
+        parts.append(f"{output_unit}={compact_count(value)}")
     return f"progress={', '.join(parts)}" if parts else ""
 
 
@@ -1737,7 +1832,7 @@ def print_run_list(
         fields = [
             f"{summary['run']:<36} "
             f"{colorize(state, state_color, enabled=color_enabled):<8}",
-            f"done={counts['done']}/{summary['tasks']}",
+            f"tasks={counts['done']}/{summary['tasks']}",
             f"active={active}",
             f"running={counts['running']}",
             f"claimed={counts['claimed']}",
@@ -1893,27 +1988,69 @@ def status_worker(manifest: dict[str, Any], task: dict[str, Any], state: str) ->
     return ""
 
 
-def task_log_progress(manifest: dict[str, Any], task: dict[str, Any]) -> str:
+def log_tail(path: Path, *, max_bytes: int = 8192) -> str:
+    with path.open("rb") as file:
+        file.seek(0, os.SEEK_END)
+        size = file.tell()
+        file.seek(max(0, size - max_bytes))
+        return file.read().decode("utf-8", errors="replace")
+
+
+def parse_int(value: str | None) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value.replace("_", "").replace(",", ""))
+    except ValueError:
+        return None
+
+
+def task_log_progress_data(manifest: dict[str, Any], task: dict[str, Any]) -> dict[str, Any] | None:
     path = task_log_path(manifest, task)
     try:
-        with path.open("rb") as file:
-            file.seek(0, os.SEEK_END)
-            size = file.tell()
-            file.seek(max(0, size - 8192))
-            text = file.read().decode("utf-8", errors="replace")
+        text = log_tail(path)
     except OSError:
-        return ""
+        return None
+
+    config = task.get("progress")
+    if isinstance(config, dict) and config.get("log_regex"):
+        try:
+            progress_re = re.compile(str(config["log_regex"]))
+        except re.error:
+            return None
+        for line in reversed(text.splitlines()):
+            match = progress_re.search(line)
+            if not match:
+                continue
+            done = parse_int(match.groupdict().get("done"))
+            if done is None:
+                continue
+            total = parse_int(match.groupdict().get("total"))
+            if total is None:
+                total_value = config.get("total")
+                total = total_value if isinstance(total_value, int) else parse_int(str(total_value)) if total_value is not None else None
+            output = parse_int(match.groupdict().get("output"))
+            data: dict[str, Any] = {
+                "done": done,
+                "unit": str(config.get("unit") or ""),
+                "output_unit": str(config.get("output_unit") or "output"),
+            }
+            if total is not None:
+                data["total"] = total
+            if output is not None:
+                data["output"] = output
+            data["kind"] = "metadata"
+            data["text"] = progress_text(data)
+            return data
 
     progress_re = re.compile(r"\[\s*\d+/\d+\s+(\d+)\s*/\s*(\d+)\]")
-    score_re = re.compile(r"\bselected=(\d+)\s+written=(\d+)\b")
     for line in reversed(text.splitlines()):
         match = progress_re.search(line)
         if match:
-            return f"{match.group(1)}/{match.group(2)}"
-        match = score_re.search(line)
-        if match:
-            return f"written={match.group(2)}"
-    return ""
+            done = int(match.group(1))
+            total = int(match.group(2))
+            return {"kind": "fraction", "done": done, "total": total, "text": f"{done}/{total}"}
+    return None
 
 
 def status_summary(manifest: dict[str, Any], *, lease_seconds: int) -> dict[str, Any]:
@@ -1932,7 +2069,8 @@ def status_summary(manifest: dict[str, Any], *, lease_seconds: int) -> dict[str,
         counts[state] += 1
         worker = status_worker(manifest, task, state)
         index = task_display_index(task)
-        progress = task_log_progress(manifest, task) if state == "running" else ""
+        progress_data = task_log_progress_data(manifest, task) if state == "running" else None
+        progress = str(progress_data.get("text") or "") if isinstance(progress_data, dict) else ""
         row = {
             "id": task["id"],
             "index": index,
@@ -1940,6 +2078,8 @@ def status_summary(manifest: dict[str, Any], *, lease_seconds: int) -> dict[str,
             "worker": worker,
             "progress": progress,
         }
+        if progress_data:
+            row["progress_data"] = progress_data
         rows.append(row)
 
         if state in {"done", "fail", "stale"}:
@@ -2013,7 +2153,7 @@ def print_compact_status(
 ) -> None:
     counts = summary["counts"]
     print(
-        f"tasks: {summary['tasks']}  done={counts['done']} "
+        f"tasks={counts['done']}/{summary['tasks']} "
         f"active={summary['active_count']} running={counts['running']} "
         f"claimed={counts['claimed']} pending={counts['pending']} "
         f"fail={counts['fail']} stale={counts['stale']}"
@@ -2042,7 +2182,7 @@ def cmd_wait(args: argparse.Namespace) -> int:
         counts = task_counts(manifest, lease_seconds=args.lease_seconds)
         total = len(manifest["tasks"])
         line = (
-            f"tasks={total} done={counts['done']} running={counts['running']} "
+            f"tasks={counts['done']}/{total} running={counts['running']} "
             f"claimed={counts['claimed']} stale={counts['stale']} "
             f"fail={counts['fail']} pending={counts['pending']}"
         )
@@ -2712,110 +2852,184 @@ def cmd_deploy(args: argparse.Namespace) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(
+        description=__doc__,
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
     parser.add_argument("--version", action="store_true", help="Print crucible version and exit.")
     parser.add_argument("--version-json", action="store_true", help="Print crucible version as JSON and exit.")
     sub = parser.add_subparsers(dest="command")
 
-    plan = sub.add_parser("plan", help="Create a numbered shard manifest.")
-    plan.add_argument("--name", required=True)
-    plan.add_argument("--shards", type=int, required=True)
-    plan.add_argument("--work-dir", required=True)
-    plan.add_argument("--out", required=True)
-    plan.add_argument("--command-template", required=True)
-    plan.add_argument("--output-template", action="append", required=True)
-    plan.add_argument("--var", action="append", default=[])
+    plan = sub.add_parser(
+        "plan",
+        help="Create a numbered task manifest.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    plan.add_argument("--name", required=True, help="Run name stored in the manifest.")
+    plan.add_argument(
+        "--tasks", "--shards",
+        dest="shards",
+        metavar="N",
+        type=int,
+        required=True,
+        help="Number of numbered tasks to create.",
+    )
+    plan.add_argument("--work-dir", required=True, help="Working directory for task commands.")
+    plan.add_argument("--out", required=True, help="Manifest path to write.")
+    plan.add_argument(
+        "--command-template",
+        required=True,
+        help="Shell command template. Supports {index}, {shard}, {task_id}, {output}, and --var keys.",
+    )
+    plan.add_argument(
+        "--output-template",
+        action="append",
+        required=True,
+        help="Output path template for each task. Repeat for multiple outputs.",
+    )
+    plan.add_argument("--var", action="append", default=[], help="Template variable KEY=VALUE. Repeatable.")
     plan.add_argument(
         "--path-map",
         action="append",
         default=[],
         help="Host path mapping, PROFILE:/source=/dest. Repeatable.",
     )
-    plan.add_argument("--task-prefix", default="task")
-    plan.add_argument("--state-dir")
-    plan.add_argument("--log-dir")
-    plan.add_argument("--python-min", default="3.11")
-    plan.add_argument("--git-min", default="2.38")
-    plan.add_argument("--git-repo")
-    plan.add_argument("--git-commit")
-    plan.add_argument("--require-clean-git", action="store_true")
+    plan.add_argument("--task-prefix", default="task", help="Prefix for generated task ids.")
+    plan.add_argument("--state-dir", help="Directory for .done/.fail/.running state files.")
+    plan.add_argument("--log-dir", help="Directory for task logs.")
+    plan.add_argument("--python-min", default="3.11", help="Minimum Python version required on workers.")
+    plan.add_argument("--git-min", default="2.38", help="Minimum Git version required on workers.")
+    plan.add_argument("--git-repo", help="Git checkout to pin; defaults to --work-dir.")
+    plan.add_argument("--git-commit", help="Required Git commit; defaults to current HEAD.")
+    plan.add_argument("--require-clean-git", action="store_true", help="Require a clean pinned Git checkout.")
+    plan.add_argument("--progress-unit", help="Unit name for declared task progress, for example rows or games.")
+    plan.add_argument("--progress-total", help="Per-task total for declared progress. Supports templates.")
+    plan.add_argument(
+        "--progress-total-lines",
+        help="Count lines in this file and split the total across generated tasks.",
+    )
+    plan.add_argument(
+        "--progress-log-regex",
+        help="Regex read from task logs. Use named group (?P<done>...), optional total and output.",
+    )
+    plan.add_argument("--progress-output-unit", help="Label for optional (?P<output>...) progress value.")
     plan.set_defaults(func=cmd_plan)
 
-    add_input = sub.add_parser("add-input", help="Record input file checksums.")
-    add_input.add_argument("--manifest", required=True)
-    add_input.add_argument("--path", action="append", required=True)
+    add_input = sub.add_parser(
+        "add-input",
+        help="Record input file checksums.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    add_input.add_argument("--manifest", required=True, help="Manifest to update.")
+    add_input.add_argument("--path", action="append", required=True, help="Input file to checksum. Repeatable.")
     add_input.set_defaults(func=cmd_add_input)
 
-    add_repo = sub.add_parser("add-repo", help="Record a git checkout requirement.")
-    add_repo.add_argument("--manifest", required=True)
-    add_repo.add_argument("--path", required=True)
-    add_repo.add_argument("--name")
-    add_repo.add_argument("--commit")
-    add_repo.add_argument("--branch")
-    add_repo.add_argument("--remote")
-    add_repo.add_argument("--require-clean", action="store_true")
+    add_repo = sub.add_parser(
+        "add-repo",
+        help="Record a git checkout requirement.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    add_repo.add_argument("--manifest", required=True, help="Manifest to update.")
+    add_repo.add_argument("--path", required=True, help="Worker-local checkout path.")
+    add_repo.add_argument("--name", help="Human-readable repository label.")
+    add_repo.add_argument("--commit", help="Required commit, short or full SHA.")
+    add_repo.add_argument("--branch", help="Branch to checkout before optional commit pinning.")
+    add_repo.add_argument("--remote", help="Remote to fetch/pull before checkout.")
+    add_repo.add_argument("--require-clean", action="store_true", help="Require a clean worktree.")
     add_repo.set_defaults(func=cmd_add_repo)
 
-    sync_repos = sub.add_parser("sync-repos", help="Fetch and checkout declared git requirements.")
-    sync_repos.add_argument("--manifest", required=True)
-    sync_repos.add_argument("--profile")
+    sync_repos = sub.add_parser(
+        "sync-repos",
+        help="Fetch and checkout declared git requirements.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    sync_repos.add_argument("--manifest", required=True, help="Manifest containing repo requirements.")
+    sync_repos.add_argument("--profile", help="Path-map/profile name for this worker.")
     sync_repos.set_defaults(func=cmd_sync_repos)
 
-    run = sub.add_parser("run", help="Run one task by id or index.")
-    run.add_argument("--manifest", required=True)
-    run.add_argument("--task")
-    run.add_argument("--index", type=int)
-    run.add_argument("--profile")
-    run.add_argument("--force", action="store_true")
+    run = sub.add_parser(
+        "run",
+        help="Run one task by id or index.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    run.add_argument("--manifest", required=True, help="Manifest containing the task.")
+    run.add_argument("--task", help="Task id to run.")
+    run.add_argument("--index", type=int, help="Task index to run.")
+    run.add_argument("--profile", help="Path-map/profile name for this worker.")
+    run.add_argument("--force", action="store_true", help="Re-run even if the task is complete.")
     run.set_defaults(func=cmd_run)
 
-    claim = sub.add_parser("claim", help="Atomically claim the next coordinator task.")
-    claim.add_argument("--manifest", required=True)
-    claim.add_argument("--worker", required=True)
-    claim.add_argument("--profile")
-    claim.add_argument("--lease-seconds", type=int, default=600)
-    claim.add_argument("--retry-failed", action="store_true")
-    claim.add_argument("--json", action="store_true")
+    claim = sub.add_parser(
+        "claim",
+        help="Atomically claim the next coordinator task.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    claim.add_argument("--manifest", required=True, help="Coordinator manifest.")
+    claim.add_argument("--worker", required=True, help="Worker name for the claim.")
+    claim.add_argument("--profile", help="Profile name recorded with the claim.")
+    claim.add_argument("--lease-seconds", type=int, default=600, help="Claim lease duration before stale.")
+    claim.add_argument("--retry-failed", action="store_true", help="Allow failed tasks to be claimed again.")
+    claim.add_argument("--json", action="store_true", help="Print claim payload as JSON.")
     claim.set_defaults(func=cmd_claim)
 
-    release = sub.add_parser("release", help="Release a coordinator task claim.")
-    release.add_argument("--manifest", required=True)
-    release.add_argument("--task", required=True)
-    release.add_argument("--worker")
-    release.add_argument("--claim-id")
+    release = sub.add_parser(
+        "release",
+        help="Release a coordinator task claim.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    release.add_argument("--manifest", required=True, help="Coordinator manifest.")
+    release.add_argument("--task", required=True, help="Task id whose claim should be released.")
+    release.add_argument("--worker", help="Expected worker owner.")
+    release.add_argument("--claim-id", help="Expected claim id.")
     release.set_defaults(func=cmd_release)
 
-    heartbeat = sub.add_parser("heartbeat", help="Refresh a coordinator task claim heartbeat.")
-    heartbeat.add_argument("--manifest", required=True)
-    heartbeat.add_argument("--task", required=True)
-    heartbeat.add_argument("--worker", required=True)
-    heartbeat.add_argument("--claim-id")
+    heartbeat = sub.add_parser(
+        "heartbeat",
+        help="Refresh a coordinator task claim heartbeat.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    heartbeat.add_argument("--manifest", required=True, help="Coordinator manifest.")
+    heartbeat.add_argument("--task", required=True, help="Task id to refresh.")
+    heartbeat.add_argument("--worker", required=True, help="Expected worker owner.")
+    heartbeat.add_argument("--claim-id", help="Expected claim id.")
     heartbeat.set_defaults(func=cmd_heartbeat)
 
-    work = sub.add_parser("work", help="Claim, run, sync, and repeat worker tasks.")
-    work.add_argument("--manifest", required=True)
+    work = sub.add_parser(
+        "work",
+        help="Claim, run, sync, and repeat worker tasks.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    work.add_argument("--manifest", required=True, help="Worker-local manifest copy.")
     work.add_argument(
         "--coordinator",
         required=True,
         help="Coordinator manifest path, either /path/manifest.json or host:/path/manifest.json.",
     )
-    work.add_argument("--profile")
-    work.add_argument("--worker", default=socket.gethostname())
-    work.add_argument("--lease-seconds", type=int, default=600)
-    work.add_argument("--max-tasks", type=int, default=0)
-    work.add_argument("--retry-failed", action="store_true")
-    work.add_argument("--force", action="store_true")
-    work.add_argument("--fail-fast", action="store_true")
+    work.add_argument("--profile", help="Path-map/profile name for this worker.")
+    work.add_argument("--worker", default=socket.gethostname(), help="Worker name recorded in claims.")
+    work.add_argument("--lease-seconds", type=int, default=600, help="Claim lease duration before stale.")
+    work.add_argument("--max-tasks", type=int, default=0, help="Maximum tasks to run; 0 means until no work remains.")
+    work.add_argument("--retry-failed", action="store_true", help="Allow failed tasks to be claimed again.")
+    work.add_argument("--force", action="store_true", help="Re-run tasks even if local state says complete.")
+    work.add_argument("--fail-fast", action="store_true", help="Stop after the first task failure.")
     work.set_defaults(func=cmd_work)
 
-    doctor = sub.add_parser("doctor", help="Check host prerequisites for a manifest.")
-    doctor.add_argument("--manifest", required=True)
-    doctor.add_argument("--profile")
-    doctor.add_argument("--role", choices=["worker", "coordinator"], default="worker")
-    doctor.add_argument("--notify-command")
+    doctor = sub.add_parser(
+        "doctor",
+        help="Check host prerequisites for a manifest.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    doctor.add_argument("--manifest", required=True, help="Manifest to validate.")
+    doctor.add_argument("--profile", help="Path-map/profile name for this host.")
+    doctor.add_argument("--role", choices=["worker", "coordinator"], default="worker", help="Host role to validate.")
+    doctor.add_argument("--notify-command", help="Coordinator notification command to check.")
     doctor.set_defaults(func=cmd_doctor)
 
-    status = sub.add_parser("status", help="Show run or task status.")
+    status = sub.add_parser(
+        "status",
+        help="Show run or task status.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
     status.add_argument(
         "run",
         nargs="?",
@@ -2833,7 +3047,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     status.set_defaults(func=cmd_status)
 
-    list_runs = sub.add_parser("list", help="List Crucible runs.")
+    list_runs = sub.add_parser(
+        "list",
+        help="List Crucible runs.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
     list_runs.add_argument("--all", action="store_true", help="Show all runs, including completed runs.")
     list_runs.add_argument("--done", action="store_true", help="Show completed runs only.")
     list_runs.add_argument("--failed", action="store_true", help="Show runs with failed tasks only.")
@@ -2847,33 +3065,53 @@ def build_parser() -> argparse.ArgumentParser:
     )
     list_runs.set_defaults(func=cmd_list)
 
-    wait = sub.add_parser("wait", help="Wait until coordinator tasks finish.")
-    wait.add_argument("--manifest", required=True)
-    wait.add_argument("--profile")
-    wait.add_argument("--lease-seconds", type=int, default=600)
-    wait.add_argument("--interval-seconds", type=float, default=30.0)
-    wait.add_argument("--timeout-seconds", type=float, default=0.0)
-    wait.add_argument("--fail-on-fail", action=argparse.BooleanOptionalAction, default=True)
+    wait = sub.add_parser(
+        "wait",
+        help="Wait until coordinator tasks finish.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    wait.add_argument("--manifest", required=True, help="Coordinator manifest.")
+    wait.add_argument("--profile", help="Path-map/profile name for this host.")
+    wait.add_argument("--lease-seconds", type=int, default=600, help="Claim lease duration before stale.")
+    wait.add_argument("--interval-seconds", type=float, default=30.0, help="Polling interval.")
+    wait.add_argument("--timeout-seconds", type=float, default=0.0, help="Overall timeout; 0 means no timeout.")
+    wait.add_argument("--fail-on-fail", action=argparse.BooleanOptionalAction, default=True, help="Return failure when any task fails.")
     wait.set_defaults(func=cmd_wait)
 
-    verify = sub.add_parser("verify", help="Verify all run tasks are complete.")
-    verify.add_argument("run")
+    verify = sub.add_parser(
+        "verify",
+        help="Verify all run tasks are complete.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    verify.add_argument("run", help="Run name or run directory.")
     verify.set_defaults(func=cmd_verify)
 
-    merge = sub.add_parser("merge", help="Concatenate first output from each task.")
-    merge.add_argument("run")
-    merge.add_argument("--output", required=True)
-    merge.add_argument("--force", action="store_true")
-    merge.add_argument("--newline-between", action="store_true")
+    merge = sub.add_parser(
+        "merge",
+        help="Concatenate first output from each task.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    merge.add_argument("run", help="Run name or run directory.")
+    merge.add_argument("--output", required=True, help="Merged output path.")
+    merge.add_argument("--force", action="store_true", help="Overwrite an existing merged output.")
+    merge.add_argument("--newline-between", action="store_true", help="Insert a newline between task outputs.")
     merge.set_defaults(func=cmd_merge)
 
-    stop = sub.add_parser("stop", help="Request a run stop.")
-    stop.add_argument("run", nargs="?")
-    stop.add_argument("--all", action="store_true")
-    stop.add_argument("--lease-seconds", type=int, default=600)
+    stop = sub.add_parser(
+        "stop",
+        help="Request a run stop.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    stop.add_argument("run", nargs="?", help="Run name or run directory to stop.")
+    stop.add_argument("--all", action="store_true", help="Request stop for all current runs.")
+    stop.add_argument("--lease-seconds", type=int, default=600, help="Claim lease duration before stale.")
     stop.set_defaults(func=cmd_stop)
 
-    delete = sub.add_parser("del", help="Delete run directories.")
+    delete = sub.add_parser(
+        "del",
+        help="Delete run directories.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
     delete.add_argument("run", nargs="?", help="Run name or run directory to delete.")
     delete.add_argument("--done", action="store_true", help="Delete all completed runs.")
     delete.add_argument("--force", action="store_true", help="Do not prompt before deleting.")
@@ -2885,27 +3123,39 @@ def build_parser() -> argparse.ArgumentParser:
     )
     delete.set_defaults(func=cmd_del)
 
-    self_update = sub.add_parser("self-update", help="Fast-forward the crucible checkout itself.")
-    self_update.add_argument("--remote", default="origin")
-    self_update.add_argument("--branch")
-    self_update.add_argument("--require-clean", action=argparse.BooleanOptionalAction, default=True)
-    self_update.add_argument("--json", action="store_true")
+    self_update = sub.add_parser(
+        "self-update",
+        help="Fast-forward the crucible checkout itself.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    self_update.add_argument("--remote", default="origin", help="Git remote to pull from.")
+    self_update.add_argument("--branch", help="Branch to update; defaults to current branch.")
+    self_update.add_argument("--require-clean", action=argparse.BooleanOptionalAction, default=True, help="Require clean worktree before updating.")
+    self_update.add_argument("--json", action="store_true", help="Print version payload as JSON after updating.")
     self_update.set_defaults(func=cmd_self_update)
 
-    version = sub.add_parser("version", help="Print crucible version.")
-    version.add_argument("--json", action="store_true")
+    version = sub.add_parser(
+        "version",
+        help="Print crucible version.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    version.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
     version.set_defaults(func=cmd_version)
 
-    deploy = sub.add_parser("deploy", help="Verify workers and run manifest tasks.")
-    deploy.add_argument("workers")
-    deploy.add_argument("manifest")
-    deploy.add_argument("--jobs", type=int, default=4)
-    deploy.add_argument("--run")
-    deploy.add_argument("--resume", action="store_true")
-    deploy.add_argument("--replace", action="store_true")
-    deploy.add_argument("--remote-timeout-seconds", type=float, default=1800.0)
-    deploy.add_argument("--no-color", action="store_true")
-    deploy.add_argument("--verbose", action="store_true")
+    deploy = sub.add_parser(
+        "deploy",
+        help="Verify workers and run manifest tasks.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    deploy.add_argument("workers", help="workers.json file.")
+    deploy.add_argument("manifest", help="Manifest template to materialize into runs/<name>.")
+    deploy.add_argument("--jobs", type=int, default=4, help="Maximum workers to prepare/run concurrently.")
+    deploy.add_argument("--run", help="Run directory name under runs/. Defaults to manifest name.")
+    deploy.add_argument("--resume", action="store_true", help="Resume an existing materialized run.")
+    deploy.add_argument("--replace", action="store_true", help="Delete and recreate an existing run.")
+    deploy.add_argument("--remote-timeout-seconds", type=float, default=1800.0, help="Timeout for remote setup/work commands.")
+    deploy.add_argument("--no-color", action="store_true", help="Disable ANSI color output.")
+    deploy.add_argument("--verbose", action="store_true", help="Print setup and worker phase details.")
     deploy.set_defaults(func=cmd_deploy)
 
     return parser

@@ -31,6 +31,23 @@ class CrucibleTests(unittest.TestCase):
             check=False,
         )
 
+    def test_subcommand_help_is_available(self) -> None:
+        commands = [
+            "plan", "add-input", "add-repo", "sync-repos", "run", "claim",
+            "release", "heartbeat", "work", "doctor", "status", "list",
+            "wait", "verify", "merge", "stop", "del", "self-update",
+            "version", "deploy",
+        ]
+        for command in commands:
+            with self.subTest(command=command):
+                result = self.run_cli(command, "--help")
+                self.assertEqual("", result.stderr)
+                self.assertEqual(0, result.returncode)
+                self.assertIn("usage:", result.stdout)
+        self.assertIn("--progress-log-regex", self.run_cli("plan", "--help").stdout)
+        self.assertIn("Coordinator manifest", self.run_cli("claim", "--help").stdout)
+        self.assertIn("workers.json", self.run_cli("deploy", "--help").stdout)
+
     @unittest.skipIf(not hasattr(os, "symlink"), "symlink support required")
     def test_expand_path_preserves_symlink_text(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -79,7 +96,7 @@ class CrucibleTests(unittest.TestCase):
 
             status = self.run_cli("status", str(run_dir))
             self.assertEqual(0, status.returncode)
-            self.assertIn("done=3", status.stdout)
+            self.assertIn("tasks=3/3", status.stdout)
 
             merged = root / "merged.txt"
             merge = self.run_cli(
@@ -112,6 +129,37 @@ class CrucibleTests(unittest.TestCase):
 
             self.assertNotEqual(0, result.returncode)
             self.assertIn("duplicate output path", result.stderr)
+
+    def test_plan_declares_progress_metadata_from_line_count(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            subprocess.run(["git", "init", "-b", "main"], cwd=root, check=True, stdout=subprocess.DEVNULL)
+            subprocess.run(["git", "config", "user.name", "Petter Wahlman"], cwd=root, check=True)
+            subprocess.run(["git", "config", "user.email", "petter@wahlman.no"], cwd=root, check=True)
+            source = root / "source.txt"
+            source.write_text("a\nb\nc\nd\ne\n", encoding="utf-8")
+            subprocess.run(["git", "add", "source.txt"], cwd=root, check=True)
+            subprocess.run(["git", "commit", "-m", "test"], cwd=root, check=True, stdout=subprocess.DEVNULL)
+
+            manifest = root / "manifest.json"
+            result = self.run_cli(
+                "plan",
+                "--name", "progress",
+                "--shards", "2",
+                "--work-dir", str(root),
+                "--out", str(manifest),
+                "--command-template", "printf ok > {output}",
+                "--output-template", str(root / "out" / "task.{index}.txt"),
+                "--progress-unit", "rows",
+                "--progress-total-lines", str(source),
+                "--progress-log-regex", r"processed=(?P<done>\d+)",
+            )
+
+            self.assertEqual("", result.stderr)
+            self.assertEqual(0, result.returncode)
+            tasks = json.loads(manifest.read_text(encoding="utf-8"))["tasks"]
+            self.assertEqual([3, 2], [task["progress"]["total"] for task in tasks])
+            self.assertEqual("rows", tasks[0]["progress"]["unit"])
 
     def test_negative_timeout_is_not_passed_to_subprocess(self) -> None:
         self.assertIsNone(crucible.bounded_timeout(-1))
@@ -339,7 +387,7 @@ class CrucibleTests(unittest.TestCase):
 
             status = self.run_cli("status", str(coordinator))
             self.assertEqual(0, status.returncode)
-            self.assertIn("done=2", status.stdout)
+            self.assertIn("tasks=2/2", status.stdout)
 
             verify = self.run_cli("verify", str(coordinator))
             self.assertEqual("", verify.stderr)
@@ -379,7 +427,7 @@ class CrucibleTests(unittest.TestCase):
                 "--timeout-seconds", "0.02",
             )
             self.assertEqual(124, waiting.returncode)
-            self.assertIn("done=1", waiting.stdout)
+            self.assertIn("tasks=1/2", waiting.stdout)
             self.assertIn("pending=1", waiting.stdout)
 
             second = self.run_cli("run", "--manifest", str(manifest), "--index", "1")
@@ -393,7 +441,7 @@ class CrucibleTests(unittest.TestCase):
             )
             self.assertEqual("", done.stderr)
             self.assertEqual(0, done.returncode)
-            self.assertIn("done=2", done.stdout)
+            self.assertIn("tasks=2/2", done.stdout)
 
     def test_claim_is_atomic_status_visible_and_released(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -693,7 +741,7 @@ class CrucibleTests(unittest.TestCase):
             compact = self.run_cli("status", str(root))
             self.assertEqual(1, compact.returncode)
             self.assertIn(
-                "tasks: 4  done=1 active=1 running=1 claimed=0 pending=1 fail=1 stale=0",
+                "tasks=1/4 active=1 running=1 claimed=0 pending=1 fail=1 stale=0",
                 compact.stdout,
             )
             self.assertNotIn("host-done [1]: 0", compact.stdout)
@@ -846,9 +894,60 @@ class CrucibleTests(unittest.TestCase):
 
                 one_run = self.run_cli("status", str(runs / "main"), cwd=root)
                 self.assertEqual(0, one_run.returncode)
-                self.assertIn("tasks: 1", one_run.stdout)
+                self.assertIn("tasks=0/1", one_run.stdout)
 
-    def test_list_shows_score_progress(self) -> None:
+    def test_list_shows_declared_progress(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            runs = root / "runs"
+            run = runs / "score"
+            state = run / "state"
+            logs = run / "logs"
+            state.mkdir(parents=True)
+            logs.mkdir(parents=True)
+            manifest = {
+                "schema": "crucible.task.v1",
+                "name": "score",
+                "work_dir": str(run),
+                "state_dir": str(state),
+                "log_dir": str(logs),
+                "tasks": [{
+                    "id": "task_0",
+                    "index": 0,
+                    "command": "true",
+                    "outputs": [],
+                    "progress": {
+                        "unit": "rows",
+                        "total": 125000,
+                        "log_regex": r"selected=(?P<done>\d+)\s+written=(?P<output>\d+)",
+                        "output_unit": "output",
+                    },
+                }],
+            }
+            (run / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+            (state / "task_0.running.json").write_text(json.dumps({"task": "task_0", "host": "worker"}))
+            (logs / "task_0.log").write_text(
+                "shard 0/24: selected=50000 written=48010 rate=6.7/s\n",
+                encoding="utf-8",
+            )
+
+            with mock.patch("crucible.runs_dir", return_value=runs):
+                stdout = io.StringIO()
+                with contextlib.redirect_stdout(stdout):
+                    rc = crucible.cmd_list(
+                        argparse.Namespace(
+                            all=False,
+                            done=False,
+                            failed=False,
+                            json=False,
+                            no_color=True,
+                            lease_seconds=600,
+                        )
+                    )
+                self.assertEqual(0, rc)
+                self.assertIn("progress=50k/125k rows, output=48k", stdout.getvalue())
+
+    def test_list_ignores_undeclared_domain_progress(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             runs = root / "runs"
@@ -886,7 +985,7 @@ class CrucibleTests(unittest.TestCase):
                         )
                     )
                 self.assertEqual(0, rc)
-                self.assertIn("progress=~48k labels", stdout.getvalue())
+                self.assertNotIn("progress=", stdout.getvalue())
 
     def test_stop_prevents_new_claims(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
