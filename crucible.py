@@ -3501,11 +3501,24 @@ def build_parser() -> argparse.ArgumentParser:
 
     update = sub.add_parser(
         "update",
-        help="Update Crucible on workers.",
+        help="Update workers to the coordinator HEAD.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+        description=(
+            "Update Crucible on workers to the exact commit currently checked "
+            "out by the coordinator. With --all, first fast-forward the "
+            "coordinator from the selected remote/branch, then update workers "
+            "to that new HEAD."
+        ),
     )
     update.add_argument("workers", nargs="?", help="workers.json file. Defaults to runs/workers.json, then ./workers.json.")
-    update.add_argument("--all", action="store_true", help="Also update the coordinator.")
+    update.add_argument(
+        "--all",
+        action="store_true",
+        help=(
+            "Fast-forward the coordinator first, then update workers to the "
+            "coordinator's new HEAD."
+        ),
+    )
     update.add_argument("--remote", default="origin", help="Git remote to pull from.")
     update.add_argument("--branch", default="main", help="Branch to update.")
     update.add_argument("--require-clean", action=argparse.BooleanOptionalAction, default=True, help="Require clean worktrees before updating.")
