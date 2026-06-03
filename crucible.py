@@ -1748,13 +1748,37 @@ def compact_count(value: int) -> str:
     return str(value)
 
 
+def compact_duration(seconds: float) -> str:
+    remaining = max(0, int(round(seconds)))
+    minutes, seconds = divmod(remaining, 60)
+    hours, minutes = divmod(minutes, 60)
+    days, hours = divmod(hours, 24)
+    if days:
+        return f"{days}d{hours:02d}h"
+    if hours:
+        return f"{hours}h{minutes:02d}m"
+    if minutes:
+        return f"{minutes}m{seconds:02d}s"
+    return f"{seconds}s"
+
+
+def progress_eta_text(done: Any, total: Any, rate: Any) -> str:
+    if not isinstance(done, int) or not isinstance(total, int) or total <= 0:
+        return ""
+    if not isinstance(rate, (int, float)) or rate <= 0:
+        return ""
+    return f"eta={compact_duration((total - done) / float(rate))}"
+
+
 def progress_text(data: dict[str, Any]) -> str:
     if data.get("kind") == "subtask":
         done = data.get("done")
         total = data.get("total")
         done_text = str(done) if isinstance(done, int) else "?"
         total_text = str(total) if isinstance(total, int) and total > 0 else "?"
-        return f"subtask={done_text}/{total_text}"
+        eta = progress_eta_text(done, total, data.get("rate"))
+        suffix = f" {eta}" if eta else ""
+        return f"subtask={done_text}/{total_text}{suffix}"
 
     done = data.get("done")
     total = data.get("total")
@@ -1770,6 +1794,9 @@ def progress_text(data: dict[str, Any]) -> str:
         main = ""
     if main and unit:
         main = f"{main} {unit}"
+    eta = progress_eta_text(done, total, data.get("rate"))
+    if main and eta:
+        main = f"{main} {eta}"
 
     parts = [main] if main else []
     if isinstance(output, int):
@@ -1780,7 +1807,10 @@ def progress_text(data: dict[str, Any]) -> str:
 def summary_progress(summary: dict[str, Any]) -> str:
     subtask_done = 0
     subtask_total = 0
+    subtask_rate = 0.0
+    subtask_count = 0
     subtask_known_total = True
+    subtask_known_rate = True
     by_unit: dict[str, dict[str, Any]] = {}
     outputs: dict[str, int] = {}
     for row in summary["active"]:
@@ -1789,13 +1819,22 @@ def summary_progress(summary: dict[str, Any]) -> str:
             done = data.get("done")
             if isinstance(done, int):
                 unit = str(data.get("unit") or "items")
-                bucket = by_unit.setdefault(unit, {"done": 0, "total": 0, "all_total": True})
+                bucket = by_unit.setdefault(
+                    unit,
+                    {"done": 0, "total": 0, "rate": 0.0, "count": 0, "all_total": True, "all_rate": True},
+                )
+                bucket["count"] += 1
                 bucket["done"] += done
                 total = data.get("total")
                 if isinstance(total, int) and total > 0:
                     bucket["total"] += total
                 else:
                     bucket["all_total"] = False
+                rate = data.get("rate")
+                if isinstance(rate, (int, float)) and rate > 0:
+                    bucket["rate"] += float(rate)
+                else:
+                    bucket["all_rate"] = False
             output = data.get("output")
             if isinstance(output, int):
                 output_unit = str(data.get("output_unit") or "output")
@@ -1805,28 +1844,44 @@ def summary_progress(summary: dict[str, Any]) -> str:
             done = data.get("done")
             total = data.get("total")
             if isinstance(done, int):
+                subtask_count += 1
                 subtask_done += done
                 if isinstance(total, int) and total > 0:
                     subtask_total += total
                 else:
                     subtask_known_total = False
+                rate = data.get("rate")
+                if isinstance(rate, (int, float)) and rate > 0:
+                    subtask_rate += float(rate)
+                else:
+                    subtask_known_rate = False
                 continue
-
-        progress = str(row.get("progress") or "")
-        fraction_match = re.fullmatch(r"(\d+)/(\d+)", progress)
-        if fraction_match:
-            subtask_done += int(fraction_match.group(1))
-            subtask_total += int(fraction_match.group(2))
 
     parts: list[str] = []
     if subtask_done or subtask_total:
         total = str(subtask_total) if subtask_known_total and subtask_total > 0 else "?"
-        parts.append(f"subtask={subtask_done}/{total}")
+        text = f"subtask={subtask_done}/{total}"
+        if (
+            subtask_known_total and subtask_known_rate and subtask_count == summary["active_count"]
+            and summary["counts"]["pending"] == 0
+        ):
+            eta = progress_eta_text(subtask_done, subtask_total, subtask_rate)
+            if eta:
+                text = f"{text} {eta}"
+        parts.append(text)
     for unit, bucket in sorted(by_unit.items()):
         done = int(bucket["done"])
         total = int(bucket["total"])
         if bucket["all_total"] and total > 0:
-            parts.append(f"{compact_count(done)}/{compact_count(total)} {unit}")
+            text = f"{compact_count(done)}/{compact_count(total)} {unit}"
+            if (
+                bucket["all_rate"] and bucket["count"] == summary["active_count"]
+                and summary["counts"]["pending"] == 0
+            ):
+                eta = progress_eta_text(done, total, bucket["rate"])
+                if eta:
+                    text = f"{text} {eta}"
+            parts.append(text)
         else:
             parts.append(f"~{compact_count(done)} {unit}")
     for output_unit, value in sorted(outputs.items()):
@@ -2051,6 +2106,15 @@ def parse_int(value: str | None) -> int | None:
         return None
 
 
+def parse_float(value: str | None) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value.replace("_", "").replace(",", ""))
+    except ValueError:
+        return None
+
+
 def normalize_progress_data(raw: Any) -> dict[str, Any] | None:
     if not isinstance(raw, dict):
         return None
@@ -2073,6 +2137,12 @@ def normalize_progress_data(raw: Any) -> dict[str, Any] | None:
         output = parse_int(str(output)) if output is not None else None
     if output is not None:
         data["output"] = output
+
+    rate = data.get("rate")
+    if not isinstance(rate, (int, float)):
+        rate = parse_float(str(rate)) if rate is not None else None
+    if isinstance(rate, (int, float)) and rate > 0:
+        data["rate"] = float(rate)
 
     kind = str(data.get("kind") or "").strip()
     if kind not in {"metadata", "subtask"}:
@@ -2107,18 +2177,20 @@ def task_log_progress_data(manifest: dict[str, Any], task: dict[str, Any]) -> di
                 total_value = config.get("total")
                 total = total_value if isinstance(total_value, int) else parse_int(str(total_value)) if total_value is not None else None
             output = parse_int(match.groupdict().get("output"))
+            rate = parse_float(match.groupdict().get("rate"))
             data: dict[str, Any] = {
                 "done": done,
                 "unit": str(config.get("unit") or ""),
                 "output_unit": str(config.get("output_unit") or "output"),
+                "kind": "metadata",
             }
             if total is not None:
                 data["total"] = total
             if output is not None:
                 data["output"] = output
-            data["kind"] = "metadata"
-            data["text"] = progress_text(data)
-            return data
+            if rate is not None:
+                data["rate"] = rate
+            return normalize_progress_data(data)
 
     progress_re = re.compile(r"\[\s*\d+/\d+\s+(\d+)\s*/\s*(\d+)\]")
     for line in reversed(text.splitlines()):
@@ -2126,9 +2198,7 @@ def task_log_progress_data(manifest: dict[str, Any], task: dict[str, Any]) -> di
         if match:
             done = int(match.group(1))
             total = int(match.group(2))
-            data = {"kind": "subtask", "done": done, "total": total}
-            data["text"] = progress_text(data)
-            return data
+            return normalize_progress_data({"kind": "subtask", "done": done, "total": total})
     return None
 
 

@@ -495,14 +495,14 @@ class CrucibleTests(unittest.TestCase):
                 "--manifest", str(manifest),
                 "--task", "task_0000",
                 "--worker", "worker-a",
-                "--progress-json", '{"done":42,"total":1000}',
+                "--progress-json", '{"done":42,"total":1000,"rate":2}',
             )
             self.assertEqual("", heartbeat.stderr)
             self.assertEqual(0, heartbeat.returncode)
 
             status_with_progress = self.run_cli("status", str(root))
             self.assertEqual(0, status_with_progress.returncode)
-            self.assertIn("worker-a claimed: 0 [subtask=42/1000]", status_with_progress.stdout)
+            self.assertIn("worker-a claimed: 0 [subtask=42/1000 eta=7m59s]", status_with_progress.stdout)
 
             unknown_total = self.run_cli(
                 "heartbeat",
@@ -937,7 +937,7 @@ class CrucibleTests(unittest.TestCase):
                     "progress": {
                         "unit": "rows",
                         "total": 125000,
-                        "log_regex": r"selected=(?P<done>\d+)\s+written=(?P<output>\d+)",
+                        "log_regex": r"selected=(?P<done>\d+)\s+written=(?P<output>\d+)\s+rate=(?P<rate>[0-9.]+)/s",
                         "output_unit": "output",
                     },
                 }],
@@ -963,7 +963,7 @@ class CrucibleTests(unittest.TestCase):
                         )
                     )
                 self.assertEqual(0, rc)
-                self.assertIn("progress=50k/125k rows, output=48k", stdout.getvalue())
+                self.assertIn("progress=50k/125k rows eta=3h06m, output=48k", stdout.getvalue())
 
     def test_list_ignores_undeclared_domain_progress(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
