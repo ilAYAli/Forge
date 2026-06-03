@@ -882,6 +882,18 @@ class CrucibleTests(unittest.TestCase):
                 json.dumps({"task": "bonus_0", "host": "host-done"}),
                 encoding="utf-8",
             )
+            main_state = runs / "main" / "state"
+            main_state.mkdir(parents=True)
+            main_claim = runs / "main" / "claims" / "main_0.claim"
+            main_claim.mkdir(parents=True)
+            (main_claim / "claim.json").write_text(
+                json.dumps({"task": "main_0", "worker": "worker-main"}),
+                encoding="utf-8",
+            )
+            (main_state / "main_0.running.json").write_text(
+                json.dumps({"task": "main_0", "host": "host-main"}),
+                encoding="utf-8",
+            )
             setup_manifest = root / "examples" / "setup.manifest.json"
             setup_manifest.parent.mkdir(parents=True)
             setup_manifest.write_text(
@@ -927,6 +939,7 @@ class CrucibleTests(unittest.TestCase):
                 self.assertNotIn("bonus", status_text)
                 self.assertNotIn("setup", status_text)
                 self.assertNotIn("nnue-selfplay", status_text)
+                self.assertNotIn("worker-main running: 0", status_text)
 
                 stdout = io.StringIO()
                 with contextlib.redirect_stdout(stdout):
@@ -945,7 +958,7 @@ class CrucibleTests(unittest.TestCase):
                 active_text = stdout.getvalue()
                 self.assertIn("main", active_text)
                 self.assertNotIn("bonus", active_text)
-                self.assertIn("running=0 claimed=0", active_text)
+                self.assertIn("running=1 claimed=0", active_text)
 
                 stdout = io.StringIO()
                 with contextlib.redirect_stdout(stdout):
@@ -966,6 +979,27 @@ class CrucibleTests(unittest.TestCase):
                 self.assertNotIn("rows", payload["runs"][0])
                 self.assertNotIn("groups", payload["runs"][0])
                 self.assertIn("state", payload["runs"][0])
+
+                stdout = io.StringIO()
+                with contextlib.redirect_stdout(stdout):
+                    rc = crucible.cmd_status(
+                        argparse.Namespace(
+                            run=None,
+                            all=True,
+                            done=False,
+                            failed=False,
+                            json=False,
+                            no_color=True,
+                            lease_seconds=600,
+                            show_done=False,
+                            verbose=False,
+                        )
+                    )
+                self.assertEqual(0, rc)
+                all_text = stdout.getvalue()
+                self.assertIn("main", all_text)
+                self.assertIn("bonus", all_text)
+                self.assertIn("worker-main running: 0", all_text)
 
                 stdout = io.StringIO()
                 with contextlib.redirect_stdout(stdout):

@@ -1712,6 +1712,8 @@ def cmd_status(args: argparse.Namespace) -> int:
             color_enabled=color_enabled,
             as_json=args.json,
             filter_name=filter_name,
+            show_details=bool(args.all or getattr(args, "show_done", False) or getattr(args, "verbose", False)),
+            show_done=bool(getattr(args, "show_done", False) or getattr(args, "verbose", False)),
         )
     if selected:
         raise SystemExit("--all, --done, and --failed cannot be used with a run name")
@@ -2037,6 +2039,8 @@ def print_run_status(
     color_enabled: bool,
     as_json: bool,
     filter_name: str | None,
+    show_details: bool = False,
+    show_done: bool = False,
 ) -> int:
     filtered = filtered_run_summaries(summaries, filter_name)
     if as_json:
@@ -2067,6 +2071,8 @@ def print_run_status(
             f"stale={counts['stale']}",
         ])
         print(" ".join(fields))
+        if show_details:
+            print_status_details(summary, color_enabled=color_enabled, show_done=show_done)
     return 0 if all(item["counts"]["fail"] == 0 for item in filtered) else 1
 
 
@@ -2412,19 +2418,12 @@ def print_status_group(title: str, groups: dict[str, list[int | str]], *, color_
         print(f"  {worker} [{len(values)}]: {format_status_values(values)}")
 
 
-def print_compact_status(
+def print_status_details(
     summary: dict[str, Any],
     *,
     color_enabled: bool = False,
     show_done: bool = False,
 ) -> None:
-    counts = summary["counts"]
-    print(
-        f"tasks={counts['done']}/{summary['tasks']} "
-        f"active={summary['active_count']} running={counts['running']} "
-        f"claimed={counts['claimed']} pending={counts['pending']} "
-        f"fail={counts['fail']} stale={counts['stale']}"
-    )
     if show_done:
         print_status_group("done", summary["groups"]["done"], color_enabled=color_enabled)
     if summary["active"]:
@@ -2439,6 +2438,22 @@ def print_compact_status(
     if summary["pending"]:
         print(colorize("pending:", "yellow", enabled=color_enabled))
         print(f"  {format_status_values(summary['pending'])}")
+
+
+def print_compact_status(
+    summary: dict[str, Any],
+    *,
+    color_enabled: bool = False,
+    show_done: bool = False,
+) -> None:
+    counts = summary["counts"]
+    print(
+        f"tasks={counts['done']}/{summary['tasks']} "
+        f"active={summary['active_count']} running={counts['running']} "
+        f"claimed={counts['claimed']} pending={counts['pending']} "
+        f"fail={counts['fail']} stale={counts['stale']}"
+    )
+    print_status_details(summary, color_enabled=color_enabled, show_done=show_done)
 
 
 def cmd_wait(args: argparse.Namespace) -> int:
