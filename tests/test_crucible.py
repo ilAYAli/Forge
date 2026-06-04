@@ -860,7 +860,7 @@ class CrucibleTests(unittest.TestCase):
             self.assertNotIn("host-done [1]: 0", compact.stdout)
             self.assertIn("worker-claimed running: task=1 [subtask=42/1000]", compact.stdout)
             self.assertIn("host-fail [1]: 2", compact.stdout)
-            self.assertIn("pending:\n  3", compact.stdout)
+            self.assertIn("pending: 1\n  3", compact.stdout)
 
             result = self.run_cli("status", str(root), "--verbose")
             self.assertEqual(1, result.returncode)

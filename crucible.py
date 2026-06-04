@@ -2815,7 +2815,8 @@ def status_color(state: str) -> str:
 def print_status_group(title: str, groups: dict[str, list[int | str]], *, color_enabled: bool) -> None:
     if not groups:
         return
-    print(colorize(f"{title}:", status_color(title), enabled=color_enabled))
+    count = sum(len(values) for values in groups.values())
+    print(colorize(f"{title}: {count}", status_color(title), enabled=color_enabled))
     for worker, values in sorted(groups.items()):
         print(f"  {worker} [{len(values)}]: {format_status_values(values)}")
 
@@ -2839,7 +2840,7 @@ def print_status_details(
     if show_done:
         print_status_group("done", summary["groups"]["done"], color_enabled=color_enabled)
     if summary["active"]:
-        print(colorize("active:", "yellow", enabled=color_enabled))
+        print(colorize(f"active: {len(summary['active'])}", "yellow", enabled=color_enabled))
         for row in sorted(summary["active"], key=active_status_sort_key):
             progress = f" [{row['progress']}]" if row.get("progress") else ""
             label = f" {row['label']}" if row.get("label") else ""
@@ -2849,7 +2850,7 @@ def print_status_details(
     print_status_group("fail", summary["groups"]["fail"], color_enabled=color_enabled)
     print_status_group("stale", summary["groups"]["stale"], color_enabled=color_enabled)
     if summary["pending"]:
-        print(colorize("pending:", "yellow", enabled=color_enabled))
+        print(colorize(f"pending: {len(summary['pending'])}", "yellow", enabled=color_enabled))
         print(f"  {format_status_values(summary['pending'])}")
 
 
