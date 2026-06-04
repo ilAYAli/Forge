@@ -19,9 +19,6 @@ repeatable work across them. It is a good fit for:
 - private experiment loops where you want reproducible inputs, logs, task
   state, and outputs in one run directory.
 
-Crucible does not provision machines, run a public worker pool, or administer
-public tournaments. It coordinates the workers you list in `workers.json`.
-
 ## Quick Start
 
 Install on the coordinator:
