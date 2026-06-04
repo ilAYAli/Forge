@@ -2839,10 +2839,10 @@ def status_summary(manifest: dict[str, Any], *, lease_seconds: int) -> dict[str,
             row["progress_data"] = progress_data
         rows.append(row)
 
-        if state in {"done", "fail", "stale"}:
+        if state in {"done", "fail"}:
             key = worker or "unknown"
             groups[state].setdefault(key, []).append(index)
-        elif state in {"running", "claimed"}:
+        elif state in {"running", "claimed", "stale"}:
             active.append(row)
         elif state == "pending":
             pending.append(index)
@@ -2906,16 +2906,19 @@ def print_status_group(title: str, groups: dict[str, list[int | str]], *, color_
 
 
 def active_status_sort_key(row: dict[str, Any]) -> tuple[int, float, tuple[bool, int | str]]:
+    state = str(row.get("state") or "")
+    if state in {"claimed", "stale"}:
+        return (0, 0.0, status_value_key(row["index"]))
     data = row.get("progress_data")
     if isinstance(data, dict):
         eta_s = data.get("eta_s")
         if isinstance(eta_s, (int, float)):
-            return (0, float(eta_s), status_value_key(row["index"]))
+            return (1, float(eta_s), status_value_key(row["index"]))
         done = data.get("done")
         total = data.get("total")
         if isinstance(done, int) and isinstance(total, int) and total > 0:
-            return (1, -(done / total), status_value_key(row["index"]))
-    return (2, 0.0, status_value_key(row["index"]))
+            return (2, -(done / total), status_value_key(row["index"]))
+    return (3, 0.0, status_value_key(row["index"]))
 
 
 def print_status_details(
@@ -2929,13 +2932,17 @@ def print_status_details(
     if summary["active"]:
         print(colorize(f"active: {len(summary['active'])}", "yellow", enabled=color_enabled))
         for row in sorted(summary["active"], key=active_status_sort_key):
-            progress = f" [{row['progress']}]" if row.get("progress") else ""
+            state_name = str(row.get("state") or "")
+            progress = f" [{row['progress']}]" if state_name == "running" and row.get("progress") else ""
             label = f" {json.dumps(str(row['label']))}" if row.get("label") else ""
             worker = row["worker"] or "unknown"
-            state = colorize(str(row["state"]), status_color(str(row["state"])), enabled=color_enabled)
-            print(f"  {worker} {state}:{label} task={row['index']}{progress}")
+            state = (
+                f" [{colorize(state_name, status_color(state_name), enabled=color_enabled)}]"
+                if state_name != "running"
+                else ""
+            )
+            print(f"  {worker}{state}{label} task={row['index']}{progress}")
     print_status_group("fail", summary["groups"]["fail"], color_enabled=color_enabled)
-    print_status_group("stale", summary["groups"]["stale"], color_enabled=color_enabled)
     if summary["pending"]:
         print(colorize(f"pending: {len(summary['pending'])}", "yellow", enabled=color_enabled))
         print(f"  {format_status_values(summary['pending'])}")

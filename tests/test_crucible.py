@@ -624,7 +624,8 @@ class CrucibleTests(unittest.TestCase):
 
             status_with_progress = self.run_cli("status", str(root))
             self.assertEqual(0, status_with_progress.returncode)
-            self.assertIn("worker-a claimed: task=0 [subtask=42/1000, eta=7m59s]", status_with_progress.stdout)
+            self.assertIn("worker-a [claimed] task=0", status_with_progress.stdout)
+            self.assertNotIn("worker-a [claimed] task=0 [subtask=42/1000", status_with_progress.stdout)
 
             unknown_total = self.run_cli(
                 "heartbeat",
@@ -637,7 +638,7 @@ class CrucibleTests(unittest.TestCase):
             self.assertEqual(0, unknown_total.returncode)
             status_unknown_total = self.run_cli("status", str(root))
             self.assertEqual(0, status_unknown_total.returncode)
-            self.assertIn("worker-a claimed: task=0 [subtask=43/?]", status_unknown_total.stdout)
+            self.assertIn("worker-a [claimed] task=0", status_unknown_total.stdout)
 
             wrong_claim = self.run_cli(
                 "heartbeat",
@@ -883,8 +884,11 @@ class CrucibleTests(unittest.TestCase):
 
     def test_active_status_sort_prefers_shorter_eta(self) -> None:
         rows = [
+            {"index": 5, "state": "stale"},
+            {"index": 6, "state": "claimed"},
             {
                 "index": 1,
+                "state": "running",
                 "progress_data": crucible.normalize_progress_data({
                     "kind": "metadata",
                     "done": 20,
@@ -895,6 +899,7 @@ class CrucibleTests(unittest.TestCase):
             },
             {
                 "index": 2,
+                "state": "running",
                 "progress_data": crucible.normalize_progress_data({
                     "kind": "metadata",
                     "done": 20,
@@ -905,6 +910,7 @@ class CrucibleTests(unittest.TestCase):
             },
             {
                 "index": 3,
+                "state": "running",
                 "progress_data": crucible.normalize_progress_data({
                     "kind": "metadata",
                     "done": 10,
@@ -912,11 +918,11 @@ class CrucibleTests(unittest.TestCase):
                     "unit": "rows",
                 }),
             },
-            {"index": 4},
+            {"index": 4, "state": "running"},
         ]
 
         ordered = sorted(rows, key=crucible.active_status_sort_key)
-        self.assertEqual([2, 1, 3, 4], [row["index"] for row in ordered])
+        self.assertEqual([5, 6, 2, 1, 3, 4], [row["index"] for row in ordered])
 
     def test_status_verbose_shows_host_and_worker(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -985,7 +991,7 @@ class CrucibleTests(unittest.TestCase):
                 compact.stdout,
             )
             self.assertNotIn("host-done [1]: 0", compact.stdout)
-            self.assertIn("worker-claimed running: task=1 [subtask=42/1000]", compact.stdout)
+            self.assertIn("worker-claimed task=1 [subtask=42/1000]", compact.stdout)
             self.assertIn("host-fail [1]: 2", compact.stdout)
             self.assertIn("pending: 1\n  3", compact.stdout)
 
@@ -1076,9 +1082,9 @@ class CrucibleTests(unittest.TestCase):
 
             status = self.run_cli("status", str(root))
             self.assertEqual(0, status.returncode)
-            high = status.stdout.index("worker-high running: task=1")
-            low = status.stdout.index("worker-low running: task=0")
-            none = status.stdout.index("worker-none running: task=2")
+            high = status.stdout.index("worker-high task=1")
+            low = status.stdout.index("worker-low task=0")
+            none = status.stdout.index("worker-none task=2")
             self.assertLess(high, low)
             self.assertLess(low, none)
 
@@ -1100,26 +1106,46 @@ class CrucibleTests(unittest.TestCase):
                         "command": "/venv/bin/python /repo/tools/score/score.py uci --depth 16",
                         "outputs": [str(root / "out0.txt")],
                     },
+                    {
+                        "id": "task_1",
+                        "index": 1,
+                        "command": "/venv/bin/python /repo/tools/score/score.py uci --depth 16",
+                        "outputs": [str(root / "out1.txt")],
+                    },
+                    {
+                        "id": "task_2",
+                        "index": 2,
+                        "command": "/venv/bin/python /repo/tools/score/score.py uci --depth 16",
+                        "outputs": [str(root / "out2.txt")],
+                    },
                 ],
             }
             manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
             (root / "state").mkdir()
-            claim_dir = root / "claims" / "task_0.claim"
-            claim_dir.mkdir(parents=True)
-            (claim_dir / "claim.json").write_text(json.dumps({
-                "task": "task_0",
-                "worker": "worker-a",
-                "claimed_at": "2023-01-01T00:00:00Z",
-            }))
+            old = crucible.epoch() - 1000
+            for task_id, worker in [("task_0", "worker-a"), ("task_1", "worker-b"), ("task_2", "worker-c")]:
+                claim_dir = root / "claims" / f"{task_id}.claim"
+                claim_dir.mkdir(parents=True)
+                claim_epoch = old if task_id == "task_2" else crucible.epoch()
+                (claim_dir / "claim.json").write_text(json.dumps({
+                    "task": task_id,
+                    "worker": worker,
+                    "claimed_at": "2023-01-01T00:00:00Z",
+                    "claimed_epoch": claim_epoch,
+                    "heartbeat_epoch": claim_epoch,
+                }))
             (root / "state" / "task_0.running.json").write_text(json.dumps({
                 "task": "task_0",
                 "host": "host-a",
                 "started_at": "2023-01-01T00:00:00Z",
             }))
+            os.utime(root / "claims" / "task_2.claim", (old, old))
 
             status = self.run_cli("status", str(root))
             self.assertEqual(0, status.returncode)
-            self.assertIn('worker-a running: "score:uci" task=0', status.stdout)
+            self.assertIn('worker-a "score:uci" task=0', status.stdout)
+            self.assertIn('worker-b [claimed] "score:uci" task=1', status.stdout)
+            self.assertIn('worker-c [stale] "score:uci" task=2', status.stdout)
 
     def test_status_uses_runs_directory(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1203,7 +1229,7 @@ class CrucibleTests(unittest.TestCase):
                 self.assertNotIn("bonus", status_text)
                 self.assertNotIn("setup", status_text)
                 self.assertNotIn("nnue-selfplay", status_text)
-                self.assertNotIn("worker-main running: task=0", status_text)
+                self.assertNotIn("worker-main task=0", status_text)
 
                 stdout = io.StringIO()
                 with contextlib.redirect_stdout(stdout):
@@ -1263,7 +1289,7 @@ class CrucibleTests(unittest.TestCase):
                 all_text = stdout.getvalue()
                 self.assertIn("main", all_text)
                 self.assertIn("bonus", all_text)
-                self.assertIn("worker-main running: task=0", all_text)
+                self.assertIn("worker-main task=0", all_text)
 
                 stdout = io.StringIO()
                 with contextlib.redirect_stdout(stdout):
@@ -1567,7 +1593,7 @@ class CrucibleTests(unittest.TestCase):
                 self.assertEqual(0, rc)
                 text = stdout.getvalue()
                 self.assertIn("progress=1500/2000 games, eta=1m40s", text)
-                self.assertIn("worker-a running: task=1 [500/1000 games, eta=1m40s]", text)
+                self.assertIn("worker-a task=1 [500/1000 games, eta=1m40s]", text)
 
     def test_status_uses_completed_rate_when_running_task_has_no_progress_yet(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1639,7 +1665,7 @@ class CrucibleTests(unittest.TestCase):
                 self.assertEqual(0, rc)
                 text = stdout.getvalue()
                 self.assertIn("progress=1000/2000 games, eta=1m40s", text)
-                self.assertIn("worker-a running: task=1 [0/1000 games, eta=1m40s]", text)
+                self.assertIn("worker-a task=1 [0/1000 games, eta=1m40s]", text)
 
     def test_status_ignores_undeclared_domain_progress(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
