@@ -50,7 +50,7 @@ class CrucibleTests(unittest.TestCase):
 
     def test_subcommand_help_is_available(self) -> None:
         commands = [
-            "plan", "add-input", "add-repo", "sync-repos", "run", "claim",
+            "plan", "add-input", "add-repo", "add-command", "sync-repos", "run", "claim",
             "release", "heartbeat", "work", "doctor", "status",
             "wait", "verify", "merge", "stop", "drain", "del", "self-update",
             "update", "version", "deploy",
@@ -2169,6 +2169,84 @@ class CrucibleTests(unittest.TestCase):
             self.assertNotEqual(0, rejected.returncode)
             self.assertIn("repo-b: git commit", rejected.stderr)
 
+    def test_add_repo_records_setup_hooks(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            subprocess.run(["git", "init", "-b", "main", str(repo)], check=True, stdout=subprocess.DEVNULL)
+            subprocess.run(["git", "config", "user.name", "Petter Wahlman"], cwd=repo, check=True)
+            subprocess.run(["git", "config", "user.email", "petter@wahlman.no"], cwd=repo, check=True)
+            (repo / "tool.sh").write_text("#!/bin/sh\nprintf 'tool ok\\n'\n", encoding="utf-8")
+            subprocess.run(["chmod", "+x", "tool.sh"], cwd=repo, check=True)
+            subprocess.run(["git", "add", "tool.sh"], cwd=repo, check=True)
+            subprocess.run(["git", "commit", "-m", "tool"], cwd=repo, check=True, stdout=subprocess.DEVNULL)
+            commit = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
+
+            manifest = root / "manifest.json"
+            manifest.write_text(
+                json.dumps({
+                    "schema": "crucible.task.v1",
+                    "name": "repo-hooks",
+                    "work_dir": str(root),
+                    "state_dir": str(root / "state"),
+                    "log_dir": str(root / "logs"),
+                    "requirements": {},
+                    "tasks": [],
+                }),
+                encoding="utf-8",
+            )
+
+            add = self.run_cli(
+                "add-repo",
+                "--manifest", str(manifest),
+                "--name", "tool",
+                "--path", str(repo),
+                "--commit", commit[:8],
+                "--install", "mkdir -p install && cp tool.sh install/tool",
+                "--probe", "install/tool | grep 'tool ok'",
+                "--probe-timeout-s", "5",
+            )
+            self.assertEqual("", add.stderr)
+            self.assertEqual(0, add.returncode)
+
+            sync = self.run_cli("sync-repos", "--manifest", str(manifest))
+            self.assertEqual("", sync.stderr)
+            self.assertEqual(0, sync.returncode)
+            self.assertTrue((repo / "install/tool").exists())
+
+    def test_add_command_records_probe(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest = root / "manifest.json"
+            manifest.write_text(
+                json.dumps({
+                    "schema": "crucible.task.v1",
+                    "name": "command-probe",
+                    "work_dir": str(root),
+                    "state_dir": str(root / "state"),
+                    "log_dir": str(root / "logs"),
+                    "requirements": {},
+                    "tasks": [],
+                }),
+                encoding="utf-8",
+            )
+
+            add = self.run_cli(
+                "add-command",
+                "--manifest", str(manifest),
+                "--name", "python-version",
+                "--path", sys.executable,
+                "--command", f"{sys.executable} --version",
+                "--contains", "Python",
+                "--timeout-s", "5",
+            )
+            self.assertEqual("", add.stderr)
+            self.assertEqual(0, add.returncode)
+
+            doctor = self.run_cli("doctor", "--manifest", str(manifest))
+            self.assertEqual("", doctor.stderr)
+            self.assertEqual(0, doctor.returncode)
+
     def test_sync_repos_checks_out_declared_commit(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -3224,6 +3302,64 @@ class CrucibleTests(unittest.TestCase):
             self.assertEqual(1, rc)
             scripts = [command[-1] for command in commands if command[0] == "sh"]
             self.assertFalse(any(" work " in script for script in scripts))
+
+    def test_deploy_command_probe_failure_blocks_tasks(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            runs = root / "runs"
+            manifest = root / "manifest.json"
+            manifest.write_text(
+                json.dumps({
+                    "schema": "crucible.task.v1",
+                    "name": "deploy-command-probe",
+                    "work_dir": str(root),
+                    "state_dir": str(root / "state"),
+                    "log_dir": str(root / "logs"),
+                    "requirements": {
+                        "commands": [{
+                            "name": "sprt-feature",
+                            "command": "printf 'old sprt\\n'; exit 1",
+                            "contains": "--no-ntfy",
+                        }],
+                    },
+                    "tasks": [{
+                        "id": "task_0000",
+                        "index": 0,
+                        "command": "printf task > {output}",
+                        "outputs": ["{output_dir}/out.txt"],
+                    }],
+                }),
+                encoding="utf-8",
+            )
+            workers_path = root / "workers.json"
+            workers_path.write_text(
+                json.dumps({
+                    "schema": "crucible.workers.v1",
+                    "workers": [{"host": "localhost", "local": True, "cache_dir": str(root / "cache")}],
+                }),
+                encoding="utf-8",
+            )
+
+            with self.patch_runs_dir(runs):
+                stdout = io.StringIO()
+                with contextlib.redirect_stdout(stdout):
+                    rc = crucible.cmd_deploy(
+                        argparse.Namespace(
+                            manifest=str(manifest),
+                            workers=str(workers_path),
+                            jobs=1,
+                            run="deploy-command-probe-test",
+                            resume=False,
+                            replace=True,
+                            remote_timeout_seconds=1800.0,
+                            no_color=True,
+                            verbose=False,
+                        )
+                    )
+
+            self.assertEqual(1, rc)
+            self.assertIn("deploy: setup failed; no tasks started", stdout.getvalue())
+            self.assertFalse((runs / "deploy-command-probe-test/outputs/out.txt").exists())
 
     def test_deploy_interrupt_terminates_active_worker_commands(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

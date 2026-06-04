@@ -1,0 +1,133 @@
+{
+  "schema": "crucible.task.v1",
+  "name": "nnue-sprt",
+  "kind": "sprt",
+  "description": "Distributed SPRT in fixed-size game chunks",
+  "work_dir": "~/code/cpp/chess/nnue",
+  "requirements": {
+    "python_min": "3.11",
+    "git_min": "2.38",
+    "repos": [
+      {
+        "name": "sprt",
+        "url": "git@github.com:ilAYAli/sprt.git",
+        "path": "~/code/cpp/chess/sprt",
+        "remote": "origin",
+        "commit": "REPLACE_WITH_SPRT_COMMIT_SHA",
+        "install": [
+          "mkdir -p ~/.local/bin && ln -sf \"$PWD/sprt\" ~/.local/bin/sprt"
+        ],
+        "probe": [
+          "~/.local/bin/sprt --help | grep -- '--no-ntfy'"
+        ]
+      }
+    ],
+    "commands": [
+      {
+        "name": "sprt",
+        "path": "~/.local/bin/sprt",
+        "command": "~/.local/bin/sprt --help",
+        "contains": "--no-ntfy"
+      },
+      {
+        "name": "fastchess",
+        "path": "~/.local/bin/fastchess"
+      },
+      {
+        "name": "engine",
+        "path": "~/assets/engines/reference"
+      },
+      {
+        "name": "engine-candidate-net-search",
+        "command": "printf 'uci\\nsetoption name use_syzygy value false\\nsetoption name nnue_file value REPLACE_WITH_CANDIDATE_NET\\nisready\\nposition startpos\\ngo depth 1\\nquit\\n' | timeout 20s ~/assets/engines/reference",
+        "contains": "bestmove",
+        "timeout_s": 25
+      },
+      {
+        "name": "engine-reference-net-search",
+        "command": "printf 'uci\\nsetoption name use_syzygy value false\\nsetoption name nnue_file value REPLACE_WITH_REFERENCE_NET\\nisready\\nposition startpos\\ngo depth 1\\nquit\\n' | timeout 20s ~/assets/engines/reference",
+        "contains": "bestmove",
+        "timeout_s": 25
+      }
+    ],
+    "inputs": [
+      {
+        "path": "REPLACE_WITH_CANDIDATE_NET"
+      },
+      {
+        "path": "REPLACE_WITH_REFERENCE_NET"
+      },
+      {
+        "path": "REPLACE_WITH_OPENING_BOOK"
+      }
+    ]
+  },
+  "vars": {
+    "engine": "~/assets/engines/reference",
+    "candidate_net": "REPLACE_WITH_CANDIDATE_NET",
+    "reference_net": "REPLACE_WITH_REFERENCE_NET",
+    "book": "REPLACE_WITH_OPENING_BOOK",
+    "games": "256",
+    "concurrency": "4",
+    "threads": "1",
+    "tc": "2+0.02"
+  },
+  "tasks": [
+    {
+      "id": "sprt_0000",
+      "index": 0,
+      "label": "sprt:256",
+      "progress": {
+        "log_regex": "\\[\\s*(?P<done>\\d+)\\/(?P<total>\\d+)\\]",
+        "unit": "games",
+        "total": 256
+      },
+      "command": "logdir=\"$(dirname \"{output}\")\"; mkdir -p \"$logdir\"; ~/.local/bin/sprt --candidate {engine} --reference {engine} --candidate-uci nnue_file={candidate_net} --reference-uci nnue_file={reference_net} --games {games} --concurrency {concurrency} --threads {threads} --tc {tc} --fastchess ~/.local/bin/fastchess --book {book} --log-dir \"$logdir\" --name {task_id} --no-ntfy --no-eta",
+      "outputs": [
+        "{output_dir}/sprt_0000/logs/sprt_0000.log"
+      ]
+    },
+    {
+      "id": "sprt_0001",
+      "index": 1,
+      "label": "sprt:256",
+      "progress": {
+        "log_regex": "\\[\\s*(?P<done>\\d+)\\/(?P<total>\\d+)\\]",
+        "unit": "games",
+        "total": 256
+      },
+      "command": "logdir=\"$(dirname \"{output}\")\"; mkdir -p \"$logdir\"; ~/.local/bin/sprt --candidate {engine} --reference {engine} --candidate-uci nnue_file={candidate_net} --reference-uci nnue_file={reference_net} --games {games} --concurrency {concurrency} --threads {threads} --tc {tc} --fastchess ~/.local/bin/fastchess --book {book} --log-dir \"$logdir\" --name {task_id} --no-ntfy --no-eta",
+      "outputs": [
+        "{output_dir}/sprt_0001/logs/sprt_0001.log"
+      ]
+    },
+    {
+      "id": "sprt_0002",
+      "index": 2,
+      "label": "sprt:256",
+      "progress": {
+        "log_regex": "\\[\\s*(?P<done>\\d+)\\/(?P<total>\\d+)\\]",
+        "unit": "games",
+        "total": 256
+      },
+      "command": "logdir=\"$(dirname \"{output}\")\"; mkdir -p \"$logdir\"; ~/.local/bin/sprt --candidate {engine} --reference {engine} --candidate-uci nnue_file={candidate_net} --reference-uci nnue_file={reference_net} --games {games} --concurrency {concurrency} --threads {threads} --tc {tc} --fastchess ~/.local/bin/fastchess --book {book} --log-dir \"$logdir\" --name {task_id} --no-ntfy --no-eta",
+      "outputs": [
+        "{output_dir}/sprt_0002/logs/sprt_0002.log"
+      ]
+    },
+    {
+      "id": "sprt_0003",
+      "index": 3,
+      "label": "sprt:256",
+      "progress": {
+        "log_regex": "\\[\\s*(?P<done>\\d+)\\/(?P<total>\\d+)\\]",
+        "unit": "games",
+        "total": 256
+      },
+      "command": "logdir=\"$(dirname \"{output}\")\"; mkdir -p \"$logdir\"; ~/.local/bin/sprt --candidate {engine} --reference {engine} --candidate-uci nnue_file={candidate_net} --reference-uci nnue_file={reference_net} --games {games} --concurrency {concurrency} --threads {threads} --tc {tc} --fastchess ~/.local/bin/fastchess --book {book} --log-dir \"$logdir\" --name {task_id} --no-ntfy --no-eta",
+      "outputs": [
+        "{output_dir}/sprt_0003/logs/sprt_0003.log"
+      ]
+    }
+  ]
+}

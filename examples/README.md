@@ -41,3 +41,15 @@ crucible merge \
 
 Use worker `slots` for labeling. Each shard owns one Stockfish process, so
 multiple slots can use idle CPU cores on the same host.
+
+## NNUE SPRT
+
+Run independent SPRT chunks:
+
+```sh
+crucible deploy examples/workers.json examples/nnue-sprt.manifest.json --run nnue-sprt
+crucible status nnue-sprt --verbose
+```
+
+The manifest pins and installs the `sprt` wrapper from Git, then probes the
+exact option used by the task command before any games are started.

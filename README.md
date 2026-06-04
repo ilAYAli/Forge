@@ -43,6 +43,12 @@ runs `doctor`, then starts worker loops. Workers need Python, Git, SSH/rsync,
 and the toolchain required by the manifest. Workers do not need `crucible`
 installed.
 
+Declare exact tool requirements in the manifest. For tools built from Git, use
+`requirements.repos` with a pinned `commit`, optional `build`/`install`, and a
+`probe` that proves the required runtime capability. Use `requirements.commands`
+for executable or external-binary checks. Failed probes stop `deploy` before any
+task is assigned.
+
 Default output is an ordered per-worker summary. Use `--verbose` for live phase
 details. TTY output is colored by default; use `--no-color` to disable it.
 
@@ -135,6 +141,27 @@ crucible plan \
   --output-template '~/work/project/out/shard.{index}.txt'
 ```
 
+Add prerequisites without hand-editing JSON:
+
+```sh
+crucible add-repo \
+  --manifest run.manifest.json \
+  --name tool \
+  --path ~/work/tool \
+  --url git@example.com:owner/tool.git \
+  --remote origin \
+  --commit REPLACE_WITH_COMMIT_SHA \
+  --install 'mkdir -p ~/.local/bin && ln -sf "$PWD/tool" ~/.local/bin/tool' \
+  --probe '~/.local/bin/tool --help | grep -- "--needed-option"'
+
+crucible add-command \
+  --manifest run.manifest.json \
+  --name external-tool \
+  --path ~/.local/bin/external-tool \
+  --command '~/.local/bin/external-tool --version' \
+  --contains 'External Tool'
+```
+
 ## Common Commands
 
 ```sh
@@ -152,6 +179,8 @@ For everything else, use subcommand help:
 crucible status --help
 crucible deploy --help
 crucible plan --help
+crucible add-repo --help
+crucible add-command --help
 crucible verify --help
 crucible merge --help
 crucible stop --help

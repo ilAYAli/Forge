@@ -94,11 +94,35 @@ def build_parser() -> argparse.ArgumentParser:
     add_repo.add_argument("--manifest", required=True, help="Manifest to update.")
     add_repo.add_argument("--path", required=True, help="Worker-local checkout path.")
     add_repo.add_argument("--name", help="Human-readable repository label.")
+    add_repo.add_argument("--url", help="Clone URL used when the checkout is missing.")
     add_repo.add_argument("--commit", help="Required commit, short or full SHA.")
     add_repo.add_argument("--branch", help="Branch to checkout before optional commit pinning.")
     add_repo.add_argument("--remote", help="Remote to fetch/pull before checkout.")
     add_repo.add_argument("--require-clean", action="store_true", help="Require a clean worktree.")
+    add_repo.add_argument("--allow-dirty", action="store_true", help="Allow dirty worktree during sync-repos.")
+    add_repo.add_argument("--build", action="append", help="Build command run after checkout. Repeatable.")
+    add_repo.add_argument("--install", action="append", help="Install command run after build. Repeatable.")
+    add_repo.add_argument("--probe", action="append", help="Probe command that must pass after install. Repeatable.")
+    add_repo.add_argument("--build-timeout-s", type=float, help="Timeout for each build command.")
+    add_repo.add_argument("--install-timeout-s", type=float, help="Timeout for each install command.")
+    add_repo.add_argument("--probe-timeout-s", type=float, help="Timeout for each probe command.")
     add_repo.set_defaults(func=cmd_add_repo)
+
+    add_command = sub.add_parser(
+        "add-command",
+        help="Record a command or executable requirement.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    add_command.add_argument("--manifest", required=True, help="Manifest to update.")
+    add_command.add_argument("--name", help="Human-readable command label.")
+    add_command.add_argument("--path", help="Executable path or PATH lookup name.")
+    add_command.add_argument("--command", help="Probe command to run.")
+    add_command.add_argument("--contains", help="Required substring in probe output.")
+    add_command.add_argument("--regex", help="Required regex in probe output.")
+    add_command.add_argument("--rc", type=int, default=0, help="Required probe exit code.")
+    add_command.add_argument("--timeout-s", type=float, help="Probe timeout.")
+    add_command.add_argument("--profile", action="append", help="Limit requirement to a worker profile. Repeatable.")
+    add_command.set_defaults(func=cmd_add_command)
 
     sync_repos = sub.add_parser(
         "sync-repos",

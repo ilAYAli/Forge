@@ -477,17 +477,67 @@ def cmd_add_repo(args: argparse.Namespace) -> int:
         "name": args.name or repo.name,
         "path": str(repo),
         "commit": commit,
-        "require_clean": args.require_clean,
     }
+    if args.url:
+        record["url"] = args.url
     if args.branch:
         record["branch"] = args.branch
     if args.remote:
         record["remote"] = args.remote
+    if args.require_clean:
+        record["require_clean"] = True
+    if args.allow_dirty:
+        record["allow_dirty"] = True
+    for field in ("build", "install", "probe"):
+        values = getattr(args, field)
+        if values:
+            record[field] = values
+        timeout = getattr(args, f"{field}_timeout_s")
+        if timeout is not None:
+            record[f"{field}_timeout_s"] = timeout
     repos[:] = [
         item for item in repos
         if not isinstance(item, dict) or item.get("path") != str(repo)
     ]
     repos.append(record)
+    write_json(path, manifest)
+    print(path)
+    return 0
+
+def cmd_add_command(args: argparse.Namespace) -> int:
+    if not args.path and not args.command:
+        raise SystemExit("add-command requires --path, --command, or both")
+    path = expand_path(args.manifest)
+    manifest = load_manifest(path)
+    req = manifest.setdefault("requirements", {})
+    if not isinstance(req, dict):
+        raise SystemExit("requirements must be an object")
+    commands = req.setdefault("commands", [])
+    if not isinstance(commands, list):
+        raise SystemExit("requirements.commands must be a list")
+    record: dict[str, Any] = {
+        "name": args.name or args.path or args.command,
+    }
+    if args.path:
+        record["path"] = args.path
+    if args.command:
+        record["command"] = args.command
+    if args.contains:
+        record["contains"] = args.contains
+    if args.regex:
+        record["regex"] = args.regex
+    if args.rc != 0:
+        record["rc"] = args.rc
+    if args.timeout_s is not None:
+        record["timeout_s"] = args.timeout_s
+    if args.profile:
+        record["profiles"] = args.profile
+    key = str(record["name"])
+    commands[:] = [
+        item for item in commands
+        if not isinstance(item, dict) or str(item.get("name") or item.get("path") or item.get("command")) != key
+    ]
+    commands.append(record)
     write_json(path, manifest)
     print(path)
     return 0
