@@ -129,7 +129,7 @@ Use `plan` for simple numbered shards:
 ```sh
 crucible plan \
   --name score \
-  --kind score \
+  --kind label \
   --task-label score \
   --shards 24 \
   --work-dir ~/work/project \
