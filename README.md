@@ -135,7 +135,7 @@ crucible plan \
   --output-template '~/work/project/out/shard.{index}.txt'
 ```
 
-## Daily Commands
+## Common Commands
 
 ```sh
 crucible --help
