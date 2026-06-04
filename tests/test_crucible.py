@@ -427,6 +427,54 @@ class CrucibleTests(unittest.TestCase):
             self.assertEqual("0\n", (coordinator / "out" / "shard.0.txt").read_text(encoding="utf-8"))
             self.assertEqual("1\n", (coordinator / "out" / "shard.1.txt").read_text(encoding="utf-8"))
 
+    def test_worker_waits_when_no_claim_but_coordinator_has_work(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest_path = root / "manifest.json"
+            manifest_path.write_text(
+                json.dumps({
+                    "schema": "crucible.task.v1",
+                    "name": "idle-wait",
+                    "work_dir": str(root),
+                    "state_dir": str(root / "state"),
+                    "log_dir": str(root / "logs"),
+                    "claim_dir": str(root / "claims"),
+                    "tasks": [{"id": "task_0000", "index": 0, "command": "true", "outputs": []}],
+                }),
+                encoding="utf-8",
+            )
+            args = argparse.Namespace(
+                manifest=str(manifest_path),
+                coordinator=str(manifest_path),
+                profile=None,
+                worker="worker-a",
+                lease_seconds=600,
+                max_tasks=1,
+                idle_seconds=10.0,
+                retry_failed=False,
+                force=False,
+                fail_fast=False,
+            )
+            claim = {"task": "task_0000", "claim": {"claim_id": "claim-1"}}
+
+            with (
+                mock.patch("crucible.check_coordinator_cli"),
+                mock.patch("crucible.check_requirements"),
+                mock.patch("crucible.claim_from_coordinator", side_effect=[None, claim]) as claim_mock,
+                mock.patch("crucible.coordinator_has_claimable_or_active_work", return_value=True),
+                mock.patch("crucible.time.sleep") as sleep_mock,
+                mock.patch("crucible.heartbeat_on_coordinator"),
+                mock.patch("crucible.run_task", return_value=0) as run_task_mock,
+                mock.patch("crucible.sync_task_result"),
+                mock.patch("crucible.release_on_coordinator"),
+            ):
+                rc = crucible.cmd_work(args)
+
+            self.assertEqual(0, rc)
+            self.assertEqual(2, claim_mock.call_count)
+            sleep_mock.assert_called_once()
+            run_task_mock.assert_called_once()
+
     def test_wait_reports_timeout_until_tasks_are_done(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -790,6 +838,43 @@ class CrucibleTests(unittest.TestCase):
             )
             self.assertNotEqual(0, coordinator.returncode)
             self.assertIn("notify command not found", coordinator.stderr)
+
+    def test_active_status_sort_prefers_shorter_eta(self) -> None:
+        rows = [
+            {
+                "index": 1,
+                "progress_data": crucible.normalize_progress_data({
+                    "kind": "metadata",
+                    "done": 20,
+                    "total": 31,
+                    "unit": "rows",
+                    "rate": 1.0,
+                }),
+            },
+            {
+                "index": 2,
+                "progress_data": crucible.normalize_progress_data({
+                    "kind": "metadata",
+                    "done": 20,
+                    "total": 31,
+                    "unit": "rows",
+                    "rate": 2.0,
+                }),
+            },
+            {
+                "index": 3,
+                "progress_data": crucible.normalize_progress_data({
+                    "kind": "metadata",
+                    "done": 10,
+                    "total": 31,
+                    "unit": "rows",
+                }),
+            },
+            {"index": 4},
+        ]
+
+        ordered = sorted(rows, key=crucible.active_status_sort_key)
+        self.assertEqual([2, 1, 3, 4], [row["index"] for row in ordered])
 
     def test_status_verbose_shows_host_and_worker(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -2241,6 +2326,7 @@ class CrucibleTests(unittest.TestCase):
 
         self.assertIn("/opt/homebrew/bin/python3 .cache/crucible/crucible.py doctor", prereq)
         self.assertIn("/opt/homebrew/bin/python3 .cache/crucible/crucible.py work", work)
+        self.assertIn("--idle-seconds 120.0", work)
 
     def test_coordinator_host_override_is_used_for_remote_workers(self) -> None:
         manifest = Path("/tmp/run/manifest.json")

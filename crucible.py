@@ -40,6 +40,8 @@ DEFAULT_REQUIREMENT_TIMEOUT_SECONDS = 15.0
 HEARTBEAT_MIN_INTERVAL_SECONDS = 5.0
 HEARTBEAT_MAX_INTERVAL_SECONDS = 60.0
 HEARTBEAT_DEFAULT_INTERVAL_SECONDS = 30.0
+WORK_IDLE_POLL_SECONDS = 5.0
+DEFAULT_DEPLOY_WORK_IDLE_SECONDS = 120.0
 SSH_OPTS = [
     "-o", "BatchMode=yes",
     "-o", f"ConnectTimeout={SSH_CONNECT_TIMEOUT_SECONDS}",
@@ -1693,6 +1695,35 @@ def claim_from_coordinator(args: argparse.Namespace) -> dict[str, Any] | None:
     return payload
 
 
+def coordinator_status_summary(coordinator: str, *, lease_seconds: int) -> dict[str, Any] | None:
+    run_dir = str(Path(coordinator_manifest_path(coordinator)).parent)
+    result = run_coordinator_cli(
+        coordinator,
+        [
+            "status",
+            run_dir,
+            "--json",
+            "--lease-seconds", str(lease_seconds),
+            "--no-color",
+        ],
+    )
+    if result.returncode != 0:
+        return None
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def coordinator_has_claimable_or_active_work(coordinator: str, *, lease_seconds: int) -> bool:
+    summary = coordinator_status_summary(coordinator, lease_seconds=lease_seconds)
+    counts = summary.get("counts") if isinstance(summary, dict) else None
+    if not isinstance(counts, dict):
+        return False
+    return any(int(counts.get(name) or 0) > 0 for name in ("pending", "running", "claimed", "stale"))
+
+
 def release_on_coordinator(
     coordinator: str,
     task_id: str,
@@ -1786,11 +1817,24 @@ def cmd_work(args: argparse.Namespace) -> int:
     check_requirements(local_manifest)
     completed = 0
     failed = 0
+    idle_deadline: float | None = None
 
     while args.max_tasks <= 0 or completed < args.max_tasks:
         claim = claim_from_coordinator(args)
         if claim is None:
-            break
+            idle_seconds = max(0.0, float(args.idle_seconds))
+            if idle_seconds <= 0.0:
+                break
+            if not coordinator_has_claimable_or_active_work(args.coordinator, lease_seconds=args.lease_seconds):
+                break
+            if idle_deadline is None:
+                idle_deadline = time.monotonic() + idle_seconds
+            remaining = idle_deadline - time.monotonic()
+            if remaining <= 0.0:
+                break
+            time.sleep(min(WORK_IDLE_POLL_SECONDS, remaining))
+            continue
+        idle_deadline = None
         task_id = str(claim["task"])
         claim_payload = claim.get("claim") if isinstance(claim.get("claim"), dict) else {}
         claim_id = str(claim_payload.get("claim_id") or "")
@@ -2094,12 +2138,19 @@ def compact_duration(seconds: float) -> str:
     return f"{seconds}s"
 
 
-def progress_eta_text(done: Any, total: Any, rate: Any) -> str:
+def progress_eta_seconds(done: Any, total: Any, rate: Any) -> float | None:
     if not isinstance(done, int) or not isinstance(total, int) or total <= 0:
-        return ""
+        return None
     if not isinstance(rate, (int, float)) or rate <= 0:
+        return None
+    return max(0.0, (total - done) / float(rate))
+
+
+def progress_eta_text(done: Any, total: Any, rate: Any) -> str:
+    eta_s = progress_eta_seconds(done, total, rate)
+    if eta_s is None:
         return ""
-    return f"eta={compact_duration((total - done) / float(rate))}"
+    return f"eta={compact_duration(eta_s)}"
 
 
 def parse_timestamp_epoch(value: Any) -> float | None:
@@ -2628,6 +2679,11 @@ def normalize_progress_data(raw: Any) -> dict[str, Any] | None:
     if kind not in {"metadata", "subtask"}:
         kind = "metadata" if data.get("unit") else "subtask"
     data["kind"] = kind
+    eta_s = progress_eta_seconds(data.get("done"), data.get("total"), data.get("rate"))
+    if eta_s is not None:
+        data["eta_s"] = eta_s
+    else:
+        data.pop("eta_s", None)
     data["text"] = progress_text(data)
     return data
 
@@ -2821,14 +2877,17 @@ def print_status_group(title: str, groups: dict[str, list[int | str]], *, color_
         print(f"  {worker} [{len(values)}]: {format_status_values(values)}")
 
 
-def active_status_sort_key(row: dict[str, Any]) -> tuple[bool, float, tuple[bool, int | str]]:
+def active_status_sort_key(row: dict[str, Any]) -> tuple[int, float, tuple[bool, int | str]]:
     data = row.get("progress_data")
     if isinstance(data, dict):
+        eta_s = data.get("eta_s")
+        if isinstance(eta_s, (int, float)):
+            return (0, float(eta_s), status_value_key(row["index"]))
         done = data.get("done")
         total = data.get("total")
         if isinstance(done, int) and isinstance(total, int) and total > 0:
-            return (False, -(done / total), status_value_key(row["index"]))
-    return (True, 0.0, status_value_key(row["index"]))
+            return (1, -(done / total), status_value_key(row["index"]))
+    return (2, 0.0, status_value_key(row["index"]))
 
 
 def print_status_details(
@@ -3473,6 +3532,7 @@ def deploy_work_command(*, worker: dict[str, Any], manifest: dict[str, Any], coo
         "--manifest", manifest_path,
         "--coordinator", coordinator,
         "--worker", str(worker["host"]),
+        "--idle-seconds", str(DEFAULT_DEPLOY_WORK_IDLE_SECONDS),
         *profile_args,
     ])
 
@@ -3945,6 +4005,7 @@ def build_parser() -> argparse.ArgumentParser:
     work.add_argument("--worker", default=socket.gethostname(), help="Worker name recorded in claims.")
     work.add_argument("--lease-seconds", type=int, default=600, help="Claim lease duration before stale.")
     work.add_argument("--max-tasks", type=int, default=0, help="Maximum tasks to run; 0 means until no work remains.")
+    work.add_argument("--idle-seconds", type=float, default=0.0, help="Wait this long for more coordinator work after a no-claim result.")
     work.add_argument("--retry-failed", action="store_true", help="Allow failed tasks to be claimed again.")
     work.add_argument("--force", action="store_true", help="Re-run tasks even if local state says complete.")
     work.add_argument("--fail-fast", action="store_true", help="Stop after the first task failure.")
