@@ -41,6 +41,7 @@ def cmd_status(args: argparse.Namespace) -> int:
         summary,
         color_enabled=color_enabled,
         show_done=args.show_done or args.verbose,
+        show_diagnostics=args.verbose,
     )
     if args.verbose:
         for row in summary["rows"]:
@@ -203,17 +204,11 @@ def parse_timestamp_epoch(value: Any) -> float | None:
         return None
 
 def task_running_payload(manifest: dict[str, Any], task: dict[str, Any]) -> dict[str, Any] | None:
-    try:
-        payload = read_json(task_running_path(manifest, task))
-    except (OSError, json.JSONDecodeError):
-        return None
+    payload = read_state_json(task_running_path(manifest, task))
     return payload if isinstance(payload, dict) else None
 
 def task_done_payload(manifest: dict[str, Any], task: dict[str, Any]) -> dict[str, Any] | None:
-    try:
-        payload = read_json(task_done_path(manifest, task))
-    except (OSError, json.JSONDecodeError):
-        return None
+    payload = read_state_json(task_done_path(manifest, task))
     return payload if isinstance(payload, dict) else None
 
 def infer_progress_rate(
@@ -478,7 +473,12 @@ def print_run_status(
         ])
         print(" ".join(fields))
         if show_details:
-            print_status_details(summary, color_enabled=color_enabled, show_done=show_done)
+            print_status_details(
+                summary,
+                color_enabled=color_enabled,
+                show_done=show_done,
+                show_diagnostics=True,
+            )
     return 0 if all(item["counts"]["fail"] == 0 for item in filtered) else 1
 
 def load_run_manifest(run: str | Path) -> tuple[Path, dict[str, Any]]:
@@ -626,9 +626,8 @@ def status_worker(manifest: dict[str, Any], task: dict[str, Any], state: str) ->
         paths.append(task_running_path(manifest, task))
 
     for path in paths:
-        try:
-            payload = read_json(path)
-        except Exception:
+        payload = read_state_json(path)
+        if payload is None:
             continue
         worker = payload.get("worker")
         if isinstance(worker, dict):
@@ -752,13 +751,13 @@ def task_log_progress_data(manifest: dict[str, Any], task: dict[str, Any]) -> di
     return None
 
 def task_heartbeat_progress_data(manifest: dict[str, Any], task: dict[str, Any]) -> dict[str, Any] | None:
-    try:
-        payload = read_json(task_heartbeat_path(manifest, task))
-    except Exception:
+    payload = read_state_json(task_heartbeat_path(manifest, task))
+    if payload is None:
         return None
     return normalize_progress_data(payload.get("progress_data"))
 
 def status_summary(manifest: dict[str, Any], *, lease_seconds: int) -> dict[str, Any]:
+    clear_state_diagnostics()
     counts = {"done": 0, "fail": 0, "running": 0, "claimed": 0, "stale": 0, "pending": 0}
     rows: list[dict[str, Any]] = []
     groups: dict[str, dict[str, list[int | str]]] = {
@@ -844,6 +843,7 @@ def status_summary(manifest: dict[str, Any], *, lease_seconds: int) -> dict[str,
         "rows": rows,
         "progress_totals": progress_totals,
         "progress_done": progress_done,
+        "diagnostics": state_diagnostics(),
     }
 
 def sort_status_values(values: list[int | str]) -> list[int | str]:
@@ -918,6 +918,7 @@ def print_status_details(
     *,
     color_enabled: bool = False,
     show_done: bool = False,
+    show_diagnostics: bool = False,
 ) -> None:
     if show_done:
         print_status_group("done", summary["groups"]["done"], color_enabled=color_enabled)
@@ -936,12 +937,17 @@ def print_status_details(
             print(f"  {worker}{state}{label} task={row['index']}{progress}")
     print_status_group("fail", summary["groups"]["fail"], color_enabled=color_enabled)
     print_pending_status(summary, color_enabled=color_enabled)
+    if show_diagnostics and summary.get("diagnostics"):
+        print(colorize("diagnostics:", "yellow", enabled=color_enabled))
+        for item in summary["diagnostics"]:
+            print(f"  {item}")
 
 def print_compact_status(
     summary: dict[str, Any],
     *,
     color_enabled: bool = False,
     show_done: bool = False,
+    show_diagnostics: bool = False,
 ) -> None:
     counts = summary["counts"]
     fields = [
@@ -955,7 +961,12 @@ def print_compact_status(
         f"stale={counts['stale']}",
     ]
     print(" ".join(fields))
-    print_status_details(summary, color_enabled=color_enabled, show_done=show_done)
+    print_status_details(
+        summary,
+        color_enabled=color_enabled,
+        show_done=show_done,
+        show_diagnostics=show_diagnostics,
+    )
 
 def cmd_wait(args: argparse.Namespace) -> int:
     started_at = time.monotonic()

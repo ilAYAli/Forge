@@ -28,6 +28,28 @@ def task_stale_lock_dir(manifest: dict[str, Any], task: dict[str, Any]) -> Path:
 def task_log_path(manifest: dict[str, Any], task: dict[str, Any]) -> Path:
     return log_dir(manifest) / f"{task['id']}.log"
 
+_STATE_DIAGNOSTICS: dict[str, str] = {}
+
+def clear_state_diagnostics() -> None:
+    _STATE_DIAGNOSTICS.clear()
+
+def state_diagnostics() -> list[str]:
+    return list(_STATE_DIAGNOSTICS.values())
+
+def record_state_diagnostic(path: Path, detail: str) -> None:
+    _STATE_DIAGNOSTICS[str(path)] = f"{path}: {detail}"
+
+def read_state_json(path: Path, *, missing_ok: bool = True) -> dict[str, Any] | None:
+    try:
+        return read_json(path)
+    except OSError as exc:
+        if not missing_ok:
+            record_state_diagnostic(path, f"state JSON unreadable: {exc}")
+        return None
+    except SystemExit as exc:
+        record_state_diagnostic(path, f"state JSON invalid: {exc}")
+        return None
+
 def path_epoch(path: Path) -> float:
     try:
         return path.stat().st_mtime
@@ -81,20 +103,29 @@ def task_claim_state(manifest: dict[str, Any], task: dict[str, Any], *, lease_se
     if not claim.exists():
         return None
     path = task_claim_path(manifest, task)
-    try:
-        payload = read_json(path)
-    except (OSError, json.JSONDecodeError):
+    payload = read_state_json(path, missing_ok=False)
+    if payload is None:
         if marker_is_stale(claim, lease_seconds=lease_seconds):
             return "stale"
         return "claimed"
     heartbeat = task_heartbeat_path(manifest, task)
-    heartbeat_epoch = float(payload.get("heartbeat_epoch") or payload.get("claimed_epoch") or 0)
+    try:
+        heartbeat_epoch = float(payload.get("heartbeat_epoch") or payload.get("claimed_epoch") or 0)
+    except (TypeError, ValueError):
+        record_state_diagnostic(path, "claim heartbeat_epoch is not numeric")
+        heartbeat_epoch = 0
     if heartbeat.exists():
-        try:
-            heartbeat_payload = read_json(heartbeat)
-            heartbeat_epoch = float(heartbeat_payload.get("heartbeat_epoch") or heartbeat_epoch)
-        except (OSError, json.JSONDecodeError, ValueError):
-            pass
+        heartbeat_payload = read_state_json(heartbeat)
+        if heartbeat_payload is not None:
+            try:
+                heartbeat_epoch = float(heartbeat_payload.get("heartbeat_epoch") or heartbeat_epoch)
+            except (TypeError, ValueError):
+                record_state_diagnostic(heartbeat, "heartbeat_epoch is not numeric")
+        else:
+            try:
+                heartbeat_epoch = float(heartbeat_epoch)
+            except (TypeError, ValueError):
+                heartbeat_epoch = 0
     if lease_seconds > 0 and heartbeat_epoch and epoch() - heartbeat_epoch > lease_seconds:
         return "stale"
     return "claimed"
@@ -325,7 +356,9 @@ def check_claim_owner(
     claim_path = task_claim_path(manifest, task)
     if not claim_path.exists():
         raise SystemExit(f"{task['id']}: no active claim")
-    payload = read_json(claim_path)
+    payload = read_state_json(claim_path, missing_ok=False)
+    if payload is None:
+        raise SystemExit(f"{task['id']}: invalid claim: {claim_path}")
     expected_worker = str(payload.get("worker") or "")
     if worker and expected_worker and expected_worker != worker:
         raise SystemExit(f"{task['id']}: claimed by {expected_worker}, not {worker}")
@@ -365,9 +398,8 @@ def release_worker_claims(
             break
         if task_state(manifest, task, lease_seconds=lease_seconds) != "claimed":
             continue
-        try:
-            payload = read_json(task_claim_path(manifest, task))
-        except Exception:
+        payload = read_state_json(task_claim_path(manifest, task), missing_ok=False)
+        if payload is None:
             continue
         if claim_payload_worker(payload) != worker:
             continue

@@ -791,6 +791,100 @@ class CrucibleTests(unittest.TestCase):
             status = self.run_cli("status", str(root))
             self.assertIn("pending=1", status.stdout)
 
+    def test_malformed_claim_is_claimed_until_stale(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest = {
+                "schema": "crucible.task.v1",
+                "name": "bad-claim",
+                "work_dir": str(root),
+                "state_dir": str(root / "state"),
+                "log_dir": str(root / "logs"),
+                "claim_dir": str(root / "claims"),
+                "tasks": [{"id": "task_0", "index": 0, "command": "true", "outputs": []}],
+            }
+            task = manifest["tasks"][0]
+            claim = crucible.task_claim_dir(manifest, task)
+            claim.mkdir(parents=True)
+            crucible.task_claim_path(manifest, task).write_text("{broken", encoding="utf-8")
+
+            crucible.clear_state_diagnostics()
+            self.assertEqual("claimed", crucible.task_state(manifest, task, lease_seconds=600))
+            self.assertIn("claim.json", "\n".join(crucible.state_diagnostics()))
+
+            os.utime(claim, (100.0, 100.0))
+            with mock.patch("crucible_lib.tasks.epoch", return_value=1000.0):
+                self.assertEqual("stale", crucible.task_state(manifest, task, lease_seconds=1))
+
+    def test_malformed_heartbeat_is_diagnostic_not_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest = {
+                "schema": "crucible.task.v1",
+                "name": "bad-heartbeat",
+                "work_dir": str(root),
+                "state_dir": str(root / "state"),
+                "log_dir": str(root / "logs"),
+                "claim_dir": str(root / "claims"),
+                "tasks": [{"id": "task_0", "index": 0, "command": "true", "outputs": []}],
+            }
+            task = manifest["tasks"][0]
+            claim = crucible.task_claim_dir(manifest, task)
+            claim.mkdir(parents=True)
+            heartbeat_epoch = crucible.epoch()
+            crucible.write_json(crucible.task_claim_path(manifest, task), {
+                "task": "task_0",
+                "worker": "worker-a",
+                "claimed_epoch": heartbeat_epoch,
+                "heartbeat_epoch": heartbeat_epoch,
+            })
+            crucible.task_heartbeat_path(manifest, task).write_text("{broken", encoding="utf-8")
+
+            crucible.clear_state_diagnostics()
+            self.assertEqual("claimed", crucible.task_state(manifest, task, lease_seconds=600))
+            self.assertIn("heartbeat.json", "\n".join(crucible.state_diagnostics()))
+
+    def test_verbose_status_shows_state_diagnostics(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run = root / "runs" / "bad-claim"
+            manifest = {
+                "schema": "crucible.task.v1",
+                "name": "bad-claim",
+                "work_dir": str(root),
+                "state_dir": str(run / "state"),
+                "log_dir": str(run / "logs"),
+                "claim_dir": str(run / "claims"),
+                "tasks": [{"id": "task_0", "index": 0, "command": "true", "outputs": []}],
+            }
+            run.mkdir(parents=True)
+            crucible.write_json(run / "manifest.json", manifest)
+            task = manifest["tasks"][0]
+            claim = crucible.task_claim_dir(manifest, task)
+            claim.mkdir(parents=True)
+            crucible.task_claim_path(manifest, task).write_text("{broken", encoding="utf-8")
+
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout):
+                rc = crucible.cmd_status(
+                    argparse.Namespace(
+                        run=str(run),
+                        all=False,
+                        done=False,
+                        failed=False,
+                        json=False,
+                        no_color=True,
+                        lease_seconds=600,
+                        verbose=True,
+                        show_done=False,
+                    )
+                )
+
+            self.assertEqual(0, rc)
+            text = stdout.getvalue()
+            self.assertIn("diagnostics:", text)
+            self.assertIn("claim.json", text)
+
     def test_zombie_claim_expires_and_can_be_reclaimed(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
