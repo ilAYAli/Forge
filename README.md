@@ -157,18 +157,23 @@ crucible merge --help
 crucible stop --help
 ```
 
-`status` without a run name summarizes active runs in `runs/`. `status <run>`
-shows one run. The default view shows task counts, active tasks, failed/stale
-tasks, and compressed pending ranges. Use `--verbose` for the full task table.
+### Status
+
+`crucible status` shows active runs under `runs/`. Pass a run name for one
+run, and add `--verbose` for one row per task:
+
+```sh
+crucible status
+crucible status my-run --verbose
+```
+
 Use `--all`, `--done`, or `--failed` to change which runs are listed. Use
-`--show-done` when you want completed task breakdowns by worker.
+`--show-done` to include completed task breakdowns by worker.
 
-`--kind` is a run label shown in summary status. `--task-label` is a per-task
-label shown in detailed status. Both are plain user metadata; Crucible does not
-attach domain meaning to them.
+### Coordinator Runs
 
-Put a coordinator pointer in `runs/coordinator` on non-coordinator hosts to make
-`crucible status` read the coordinator's run state by default:
+Workers can point `status` at the coordinator's run directory by writing
+`runs/coordinator`:
 
 ```sh
 mkdir -p runs
@@ -179,21 +184,32 @@ Set `CRUCIBLE_RUNS_DIR` to use a different local run root, or
 `CRUCIBLE_COORDINATOR_RUNS=host:/path/to/crucible/runs` to override
 `runs/coordinator`. Explicit run paths remain local diagnostics.
 
+### Labels
+
+`--kind` labels a run in summary status. `--task-label` labels tasks in verbose
+status. Crucible treats both as user-defined text.
+
+### Worker Updates
+
 `update` uses `runs/workers.json` by default, falling back to `./workers.json`.
 It updates workers to the coordinator's exact current Crucible commit. With
 `--all`, the coordinator fast-forwards first, then workers are matched to the
 new coordinator commit.
 
-Lower-level commands remain available for diagnostics: `sync-repos`, `doctor`,
-`work`, `claim`, `release`, `heartbeat`, and `run`.
+### Notifications
 
 `deploy` and `wait` support `--notify-command`, or `CRUCIBLE_NOTIFY_COMMAND`.
 The command receives one JSON payload on stdin and in `CRUCIBLE_EVENT_JSON`.
 Crucible does not assume any notification service.
 
+### Task Count
+
 For long tasks, create more tasks than worker slots. `deploy` warns when a run
 has fewer than four tasks per worker slot, because that can leave fast workers
 idle behind a slow tail.
+
+Lower-level commands remain available for diagnostics: `sync-repos`, `doctor`,
+`work`, `claim`, `release`, `heartbeat`, and `run`.
 
 ## Examples
 
