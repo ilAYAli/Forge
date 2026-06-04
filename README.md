@@ -144,6 +144,8 @@ crucible status --done        # completed runs
 crucible status --failed      # failed runs
 crucible status my-run        # detailed status for one run
 crucible status my-run -v     # one row per task
+crucible wait --manifest runs/my-run/manifest.json --notify-command ./notify
+                              # wait for terminal state and emit one JSON event
 crucible verify my-run        # require every task to be done
 crucible merge my-run --output merged.txt
 crucible stop my-run          # ask workers to stop this run
@@ -188,6 +190,10 @@ new coordinator commit.
 
 Lower-level commands remain available for diagnostics: `sync-repos`, `doctor`,
 `work`, `claim`, `release`, `heartbeat`, and `run`.
+
+`deploy` and `wait` support `--notify-command`, or `CRUCIBLE_NOTIFY_COMMAND`.
+The command receives one JSON payload on stdin and in `CRUCIBLE_EVENT_JSON`.
+Crucible does not assume any notification service.
 
 For long tasks, create more tasks than worker slots. `deploy` warns when a run
 has fewer than four tasks per worker slot, because that can leave fast workers

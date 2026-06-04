@@ -565,6 +565,107 @@ class CrucibleTests(unittest.TestCase):
             self.assertEqual(0, done.returncode)
             self.assertIn("tasks=2/2", done.stdout)
 
+    def test_wait_sends_done_notification_payload(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest = root / "wait-done" / "manifest.json"
+            crucible.write_json(manifest, {
+                "schema": "crucible.task.v1",
+                "name": "wait-done",
+                "kind": "smoke",
+                "description": "wait done check",
+                "work_dir": str(root),
+                "state_dir": str(root / "wait-done" / "state"),
+                "log_dir": str(root / "wait-done" / "logs"),
+                "claim_dir": str(root / "wait-done" / "claims"),
+                "tasks": [],
+            })
+            payloads: list[dict[str, object]] = []
+
+            def capture_notify(command: str | None, payload: dict[str, object]) -> int:
+                self.assertEqual("notify-me", command)
+                payloads.append(payload)
+                return 0
+
+            args = argparse.Namespace(
+                manifest=str(manifest),
+                profile=None,
+                lease_seconds=600,
+                interval_seconds=0.01,
+                timeout_seconds=1.0,
+                fail_on_fail=True,
+                notify_command="notify-me",
+            )
+            with mock.patch("crucible.run_notify_command", capture_notify):
+                stdout = io.StringIO()
+                with contextlib.redirect_stdout(stdout):
+                    rc = crucible.cmd_wait(args)
+
+            self.assertEqual(0, rc)
+            self.assertEqual(1, len(payloads))
+            payload = payloads[0]
+            self.assertEqual("run_done", payload["event"])
+            self.assertEqual("wait-done", payload["run"])
+            self.assertEqual("ok", payload["state"])
+            self.assertEqual(0, payload["rc"])
+            self.assertEqual("smoke", payload["kind"])
+            self.assertEqual("wait done check", payload["description"])
+            self.assertEqual({"done": 0, "fail": 0, "running": 0, "claimed": 0, "stale": 0, "pending": 0}, payload["counts"])
+
+    def test_wait_sends_fail_notification_payload(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest = root / "wait-fail" / "manifest.json"
+            out = root / "wait-fail" / "out.txt"
+            crucible.write_json(manifest, {
+                "schema": "crucible.task.v1",
+                "name": "wait-fail",
+                "work_dir": str(root),
+                "state_dir": str(root / "wait-fail" / "state"),
+                "log_dir": str(root / "wait-fail" / "logs"),
+                "claim_dir": str(root / "wait-fail" / "claims"),
+                "tasks": [{
+                    "id": "task_0",
+                    "index": 0,
+                    "command": "false",
+                    "outputs": [str(out)],
+                }],
+            })
+            loaded = crucible.load_manifest(manifest)
+            crucible.write_json(crucible.task_fail_path(loaded, loaded["tasks"][0]), {
+                "worker": {"host": "worker-a"},
+                "rc": 1,
+            })
+            payloads: list[dict[str, object]] = []
+
+            def capture_notify(command: str | None, payload: dict[str, object]) -> int:
+                self.assertEqual("notify-me", command)
+                payloads.append(payload)
+                return 0
+
+            args = argparse.Namespace(
+                manifest=str(manifest),
+                profile=None,
+                lease_seconds=600,
+                interval_seconds=0.01,
+                timeout_seconds=1.0,
+                fail_on_fail=True,
+                notify_command="notify-me",
+            )
+            with mock.patch("crucible.run_notify_command", capture_notify):
+                stdout = io.StringIO()
+                with contextlib.redirect_stdout(stdout):
+                    rc = crucible.cmd_wait(args)
+
+            self.assertEqual(1, rc)
+            self.assertEqual(1, len(payloads))
+            payload = payloads[0]
+            self.assertEqual("run_fail", payload["event"])
+            self.assertEqual("wait-fail", payload["run"])
+            self.assertEqual("failed", payload["state"])
+            self.assertEqual(1, payload["rc"])
+            self.assertEqual(1, payload["counts"]["fail"])
+
     def test_claim_is_atomic_status_visible_and_released(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

@@ -2984,10 +2984,29 @@ def print_compact_status(
 
 
 def cmd_wait(args: argparse.Namespace) -> int:
+    started_at = time.monotonic()
+    manifest_path = expand_path(args.manifest)
     deadline = time.monotonic() + args.timeout_seconds if args.timeout_seconds > 0 else None
+    notify_command = getattr(args, "notify_command", None) or os.environ.get("CRUCIBLE_NOTIFY_COMMAND")
     last_line = ""
+
+    def notify(event: str, state: str, rc: int, manifest: dict[str, Any]) -> None:
+        if notify_command:
+            run_notify_command(
+                notify_command,
+                run_completion_event_payload(
+                    manifest_path=manifest_path,
+                    manifest=manifest,
+                    event=event,
+                    state=state,
+                    rc=rc,
+                    elapsed_seconds=time.monotonic() - started_at,
+                    lease_seconds=args.lease_seconds,
+                ),
+            )
+
     while True:
-        manifest = apply_profile(load_manifest(expand_path(args.manifest)), args.profile)
+        manifest = apply_profile(load_manifest(manifest_path), args.profile)
         counts = task_counts(manifest, lease_seconds=args.lease_seconds)
         total = len(manifest["tasks"])
         line = (
@@ -3000,11 +3019,14 @@ def cmd_wait(args: argparse.Namespace) -> int:
             last_line = line
 
         if counts["fail"] and args.fail_on_fail:
+            notify("run_fail", "failed", 1, manifest)
             return 1
         if counts["done"] == total:
+            notify("run_done", "ok", 0, manifest)
             return 0
         if deadline is not None and time.monotonic() >= deadline:
             print("timeout waiting for tasks", file=sys.stderr)
+            notify("run_timeout", "timeout", 124, manifest)
             return 124
         time.sleep(max(0.1, args.interval_seconds))
 
@@ -3074,6 +3096,36 @@ def deploy_event_payload(
         ],
     }
     payload.update(metadata)
+    return payload
+
+
+def run_completion_event_payload(
+    *,
+    manifest_path: Path,
+    manifest: dict[str, Any],
+    event: str,
+    state: str,
+    rc: int,
+    elapsed_seconds: float,
+    lease_seconds: int,
+) -> dict[str, Any]:
+    summary = status_summary(manifest, lease_seconds=lease_seconds)
+    payload: dict[str, Any] = {
+        "event": event,
+        "run": manifest_path.parent.name,
+        "run_dir": str(manifest_path.parent),
+        "manifest": str(manifest_path),
+        "state": state,
+        "rc": rc,
+        "elapsed_seconds": round(elapsed_seconds, 3),
+        "tasks": summary["tasks"],
+        "counts": summary["counts"],
+        "active_count": summary["active_count"],
+    }
+    progress = summary_progress(summary)
+    if progress:
+        payload["progress"] = progress
+    payload.update(manifest_metadata(manifest))
     return payload
 
 
@@ -4107,6 +4159,7 @@ def build_parser() -> argparse.ArgumentParser:
     wait.add_argument("--interval-seconds", type=float, default=30.0, help="Polling interval.")
     wait.add_argument("--timeout-seconds", type=float, default=0.0, help="Overall timeout; 0 means no timeout.")
     wait.add_argument("--fail-on-fail", action=argparse.BooleanOptionalAction, default=True, help="Return failure when any task fails.")
+    wait.add_argument("--notify-command", help="Command run on done/fail/timeout with CRUCIBLE_EVENT_JSON and JSON on stdin.")
     wait.set_defaults(func=cmd_wait)
 
     verify = sub.add_parser(
