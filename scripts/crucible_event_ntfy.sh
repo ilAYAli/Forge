@@ -2,6 +2,9 @@
 set -euo pipefail
 
 AI_STDOUT_URL=${CRUCIBLE_AI_STDOUT_URL:-https://ntfy.wahlman.no/AI_stdout}
+AI_STDIN_URL=${CRUCIBLE_AI_STDIN_URL:-https://ntfy.wahlman.no/AI_stdin}
+AI_STDIN_ENABLE=${CRUCIBLE_AI_STDIN_ENABLE:-1}
+AI_STDIN_EVENTS=${CRUCIBLE_AI_STDIN_EVENTS:-deploy_done,deploy_fail}
 DRY_RUN=${CRUCIBLE_NTFY_DRY_RUN:-0}
 
 payload=${CRUCIBLE_EVENT_JSON:-}
@@ -55,8 +58,32 @@ print("\n".join(lines))
 PY
 )
 
+wake_message=$(
+    CRUCIBLE_EVENT_JSON="$payload" python3 - <<'PY'
+import json
+import os
+
+event = json.loads(os.environ["CRUCIBLE_EVENT_JSON"])
+state = event.get("state", "")
+run = event.get("run", "")
+run_dir = event.get("run_dir", "")
+counts = event.get("counts") or {}
+failed = counts.get("fail", 0)
+tasks = event.get("tasks", 0)
+done = counts.get("done", 0)
+
+verb = "complete" if state == "ok" else "failed"
+print(
+    f"Crucible run {verb}: run={run} state={state} "
+    f"tasks={done}/{tasks} fail={failed} log={run_dir}/deploy.log. "
+    "Inspect the result and continue the next task."
+)
+PY
+)
+
 if [ "$DRY_RUN" = "1" ]; then
     printf '%s\n' "$rendered"
+    printf '%s\n' "$wake_message"
     exit 0
 fi
 
@@ -67,12 +94,40 @@ if printf '%s' "$payload" | grep -q '"state"[[:space:]]*:[[:space:]]*"failed"'; 
     priority=5
 fi
 
-if [ -n "${NTFY_AUTH:-${LICHESS_NTFY_AUTH:-}}" ]; then
-    curl -fsS -m 10 -u "${NTFY_AUTH:-${LICHESS_NTFY_AUTH:-}}" \
-        -H "Title: Crucible" -H "Priority: $priority" \
-        --data-binary "$rendered" "$AI_STDOUT_URL" >/dev/null
-else
-    curl -fsS -m 10 \
-        -H "Title: Crucible" -H "Priority: $priority" \
-        --data-binary "$rendered" "$AI_STDOUT_URL" >/dev/null
+send_ntfy() {
+    local url=$1
+    local title=$2
+    local message=$3
+
+    if [ -n "${NTFY_AUTH:-${LICHESS_NTFY_AUTH:-}}" ]; then
+        curl -fsS -m 10 -u "${NTFY_AUTH:-${LICHESS_NTFY_AUTH:-}}" \
+            -H "Title: $title" -H "Priority: $priority" \
+            --data-binary "$message" "$url" >/dev/null
+    else
+        curl -fsS -m 10 \
+            -H "Title: $title" -H "Priority: $priority" \
+            --data-binary "$message" "$url" >/dev/null
+    fi
+}
+
+rc=0
+send_ntfy "$AI_STDOUT_URL" "Crucible" "$rendered" || rc=$?
+
+event_name=$(
+    CRUCIBLE_EVENT_JSON="$payload" python3 - <<'PY'
+import json
+import os
+print(json.loads(os.environ["CRUCIBLE_EVENT_JSON"]).get("event", ""))
+PY
+)
+
+case ",$AI_STDIN_EVENTS," in
+    *,"$event_name",*) send_ai_stdin=1 ;;
+    *) send_ai_stdin=0 ;;
+esac
+
+if [ "$AI_STDIN_ENABLE" = "1" ] && [ "$send_ai_stdin" = "1" ]; then
+    send_ntfy "$AI_STDIN_URL" "Crucible" "$wake_message" || rc=$?
 fi
+
+exit "$rc"

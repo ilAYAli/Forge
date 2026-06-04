@@ -70,7 +70,8 @@
     "games": "256",
     "concurrency": "4",
     "threads": "1",
-    "tc": "2+0.02"
+    "tc": "2+0.02",
+    "restart": "off"
   },
   "tasks": [
     {
@@ -82,7 +83,7 @@
         "unit": "games",
         "total": 256
       },
-      "command": "logdir=\"$(dirname \"{output}\")\"; mkdir -p \"$logdir\"; ~/.local/bin/sprt --candidate {engine} --reference {engine} --candidate-uci nnue_file={candidate_net} --reference-uci nnue_file={reference_net} --games {games} --concurrency {concurrency} --threads {threads} --tc {tc} --fastchess ~/.local/bin/fastchess --book {book} --log-dir \"$logdir\" --name {task_id} --no-ntfy --no-eta",
+      "command": "logdir=\"$(dirname \"{output}\")\"; mkdir -p \"$logdir\"; ~/.local/bin/sprt --candidate {engine} --reference {engine} --candidate-uci nnue_file={candidate_net} --reference-uci nnue_file={reference_net} --games {games} --concurrency {concurrency} --threads {threads} --tc {tc} --restart {restart} --fastchess ~/.local/bin/fastchess --book {book} --log-dir \"$logdir\" --name {task_id} --no-ntfy --no-eta",
       "outputs": [
         "{output_dir}/sprt_0000/logs/sprt_0000.log"
       ]
@@ -96,7 +97,7 @@
         "unit": "games",
         "total": 256
       },
-      "command": "logdir=\"$(dirname \"{output}\")\"; mkdir -p \"$logdir\"; ~/.local/bin/sprt --candidate {engine} --reference {engine} --candidate-uci nnue_file={candidate_net} --reference-uci nnue_file={reference_net} --games {games} --concurrency {concurrency} --threads {threads} --tc {tc} --fastchess ~/.local/bin/fastchess --book {book} --log-dir \"$logdir\" --name {task_id} --no-ntfy --no-eta",
+      "command": "logdir=\"$(dirname \"{output}\")\"; mkdir -p \"$logdir\"; ~/.local/bin/sprt --candidate {engine} --reference {engine} --candidate-uci nnue_file={candidate_net} --reference-uci nnue_file={reference_net} --games {games} --concurrency {concurrency} --threads {threads} --tc {tc} --restart {restart} --fastchess ~/.local/bin/fastchess --book {book} --log-dir \"$logdir\" --name {task_id} --no-ntfy --no-eta",
       "outputs": [
         "{output_dir}/sprt_0001/logs/sprt_0001.log"
       ]
@@ -110,7 +111,7 @@
         "unit": "games",
         "total": 256
       },
-      "command": "logdir=\"$(dirname \"{output}\")\"; mkdir -p \"$logdir\"; ~/.local/bin/sprt --candidate {engine} --reference {engine} --candidate-uci nnue_file={candidate_net} --reference-uci nnue_file={reference_net} --games {games} --concurrency {concurrency} --threads {threads} --tc {tc} --fastchess ~/.local/bin/fastchess --book {book} --log-dir \"$logdir\" --name {task_id} --no-ntfy --no-eta",
+      "command": "logdir=\"$(dirname \"{output}\")\"; mkdir -p \"$logdir\"; ~/.local/bin/sprt --candidate {engine} --reference {engine} --candidate-uci nnue_file={candidate_net} --reference-uci nnue_file={reference_net} --games {games} --concurrency {concurrency} --threads {threads} --tc {tc} --restart {restart} --fastchess ~/.local/bin/fastchess --book {book} --log-dir \"$logdir\" --name {task_id} --no-ntfy --no-eta",
       "outputs": [
         "{output_dir}/sprt_0002/logs/sprt_0002.log"
       ]
@@ -124,7 +125,7 @@
         "unit": "games",
         "total": 256
       },
-      "command": "logdir=\"$(dirname \"{output}\")\"; mkdir -p \"$logdir\"; ~/.local/bin/sprt --candidate {engine} --reference {engine} --candidate-uci nnue_file={candidate_net} --reference-uci nnue_file={reference_net} --games {games} --concurrency {concurrency} --threads {threads} --tc {tc} --fastchess ~/.local/bin/fastchess --book {book} --log-dir \"$logdir\" --name {task_id} --no-ntfy --no-eta",
+      "command": "logdir=\"$(dirname \"{output}\")\"; mkdir -p \"$logdir\"; ~/.local/bin/sprt --candidate {engine} --reference {engine} --candidate-uci nnue_file={candidate_net} --reference-uci nnue_file={reference_net} --games {games} --concurrency {concurrency} --threads {threads} --tc {tc} --restart {restart} --fastchess ~/.local/bin/fastchess --book {book} --log-dir \"$logdir\" --name {task_id} --no-ntfy --no-eta",
       "outputs": [
         "{output_dir}/sprt_0003/logs/sprt_0003.log"
       ]
