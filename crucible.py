@@ -976,6 +976,12 @@ def task_state(manifest: dict[str, Any], task: dict[str, Any], *, lease_seconds:
     return "pending"
 
 
+class TaskSignalInterrupt(Exception):
+    def __init__(self, signum: int) -> None:
+        super().__init__(signum)
+        self.signum = signum
+
+
 def terminate_process_group(proc: subprocess.Popen[Any], log: Any, reason: str) -> None:
     log.write(f"{now()} terminate {reason}: pid={proc.pid}\n")
     log.flush()
@@ -1018,15 +1024,6 @@ def run_task(manifest: dict[str, Any], task: dict[str, Any], *, force: bool) -> 
     log_path = task_log_path(manifest, task)
     start = time.monotonic()
     started_at = now()
-    running = {
-        "task": task["id"],
-        "host": socket.gethostname(),
-        "started_at": started_at,
-        "command": command,
-        "pid": os.getpid(),
-    }
-    write_json(task_running_path(manifest, task), running)
-
     with log_path.open("w", encoding="utf-8") as log:
         log.write(f"{started_at} start {task['id']}: {command}\n")
         log.flush()
@@ -1038,15 +1035,46 @@ def run_task(manifest: dict[str, Any], task: dict[str, Any], *, force: bool) -> 
             text=True,
             start_new_session=True,
         )
+        running = {
+            "task": task["id"],
+            "host": socket.gethostname(),
+            "started_at": started_at,
+            "command": command,
+            "pid": os.getpid(),
+            "child_pid": proc.pid,
+        }
+        try:
+            running["child_pgid"] = os.getpgid(proc.pid)
+        except OSError:
+            pass
+        write_json(task_running_path(manifest, task), running)
+
+        previous_handlers: dict[int, Any] = {}
+
+        def handle_task_signal(signum: int, _frame: Any) -> None:
+            raise TaskSignalInterrupt(signum)
+
+        for sig in (getattr(signal, "SIGTERM", None), getattr(signal, "SIGHUP", None)):
+            if sig is None:
+                continue
+            previous_handlers[int(sig)] = signal.getsignal(sig)
+            signal.signal(sig, handle_task_signal)
+
         timeout = bounded_timeout(task.get("timeout_s", manifest.get("timeout_s")))
         try:
             rc = proc.wait(timeout=timeout) if timeout else proc.wait()
+        except TaskSignalInterrupt as exc:
+            terminate_process_group(proc, log, f"signal {exc.signum}")
+            rc = 128 + exc.signum
         except subprocess.TimeoutExpired:
             terminate_process_group(proc, log, "timeout")
             rc = 124
         except KeyboardInterrupt:
             terminate_process_group(proc, log, "interrupt")
             rc = 130
+        finally:
+            for signum, handler in previous_handlers.items():
+                signal.signal(signum, handler)
         finished_at = now()
         log.write(f"{finished_at} done {task['id']} rc={rc}\n")
 
@@ -2902,10 +2930,10 @@ def print_status_details(
         print(colorize(f"active: {len(summary['active'])}", "yellow", enabled=color_enabled))
         for row in sorted(summary["active"], key=active_status_sort_key):
             progress = f" [{row['progress']}]" if row.get("progress") else ""
-            label = f" {row['label']}" if row.get("label") else ""
+            label = f" {json.dumps(str(row['label']))}" if row.get("label") else ""
             worker = row["worker"] or "unknown"
             state = colorize(str(row["state"]), status_color(str(row["state"])), enabled=color_enabled)
-            print(f"  {worker} {state}: task={row['index']}{label}{progress}")
+            print(f"  {worker} {state}:{label} task={row['index']}{progress}")
     print_status_group("fail", summary["groups"]["fail"], color_enabled=color_enabled)
     print_status_group("stale", summary["groups"]["stale"], color_enabled=color_enabled)
     if summary["pending"]:

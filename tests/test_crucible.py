@@ -5,6 +5,7 @@ import io
 import json
 import os
 import argparse
+import signal
 import subprocess
 import sys
 import tempfile
@@ -474,6 +475,47 @@ class CrucibleTests(unittest.TestCase):
             self.assertEqual(2, claim_mock.call_count)
             sleep_mock.assert_called_once()
             run_task_mock.assert_called_once()
+
+    def test_run_task_terminates_child_group_on_signal(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest = {
+                "schema": "crucible.task.v1",
+                "name": "signal-cleanup",
+                "work_dir": str(root),
+                "state_dir": str(root / "state"),
+                "log_dir": str(root / "logs"),
+                "tasks": [{"id": "task_0000", "index": 0, "command": "sleep 60", "outputs": []}],
+            }
+            task = manifest["tasks"][0]
+
+            class FakeProc:
+                pid = 12345
+
+                def __init__(self) -> None:
+                    self.wait_calls = 0
+
+                def wait(self, timeout=None):
+                    self.wait_calls += 1
+                    if timeout is None and self.wait_calls == 1:
+                        raise crucible.TaskSignalInterrupt(signal.SIGTERM)
+                    return 0
+
+            fake_proc = FakeProc()
+            with (
+                mock.patch("crucible.subprocess.Popen", return_value=fake_proc),
+                mock.patch("crucible.os.getpgid", return_value=fake_proc.pid),
+                mock.patch("crucible.os.killpg") as killpg_mock,
+                mock.patch("crucible.platform.platform", return_value="test-platform"),
+            ):
+                rc = crucible.run_task(manifest, task, force=False)
+
+            self.assertEqual(128 + signal.SIGTERM, rc)
+            killpg_mock.assert_called_with(fake_proc.pid, signal.SIGTERM)
+            self.assertTrue(crucible.task_fail_path(manifest, task).exists())
+            self.assertFalse(crucible.task_running_path(manifest, task).exists())
+            log = crucible.task_log_path(manifest, task).read_text(encoding="utf-8")
+            self.assertIn("terminate signal", log)
 
     def test_wait_reports_timeout_until_tasks_are_done(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1077,7 +1119,7 @@ class CrucibleTests(unittest.TestCase):
 
             status = self.run_cli("status", str(root))
             self.assertEqual(0, status.returncode)
-            self.assertIn("worker-a running: task=0 score:uci", status.stdout)
+            self.assertIn('worker-a running: "score:uci" task=0', status.stdout)
 
     def test_status_uses_runs_directory(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
