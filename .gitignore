@@ -8,3 +8,4 @@ logs/
 out/
 runs/
 config.json
+claude.sh
