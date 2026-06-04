@@ -268,6 +268,45 @@ def copy_to_worker(
     if result.returncode != 0:
         raise RuntimeError(result.stderr.strip() or f"rsync failed for {src}")
 
+def copy_dir_to_worker(
+    worker: dict[str, Any],
+    src: Path,
+    dst: str,
+    *,
+    timeout: float | None = None,
+    tracker: ProcessTracker | None = None,
+) -> None:
+    if is_local_worker(worker):
+        target = expand_path(dst)
+        shutil.copytree(src, target, dirs_exist_ok=True)
+        return
+    mkdir = run_worker_shell(
+        worker,
+        "mkdir -p " + shlex.quote(dst),
+        timeout=timeout,
+        tracker=tracker,
+    )
+    if mkdir.returncode != 0:
+        raise RuntimeError(mkdir.stderr.strip() or mkdir.stdout.strip() or f"failed to create {dst}")
+    command = [
+        "rsync", "-a", "--delete", "-e", RSYNC_SSH,
+        str(src) + "/",
+        worker_rsync_target(worker, dst.rstrip("/") + "/"),
+    ]
+    if tracker is not None:
+        result = tracker.run(command, timeout=timeout)
+    else:
+        result = subprocess.run(
+            command,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+            timeout=timeout,
+        )
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.strip() or f"rsync failed for {src}")
+
 def bootstrap_worker_runner(
     worker: dict[str, Any],
     manifest_path: Path,
@@ -280,7 +319,15 @@ def bootstrap_worker_runner(
         result = run_worker_shell(worker, "mkdir -p " + shlex.quote(cache), timeout=timeout, tracker=tracker)
         if result.returncode != 0:
             raise RuntimeError(result.stderr.strip() or result.stdout.strip() or "failed to create worker cache")
-    copy_to_worker(worker, script_path(), worker_cache_file(worker, "crucible.py"), timeout=timeout, tracker=tracker)
+    wrapper = script_path()
+    copy_to_worker(worker, wrapper, worker_cache_file(worker, "crucible.py"), timeout=timeout, tracker=tracker)
+    copy_dir_to_worker(
+        worker,
+        wrapper.parent / "crucible_lib",
+        worker_cache_file(worker, "crucible_lib"),
+        timeout=timeout,
+        tracker=tracker,
+    )
     copy_to_worker(worker, manifest_path, worker_cache_file(worker, "manifest.json"), timeout=timeout, tracker=tracker)
 
 def active_worker_profile(manifest: dict[str, Any], worker: dict[str, Any]) -> str | None:

@@ -2790,6 +2790,20 @@ class CrucibleTests(unittest.TestCase):
         self.assertEqual("pwa-wsl", crucible.worker_label("pwa-wsl", "pwa-wsl"))
         self.assertEqual("pwa-5090#2", crucible.worker_label("pwa-5090", "pwa-5090", 2, 4))
 
+    def test_bootstrap_worker_runner_syncs_package(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest = root / "manifest.json"
+            cache = root / "cache"
+            manifest.write_text("{}", encoding="utf-8")
+            worker = {"host": "localhost", "local": True, "cache_dir": str(cache)}
+
+            crucible.bootstrap_worker_runner(worker, manifest)
+
+            self.assertTrue((cache / "crucible.py").exists())
+            self.assertTrue((cache / "crucible_lib" / "__init__.py").exists())
+            self.assertTrue((cache / "manifest.json").exists())
+
     def test_managed_remote_script_cleans_child_process_group(self) -> None:
         script = crucible.managed_remote_script("sleep 60")
 
