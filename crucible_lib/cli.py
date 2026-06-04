@@ -1,0 +1,376 @@
+from __future__ import annotations
+
+from .core import *
+from .manifest import *
+from .tasks import *
+from .status import *
+from .workers import *
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description=__doc__,
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    parser.add_argument("--version", action="store_true", help="Print crucible version and exit.")
+    parser.add_argument("--version-json", action="store_true", help="Print crucible version as JSON and exit.")
+    sub = parser.add_subparsers(dest="command")
+
+    plan = sub.add_parser(
+        "plan",
+        help="Create a numbered task manifest.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    plan.add_argument("--name", required=True, help="Run name stored in the manifest.")
+    plan.add_argument("--kind", help="Short user-defined run type shown in status.")
+    plan.add_argument("--description", help="Short single-line run description shown in status.")
+    plan.add_argument(
+        "--task-label",
+        help="Short per-task label shown in detailed status. Supports templates.",
+    )
+    plan.add_argument(
+        "--tasks", "--shards",
+        dest="shards",
+        metavar="N",
+        type=int,
+        required=True,
+        help="Number of numbered tasks to create.",
+    )
+    plan.add_argument("--work-dir", required=True, help="Working directory for task commands.")
+    plan.add_argument("--out", required=True, help="Manifest path to write.")
+    plan.add_argument(
+        "--command-template",
+        required=True,
+        help="Shell command template. Supports {index}, {shard}, {task_id}, {output}, and --var keys.",
+    )
+    plan.add_argument(
+        "--output-template",
+        action="append",
+        required=True,
+        help="Output path template for each task. Repeat for multiple outputs.",
+    )
+    plan.add_argument("--var", action="append", default=[], help="Template variable KEY=VALUE. Repeatable.")
+    plan.add_argument(
+        "--path-map",
+        action="append",
+        default=[],
+        help="Host path mapping, PROFILE:/source=/dest. Repeatable.",
+    )
+    plan.add_argument("--task-prefix", default="task", help="Prefix for generated task ids.")
+    plan.add_argument("--state-dir", help="Directory for .done/.fail/.running state files.")
+    plan.add_argument("--log-dir", help="Directory for task logs.")
+    plan.add_argument("--python-min", default="3.11", help="Minimum Python version required on workers.")
+    plan.add_argument("--git-min", default="2.38", help="Minimum Git version required on workers.")
+    plan.add_argument("--git-repo", help="Git checkout to pin; defaults to --work-dir.")
+    plan.add_argument("--git-commit", help="Required Git commit; defaults to current HEAD.")
+    plan.add_argument("--require-clean-git", action="store_true", help="Require a clean pinned Git checkout.")
+    plan.add_argument("--progress-unit", help="Unit name for declared task progress, for example rows or games.")
+    plan.add_argument("--progress-total", help="Per-task total for declared progress. Supports templates.")
+    plan.add_argument(
+        "--progress-total-lines",
+        help="Count lines in this file and split the total across generated tasks.",
+    )
+    plan.add_argument(
+        "--progress-log-regex",
+        help="Regex read from task logs. Use named group (?P<done>...), optional total and output.",
+    )
+    plan.add_argument("--progress-output-unit", help="Label for optional (?P<output>...) progress value.")
+    plan.set_defaults(func=cmd_plan)
+
+    add_input = sub.add_parser(
+        "add-input",
+        help="Record input file checksums.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    add_input.add_argument("--manifest", required=True, help="Manifest to update.")
+    add_input.add_argument("--path", action="append", required=True, help="Input file to checksum. Repeatable.")
+    add_input.set_defaults(func=cmd_add_input)
+
+    add_repo = sub.add_parser(
+        "add-repo",
+        help="Record a git checkout requirement.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    add_repo.add_argument("--manifest", required=True, help="Manifest to update.")
+    add_repo.add_argument("--path", required=True, help="Worker-local checkout path.")
+    add_repo.add_argument("--name", help="Human-readable repository label.")
+    add_repo.add_argument("--commit", help="Required commit, short or full SHA.")
+    add_repo.add_argument("--branch", help="Branch to checkout before optional commit pinning.")
+    add_repo.add_argument("--remote", help="Remote to fetch/pull before checkout.")
+    add_repo.add_argument("--require-clean", action="store_true", help="Require a clean worktree.")
+    add_repo.set_defaults(func=cmd_add_repo)
+
+    sync_repos = sub.add_parser(
+        "sync-repos",
+        help="Fetch and checkout declared git requirements.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    sync_repos.add_argument("--manifest", required=True, help="Manifest containing repo requirements.")
+    sync_repos.add_argument("--profile", help="Path-map/profile name for this worker.")
+    sync_repos.set_defaults(func=cmd_sync_repos)
+
+    run = sub.add_parser(
+        "run",
+        help="Run one task by id or index.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    run.add_argument("--manifest", required=True, help="Manifest containing the task.")
+    run.add_argument("--task", help="Task id to run.")
+    run.add_argument("--index", type=int, help="Task index to run.")
+    run.add_argument("--profile", help="Path-map/profile name for this worker.")
+    run.add_argument("--force", action="store_true", help="Re-run even if the task is complete.")
+    run.set_defaults(func=cmd_run)
+
+    claim = sub.add_parser(
+        "claim",
+        help="Atomically claim the next coordinator task.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    claim.add_argument("--manifest", required=True, help="Coordinator manifest.")
+    claim.add_argument("--worker", required=True, help="Worker name for the claim.")
+    claim.add_argument("--profile", help="Profile name recorded with the claim.")
+    claim.add_argument("--lease-seconds", type=int, default=600, help="Claim lease duration before stale.")
+    claim.add_argument("--retry-failed", action="store_true", help="Allow failed tasks to be claimed again.")
+    claim.add_argument("--json", action="store_true", help="Print claim payload as JSON.")
+    claim.set_defaults(func=cmd_claim)
+
+    release = sub.add_parser(
+        "release",
+        help="Release coordinator task claims.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    release.add_argument("--manifest", required=True, help="Coordinator manifest.")
+    release.add_argument("--task", help="Task id whose claim should be released.")
+    release.add_argument("--worker", help="Expected worker owner, or worker whose reserved claims should be released.")
+    release.add_argument("--claim-id", help="Expected claim id.")
+    release.add_argument("--count", type=int, default=0, help="Maximum worker claims to release; 0 releases all reserved claims.")
+    release.add_argument("--lease-seconds", type=int, default=600, help="Claim lease duration before stale.")
+    release.set_defaults(func=cmd_release)
+
+    heartbeat = sub.add_parser(
+        "heartbeat",
+        help="Refresh a coordinator task claim heartbeat.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    heartbeat.add_argument("--manifest", required=True, help="Coordinator manifest.")
+    heartbeat.add_argument("--task", required=True, help="Task id to refresh.")
+    heartbeat.add_argument("--worker", required=True, help="Expected worker owner.")
+    heartbeat.add_argument("--claim-id", help="Expected claim id.")
+    heartbeat.add_argument("--progress-json", help="Optional JSON progress object to store with the heartbeat.")
+    heartbeat.add_argument("--running", action="store_true", help="Mark the task as running on the coordinator.")
+    heartbeat.set_defaults(func=cmd_heartbeat)
+
+    work = sub.add_parser(
+        "work",
+        help="Claim, run, sync, and repeat worker tasks.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    work.add_argument("--manifest", required=True, help="Worker-local manifest copy.")
+    work.add_argument(
+        "--coordinator",
+        required=True,
+        help="Coordinator manifest path, either /path/manifest.json or host:/path/manifest.json.",
+    )
+    work.add_argument("--profile", help="Path-map/profile name for this worker.")
+    work.add_argument("--worker", default=socket.gethostname(), help="Worker name recorded in claims.")
+    work.add_argument("--lease-seconds", type=int, default=600, help="Claim lease duration before stale.")
+    work.add_argument("--max-tasks", type=int, default=0, help="Maximum tasks to run; 0 means until no work remains.")
+    work.add_argument("--idle-seconds", type=float, default=0.0, help="Wait this long for more coordinator work after a no-claim result.")
+    work.add_argument("--retry-failed", action="store_true", help="Allow failed tasks to be claimed again.")
+    work.add_argument("--force", action="store_true", help="Re-run tasks even if local state says complete.")
+    work.add_argument("--fail-fast", action="store_true", help="Stop after the first task failure.")
+    work.set_defaults(func=cmd_work)
+
+    doctor = sub.add_parser(
+        "doctor",
+        help="Check host prerequisites for a manifest.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    doctor.add_argument("--manifest", required=True, help="Manifest to validate.")
+    doctor.add_argument("--profile", help="Path-map/profile name for this host.")
+    doctor.add_argument("--role", choices=["worker", "coordinator"], default="worker", help="Host role to validate.")
+    doctor.add_argument("--notify-command", help="Coordinator notification command to check.")
+    doctor.set_defaults(func=cmd_doctor)
+
+    status = sub.add_parser(
+        "status",
+        help="Show run or task status.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    status.add_argument(
+        "run",
+        nargs="?",
+        help="Run name or run directory. Omit to show active runs.",
+    )
+    status.add_argument("-v", "--verbose", action="store_true", help="Show one row per task.")
+    status.add_argument("--show-done", action="store_true", help="Show completed task breakdown for one run.")
+    status.add_argument("--all", action="store_true", help="Show all runs, including completed runs.")
+    status.add_argument("--done", action="store_true", help="Show completed runs only.")
+    status.add_argument("--failed", action="store_true", help="Show runs with failed tasks only.")
+    status.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    status.add_argument("--no-color", action="store_true", help="Disable ANSI color output.")
+    status.add_argument(
+        "--lease-seconds",
+        type=int,
+        default=600,
+        help="Seconds before a claimed task is considered stale. Default: 600.",
+    )
+    status.set_defaults(func=cmd_status)
+
+    wait = sub.add_parser(
+        "wait",
+        help="Wait until coordinator tasks finish.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    wait.add_argument("--manifest", required=True, help="Coordinator manifest.")
+    wait.add_argument("--profile", help="Path-map/profile name for this host.")
+    wait.add_argument("--lease-seconds", type=int, default=600, help="Claim lease duration before stale.")
+    wait.add_argument("--interval-seconds", type=float, default=30.0, help="Polling interval.")
+    wait.add_argument("--timeout-seconds", type=float, default=0.0, help="Overall timeout; 0 means no timeout.")
+    wait.add_argument("--fail-on-fail", action=argparse.BooleanOptionalAction, default=True, help="Return failure when any task fails.")
+    wait.add_argument("--notify-command", help="Command run on done/fail/timeout with CRUCIBLE_EVENT_JSON and JSON on stdin.")
+    wait.set_defaults(func=cmd_wait)
+
+    verify = sub.add_parser(
+        "verify",
+        help="Verify all run tasks are complete.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    verify.add_argument("run", help="Run name or run directory.")
+    verify.set_defaults(func=cmd_verify)
+
+    merge = sub.add_parser(
+        "merge",
+        help="Concatenate first output from each task.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    merge.add_argument("run", help="Run name or run directory.")
+    merge.add_argument("--output", required=True, help="Merged output path.")
+    merge.add_argument("--force", action="store_true", help="Overwrite an existing merged output.")
+    merge.add_argument("--newline-between", action="store_true", help="Insert a newline between task outputs.")
+    merge.set_defaults(func=cmd_merge)
+
+    stop = sub.add_parser(
+        "stop",
+        help="Request a run stop.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    stop.add_argument("run", nargs="?", help="Run name or run directory to stop.")
+    stop.add_argument("--all", action="store_true", help="Request stop for all current runs.")
+    stop.add_argument("--lease-seconds", type=int, default=600, help="Claim lease duration before stale.")
+    stop.set_defaults(func=cmd_stop)
+
+    drain = sub.add_parser(
+        "drain",
+        help="Stop a worker from claiming more tasks.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    drain.add_argument("run", nargs="?", help="Run name or run directory to drain.")
+    drain.add_argument("--all", action="store_true", help="Drain worker from all current runs.")
+    drain.add_argument("--worker", required=True, help="Worker name to drain.")
+    drain.add_argument("--clear", action="store_true", help="Clear the drain marker and allow new claims.")
+    drain.add_argument("--lease-seconds", type=int, default=600, help="Claim lease duration before stale.")
+    drain.set_defaults(func=cmd_drain)
+
+    delete = sub.add_parser(
+        "del",
+        help="Delete run directories.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    delete.add_argument("run", nargs="?", help="Run name or run directory to delete.")
+    delete.add_argument("--done", action="store_true", help="Delete all completed runs.")
+    delete.add_argument("--force", action="store_true", help="Do not prompt before deleting.")
+    delete.add_argument(
+        "--lease-seconds",
+        type=int,
+        default=600,
+        help="Seconds before a claimed task is considered stale. Default: 600.",
+    )
+    delete.set_defaults(func=cmd_del)
+
+    self_update = sub.add_parser(
+        "self-update",
+        help="Fast-forward the crucible checkout itself.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    self_update.add_argument("--remote", default="origin", help="Git remote to pull from.")
+    self_update.add_argument("--branch", help="Branch to update; defaults to current branch.")
+    self_update.add_argument("--require-clean", action=argparse.BooleanOptionalAction, default=True, help="Require clean worktree before updating.")
+    self_update.add_argument("--json", action="store_true", help="Print version payload as JSON after updating.")
+    self_update.set_defaults(func=cmd_self_update)
+
+    update = sub.add_parser(
+        "update",
+        help="Update workers to the coordinator HEAD.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+        description=(
+            "Update Crucible on workers to the exact commit currently checked "
+            "out by the coordinator. With --all, first fast-forward the "
+            "coordinator from the selected remote/branch, then update workers "
+            "to that new HEAD."
+        ),
+    )
+    update.add_argument("workers", nargs="?", help="workers.json file. Defaults to runs/workers.json, then ./workers.json.")
+    update.add_argument(
+        "--all",
+        action="store_true",
+        help=(
+            "Fast-forward the coordinator first, then update workers to the "
+            "coordinator's new HEAD."
+        ),
+    )
+    update.add_argument("--remote", default="origin", help="Git remote to pull from.")
+    update.add_argument("--branch", default="main", help="Branch to update.")
+    update.add_argument("--require-clean", action=argparse.BooleanOptionalAction, default=True, help="Require clean worktrees before updating.")
+    update.add_argument("--timeout-seconds", type=float, default=300.0, help="Timeout per worker update.")
+    update.set_defaults(func=cmd_update)
+
+    version = sub.add_parser(
+        "version",
+        help="Print crucible version.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    version.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    version.set_defaults(func=cmd_version)
+
+    deploy = sub.add_parser(
+        "deploy",
+        help="Verify workers and run manifest tasks.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    deploy.add_argument("workers", help="workers.json file.")
+    deploy.add_argument("manifest", help="Manifest template to materialize into runs/<name>.")
+    deploy.add_argument("--jobs", type=int, default=4, help="Maximum workers to prepare/run concurrently.")
+    deploy.add_argument("--run", help="Run directory name under runs/. Defaults to manifest name.")
+    deploy.add_argument("--resume", action="store_true", help="Resume an existing materialized run.")
+    deploy.add_argument("--replace", action="store_true", help="Delete and recreate an existing run.")
+    deploy.add_argument("--coordinator-host", help="Coordinator hostname workers should SSH back to.")
+    deploy.add_argument("--remote-timeout-seconds", type=float, default=1800.0, help="Timeout for remote setup/work commands.")
+    deploy.add_argument(
+        "--notify-command",
+        help="Command run on completion with CRUCIBLE_EVENT_JSON and JSON on stdin.",
+    )
+    deploy.add_argument("--no-color", action="store_true", help="Disable ANSI color output.")
+    deploy.add_argument("--verbose", action="store_true", help="Print setup and worker phase details.")
+    deploy.set_defaults(func=cmd_deploy)
+
+    return parser
+
+def main() -> int:
+    parser = build_parser()
+    if len(sys.argv) == 1:
+        parser.print_help()
+        return 0
+    args = parser.parse_args()
+    if args.version or args.version_json:
+        args.json = bool(args.version_json)
+        return cmd_version(args)
+    if getattr(args, "command", None) is None:
+        parser.error("a command is required")
+    if getattr(args, "command", None) == "run" and args.task is None and args.index is None:
+        parser.error("run requires --task or --index")
+    try:
+        return int(args.func(args))
+    except KeyboardInterrupt:
+        print("interrupted", file=sys.stderr, flush=True)
+        return 130

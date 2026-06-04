@@ -32,6 +32,15 @@ class CrucibleTests(unittest.TestCase):
             check=False,
         )
 
+    @contextlib.contextmanager
+    def patch_runs_dir(self, path: Path):
+        with (
+            mock.patch("crucible_lib.core.runs_dir", return_value=path),
+            mock.patch("crucible_lib.status.runs_dir", return_value=path),
+            mock.patch("crucible_lib.workers.runs_dir", return_value=path),
+        ):
+            yield
+
     def test_no_arguments_prints_help(self) -> None:
         result = self.run_cli()
         self.assertEqual("", result.stderr)
@@ -459,15 +468,15 @@ class CrucibleTests(unittest.TestCase):
             claim = {"task": "task_0000", "claim": {"claim_id": "claim-1"}}
 
             with (
-                mock.patch("crucible.check_coordinator_cli"),
-                mock.patch("crucible.check_requirements"),
-                mock.patch("crucible.claim_from_coordinator", side_effect=[None, claim]) as claim_mock,
-                mock.patch("crucible.coordinator_has_claimable_or_active_work", return_value=True),
-                mock.patch("crucible.time.sleep") as sleep_mock,
-                mock.patch("crucible.heartbeat_on_coordinator"),
-                mock.patch("crucible.run_task", return_value=0) as run_task_mock,
-                mock.patch("crucible.sync_task_result"),
-                mock.patch("crucible.release_on_coordinator"),
+                mock.patch("crucible_lib.tasks.check_coordinator_cli"),
+                mock.patch("crucible_lib.tasks.check_requirements"),
+                mock.patch("crucible_lib.tasks.claim_from_coordinator", side_effect=[None, claim]) as claim_mock,
+                mock.patch("crucible_lib.tasks.coordinator_has_claimable_or_active_work", return_value=True),
+                mock.patch("crucible_lib.tasks.time.sleep") as sleep_mock,
+                mock.patch("crucible_lib.tasks.heartbeat_on_coordinator"),
+                mock.patch("crucible_lib.tasks.run_task", return_value=0) as run_task_mock,
+                mock.patch("crucible_lib.tasks.sync_task_result"),
+                mock.patch("crucible_lib.tasks.release_on_coordinator"),
             ):
                 rc = crucible.cmd_work(args)
 
@@ -596,7 +605,7 @@ class CrucibleTests(unittest.TestCase):
                 fail_on_fail=True,
                 notify_command="notify-me",
             )
-            with mock.patch("crucible.run_notify_command", capture_notify):
+            with mock.patch("crucible_lib.status.run_notify_command", capture_notify):
                 stdout = io.StringIO()
                 with contextlib.redirect_stdout(stdout):
                     rc = crucible.cmd_wait(args)
@@ -652,7 +661,7 @@ class CrucibleTests(unittest.TestCase):
                 fail_on_fail=True,
                 notify_command="notify-me",
             )
-            with mock.patch("crucible.run_notify_command", capture_notify):
+            with mock.patch("crucible_lib.status.run_notify_command", capture_notify):
                 stdout = io.StringIO()
                 with contextlib.redirect_stdout(stdout):
                     rc = crucible.cmd_wait(args)
@@ -1336,7 +1345,7 @@ class CrucibleTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            with mock.patch("crucible.runs_dir", return_value=runs):
+            with self.patch_runs_dir(runs):
                 stdout = io.StringIO()
                 with contextlib.redirect_stdout(stdout):
                     rc = crucible.cmd_status(
@@ -1466,7 +1475,7 @@ class CrucibleTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            with mock.patch("crucible.runs_dir", return_value=runs):
+            with self.patch_runs_dir(runs):
                 stdout = io.StringIO()
                 with contextlib.redirect_stdout(stdout):
                     rc = crucible.cmd_status(
@@ -1578,7 +1587,7 @@ class CrucibleTests(unittest.TestCase):
                 stderr="",
             )
             with (
-                mock.patch("crucible.runs_dir", return_value=runs),
+                self.patch_runs_dir(runs),
                 mock.patch("crucible.subprocess.run", return_value=remote_result) as run_mock,
             ):
                 stdout = io.StringIO()
@@ -1638,7 +1647,7 @@ class CrucibleTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            with mock.patch("crucible.runs_dir", return_value=runs):
+            with self.patch_runs_dir(runs):
                 stdout = io.StringIO()
                 with contextlib.redirect_stdout(stdout):
                     rc = crucible.cmd_status(
@@ -1703,7 +1712,7 @@ class CrucibleTests(unittest.TestCase):
             )
             (logs / "task_1.log").write_text("[1/2 500/1000]\n", encoding="utf-8")
 
-            with mock.patch("crucible.runs_dir", return_value=runs), mock.patch("crucible.epoch", return_value=1100.0):
+            with self.patch_runs_dir(runs), mock.patch("crucible_lib.status.epoch", return_value=1100.0):
                 stdout = io.StringIO()
                 with contextlib.redirect_stdout(stdout):
                     rc = crucible.cmd_status(
@@ -1775,7 +1784,7 @@ class CrucibleTests(unittest.TestCase):
             )
             (logs / "task_1.log").write_text("", encoding="utf-8")
 
-            with mock.patch("crucible.runs_dir", return_value=runs), mock.patch("crucible.epoch", return_value=1001.0):
+            with self.patch_runs_dir(runs), mock.patch("crucible_lib.status.epoch", return_value=1001.0):
                 stdout = io.StringIO()
                 with contextlib.redirect_stdout(stdout):
                     rc = crucible.cmd_status(
@@ -1820,7 +1829,7 @@ class CrucibleTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            with mock.patch("crucible.runs_dir", return_value=runs):
+            with self.patch_runs_dir(runs):
                 stdout = io.StringIO()
                 with contextlib.redirect_stdout(stdout):
                     rc = crucible.cmd_status(
@@ -1854,7 +1863,7 @@ class CrucibleTests(unittest.TestCase):
             }
             (run_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
 
-            with mock.patch("crucible.runs_dir", return_value=runs):
+            with self.patch_runs_dir(runs):
                 stop = crucible.cmd_stop(argparse.Namespace(run="active", all=False, lease_seconds=600))
                 self.assertEqual(0, stop)
                 result = crucible.claim_task(
@@ -1886,7 +1895,7 @@ class CrucibleTests(unittest.TestCase):
             }
             (run_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
 
-            with mock.patch("crucible.runs_dir", return_value=runs):
+            with self.patch_runs_dir(runs):
                 drain = crucible.cmd_drain(
                     argparse.Namespace(run="active", all=False, worker="worker-a", clear=False, lease_seconds=600)
                 )
@@ -2009,7 +2018,7 @@ class CrucibleTests(unittest.TestCase):
             }
             (run_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
 
-            with mock.patch("crucible.runs_dir", return_value=runs):
+            with self.patch_runs_dir(runs):
                 rc = crucible.cmd_del(argparse.Namespace(run=None, done=True, force=True, lease_seconds=600))
 
             self.assertEqual(0, rc)
@@ -2261,12 +2270,14 @@ class CrucibleTests(unittest.TestCase):
             subprocess.run(["git", "add", "crucible.py"], cwd=repo, check=True)
             subprocess.run(["git", "commit", "-m", "test"], cwd=repo, check=True, stdout=subprocess.DEVNULL)
 
-            original_file = crucible.__file__
+            import crucible_lib.core as crucible_core
+
+            original_file = crucible_core.__file__
             try:
-                crucible.__file__ = str(repo / "crucible.py")
+                crucible_core.__file__ = str(repo / "crucible.py")
                 payload = crucible.crucible_version_payload()
             finally:
-                crucible.__file__ = original_file
+                crucible_core.__file__ = original_file
 
             self.assertEqual("develop", payload["branch"])
             self.assertEqual("origin", payload["remote"])
@@ -2288,9 +2299,11 @@ class CrucibleTests(unittest.TestCase):
             subprocess.run(["git", "commit", "-m", "two"], cwd=source, check=True, stdout=subprocess.DEVNULL)
             expected = subprocess.check_output(["git", "-C", str(source), "rev-parse", "HEAD"], text=True).strip()
 
-            original_file = crucible.__file__
+            import crucible_lib.core as crucible_core
+
+            original_file = crucible_core.__file__
             try:
-                crucible.__file__ = str(clone / "crucible.py")
+                crucible_core.__file__ = str(clone / "crucible.py")
                 stdout = io.StringIO()
                 with contextlib.redirect_stdout(stdout):
                     rc = crucible.cmd_self_update(
@@ -2302,7 +2315,7 @@ class CrucibleTests(unittest.TestCase):
                         )
                     )
             finally:
-                crucible.__file__ = original_file
+                crucible_core.__file__ = original_file
             self.assertEqual(0, rc)
             head = subprocess.check_output(["git", "-C", str(clone), "rev-parse", "HEAD"], text=True).strip()
             self.assertEqual(expected, head)
@@ -2327,7 +2340,7 @@ class CrucibleTests(unittest.TestCase):
                 stdout="crucible abc main\n",
                 stderr="",
             )
-            with mock.patch("crucible.run_worker_shell", return_value=result) as run_mock:
+            with mock.patch("crucible_lib.workers.run_worker_shell", return_value=result) as run_mock:
                 stdout = io.StringIO()
                 with contextlib.redirect_stdout(stdout):
                     rc = crucible.cmd_update(
@@ -2370,8 +2383,8 @@ class CrucibleTests(unittest.TestCase):
                 stderr="",
             )
             with (
-                mock.patch("crucible.runs_dir", return_value=runs),
-                mock.patch("crucible.run_worker_shell", return_value=result) as run_mock,
+                self.patch_runs_dir(runs),
+                mock.patch("crucible_lib.workers.run_worker_shell", return_value=result) as run_mock,
             ):
                 rc = crucible.cmd_update(
                     argparse.Namespace(
@@ -2396,7 +2409,7 @@ class CrucibleTests(unittest.TestCase):
     def test_check_coordinator_cli_fails_early(self) -> None:
         result = subprocess.CompletedProcess(["ssh"], 127, stdout="", stderr="crucible not found")
 
-        with mock.patch("crucible.run_coordinator_cli", return_value=result):
+        with mock.patch("crucible_lib.tasks.run_coordinator_cli", return_value=result):
             with self.assertRaises(SystemExit) as raised:
                 crucible.check_coordinator_cli("pwa-5090:/tmp/manifest.json")
 
@@ -2583,7 +2596,7 @@ class CrucibleTests(unittest.TestCase):
                 verbose=False,
             )
             with (
-                mock.patch("crucible.runs_dir", return_value=runs),
+                self.patch_runs_dir(runs),
                 mock.patch("crucible.ProcessTracker.run", return_value=subprocess.CompletedProcess(["sh"], 0, stdout="", stderr="")),
             ):
                 stdout = io.StringIO()
@@ -2653,9 +2666,9 @@ class CrucibleTests(unittest.TestCase):
                 verbose=False,
             )
             with (
-                mock.patch("crucible.runs_dir", return_value=runs),
+                self.patch_runs_dir(runs),
                 mock.patch("crucible.ProcessTracker.run", return_value=subprocess.CompletedProcess(["sh"], 0, stdout="", stderr="")),
-                mock.patch("crucible.run_notify_command", capture_notify),
+                mock.patch("crucible_lib.workers.run_notify_command", capture_notify),
             ):
                 stdout = io.StringIO()
                 with contextlib.redirect_stdout(stdout):
