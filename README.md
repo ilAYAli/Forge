@@ -3,8 +3,7 @@
 Crucible distributes manifest-defined work across a private set of workers.
 
 The coordinator prepares workers, syncs declared prerequisites and inputs,
-starts worker loops, tracks task state, and collects outputs. The work can be
-CPU-bound, I/O-bound, GPU-bound, or just setup/probe commands. Crucible is
+starts worker loops, tracks task state, and collects outputs. Crucible is
 repo-agnostic; the manifest defines the work, and the workers file defines
 where it may run.
 
