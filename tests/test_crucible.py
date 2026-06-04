@@ -939,7 +939,12 @@ class CrucibleTests(unittest.TestCase):
                     {"id": "task_0", "index": 0, "command": "true", "outputs": [str(root / "out0.txt")]},
                     {"id": "task_1", "index": 1, "command": "true", "outputs": [str(root / "out1.txt")]},
                     {"id": "task_2", "index": 2, "command": "true", "outputs": [str(root / "out2.txt")]},
-                    {"id": "task_3", "index": 3, "command": "true", "outputs": [str(root / "out3.txt")]},
+                    {
+                        "id": "task_3",
+                        "index": 3,
+                        "command": "/venv/bin/python /repo/tools/score/score.py uci --depth 16",
+                        "outputs": [str(root / "out3.txt")],
+                    },
                 ]
             }
             manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
@@ -993,7 +998,7 @@ class CrucibleTests(unittest.TestCase):
             self.assertNotIn("host-done [1]: 0", compact.stdout)
             self.assertIn("worker-claimed task=1 [subtask=42/1000]", compact.stdout)
             self.assertIn("host-fail [1]: 2", compact.stdout)
-            self.assertIn("pending: 1\n  3", compact.stdout)
+            self.assertIn('pending: 1\n  "score:uci" [1]: 3', compact.stdout)
 
             result = self.run_cli("status", str(root), "--verbose")
             self.assertEqual(1, result.returncode)
@@ -1146,6 +1151,29 @@ class CrucibleTests(unittest.TestCase):
             self.assertIn('worker-a "score:uci" task=0', status.stdout)
             self.assertIn('worker-b [claimed] "score:uci" task=1', status.stdout)
             self.assertIn('worker-c [stale] "score:uci" task=2', status.stdout)
+
+    def test_pending_status_groups_by_label(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest_path = root / "manifest.json"
+            manifest = {
+                "schema": "crucible.task.v1",
+                "name": "pending-labels",
+                "work_dir": str(root),
+                "state_dir": str(root / "state"),
+                "log_dir": str(root / "logs"),
+                "tasks": [
+                    {"id": "task_0", "index": 0, "label": "score:uci", "command": "true", "outputs": []},
+                    {"id": "task_1", "index": 1, "label": "label:uci", "command": "true", "outputs": []},
+                    {"id": "task_2", "index": 2, "command": "true", "outputs": []},
+                    {"id": "task_3", "index": 3, "command": "true", "outputs": []},
+                ],
+            }
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+            status = self.run_cli("status", str(root))
+            self.assertEqual(0, status.returncode)
+            self.assertIn('pending: 4\n  "label:uci" [1]: 1\n  "score:uci" [1]: 0\n  unlabeled [2]: 2-3', status.stdout)
 
     def test_status_uses_runs_directory(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

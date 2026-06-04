@@ -2784,6 +2784,7 @@ def status_summary(manifest: dict[str, Any], *, lease_seconds: int) -> dict[str,
     }
     active: list[dict[str, Any]] = []
     pending: list[int | str] = []
+    pending_groups: dict[str, list[int | str]] = {}
     progress_totals: dict[str, int] = {}
     progress_done: dict[str, int] = {}
     completed_units: dict[str, int] = {}
@@ -2846,6 +2847,7 @@ def status_summary(manifest: dict[str, Any], *, lease_seconds: int) -> dict[str,
             active.append(row)
         elif state == "pending":
             pending.append(index)
+            pending_groups.setdefault(row["label"], []).append(index)
 
     return {
         "tasks": len(manifest["tasks"]),
@@ -2854,6 +2856,7 @@ def status_summary(manifest: dict[str, Any], *, lease_seconds: int) -> dict[str,
         "groups": groups,
         "active": active,
         "pending": pending,
+        "pending_groups": pending_groups,
         "rows": rows,
         "progress_totals": progress_totals,
         "progress_done": progress_done,
@@ -2905,6 +2908,19 @@ def print_status_group(title: str, groups: dict[str, list[int | str]], *, color_
         print(f"  {worker} [{len(values)}]: {format_status_values(values)}")
 
 
+def print_pending_status(summary: dict[str, Any], *, color_enabled: bool) -> None:
+    if not summary["pending"]:
+        return
+    print(colorize(f"pending: {len(summary['pending'])}", "yellow", enabled=color_enabled))
+    groups = summary.get("pending_groups")
+    if not isinstance(groups, dict) or not groups:
+        print(f"  {format_status_values(summary['pending'])}")
+        return
+    for label, values in sorted(groups.items(), key=lambda item: (not item[0], item[0])):
+        label_text = json.dumps(label) if label else "unlabeled"
+        print(f"  {label_text} [{len(values)}]: {format_status_values(values)}")
+
+
 def active_status_sort_key(row: dict[str, Any]) -> tuple[int, float, tuple[bool, int | str]]:
     state = str(row.get("state") or "")
     if state in {"claimed", "stale"}:
@@ -2943,9 +2959,7 @@ def print_status_details(
             )
             print(f"  {worker}{state}{label} task={row['index']}{progress}")
     print_status_group("fail", summary["groups"]["fail"], color_enabled=color_enabled)
-    if summary["pending"]:
-        print(colorize(f"pending: {len(summary['pending'])}", "yellow", enabled=color_enabled))
-        print(f"  {format_status_values(summary['pending'])}")
+    print_pending_status(summary, color_enabled=color_enabled)
 
 
 def print_compact_status(
