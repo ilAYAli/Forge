@@ -458,8 +458,8 @@ def print_run_status(
         fields = [
             f"{summary['run']:<36} "
             f"{colorize(state, state_color, enabled=color_enabled)}",
-            *run_metadata_fields(summary),
             f"tasks={counts['done']}/{summary['tasks']}",
+            *run_metadata_fields(summary),
             f"active={active}",
             f"running={counts['running']}",
             f"claimed={counts['claimed']}",
@@ -951,8 +951,8 @@ def print_compact_status(
 ) -> None:
     counts = summary["counts"]
     fields = [
-        *run_metadata_fields(summary),
         f"tasks={counts['done']}/{summary['tasks']}",
+        *run_metadata_fields(summary),
         f"active={summary['active_count']}",
         f"running={counts['running']}",
         f"claimed={counts['claimed']}",

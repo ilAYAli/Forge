@@ -129,6 +129,7 @@ class CrucibleTests(unittest.TestCase):
             self.assertIn("tasks=3/3", status.stdout)
             self.assertIn("kind=sprt", status.stdout)
             self.assertIn("desc=native check", status.stdout)
+            self.assertRegex(status.stdout.splitlines()[1], r"^tasks=3/3 kind=sprt desc=native check")
 
             merged = root / "merged.txt"
             merge = self.run_cli(
@@ -1458,6 +1459,7 @@ class CrucibleTests(unittest.TestCase):
                 self.assertEqual(0, rc)
                 status_text = stdout.getvalue()
                 self.assertIn("main", status_text)
+                self.assertRegex(status_text, r"main\s+current tasks=0/1")
                 self.assertNotIn("bonus", status_text)
                 self.assertNotIn("setup", status_text)
                 self.assertNotIn("nnue-selfplay", status_text)
