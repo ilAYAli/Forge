@@ -1,24 +1,27 @@
 # Crucible
 
-Small coordinator/worker runner for deterministic CPU/IO-heavy tasks.
+Crucible distributes manifest-defined work across a private set of workers.
 
-`crucible` is repo-agnostic. A manifest declares prerequisites and optional
-task shards. A workers file declares where to run them.
+The coordinator prepares workers, syncs declared prerequisites and inputs,
+starts worker loops, tracks task state, and collects outputs. The work can be
+CPU-bound, I/O-bound, GPU-bound, or just setup/probe commands. Crucible is
+repo-agnostic; the manifest defines the work, and the workers file defines
+where it may run.
 
 ## Suitable Use
 
-Crucible is meant for private, deterministic fan-out across machines you
-control. It is a good fit for:
+Use Crucible when you have machines you control and want one command to fan out
+repeatable work across them. It is a good fit for:
 
-- fixed-size independent batch work;
-- data generation, transformation, validation, or aggregation;
-- repository/toolchain sync before distributed work;
-- CPU/IO-heavy tasks with declared inputs and outputs.
+- independent tasks that can run in parallel;
+- setup-only jobs such as syncing repos, building tools, installing binaries, or
+  running probes;
+- data generation, transformation, validation, and result collection;
+- private experiment loops where you want reproducible inputs, logs, task
+  state, and outputs in one run directory.
 
-It is not a replacement for public test infrastructure when you need community
-workers, long-term public result history, or standardized tournament
-administration. Crucible is the fast private loop; larger public infrastructure
-is still useful when you need independent external validation.
+Crucible does not provision machines, run a public worker pool, or administer
+public tournaments. It coordinates the workers you list in `workers.json`.
 
 ## Quick Start
 
@@ -38,11 +41,12 @@ crucible deploy workers.json manifest.json --run my-run
 ```
 
 `deploy` creates `runs/<run>/`, writes the materialized `manifest.json` and
-`workers.json` there, copies the current runner and declared input files to
-each worker, runs repository sync/build/install/probe requirements, runs
-`doctor`, then starts worker loops for task shards. Workers need Python, Git,
-SSH/rsync, and the toolchain required by the manifest. Workers do not need
-`crucible` installed.
+`workers.json` there, copies the current runner package and declared input
+files to each worker, runs repository sync/build/install/probe requirements,
+runs `doctor`, then starts worker loops. Workers need Python, Git, SSH/rsync,
+and the toolchain required by the manifest. Workers do not need `crucible`
+installed.
+
 Default output is an ordered per-worker summary. Use `--verbose` for live phase
 details. TTY output is colored by default; use `--no-color` to disable it.
 
@@ -119,9 +123,9 @@ If workers use different paths, add `path_maps` and set matching worker
 profiles. If `tasks` is empty, `deploy` reports `setup complete` after
 prerequisites are verified.
 
-## Shard Tasks
+## Tasks
 
-Use `plan` for simple numbered shards:
+Use `plan` for simple numbered tasks:
 
 ```sh
 crucible plan \
@@ -135,41 +139,37 @@ crucible plan \
   --output-template '~/work/project/out/shard.{index}.txt'
 ```
 
-Useful run commands:
+## Daily Commands
 
 ```sh
-crucible status               # active runs in runs/
-crucible status --all         # all runs, including completed runs
-crucible status --done        # completed runs
-crucible status --failed      # failed runs
-crucible status my-run        # detailed status for one run
-crucible status my-run -v     # one row per task
+crucible --help
+crucible deploy workers.json manifest.json --run my-run
+crucible status
+watch -n 2 'crucible status --verbose'
 crucible wait --manifest runs/my-run/manifest.json --notify-command ./notify
-                              # wait for terminal state and emit one JSON event
-crucible verify my-run        # require every task to be done
-crucible merge my-run --output merged.txt
-crucible stop my-run          # ask workers to stop this run
-crucible drain my-run --worker worker-a
-                              # let current task finish, then stop new claims
-crucible drain my-run --worker worker-a --clear
-                              # allow that worker to claim again
-crucible release --manifest runs/my-run/manifest.json --worker worker-a
-                              # release that worker's reserved, non-running claims
-crucible update               # update workers to this coordinator commit
-crucible update --all         # update coordinator, then workers
-crucible del my-run           # delete one run directory
-crucible del --done           # delete completed run directories
+crucible update
 ```
 
-`status` without a run name summarizes active runs in `runs/`. `status <run>` shows detailed
-task state for one run. Template manifests under `examples/` are deploy inputs,
-not runnable jobs. The default view shows counts, active tasks, failed/stale
-tasks, and compressed pending ranges. Use `--kind` for the run type shown in
-summary status, and `--task-label` for the per-task label shown in detailed
-status. Both are opaque user metadata; Crucible does not attach domain meaning
-to them. Use `--all`, `--done`, or `--failed` to change the run filter. Use
-`--show-done` for completed task breakdowns by worker, or `--verbose` for the
-full task table.
+For everything else, use subcommand help:
+
+```sh
+crucible status --help
+crucible deploy --help
+crucible plan --help
+crucible verify --help
+crucible merge --help
+crucible stop --help
+```
+
+`status` without a run name summarizes active runs in `runs/`. `status <run>`
+shows one run. The default view shows task counts, active tasks, failed/stale
+tasks, and compressed pending ranges. Use `--verbose` for the full task table.
+Use `--all`, `--done`, or `--failed` to change which runs are listed. Use
+`--show-done` when you want completed task breakdowns by worker.
+
+`--kind` is a run label shown in summary status. `--task-label` is a per-task
+label shown in detailed status. Both are plain user metadata; Crucible does not
+attach domain meaning to them.
 
 Put a coordinator pointer in `runs/coordinator` on non-coordinator hosts to make
 `crucible status` read the coordinator's run state by default:
