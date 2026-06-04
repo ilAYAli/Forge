@@ -129,6 +129,8 @@ Use `plan` for simple numbered shards:
 ```sh
 crucible plan \
   --name score \
+  --kind score \
+  --task-label score \
   --shards 24 \
   --work-dir ~/work/project \
   --out run.manifest.json \
@@ -163,9 +165,11 @@ crucible del --done           # delete completed run directories
 `status` without a run name summarizes active runs in `runs/`. `status <run>` shows detailed
 task state for one run. Template manifests under `examples/` are deploy inputs,
 not runnable jobs. The default view shows counts, active tasks, failed/stale
-tasks, and compressed pending ranges. Use `--all`, `--done`, or `--failed` to
-change the run filter. Use `--show-done` for completed task
-breakdowns by worker, or `--verbose` for the full task table.
+tasks, and compressed pending ranges. Use `--kind` for the run type shown in
+summary status, and `--task-label` for the per-task label shown in detailed
+status. Use `--all`, `--done`, or `--failed` to change the run filter. Use
+`--show-done` for completed task breakdowns by worker, or `--verbose` for the
+full task table.
 
 Put a coordinator pointer in `runs/coordinator` on non-coordinator hosts to make
 `crucible status` read the coordinator's run state by default:

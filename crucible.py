@@ -121,6 +121,60 @@ def manifest_metadata(manifest: dict[str, Any]) -> dict[str, str]:
     return metadata
 
 
+def task_display_label(manifest: dict[str, Any], task: dict[str, Any]) -> str:
+    explicit = clean_manifest_text(task.get("label"), label=f"{task.get('id', 'task')}.label")
+    if explicit:
+        return explicit
+    manifest_kind = clean_manifest_text(manifest.get("kind"), label="kind")
+    if manifest_kind:
+        return manifest_kind
+    return infer_task_label(task)
+
+
+def infer_task_label(task: dict[str, Any]) -> str:
+    unlabeled_commands = {
+        "bash",
+        "cat",
+        "echo",
+        "env",
+        "false",
+        "printf",
+        "sh",
+        "timeout",
+        "true",
+        "zsh",
+    }
+    command = task.get("command")
+    if not isinstance(command, str) or not command.strip():
+        return ""
+    try:
+        parts = shlex.split(command)
+    except ValueError:
+        return ""
+    if not parts:
+        return ""
+
+    index = 0
+    first = Path(parts[0]).name
+    is_python = first.startswith("python")
+    if is_python and len(parts) > 1:
+        index = 1
+
+    name = Path(parts[index]).name
+    if not is_python and name in unlabeled_commands:
+        return ""
+    if name.endswith(".py"):
+        name = name[:-3]
+    elif is_python:
+        return ""
+    if not name:
+        return ""
+
+    if index + 1 < len(parts) and not parts[index + 1].startswith("-"):
+        return f"{name}:{parts[index + 1]}"
+    return name
+
+
 def run_dir_for_name(name: str) -> Path:
     return runs_dir() / validate_run_name(name)
 
@@ -1351,6 +1405,7 @@ def cmd_plan(args: argparse.Namespace) -> int:
     logs = expand_path(args.log_dir) if args.log_dir else out.parent / "logs"
     kind = clean_manifest_text(args.kind, label="--kind")
     description = clean_manifest_text(args.description, label="--description")
+    task_label = clean_manifest_text(args.task_label, label="--task-label")
     vars_obj: dict[str, str] = {}
     for item in args.var:
         key, sep, value = item.partition("=")
@@ -1411,6 +1466,11 @@ def cmd_plan(args: argparse.Namespace) -> int:
             "command": args.command_template,
             "outputs": outputs,
         }
+        if task_label:
+            task["label"] = clean_manifest_text(
+                task_label.format(**format_vars),
+                label=f"{task_id}.label",
+            )
         if progress_enabled:
             progress: dict[str, Any] = {
                 "log_regex": str(args.progress_log_regex),
@@ -1886,7 +1946,7 @@ def cmd_status(args: argparse.Namespace) -> int:
     )
     if args.verbose:
         for row in summary["rows"]:
-            print(f"{row['id']}\t{row['state']}\t{row['worker']}")
+            print(f"{row['id']}\t{row['state']}\t{row['worker']}\t{row.get('label', '')}")
     return 0 if summary["counts"]["fail"] == 0 else 1
 
 
@@ -2686,6 +2746,7 @@ def status_summary(manifest: dict[str, Any], *, lease_seconds: int) -> dict[str,
         row = {
             "id": task["id"],
             "index": index,
+            "label": task_display_label(manifest, task),
             "state": state,
             "worker": worker,
             "progress": progress,
@@ -2771,9 +2832,10 @@ def print_status_details(
         print(colorize("active:", "yellow", enabled=color_enabled))
         for row in sorted(summary["active"], key=lambda item: status_value_key(item["index"])):
             progress = f" [{row['progress']}]" if row.get("progress") else ""
+            label = f" {row['label']}" if row.get("label") else ""
             worker = row["worker"] or "unknown"
             state = colorize(str(row["state"]), status_color(str(row["state"])), enabled=color_enabled)
-            print(f"  {worker} {state}: task={row['index']}{progress}")
+            print(f"  {worker} {state}: task={row['index']}{label}{progress}")
     print_status_group("fail", summary["groups"]["fail"], color_enabled=color_enabled)
     print_status_group("stale", summary["groups"]["stale"], color_enabled=color_enabled)
     if summary["pending"]:
@@ -3721,6 +3783,10 @@ def build_parser() -> argparse.ArgumentParser:
     plan.add_argument("--name", required=True, help="Run name stored in the manifest.")
     plan.add_argument("--kind", help="Short run type shown in status, for example sprt or selfplay.")
     plan.add_argument("--description", help="Short single-line run description shown in status.")
+    plan.add_argument(
+        "--task-label",
+        help="Short per-task label shown in detailed status. Supports templates.",
+    )
     plan.add_argument(
         "--tasks", "--shards",
         dest="shards",

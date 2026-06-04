@@ -92,6 +92,7 @@ class CrucibleTests(unittest.TestCase):
                 "--name", "test",
                 "--kind", "sprt",
                 "--description", "native check",
+                "--task-label", "sprt-game",
                 "--shards", "3",
                 "--work-dir", str(root),
                 "--out", str(manifest),
@@ -103,6 +104,7 @@ class CrucibleTests(unittest.TestCase):
             manifest_payload = json.loads(manifest.read_text(encoding="utf-8"))
             self.assertEqual("sprt", manifest_payload["kind"])
             self.assertEqual("native check", manifest_payload["description"])
+            self.assertEqual("sprt-game", manifest_payload["tasks"][0]["label"])
 
             add = self.run_cli("add-input", "--manifest", str(manifest), "--path", str(root / "input.txt"))
             self.assertEqual(0, add.returncode)
@@ -880,6 +882,46 @@ class CrucibleTests(unittest.TestCase):
             self.assertEqual(1, payload["active_count"])
             self.assertEqual([0], payload["groups"]["done"]["host-done"])
             self.assertEqual("subtask=42/1000", payload["active"][0]["progress"])
+            self.assertEqual("", payload["active"][0]["label"])
+
+    def test_status_infers_python_subcommand_task_label(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest_path = root / "manifest.json"
+            manifest = {
+                "schema": "crucible.task.v1",
+                "name": "test",
+                "work_dir": str(root),
+                "state_dir": str(root / "state"),
+                "log_dir": str(root / "logs"),
+                "claim_dir": str(root / "claims"),
+                "tasks": [
+                    {
+                        "id": "task_0",
+                        "index": 0,
+                        "command": "/venv/bin/python /repo/tools/score/score.py uci --depth 16",
+                        "outputs": [str(root / "out0.txt")],
+                    },
+                ],
+            }
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            (root / "state").mkdir()
+            claim_dir = root / "claims" / "task_0.claim"
+            claim_dir.mkdir(parents=True)
+            (claim_dir / "claim.json").write_text(json.dumps({
+                "task": "task_0",
+                "worker": "worker-a",
+                "claimed_at": "2023-01-01T00:00:00Z",
+            }))
+            (root / "state" / "task_0.running.json").write_text(json.dumps({
+                "task": "task_0",
+                "host": "host-a",
+                "started_at": "2023-01-01T00:00:00Z",
+            }))
+
+            status = self.run_cli("status", str(root))
+            self.assertEqual(0, status.returncode)
+            self.assertIn("worker-a running: task=0 score:uci", status.stdout)
 
     def test_status_uses_runs_directory(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
