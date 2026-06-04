@@ -884,6 +884,77 @@ class CrucibleTests(unittest.TestCase):
             self.assertEqual("subtask=42/1000", payload["active"][0]["progress"])
             self.assertEqual("", payload["active"][0]["label"])
 
+    def test_status_sorts_active_tasks_by_completeness(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest_path = root / "manifest.json"
+            state = root / "state"
+            logs = root / "logs"
+            claims = root / "claims"
+            state.mkdir()
+            logs.mkdir()
+            manifest = {
+                "schema": "crucible.task.v1",
+                "name": "test",
+                "work_dir": str(root),
+                "state_dir": str(state),
+                "log_dir": str(logs),
+                "claim_dir": str(claims),
+                "tasks": [
+                    {
+                        "id": "task_0",
+                        "index": 0,
+                        "command": "true",
+                        "outputs": [],
+                        "progress": {
+                            "unit": "rows",
+                            "total": 100,
+                            "log_regex": r"done=(?P<done>\d+)/(?P<total>\d+)",
+                        },
+                    },
+                    {
+                        "id": "task_1",
+                        "index": 1,
+                        "command": "true",
+                        "outputs": [],
+                        "progress": {
+                            "unit": "rows",
+                            "total": 100,
+                            "log_regex": r"done=(?P<done>\d+)/(?P<total>\d+)",
+                        },
+                    },
+                    {"id": "task_2", "index": 2, "command": "true", "outputs": []},
+                ],
+            }
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            for task_id, worker in [
+                ("task_0", "worker-low"),
+                ("task_1", "worker-high"),
+                ("task_2", "worker-none"),
+            ]:
+                claim_dir = claims / f"{task_id}.claim"
+                claim_dir.mkdir(parents=True)
+                (claim_dir / "claim.json").write_text(json.dumps({
+                    "task": task_id,
+                    "worker": worker,
+                    "claimed_at": "2023-01-01T00:00:00Z",
+                }))
+                (state / f"{task_id}.running.json").write_text(json.dumps({
+                    "task": task_id,
+                    "host": worker,
+                    "started_at": "2023-01-01T00:00:00Z",
+                }))
+            (logs / "task_0.log").write_text("done=10/100\n", encoding="utf-8")
+            (logs / "task_1.log").write_text("done=80/100\n", encoding="utf-8")
+
+            status = self.run_cli("status", str(root))
+            self.assertEqual(0, status.returncode)
+            high = status.stdout.index("worker-high running: task=1")
+            low = status.stdout.index("worker-low running: task=0")
+            none = status.stdout.index("worker-none running: task=2")
+            self.assertLess(high, low)
+            self.assertLess(low, none)
+
     def test_status_infers_python_subcommand_task_label(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

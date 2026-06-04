@@ -2820,6 +2820,16 @@ def print_status_group(title: str, groups: dict[str, list[int | str]], *, color_
         print(f"  {worker} [{len(values)}]: {format_status_values(values)}")
 
 
+def active_status_sort_key(row: dict[str, Any]) -> tuple[bool, float, tuple[bool, int | str]]:
+    data = row.get("progress_data")
+    if isinstance(data, dict):
+        done = data.get("done")
+        total = data.get("total")
+        if isinstance(done, int) and isinstance(total, int) and total > 0:
+            return (False, -(done / total), status_value_key(row["index"]))
+    return (True, 0.0, status_value_key(row["index"]))
+
+
 def print_status_details(
     summary: dict[str, Any],
     *,
@@ -2830,7 +2840,7 @@ def print_status_details(
         print_status_group("done", summary["groups"]["done"], color_enabled=color_enabled)
     if summary["active"]:
         print(colorize("active:", "yellow", enabled=color_enabled))
-        for row in sorted(summary["active"], key=lambda item: status_value_key(item["index"])):
+        for row in sorted(summary["active"], key=active_status_sort_key):
             progress = f" [{row['progress']}]" if row.get("progress") else ""
             label = f" {row['label']}" if row.get("label") else ""
             worker = row["worker"] or "unknown"
