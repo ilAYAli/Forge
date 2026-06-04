@@ -10,25 +10,24 @@ task shards. A workers file declares where to run them.
 Crucible is meant for private, deterministic fan-out across machines you
 control. It is a good fit for:
 
-- self-play generation;
-- oracle labeling or scoring;
-- fixed-size SPRT/checkpoint batches;
+- fixed-size independent batch work;
+- data generation, transformation, validation, or aggregation;
 - repository/toolchain sync before distributed work;
 - CPU/IO-heavy tasks with declared inputs and outputs.
 
 It is not a replacement for public test infrastructure when you need community
 workers, long-term public result history, or standardized tournament
-administration. For engine development, Crucible is the fast private loop;
-OpenBench or similar infrastructure is still useful for public-scale validation.
+administration. Crucible is the fast private loop; larger public infrastructure
+is still useful when you need independent external validation.
 
 ## Quick Start
 
 Install on the coordinator:
 
 ```sh
-git clone git@github.com:ilAYAli/Crucible.git ~/code/cpp/chess/crucible
+git clone git@github.com:ilAYAli/Crucible.git ~/src/crucible
 mkdir -p ~/.local/bin
-ln -sf ~/code/cpp/chess/crucible/crucible.py ~/.local/bin/crucible
+ln -sf ~/src/crucible/crucible.py ~/.local/bin/crucible
 crucible --help >/dev/null
 ```
 
@@ -55,14 +54,14 @@ Example `workers.json`:
 {
   "schema": "crucible.workers.v1",
   "workers": [
-    "pwa-5090",
-    "pwa-rce",
+    "worker-a",
+    "worker-b",
     {
-      "host": "pwa-wsl",
-      "profile": "pwa-wsl"
+      "host": "worker-c",
+      "profile": "linux"
     },
     {
-      "host": "pwa-mbp",
+      "host": "worker-d",
       "profile": "mac",
       "python": "/opt/homebrew/bin/python3",
       "slots": 2
@@ -77,9 +76,8 @@ Example `workers.json`:
 
 A string worker uses the same value as host and profile. Object workers support
 `host`, `profile`, `python`, `local`, `cache_dir`, `slots`, and `enabled`.
-`slots` starts multiple worker loops on the same host; use it for
-one-shard-at-a-time tasks such as labeling, not for commands that already
-saturate the machine.
+`slots` starts multiple worker loops on the same host; use it for commands that
+consume only part of the machine, not for commands that already saturate it.
 
 ## Manifest
 
@@ -88,28 +86,27 @@ Example setup-only manifest:
 ```json
 {
   "schema": "crucible.task.v1",
-  "name": "enyo-candidate-deploy",
-  "work_dir": "~/code/cpp/chess/enyo",
+  "name": "project-deploy",
+  "work_dir": "~/work/project",
   "requirements": {
     "python_min": "3.11",
     "git_min": "2.38",
     "repos": [
       {
-        "name": "enyo",
-        "url": "git@github.com:ilAYAli/enyo.git",
-        "path": "~/code/cpp/chess/enyo",
+        "name": "project",
+        "url": "git@example.com:owner/project.git",
+        "path": "~/work/project",
         "remote": "origin",
-        "commit": "REPLACE_WITH_ENYO_COMMIT_SHA",
+        "commit": "REPLACE_WITH_COMMIT_SHA",
         "build": [
           "cmake -S . -B build -DCMAKE_BUILD_TYPE=Release",
           "cmake --build build -j8"
         ],
         "install": [
-          "scripts/deploy.sh --candidate"
+          "scripts/install.sh"
         ],
         "probe": [
-          "test -x build/enyo",
-          "test -x ../assets/engines/candidate"
+          "test -x build/project"
         ]
       }
     ]
@@ -128,9 +125,9 @@ Use `plan` for simple numbered shards:
 
 ```sh
 crucible plan \
-  --name score \
-  --kind label \
-  --task-label score \
+  --name batch-transform \
+  --kind batch \
+  --task-label transform \
   --shards 24 \
   --work-dir ~/work/project \
   --out run.manifest.json \
@@ -150,11 +147,11 @@ crucible status my-run -v     # one row per task
 crucible verify my-run        # require every task to be done
 crucible merge my-run --output merged.txt
 crucible stop my-run          # ask workers to stop this run
-crucible drain my-run --worker pwa-5090
+crucible drain my-run --worker worker-a
                               # let current task finish, then stop new claims
-crucible drain my-run --worker pwa-5090 --clear
+crucible drain my-run --worker worker-a --clear
                               # allow that worker to claim again
-crucible release --manifest runs/my-run/manifest.json --worker pwa-5090
+crucible release --manifest runs/my-run/manifest.json --worker worker-a
                               # release that worker's reserved, non-running claims
 crucible update               # update workers to this coordinator commit
 crucible update --all         # update coordinator, then workers
@@ -167,7 +164,8 @@ task state for one run. Template manifests under `examples/` are deploy inputs,
 not runnable jobs. The default view shows counts, active tasks, failed/stale
 tasks, and compressed pending ranges. Use `--kind` for the run type shown in
 summary status, and `--task-label` for the per-task label shown in detailed
-status. Use `--all`, `--done`, or `--failed` to change the run filter. Use
+status. Both are opaque user metadata; Crucible does not attach domain meaning
+to them. Use `--all`, `--done`, or `--failed` to change the run filter. Use
 `--show-done` for completed task breakdowns by worker, or `--verbose` for the
 full task table.
 
@@ -176,7 +174,7 @@ Put a coordinator pointer in `runs/coordinator` on non-coordinator hosts to make
 
 ```sh
 mkdir -p runs
-printf '%s\n' 'pwa-5090:/home/petter/code/cpp/chess/crucible/runs' > runs/coordinator
+printf '%s\n' 'coordinator.example.net:/srv/crucible/runs' > runs/coordinator
 ```
 
 Set `CRUCIBLE_RUNS_DIR` to use a different local run root, or
@@ -195,25 +193,10 @@ For long tasks, create more tasks than worker slots. `deploy` warns when a run
 has fewer than four tasks per worker slot, because that can leave fast workers
 idle behind a slow tail.
 
-## NNUE Examples
+## Examples
 
-Edit the commit SHA and paths first, then run:
-
-```sh
-crucible deploy examples/workers.json examples/nnue-selfplay.manifest.json --run nnue-selfplay-test
-crucible deploy examples/workers.json examples/nnue-label-stockfish.manifest.json --run nnue-label-test
-```
-
-Use `examples/workers-linux.json` when the coordinator cannot directly enter
-the WSL worker shell.
-
-Merge labeled shards:
-
-```sh
-crucible merge \
-  nnue-label-test \
-  --output runs/nnue-label-test/outputs/labeled.jsonl
-```
+Example manifests live under `examples/`. They are domain-specific samples, not
+part of Crucible's task model.
 
 ## Failure Model
 

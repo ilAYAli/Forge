@@ -3781,7 +3781,7 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     plan.add_argument("--name", required=True, help="Run name stored in the manifest.")
-    plan.add_argument("--kind", help="Short run type shown in status, for example sprt or selfplay.")
+    plan.add_argument("--kind", help="Short user-defined run type shown in status.")
     plan.add_argument("--description", help="Short single-line run description shown in status.")
     plan.add_argument(
         "--task-label",
