@@ -1916,8 +1916,8 @@ class CrucibleTests(unittest.TestCase):
                     )
                 self.assertEqual(0, rc)
                 text = stdout.getvalue()
-                self.assertIn("progress=1000/2000 games, eta=1m40s", text)
-                self.assertIn("worker-a task=1 [0/1000 games, eta=1m40s]", text)
+                self.assertIn("progress=1000/2000 games, eta=1m39s", text)
+                self.assertIn("worker-a task=1 [0/1000 games, eta=1m39s]", text)
 
     def test_status_ignores_undeclared_domain_progress(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

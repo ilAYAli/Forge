@@ -193,6 +193,12 @@ def progress_eta_text(done: Any, total: Any, rate: Any) -> str:
         return ""
     return f"eta={compact_duration(eta_s)}"
 
+def progress_data_eta_text(data: dict[str, Any], done: Any, total: Any) -> str:
+    eta_s = data.get("eta_s")
+    if isinstance(eta_s, (int, float)):
+        return f"eta={compact_duration(eta_s)}"
+    return progress_eta_text(done, total, data.get("rate"))
+
 def parse_timestamp_epoch(value: Any) -> float | None:
     if isinstance(value, (int, float)):
         return float(value)
@@ -202,6 +208,17 @@ def parse_timestamp_epoch(value: Any) -> float | None:
         return datetime.datetime.strptime(value, "%Y-%m-%dT%H:%M:%S%z").timestamp()
     except ValueError:
         return None
+
+def running_elapsed_seconds(payload: dict[str, Any] | None) -> float | None:
+    if not isinstance(payload, dict):
+        return None
+    started_epoch = parse_timestamp_epoch(payload.get("started_epoch"))
+    if started_epoch is None:
+        started_epoch = parse_timestamp_epoch(payload.get("started_at"))
+    if started_epoch is None:
+        return None
+    elapsed = epoch() - started_epoch
+    return elapsed if elapsed > 0 else None
 
 def task_running_payload(manifest: dict[str, Any], task: dict[str, Any]) -> dict[str, Any] | None:
     payload = read_state_json(task_running_path(manifest, task))
@@ -222,15 +239,8 @@ def infer_progress_rate(
     done = progress_data.get("done")
     if not isinstance(done, int) or done <= 0:
         return progress_data
-    started_epoch = None
-    if isinstance(running_payload, dict):
-        started_epoch = parse_timestamp_epoch(running_payload.get("started_epoch"))
-        if started_epoch is None:
-            started_epoch = parse_timestamp_epoch(running_payload.get("started_at"))
-    if started_epoch is None:
-        return progress_data
-    elapsed = epoch() - started_epoch
-    if elapsed <= 0:
+    elapsed = running_elapsed_seconds(running_payload)
+    if elapsed is None:
         return progress_data
     inferred = dict(progress_data)
     inferred["rate"] = done / elapsed
@@ -247,16 +257,25 @@ def progress_config_unit_total(task: dict[str, Any]) -> tuple[str, int] | None:
         return None
     return unit, total
 
-def fallback_progress_data(unit: str, total: int, rate: float | None) -> dict[str, Any] | None:
+def fallback_progress_data(
+    unit: str,
+    total: int,
+    rate: float | None,
+    elapsed_s: float | None = None,
+) -> dict[str, Any] | None:
     if not rate or rate <= 0:
         return None
-    return normalize_progress_data({
+    data: dict[str, Any] = {
         "kind": "metadata",
         "done": 0,
         "total": total,
         "unit": unit,
         "rate": rate,
-    })
+    }
+    full_eta = progress_eta_seconds(0, total, rate)
+    if full_eta is not None and isinstance(elapsed_s, (int, float)) and elapsed_s > 0:
+        data["eta_s"] = max(0.0, full_eta - float(elapsed_s))
+    return normalize_progress_data(data)
 
 def progress_text(data: dict[str, Any]) -> str:
     if data.get("kind") == "subtask":
@@ -265,7 +284,7 @@ def progress_text(data: dict[str, Any]) -> str:
         done_text = str(done) if isinstance(done, int) else "?"
         total_text = str(total) if isinstance(total, int) and total > 0 else "?"
         parts = [f"subtask={done_text}/{total_text}"]
-        eta = progress_eta_text(done, total, data.get("rate"))
+        eta = progress_data_eta_text(data, done, total)
         if eta:
             parts.append(eta)
         return ", ".join(parts)
@@ -288,7 +307,7 @@ def progress_text(data: dict[str, Any]) -> str:
     parts = [main] if main else []
     if isinstance(output, int):
         parts.append(f"{output_unit}={compact_count(output)}")
-    eta = progress_eta_text(done, total, data.get("rate"))
+    eta = progress_data_eta_text(data, done, total)
     if eta:
         parts.append(eta)
     return ", ".join(parts)
@@ -311,7 +330,15 @@ def summary_progress(summary: dict[str, Any]) -> str:
                 unit = str(data.get("unit") or "items")
                 bucket = by_unit.setdefault(
                     unit,
-                    {"done": 0, "total": 0, "rate": 0.0, "count": 0, "all_total": True, "all_rate": True},
+                    {
+                        "done": 0,
+                        "total": 0,
+                        "rate": 0.0,
+                        "count": 0,
+                        "all_total": True,
+                        "all_rate": True,
+                        "etas": [],
+                    },
                 )
                 bucket["count"] += 1
                 bucket["done"] += done
@@ -325,6 +352,9 @@ def summary_progress(summary: dict[str, Any]) -> str:
                     bucket["rate"] += float(rate)
                 else:
                     bucket["all_rate"] = False
+                eta_s = data.get("eta_s")
+                if isinstance(eta_s, (int, float)):
+                    bucket["etas"].append(max(0.0, float(eta_s)))
             output = data.get("output")
             if isinstance(output, int):
                 output_unit = str(data.get("output_unit") or "output")
@@ -367,7 +397,9 @@ def summary_progress(summary: dict[str, Any]) -> str:
         if isinstance(total_work, int) and total_work > 0:
             done = min(total_work, int(done_work) + active_done)
             text = f"{compact_count(done)}/{compact_count(total_work)} {unit}"
-            if bucket["rate"] > 0:
+            if summary["counts"]["pending"] == 0 and bucket["etas"]:
+                etas.append(f"eta={compact_duration(max(bucket['etas']))}")
+            elif bucket["rate"] > 0:
                 eta = progress_eta_text(done, total_work, bucket["rate"])
                 if eta:
                     etas.append(eta)
@@ -378,7 +410,10 @@ def summary_progress(summary: dict[str, Any]) -> str:
                 bucket["all_rate"] and bucket["count"] == summary["active_count"]
                 and summary["counts"]["pending"] == 0
             ):
-                eta = progress_eta_text(active_done, active_total, bucket["rate"])
+                if bucket["etas"]:
+                    eta = f"eta={compact_duration(max(bucket['etas']))}"
+                else:
+                    eta = progress_eta_text(active_done, active_total, bucket["rate"])
                 if eta:
                     etas.append(eta)
             parts.append(text)
@@ -693,11 +728,15 @@ def normalize_progress_data(raw: Any) -> dict[str, Any] | None:
     if kind not in {"metadata", "subtask"}:
         kind = "metadata" if data.get("unit") else "subtask"
     data["kind"] = kind
-    eta_s = progress_eta_seconds(data.get("done"), data.get("total"), data.get("rate"))
-    if eta_s is not None:
-        data["eta_s"] = eta_s
+    eta_s = data.get("eta_s")
+    if isinstance(eta_s, (int, float)):
+        data["eta_s"] = max(0.0, float(eta_s))
     else:
-        data.pop("eta_s", None)
+        eta_s = progress_eta_seconds(data.get("done"), data.get("total"), data.get("rate"))
+        if eta_s is not None:
+            data["eta_s"] = eta_s
+        else:
+            data.pop("eta_s", None)
     data["text"] = progress_text(data)
     return data
 
@@ -809,7 +848,12 @@ def status_summary(manifest: dict[str, Any], *, lease_seconds: int) -> dict[str,
             progress_data = infer_progress_rate(progress_data, running_payload)
         if progress_data is None and config_progress is not None and state in {"running", "claimed", "stale"}:
             unit, total = config_progress
-            progress_data = fallback_progress_data(unit, total, fallback_rates.get(unit))
+            progress_data = fallback_progress_data(
+                unit,
+                total,
+                fallback_rates.get(unit),
+                running_elapsed_seconds(running_payload),
+            )
         progress = str(progress_data.get("text") or "") if isinstance(progress_data, dict) else ""
         row = {
             "id": task["id"],
