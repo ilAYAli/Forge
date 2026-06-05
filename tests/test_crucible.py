@@ -1932,6 +1932,19 @@ class CrucibleTests(unittest.TestCase):
                 self.assertEqual(0, rc)
                 self.assertIn("done-run", stdout.getvalue())
 
+    def test_status_missing_named_run_reports_clean_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            env = {
+                "CRUCIBLE_COORDINATOR_RUNS": "",
+                "CRUCIBLE_RUNS_DIR": str(root / "runs"),
+            }
+            result = self.run_cli("status", "missing-run", cwd=root, env=env)
+            self.assertNotEqual(0, result.returncode)
+            self.assertEqual("", result.stdout)
+            self.assertIn("run not found: missing-run", result.stderr)
+            self.assertNotIn("Traceback", result.stderr)
+
     def test_status_uses_runs_dir_env(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

@@ -28,6 +28,8 @@ def cmd_status(args: argparse.Namespace) -> int:
         raise SystemExit("--all, --done, and --failed cannot be used with a run name")
 
     manifest_path = run_manifest_path(args.run)
+    if not manifest_path.is_file():
+        raise SystemExit(f"run not found: {args.run} ({manifest_path})")
     manifest = load_manifest(manifest_path)
     summary = status_summary(manifest, lease_seconds=args.lease_seconds)
     summary["manifest"] = str(manifest_path)
