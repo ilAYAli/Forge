@@ -233,6 +233,9 @@ crucible status
 crucible status my-run --verbose
 ```
 
+Default `status` shows started runs: active work, stale claims, failures, or
+partially completed queues. Never-started pending-only runs are shown as
+`queued` under `--all`, so abandoned setup/test manifests do not look active.
 Use `--all`, `--done`, or `--failed` to change which runs are listed. Use
 `--show-done` to include completed task breakdowns by worker.
 

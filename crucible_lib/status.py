@@ -94,6 +94,8 @@ def run_status_on_coordinator(args: argparse.Namespace, coordinator_runs: str) -
             check=False,
             env=env,
         )
+    if not bool(getattr(args, "json", False)):
+        print(f"coordinator: {coordinator_runs}")
     if result.stdout:
         print(result.stdout, end="")
     if result.stderr:
@@ -135,15 +137,26 @@ def run_done(summary: dict[str, Any]) -> bool:
 def run_failed(summary: dict[str, Any]) -> bool:
     return summary["counts"]["fail"] > 0
 
+def run_started(summary: dict[str, Any]) -> bool:
+    counts = summary["counts"]
+    return counts["done"] + counts["fail"] + counts["running"] + counts["claimed"] + counts["stale"] > 0
+
+def run_queued(summary: dict[str, Any]) -> bool:
+    counts = summary["counts"]
+    return summary["tasks"] > 0 and counts["pending"] == summary["tasks"] and not run_started(summary)
+
 def run_current(summary: dict[str, Any]) -> bool:
     counts = summary["counts"]
-    return counts["running"] + counts["claimed"] + counts["stale"] + counts["pending"] > 0
+    active = counts["running"] + counts["claimed"] + counts["stale"]
+    return active > 0 or (counts["pending"] > 0 and run_started(summary))
 
 def run_state(summary: dict[str, Any]) -> str:
     if run_failed(summary):
         return "failed"
     if run_current(summary):
         return "current"
+    if run_queued(summary):
+        return "queued"
     if run_done(summary):
         return "done"
     return "empty"
@@ -495,7 +508,7 @@ def print_run_status(
         counts = summary["counts"]
         active = counts["running"] + counts["claimed"] + counts["stale"]
         state = run_state(summary)
-        state_color = "red" if state == "failed" else "yellow" if state == "current" else "green"
+        state_color = "red" if state == "failed" else "yellow" if state in {"current", "queued"} else "green"
         progress = summary_progress(summary)
         fields = [
             f"{summary['run']:<36} "

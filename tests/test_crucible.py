@@ -1830,6 +1830,47 @@ class CrucibleTests(unittest.TestCase):
                 self.assertEqual(0, one_run.returncode)
                 self.assertIn("tasks=0/1", one_run.stdout)
 
+    def test_status_hides_never_started_pending_runs_by_default(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+
+            def write_run(name: str) -> Path:
+                run = root / "runs" / name
+                manifest = run / "manifest.json"
+                manifest.parent.mkdir(parents=True)
+                manifest.write_text(
+                    json.dumps({
+                        "schema": "crucible.task.v1",
+                        "name": name,
+                        "work_dir": str(run),
+                        "state_dir": str(run / "state"),
+                        "tasks": [{"id": "task_0", "index": 0, "command": "true", "outputs": []}],
+                    }),
+                    encoding="utf-8",
+                )
+                return run
+
+            write_run("queued")
+            active = write_run("active")
+            state = active / "state"
+            state.mkdir()
+            (state / "task_0.running.json").write_text(
+                json.dumps({"task": "task_0", "host": "worker-a"}),
+                encoding="utf-8",
+            )
+
+            env = {"CRUCIBLE_COORDINATOR_RUNS": "", "CRUCIBLE_RUNS_DIR": str(root / "runs")}
+            active_status = self.run_cli("status", cwd=root, env=env)
+            self.assertEqual(0, active_status.returncode)
+            self.assertIn("active", active_status.stdout)
+            self.assertNotIn("queued", active_status.stdout)
+
+            all_status = self.run_cli("status", "--all", cwd=root, env=env)
+            self.assertEqual(0, all_status.returncode)
+            self.assertIn("active", all_status.stdout)
+            self.assertIn("queued", all_status.stdout)
+            self.assertRegex(all_status.stdout, r"queued\s+queued tasks=0/1")
+
     def test_status_empty_active_message_is_specific(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -1909,6 +1950,12 @@ class CrucibleTests(unittest.TestCase):
                 }),
                 encoding="utf-8",
             )
+            state = run / "state"
+            state.mkdir()
+            (state / "task_0.running.json").write_text(
+                json.dumps({"task": "task_0", "host": "worker-a"}),
+                encoding="utf-8",
+            )
 
             with mock.patch.dict(os.environ, {"CRUCIBLE_RUNS_DIR": str(runs)}):
                 result = self.run_cli("status", cwd=root)
@@ -1943,7 +1990,10 @@ class CrucibleTests(unittest.TestCase):
                 )
 
         self.assertEqual(0, rc)
-        self.assertEqual("remote status\n", stdout.getvalue())
+        self.assertEqual(
+            "coordinator: pwa-5090:/home/petter/code/cpp/chess/crucible/runs\nremote status\n",
+            stdout.getvalue(),
+        )
         command = run_mock.call_args.args[0]
         self.assertEqual("ssh", command[0])
         self.assertIn("pwa-5090", command)
@@ -1986,7 +2036,10 @@ class CrucibleTests(unittest.TestCase):
                     )
 
             self.assertEqual(0, rc)
-            self.assertEqual("remote status\n", stdout.getvalue())
+            self.assertEqual(
+                "coordinator: pwa-5090:/home/petter/code/cpp/chess/crucible/runs\nremote status\n",
+                stdout.getvalue(),
+            )
             command = run_mock.call_args.args[0]
             self.assertEqual("ssh", command[0])
             self.assertIn("pwa-5090", command)
@@ -3288,7 +3341,7 @@ class CrucibleTests(unittest.TestCase):
                 commands.append(command)
                 return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
 
-            with mock.patch("crucible.ProcessTracker.run", fake_run):
+            with self.patch_runs_dir(Path(tmp) / "runs"), mock.patch("crucible.ProcessTracker.run", fake_run):
                 stdout = io.StringIO()
                 with contextlib.redirect_stdout(stdout):
                     rc = crucible.cmd_deploy(
@@ -3351,7 +3404,7 @@ class CrucibleTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            with mock.patch("crucible.ProcessTracker.run", return_value=subprocess.CompletedProcess(["sh"], 0, stdout="", stderr="")):
+            with self.patch_runs_dir(root / "runs"), mock.patch("crucible.ProcessTracker.run", return_value=subprocess.CompletedProcess(["sh"], 0, stdout="", stderr="")):
                 stdout = io.StringIO()
                 with contextlib.redirect_stdout(stdout):
                     rc = crucible.cmd_deploy(
@@ -3416,7 +3469,7 @@ class CrucibleTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            with mock.patch("crucible.ProcessTracker.run", return_value=subprocess.CompletedProcess(["sh"], 0, stdout="", stderr="")):
+            with self.patch_runs_dir(root / "runs"), mock.patch("crucible.ProcessTracker.run", return_value=subprocess.CompletedProcess(["sh"], 0, stdout="", stderr="")):
                 stdout = io.StringIO()
                 with contextlib.redirect_stdout(stdout):
                     rc = crucible.cmd_deploy(
@@ -3472,7 +3525,7 @@ class CrucibleTests(unittest.TestCase):
                 commands.append(command)
                 return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
 
-            with mock.patch("crucible.ProcessTracker.run", fake_run):
+            with self.patch_runs_dir(root / "runs"), mock.patch("crucible.ProcessTracker.run", fake_run):
                 stdout = io.StringIO()
                 with contextlib.redirect_stdout(stdout):
                     rc = crucible.cmd_deploy(
@@ -3529,7 +3582,7 @@ class CrucibleTests(unittest.TestCase):
                 commands.append(command)
                 return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
 
-            with mock.patch("crucible.ProcessTracker.run", fake_run):
+            with self.patch_runs_dir(root / "runs"), mock.patch("crucible.ProcessTracker.run", fake_run):
                 stdout = io.StringIO()
                 with contextlib.redirect_stdout(stdout):
                     rc = crucible.cmd_deploy(
@@ -3610,7 +3663,7 @@ class CrucibleTests(unittest.TestCase):
                     return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
                 return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
 
-            with mock.patch("crucible.ProcessTracker.run", fake_run):
+            with self.patch_runs_dir(root / "runs"), mock.patch("crucible.ProcessTracker.run", fake_run):
                 stdout = io.StringIO()
                 with contextlib.redirect_stdout(stdout):
                     rc = crucible.cmd_deploy(
@@ -3661,7 +3714,7 @@ class CrucibleTests(unittest.TestCase):
                 commands.append(command)
                 return subprocess.CompletedProcess(command, 1, stdout="", stderr="failed")
 
-            with mock.patch("crucible.ProcessTracker.run", fake_run):
+            with self.patch_runs_dir(root / "runs"), mock.patch("crucible.ProcessTracker.run", fake_run):
                 stdout = io.StringIO()
                 stderr = io.StringIO()
                 with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
@@ -3767,6 +3820,7 @@ class CrucibleTests(unittest.TestCase):
             )
 
             with (
+                self.patch_runs_dir(root / "runs"),
                 mock.patch("crucible.ProcessTracker.run", return_value=subprocess.CompletedProcess(["sh"], 0, stdout="", stderr="")),
                 mock.patch.object(crucible.ProcessTracker, "terminate_all") as terminate_all,
                 mock.patch("crucible.concurrent.futures.as_completed", side_effect=KeyboardInterrupt),
