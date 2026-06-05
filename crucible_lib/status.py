@@ -196,6 +196,8 @@ def progress_eta_text(done: Any, total: Any, rate: Any) -> str:
 def progress_data_eta_text(data: dict[str, Any], done: Any, total: Any) -> str:
     eta_s = data.get("eta_s")
     if isinstance(eta_s, (int, float)):
+        if eta_s <= 0 and data.get("eta_overdue"):
+            return "eta=anytime"
         return f"eta={compact_duration(eta_s)}"
     return progress_eta_text(done, total, data.get("rate"))
 
@@ -274,7 +276,10 @@ def fallback_progress_data(
     }
     full_eta = progress_eta_seconds(0, total, rate)
     if full_eta is not None and isinstance(elapsed_s, (int, float)) and elapsed_s > 0:
-        data["eta_s"] = max(0.0, full_eta - float(elapsed_s))
+        remaining = full_eta - float(elapsed_s)
+        data["eta_s"] = max(0.0, remaining)
+        if remaining <= 0:
+            data["eta_overdue"] = True
     return normalize_progress_data(data)
 
 def progress_text(data: dict[str, Any]) -> str:
@@ -398,7 +403,8 @@ def summary_progress(summary: dict[str, Any]) -> str:
             done = min(total_work, int(done_work) + active_done)
             text = f"{compact_count(done)}/{compact_count(total_work)} {unit}"
             if summary["counts"]["pending"] == 0 and bucket["etas"]:
-                etas.append(f"eta={compact_duration(max(bucket['etas']))}")
+                max_eta = max(bucket["etas"])
+                etas.append("eta=anytime" if max_eta <= 0 else f"eta={compact_duration(max_eta)}")
             elif bucket["rate"] > 0:
                 eta = progress_eta_text(done, total_work, bucket["rate"])
                 if eta:
@@ -411,7 +417,8 @@ def summary_progress(summary: dict[str, Any]) -> str:
                 and summary["counts"]["pending"] == 0
             ):
                 if bucket["etas"]:
-                    eta = f"eta={compact_duration(max(bucket['etas']))}"
+                    max_eta = max(bucket["etas"])
+                    eta = "eta=anytime" if max_eta <= 0 else f"eta={compact_duration(max_eta)}"
                 else:
                     eta = progress_eta_text(active_done, active_total, bucket["rate"])
                 if eta:
@@ -728,6 +735,10 @@ def normalize_progress_data(raw: Any) -> dict[str, Any] | None:
     if kind not in {"metadata", "subtask"}:
         kind = "metadata" if data.get("unit") else "subtask"
     data["kind"] = kind
+    if data.get("eta_overdue"):
+        data["eta_overdue"] = True
+    else:
+        data.pop("eta_overdue", None)
     eta_s = data.get("eta_s")
     if isinstance(eta_s, (int, float)):
         data["eta_s"] = max(0.0, float(eta_s))

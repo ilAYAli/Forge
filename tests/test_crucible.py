@@ -1919,6 +1919,78 @@ class CrucibleTests(unittest.TestCase):
                 self.assertIn("progress=1000/2000 games, eta=1m39s", text)
                 self.assertIn("worker-a task=1 [0/1000 games, eta=1m39s]", text)
 
+    def test_status_labels_overdue_fallback_eta_as_anytime(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            runs = root / "runs"
+            run = runs / "selfplay"
+            state = run / "state"
+            logs = run / "logs"
+            state.mkdir(parents=True)
+            logs.mkdir(parents=True)
+            manifest = {
+                "schema": "crucible.task.v1",
+                "name": "selfplay",
+                "work_dir": str(run),
+                "state_dir": str(state),
+                "log_dir": str(logs),
+                "tasks": [
+                    {
+                        "id": "task_0",
+                        "index": 0,
+                        "command": "true",
+                        "outputs": [],
+                        "progress": {
+                            "unit": "games",
+                            "total": 1000,
+                            "log_regex": r"\[\s*\d+/\d+\s+(?P<done>\d+)\s*/\s*(?P<total>\d+)\]",
+                        },
+                    },
+                    {
+                        "id": "task_1",
+                        "index": 1,
+                        "command": "true",
+                        "outputs": [],
+                        "progress": {
+                            "unit": "games",
+                            "total": 1000,
+                            "log_regex": r"\[\s*\d+/\d+\s+(?P<done>\d+)\s*/\s*(?P<total>\d+)\]",
+                        },
+                    },
+                ],
+            }
+            (run / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+            (state / "task_0.done.json").write_text(
+                json.dumps({"task": "task_0", "elapsed_s": 100.0}),
+                encoding="utf-8",
+            )
+            (state / "task_1.running.json").write_text(
+                json.dumps({"task": "task_1", "worker": "worker-a", "started_epoch": 1000.0}),
+                encoding="utf-8",
+            )
+            (logs / "task_1.log").write_text("", encoding="utf-8")
+
+            with self.patch_runs_dir(runs), mock.patch("crucible_lib.status.epoch", return_value=1110.0):
+                stdout = io.StringIO()
+                with contextlib.redirect_stdout(stdout):
+                    rc = crucible.cmd_status(
+                        argparse.Namespace(
+                            run=None,
+                            all=False,
+                            done=False,
+                            failed=False,
+                            json=False,
+                            no_color=True,
+                            lease_seconds=600,
+                            verbose=True,
+                            show_done=False,
+                        )
+                    )
+                self.assertEqual(0, rc)
+                text = stdout.getvalue()
+                self.assertIn("progress=1000/2000 games, eta=anytime", text)
+                self.assertIn("worker-a task=1 [0/1000 games, eta=anytime]", text)
+
     def test_status_ignores_undeclared_domain_progress(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
