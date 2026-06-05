@@ -50,6 +50,11 @@ class CrucibleTests(unittest.TestCase):
         ):
             yield
 
+    def test_remote_script_sets_common_user_bin_path(self) -> None:
+        script = crucible.managed_remote_script("crucible version")
+        self.assertIn("PATH=\"$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH\"; export PATH; ", script)
+        self.assertIn("crucible version", script)
+
     def test_no_arguments_prints_help(self) -> None:
         result = self.run_cli()
         self.assertEqual("", result.stderr)

@@ -197,7 +197,8 @@ def worker_python(worker: dict[str, Any]) -> str:
     return str(worker.get("python") or "python3")
 
 def managed_remote_script(script: str) -> str:
-    quoted = shlex.quote(script)
+    remote_path = "PATH=\"$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH\"; export PATH; "
+    quoted = shlex.quote(remote_path + script)
     cleanup = "kill -TERM -$pid 2>/dev/null; sleep 1; kill -KILL -$pid 2>/dev/null"
     return (
         "if command -v setsid >/dev/null 2>&1; then "
