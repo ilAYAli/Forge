@@ -956,10 +956,15 @@ def print_compact_status(
         f"active={summary['active_count']}",
         f"running={counts['running']}",
         f"claimed={counts['claimed']}",
-        f"pending={counts['pending']}",
-        f"fail={counts['fail']}",
-        f"stale={counts['stale']}",
     ]
+    progress = summary_progress(summary)
+    if progress:
+        fields.append(progress)
+    fields.extend([
+        f"fail={counts['fail']}",
+        f"pending={counts['pending']}",
+        f"stale={counts['stale']}",
+    ])
     print(" ".join(fields))
     print_status_details(
         summary,

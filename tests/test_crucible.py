@@ -1197,7 +1197,7 @@ class CrucibleTests(unittest.TestCase):
             compact = self.run_cli("status", str(root))
             self.assertEqual(1, compact.returncode)
             self.assertIn(
-                "tasks=1/4 active=1 running=1 claimed=0 pending=1 fail=1 stale=0",
+                "tasks=1/4 active=1 running=1 claimed=0 progress=subtask=42/1000 fail=1 pending=1 stale=0",
                 compact.stdout,
             )
             self.assertNotIn("host-done [1]: 0", compact.stdout)
@@ -1756,9 +1756,27 @@ class CrucibleTests(unittest.TestCase):
                             no_color=True,
                             lease_seconds=600,
                         )
-                    )
+                )
                 self.assertEqual(0, rc)
                 self.assertIn("progress=50k/125k rows, output=48k, eta=3h06m", stdout.getvalue())
+
+                named_stdout = io.StringIO()
+                with contextlib.redirect_stdout(named_stdout):
+                    rc = crucible.cmd_status(
+                        argparse.Namespace(
+                            run="score",
+                            all=False,
+                            done=False,
+                            failed=False,
+                            json=False,
+                            no_color=True,
+                            lease_seconds=600,
+                            verbose=False,
+                            show_done=False,
+                        )
+                    )
+                self.assertEqual(0, rc)
+                self.assertIn("progress=50k/125k rows, output=48k, eta=3h06m", named_stdout.getvalue())
 
     def test_status_infers_eta_from_elapsed_declared_progress(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
