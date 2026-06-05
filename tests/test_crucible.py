@@ -100,6 +100,7 @@ class CrucibleTests(unittest.TestCase):
         self.assertIn("Coordinator manifest", self.run_cli("claim", "--help").stdout)
         self.assertIn("workers.json", self.run_cli("deploy", "--help").stdout)
         self.assertIn("--merge", self.run_cli("run-job", "--help").stdout)
+        self.assertIn("--coordinator", self.run_cli("doctor", "--help").stdout)
         self.assertIn("workers.json", self.run_cli("update", "--help").stdout)
 
     def test_list_subcommand_is_not_supported(self) -> None:
@@ -1311,6 +1312,31 @@ class CrucibleTests(unittest.TestCase):
             self.assertEqual(0, status.returncode)
             self.assertIn("claimed=0", status.stdout)
             self.assertIn("pending=1", status.stdout)
+
+    def test_worker_doctor_checks_coordinator_callback(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest = root / "manifest.json"
+            manifest.write_text(
+                json.dumps({
+                    "schema": "crucible.task.v1",
+                    "name": "doctor-callback",
+                    "work_dir": str(root),
+                    "requirements": {"python_min": "3.11", "git_min": "2.38"},
+                    "tasks": [],
+                }),
+                encoding="utf-8",
+            )
+            with mock.patch("crucible_lib.tasks.check_coordinator_cli") as check:
+                rc = crucible.cmd_doctor(argparse.Namespace(
+                    manifest=str(manifest),
+                    profile=None,
+                    role="worker",
+                    notify_command=None,
+                    coordinator="pwa-5090:/tmp/manifest.json",
+                ))
+            self.assertEqual(0, rc)
+            check.assert_called_once_with("pwa-5090:/tmp/manifest.json")
 
     def test_coordinator_doctor_requires_notify_command(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -3048,7 +3074,11 @@ class CrucibleTests(unittest.TestCase):
         }
         manifest = {"tasks": [{"id": "task_0000"}]}
 
-        prereq = crucible.deploy_prereq_command(worker=worker, manifest=manifest)
+        prereq = crucible.deploy_prereq_command(
+            worker=worker,
+            manifest=manifest,
+            coordinator="pwa-5090:/tmp/manifest.json",
+        )
         work = crucible.deploy_work_command(
             worker=worker,
             manifest=manifest,
@@ -3056,6 +3086,7 @@ class CrucibleTests(unittest.TestCase):
         )
 
         self.assertIn("/opt/homebrew/bin/python3 .cache/crucible/crucible.py doctor", prereq)
+        self.assertIn("--coordinator pwa-5090:/tmp/manifest.json", prereq)
         self.assertIn("/opt/homebrew/bin/python3 .cache/crucible/crucible.py work", work)
         self.assertIn("--idle-seconds 120.0", work)
 

@@ -411,7 +411,12 @@ def manifest_has_git_requirements(manifest: dict[str, Any]) -> bool:
         return False
     return bool(iter_git_requirements(manifest, req))
 
-def deploy_prereq_command(*, worker: dict[str, Any], manifest: dict[str, Any]) -> str:
+def deploy_prereq_command(
+    *,
+    worker: dict[str, Any],
+    manifest: dict[str, Any],
+    coordinator: str | None = None,
+) -> str:
     runner = worker_cache_file(worker, "crucible.py")
     manifest_path = worker_cache_file(worker, "manifest.json")
     profile_args = worker_profile_args(manifest, worker)
@@ -419,7 +424,10 @@ def deploy_prereq_command(*, worker: dict[str, Any], manifest: dict[str, Any]) -
     commands = ["set -e"]
     if manifest_has_git_requirements(manifest):
         commands.append(shell_join([python, runner, "sync-repos", "--manifest", manifest_path, *profile_args]))
-    commands.append(shell_join([python, runner, "doctor", "--manifest", manifest_path, *profile_args, "--role", "worker"]))
+    doctor_command = [python, runner, "doctor", "--manifest", manifest_path, *profile_args, "--role", "worker"]
+    if coordinator:
+        doctor_command.extend(["--coordinator", coordinator])
+    commands.append(shell_join(doctor_command))
     return "\n".join(commands)
 
 def deploy_work_command(*, worker: dict[str, Any], manifest: dict[str, Any], coordinator: str) -> str:
@@ -550,7 +558,11 @@ def cmd_deploy(args: argparse.Namespace) -> int:
             if synced_inputs:
                 verbose_status(f"{label}: synced {synced_inputs} input file(s)")
             verbose_status(f"{label}: checking prerequisites")
-            script = deploy_prereq_command(worker=worker, manifest=manifest)
+            coordinator = (
+                coordinator_for_worker(worker, manifest_path, getattr(args, "coordinator_host", None))
+                if has_tasks else None
+            )
+            script = deploy_prereq_command(worker=worker, manifest=manifest, coordinator=coordinator)
             return run_worker_shell(worker, script, timeout=remote_timeout, tracker=tracker)
         except Exception as exc:
             return subprocess.CompletedProcess(["deploy", host], 1, stdout="", stderr=str(exc))

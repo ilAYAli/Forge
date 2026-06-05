@@ -886,6 +886,8 @@ def cmd_doctor(args: argparse.Namespace) -> int:
             raise SystemExit("--notify-command is empty")
         if shutil.which(command[0]) is None:
             raise SystemExit(f"notify command not found: {command[0]}")
+    if getattr(args, "coordinator", None):
+        check_coordinator_cli(str(args.coordinator))
     print("ok")
     return 0
 

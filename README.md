@@ -53,7 +53,9 @@ files to each worker, runs repository sync/build/install/probe requirements,
 runs worker loops, waits when requested, verifies declared outputs, and returns
 non-zero on setup, task, verification, or wait failure. Workers need Python,
 Git, SSH/rsync, and the toolchain required by the manifest. Workers do not need
-`crucible` installed.
+`crucible` installed. For task runs, setup also verifies that each worker can
+SSH back to the coordinator manifest selected by `--coordinator-host` before
+any task is assigned.
 
 Declare exact tool requirements in the manifest. For tools built from Git, use
 `requirements.repos` with a pinned `commit`, optional `build`/`install`, and a
@@ -267,7 +269,9 @@ new coordinator commit.
 in `CRUCIBLE_EVENT_JSON`. Crucible does not assume any notification service.
 
 Long distributed jobs should be launched from a coordinator host that every
-worker can SSH back to. For SPRT-style smoke tests, make each shard write a
+worker can SSH back to. From a worker,
+`crucible doctor --manifest <manifest> --coordinator <host>:<manifest>` checks
+that callback path directly. For SPRT-style smoke tests, make each shard write a
 declared log output, use `--task-label`, add a progress regex matching the
 tool's live status line, and pass `--notify-command` so completion or failure is
 reported without polling.
