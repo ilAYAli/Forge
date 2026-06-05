@@ -1919,7 +1919,7 @@ class CrucibleTests(unittest.TestCase):
                 self.assertIn("progress=1000/2000 games, eta=1m39s", text)
                 self.assertIn("worker-a task=1 [0/1000 games, eta=1m39s]", text)
 
-    def test_status_labels_overdue_fallback_eta_as_anytime(self) -> None:
+    def test_status_labels_overdue_fallback_eta_as_unknown(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             runs = root / "runs"
@@ -1988,8 +1988,8 @@ class CrucibleTests(unittest.TestCase):
                     )
                 self.assertEqual(0, rc)
                 text = stdout.getvalue()
-                self.assertIn("progress=1000/2000 games, eta=anytime", text)
-                self.assertIn("worker-a task=1 [0/1000 games, eta=anytime]", text)
+                self.assertIn("progress=1000/2000 games, eta=unknown", text)
+                self.assertIn("worker-a task=1 [0/1000 games, eta=unknown]", text)
 
     def test_status_ignores_undeclared_domain_progress(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

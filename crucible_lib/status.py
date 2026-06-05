@@ -197,7 +197,7 @@ def progress_data_eta_text(data: dict[str, Any], done: Any, total: Any) -> str:
     eta_s = data.get("eta_s")
     if isinstance(eta_s, (int, float)):
         if eta_s <= 0 and data.get("eta_overdue"):
-            return "eta=anytime"
+            return "eta=unknown"
         return f"eta={compact_duration(eta_s)}"
     return progress_eta_text(done, total, data.get("rate"))
 
@@ -404,7 +404,7 @@ def summary_progress(summary: dict[str, Any]) -> str:
             text = f"{compact_count(done)}/{compact_count(total_work)} {unit}"
             if summary["counts"]["pending"] == 0 and bucket["etas"]:
                 max_eta = max(bucket["etas"])
-                etas.append("eta=anytime" if max_eta <= 0 else f"eta={compact_duration(max_eta)}")
+                etas.append("eta=unknown" if max_eta <= 0 else f"eta={compact_duration(max_eta)}")
             elif bucket["rate"] > 0:
                 eta = progress_eta_text(done, total_work, bucket["rate"])
                 if eta:
@@ -418,7 +418,7 @@ def summary_progress(summary: dict[str, Any]) -> str:
             ):
                 if bucket["etas"]:
                     max_eta = max(bucket["etas"])
-                    eta = "eta=anytime" if max_eta <= 0 else f"eta={compact_duration(max_eta)}"
+                    eta = "eta=unknown" if max_eta <= 0 else f"eta={compact_duration(max_eta)}"
                 else:
                     eta = progress_eta_text(active_done, active_total, bucket["rate"])
                 if eta:
