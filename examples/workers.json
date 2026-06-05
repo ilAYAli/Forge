@@ -8,6 +8,16 @@
       "profile": "pwa-wsl"
     },
     {
+      "host": "pwa-mbp",
+      "profile": "pwa-mbp",
+      "python": "/opt/homebrew/bin/python3"
+    },
+    {
+      "host": "pwa-mbp0",
+      "profile": "pwa-mbp0",
+      "python": "/opt/homebrew/bin/python3"
+    },
+    {
       "host": "localhost",
       "local": true,
       "enabled": false
