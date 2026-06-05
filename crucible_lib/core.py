@@ -83,7 +83,10 @@ def runs_dir() -> Path:
 def configured_coordinator_runs() -> str | None:
     if COORDINATOR_RUNS_ENV in os.environ:
         return os.environ[COORDINATOR_RUNS_ENV].strip() or None
-    path = runs_dir() / COORDINATOR_RUNS_FILE
+    try:
+        path = runs_dir() / COORDINATOR_RUNS_FILE
+    except SystemExit:
+        return None
     if not path.exists():
         return None
     value = path.read_text(encoding="utf-8").strip()
@@ -427,10 +430,23 @@ def run_checked(command: list[str], *, cwd: Path | None = None) -> None:
 
 def crucible_version_payload() -> dict[str, Any]:
     path = script_path()
-    repo = script_repo(path)
-    commit = git_output(repo, "rev-parse", "HEAD")
-    branch = git_output(repo, "rev-parse", "--abbrev-ref", "HEAD")
-    dirty = bool(git_output(repo, "status", "--porcelain"))
+    try:
+        repo = script_repo(path)
+        commit = git_output(repo, "rev-parse", "HEAD")
+        branch = git_output(repo, "rev-parse", "--abbrev-ref", "HEAD")
+        dirty = bool(git_output(repo, "status", "--porcelain"))
+    except SystemExit:
+        return {
+            "schema": SCHEMA,
+            "tool": "crucible",
+            "path": str(path),
+            "repo": "",
+            "branch": "packaged",
+            "commit": "unknown",
+            "dirty": False,
+            "remote": "",
+            "upstream": "",
+        }
     remote = ""
     upstream = ""
     try:

@@ -717,3 +717,85 @@ def cmd_deploy(args: argparse.Namespace) -> int:
             ),
         )
     return 1 if failed else 0
+
+def planned_run_paths(template_path: Path, run_name_arg: str | None) -> tuple[Path, Path]:
+    template = load_manifest(template_path)
+    run_name = validate_run_name(run_name_arg) if run_name_arg else default_run_name(template_path, template)
+    run_dir = run_dir_for_name(run_name)
+    return run_dir, run_dir / RUN_MANIFEST_NAME
+
+def command_rc_from_system_exit(exc: SystemExit) -> int:
+    if isinstance(exc.code, int):
+        return int(exc.code)
+    if exc.code:
+        print(str(exc.code), file=sys.stderr)
+        return 1
+    return 0
+
+def run_command_stage(name: str, func: Any, args: argparse.Namespace) -> int:
+    try:
+        rc = int(func(args))
+    except SystemExit as exc:
+        rc = command_rc_from_system_exit(exc)
+    if rc:
+        print(f"run-job: {name} failed rc={rc}", file=sys.stderr)
+    return rc
+
+def cmd_run_job(args: argparse.Namespace) -> int:
+    template_path = expand_path(args.manifest)
+    run_dir, manifest_path = planned_run_paths(template_path, getattr(args, "run", None))
+    run_name = run_dir.name
+
+    deploy_args = argparse.Namespace(
+        workers=args.workers,
+        manifest=args.manifest,
+        jobs=args.jobs,
+        run=args.run,
+        resume=args.resume,
+        replace=args.replace,
+        coordinator_host=args.coordinator_host,
+        remote_timeout_seconds=args.remote_timeout_seconds,
+        notify_command=args.notify_command,
+        no_color=args.no_color,
+        verbose=args.verbose,
+    )
+    rc = run_command_stage("deploy", cmd_deploy, deploy_args)
+    if rc:
+        print(f"run-job: inspect with: crucible status {run_name} --verbose", file=sys.stderr)
+        return rc
+
+    if args.wait:
+        wait_args = argparse.Namespace(
+            manifest=str(manifest_path),
+            profile=None,
+            lease_seconds=args.lease_seconds,
+            interval_seconds=args.interval_seconds,
+            timeout_seconds=args.timeout_seconds,
+            fail_on_fail=args.fail_on_fail,
+            notify_command=args.notify_command,
+        )
+        rc = run_command_stage("wait", cmd_wait, wait_args)
+        if rc:
+            print(f"run-job: inspect with: crucible status {run_name} --verbose", file=sys.stderr)
+            return rc
+
+    if args.verify or args.merge:
+        rc = run_command_stage("verify", cmd_verify, argparse.Namespace(run=str(manifest_path.parent)))
+        if rc:
+            print(f"run-job: inspect with: crucible status {run_name} --verbose", file=sys.stderr)
+            return rc
+
+    if args.merge:
+        merge_args = argparse.Namespace(
+            run=str(manifest_path.parent),
+            output=args.merge,
+            force=args.merge_force,
+            newline_between=args.newline_between,
+        )
+        rc = run_command_stage("merge", cmd_merge, merge_args)
+        if rc:
+            print(f"run-job: inspect with: crucible status {run_name} --verbose", file=sys.stderr)
+            return rc
+
+    print(f"run-job: ok; status: crucible status {run_name} --verbose")
+    return 0

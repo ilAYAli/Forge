@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 from .core import *
 from .manifest import *
 from .tasks import *
@@ -7,14 +9,98 @@ from .status import *
 from .workers import *
 
 
+COMMAND_GROUPS = [
+    (
+        "Common workflow",
+        [
+            "plan",
+            "add-input",
+            "add-repo",
+            "add-command",
+            "run-job",
+            "status",
+            "wait",
+            "stop",
+            "del",
+        ],
+    ),
+    ("Result handling", ["verify", "merge"]),
+    ("Maintenance", ["update", "self-update", "version"]),
+    (
+        "Advanced/internal",
+        [
+            "deploy",
+            "doctor",
+            "sync-repos",
+            "work",
+            "run",
+            "claim",
+            "release",
+            "heartbeat",
+            "drain",
+        ],
+    ),
+]
+
+
+class CrucibleHelpFormatter(
+    argparse.ArgumentDefaultsHelpFormatter,
+    argparse.RawDescriptionHelpFormatter,
+):
+    pass
+
+
+class CrucibleArgumentParser(argparse.ArgumentParser):
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        self.command_groups = kwargs.pop("command_groups", [])
+        self.command_help: dict[str, str] = {}
+        super().__init__(*args, **kwargs)
+
+    def format_help(self) -> str:
+        if not self.command_groups:
+            return super().format_help()
+
+        formatter = self._get_formatter()
+        formatter.add_usage(self.usage, self._actions, self._mutually_exclusive_groups)
+        formatter.add_text(self.description)
+        for title, commands in self.command_groups:
+            formatter.start_section(title)
+            formatter.add_text(self._format_command_group(commands))
+            formatter.end_section()
+        for group in self._action_groups:
+            actions = [
+                action
+                for action in group._group_actions
+                if not isinstance(action, argparse._SubParsersAction)
+                and action.help is not argparse.SUPPRESS
+            ]
+            if actions:
+                formatter.start_section(group.title)
+                formatter.add_arguments(actions)
+                formatter.end_section()
+        return formatter.format_help()
+
+    def _format_command_group(self, commands: list[str]) -> str:
+        width = max(len(command) for command in commands)
+        return "\n".join(
+            f"  {command:<{width}}  {self.command_help.get(command, '')}"
+            for command in commands
+        )
+
+
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        description=__doc__,
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    parser = CrucibleArgumentParser(
+        description=(
+            "Crucible distributes manifest-defined work across workers. "
+            "Use the common workflow commands first; advanced/internal "
+            "commands remain available for diagnostics and custom automation."
+        ),
+        formatter_class=CrucibleHelpFormatter,
+        command_groups=COMMAND_GROUPS,
     )
     parser.add_argument("--version", action="store_true", help="Print crucible version and exit.")
     parser.add_argument("--version-json", action="store_true", help="Print crucible version as JSON and exit.")
-    sub = parser.add_subparsers(dest="command")
+    sub = parser.add_subparsers(dest="subcommand", metavar="command")
 
     plan = sub.add_parser(
         "plan",
@@ -37,9 +123,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="Number of numbered tasks to create.",
     )
     plan.add_argument("--work-dir", required=True, help="Working directory for task commands.")
-    plan.add_argument("--out", required=True, help="Manifest path to write.")
+    plan.add_argument("--out", "--manifest", dest="out", required=True, help="Manifest path to write.")
     plan.add_argument(
-        "--command-template",
+        "--command-template", "--command",
+        dest="command_template",
         required=True,
         help="Shell command template. Supports {index}, {shard}, {task_id}, {output}, and --var keys.",
     )
@@ -49,6 +136,7 @@ def build_parser() -> argparse.ArgumentParser:
         required=True,
         help="Output path template for each task. Repeat for multiple outputs.",
     )
+    plan.add_argument("--output-dir", help="Value for {output_dir}; defaults to the materialized run outputs directory.")
     plan.add_argument("--var", action="append", default=[], help="Template variable KEY=VALUE. Repeatable.")
     plan.add_argument(
         "--path-map",
@@ -63,6 +151,7 @@ def build_parser() -> argparse.ArgumentParser:
     plan.add_argument("--git-min", default="2.38", help="Minimum Git version required on workers.")
     plan.add_argument("--git-repo", help="Git checkout to pin; defaults to --work-dir.")
     plan.add_argument("--git-commit", help="Required Git commit; defaults to current HEAD.")
+    plan.add_argument("--no-git-requirement", action="store_true", help="Do not pin a git checkout in the manifest.")
     plan.add_argument("--require-clean-git", action="store_true", help="Require a clean pinned Git checkout.")
     plan.add_argument("--progress-unit", help="Unit name for declared task progress, for example rows or games.")
     plan.add_argument("--progress-total", help="Per-task total for declared progress. Supports templates.")
@@ -71,7 +160,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="Count lines in this file and split the total across generated tasks.",
     )
     plan.add_argument(
-        "--progress-log-regex",
+        "--progress-log-regex", "--progress-regex",
+        dest="progress_log_regex",
         help="Regex read from task logs. Use named group (?P<done>...), optional total and output.",
     )
     plan.add_argument("--progress-output-unit", help="Label for optional (?P<output>...) progress value.")
@@ -83,6 +173,7 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     add_input.add_argument("--manifest", required=True, help="Manifest to update.")
+    add_input.add_argument("--name", help="Human-readable input label.")
     add_input.add_argument("--path", action="append", required=True, help="Input file to checksum. Repeatable.")
     add_input.set_defaults(func=cmd_add_input)
 
@@ -378,6 +469,44 @@ def build_parser() -> argparse.ArgumentParser:
     deploy.add_argument("--verbose", action="store_true", help="Print setup and worker phase details.")
     deploy.set_defaults(func=cmd_deploy)
 
+    run_job = sub.add_parser(
+        "run-job",
+        help="Deploy a manifest, run workers, verify, and optionally merge outputs.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    run_job.add_argument("manifest", help="Manifest template to materialize into runs/<name>.")
+    run_job.add_argument("--workers", required=True, help="workers.json file.")
+    run_job.add_argument("--jobs", type=int, default=4, help="Maximum workers to prepare/run concurrently.")
+    run_job.add_argument("--run", help="Run directory name under runs/. Defaults to manifest name.")
+    run_job.add_argument("--resume", action="store_true", help="Resume an existing materialized run.")
+    run_job.add_argument("--replace", action="store_true", help="Delete and recreate an existing run.")
+    run_job.add_argument("--coordinator-host", help="Coordinator hostname workers should SSH back to.")
+    run_job.add_argument("--remote-timeout-seconds", type=float, default=1800.0, help="Timeout for remote setup/work commands.")
+    run_job.add_argument(
+        "--wait",
+        action="store_true",
+        help="Poll the materialized run after workers exit and fail on incomplete or failed tasks.",
+    )
+    run_job.add_argument("--lease-seconds", type=int, default=600, help="Claim lease duration before stale.")
+    run_job.add_argument("--interval-seconds", type=float, default=30.0, help="Polling interval for --wait.")
+    run_job.add_argument("--timeout-seconds", type=float, default=0.0, help="Overall --wait timeout; 0 means no timeout.")
+    run_job.add_argument("--fail-on-fail", action=argparse.BooleanOptionalAction, default=True, help="Return failure when --wait sees failed tasks.")
+    run_job.add_argument("--verify", action=argparse.BooleanOptionalAction, default=True, help="Verify task completion and outputs before returning success.")
+    run_job.add_argument("--merge", metavar="OUTPUT", help="Merge first task outputs into this file after verification.")
+    run_job.add_argument("--merge-force", action="store_true", help="Overwrite an existing merged output.")
+    run_job.add_argument("--newline-between", action="store_true", help="Insert a newline between merged task outputs.")
+    run_job.add_argument(
+        "--notify-command",
+        help="Command run on deploy/wait completion with CRUCIBLE_EVENT_JSON and JSON on stdin.",
+    )
+    run_job.add_argument("--no-color", action="store_true", help="Disable ANSI color output.")
+    run_job.add_argument("--verbose", action="store_true", help="Print setup and worker phase details.")
+    run_job.set_defaults(func=cmd_run_job)
+
+    parser.command_help = {
+        action.dest: str(action.help)
+        for action in sub._choices_actions
+    }
     return parser
 
 def main() -> int:
@@ -389,9 +518,9 @@ def main() -> int:
     if args.version or args.version_json:
         args.json = bool(args.version_json)
         return cmd_version(args)
-    if getattr(args, "command", None) is None:
+    if getattr(args, "subcommand", None) is None:
         parser.error("a command is required")
-    if getattr(args, "command", None) == "run" and args.task is None and args.index is None:
+    if getattr(args, "subcommand", None) == "run" and args.task is None and args.index is None:
         parser.error("run requires --task or --index")
     try:
         return int(args.func(args))

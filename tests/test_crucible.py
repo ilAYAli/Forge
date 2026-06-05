@@ -22,7 +22,15 @@ import crucible  # noqa: E402
 
 
 class CrucibleTests(unittest.TestCase):
-    def run_cli(self, *args: str, cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
+    def run_cli(
+        self,
+        *args: str,
+        cwd: Path | None = None,
+        env: dict[str, str] | None = None,
+    ) -> subprocess.CompletedProcess[str]:
+        process_env = os.environ.copy()
+        if env:
+            process_env.update(env)
         return subprocess.run(
             [sys.executable, str(CLI), *args],
             cwd=cwd or ROOT,
@@ -30,6 +38,7 @@ class CrucibleTests(unittest.TestCase):
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             check=False,
+            env=process_env,
         )
 
     @contextlib.contextmanager
@@ -48,12 +57,33 @@ class CrucibleTests(unittest.TestCase):
         self.assertIn("usage:", result.stdout)
         self.assertIn("status", result.stdout)
 
+    def test_top_level_help_groups_common_and_advanced_commands(self) -> None:
+        result = self.run_cli("--help")
+        self.assertEqual("", result.stderr)
+        self.assertEqual(0, result.returncode)
+        stdout = result.stdout
+        common = stdout.index("Common workflow:")
+        results = stdout.index("Result handling:")
+        maintenance = stdout.index("Maintenance:")
+        advanced = stdout.index("Advanced/internal:")
+
+        self.assertLess(common, stdout.index("    run-job"))
+        self.assertLess(stdout.index("    run-job"), results)
+        self.assertLess(results, stdout.index("    verify"))
+        self.assertLess(stdout.index("    merge"), maintenance)
+        self.assertLess(maintenance, stdout.index("    update"))
+        self.assertLess(stdout.index("    version"), advanced)
+        self.assertLess(advanced, stdout.index("    claim"))
+        self.assertLess(advanced, stdout.index("    heartbeat"))
+        self.assertLess(advanced, stdout.index("    work"))
+        self.assertNotIn("positional arguments:", stdout)
+
     def test_subcommand_help_is_available(self) -> None:
         commands = [
             "plan", "add-input", "add-repo", "add-command", "sync-repos", "run", "claim",
             "release", "heartbeat", "work", "doctor", "status",
             "wait", "verify", "merge", "stop", "drain", "del", "self-update",
-            "update", "version", "deploy",
+            "update", "version", "deploy", "run-job",
         ]
         for command in commands:
             with self.subTest(command=command):
@@ -64,6 +94,7 @@ class CrucibleTests(unittest.TestCase):
         self.assertIn("--progress-log-regex", self.run_cli("plan", "--help").stdout)
         self.assertIn("Coordinator manifest", self.run_cli("claim", "--help").stdout)
         self.assertIn("workers.json", self.run_cli("deploy", "--help").stdout)
+        self.assertIn("--merge", self.run_cli("run-job", "--help").stdout)
         self.assertIn("workers.json", self.run_cli("update", "--help").stdout)
 
     def test_list_subcommand_is_not_supported(self) -> None:
@@ -116,8 +147,15 @@ class CrucibleTests(unittest.TestCase):
             self.assertEqual("native check", manifest_payload["description"])
             self.assertEqual("sprt-game", manifest_payload["tasks"][0]["label"])
 
-            add = self.run_cli("add-input", "--manifest", str(manifest), "--path", str(root / "input.txt"))
+            add = self.run_cli(
+                "add-input",
+                "--manifest", str(manifest),
+                "--name", "source-input",
+                "--path", str(root / "input.txt"),
+            )
             self.assertEqual(0, add.returncode)
+            manifest_payload = json.loads(manifest.read_text(encoding="utf-8"))
+            self.assertEqual("source-input", manifest_payload["requirements"]["inputs"][0]["name"])
 
             for index in range(3):
                 run = self.run_cli("run", "--manifest", str(manifest), "--index", str(index))
@@ -139,6 +177,113 @@ class CrucibleTests(unittest.TestCase):
             )
             self.assertEqual(0, merge.returncode)
             self.assertEqual("0\n\n1\n\n2\n\n", merged.read_text(encoding="utf-8"))
+
+    def test_run_job_local_wait_verify_and_merge(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            subprocess.run(["git", "init", "-b", "main", str(repo)], check=True, stdout=subprocess.DEVNULL)
+            subprocess.run(["git", "config", "user.name", "Petter Wahlman"], cwd=repo, check=True)
+            subprocess.run(["git", "config", "user.email", "petter@wahlman.no"], cwd=repo, check=True)
+            (repo / "input.txt").write_text("fixed\n", encoding="utf-8")
+            subprocess.run(["git", "add", "input.txt"], cwd=repo, check=True)
+            subprocess.run(["git", "commit", "-m", "test"], cwd=repo, check=True, stdout=subprocess.DEVNULL)
+
+            manifest = root / "template.json"
+            plan = self.run_cli(
+                "plan",
+                "--name", "run-job-pass",
+                "--shards", "4",
+                "--work-dir", str(repo),
+                "--out", str(manifest),
+                "--command-template", "mkdir -p \"$(dirname {output})\" && printf '{index}\\n' > {output}",
+                "--output-template", str(repo / "out" / "task.{index}.txt"),
+            )
+            self.assertEqual("", plan.stderr)
+            self.assertEqual(0, plan.returncode)
+
+            workers = root / "workers.json"
+            crucible.write_json(workers, {
+                "schema": "crucible.workers.v1",
+                "workers": [{
+                    "host": "localhost",
+                    "profile": "localhost",
+                    "local": True,
+                    "cache_dir": str(root / "worker-cache"),
+                    "python": sys.executable,
+                }],
+            })
+
+            merged = root / "merged.txt"
+            result = self.run_cli(
+                "run-job", str(manifest),
+                "--workers", str(workers),
+                "--jobs", "1",
+                "--wait",
+                "--interval-seconds", "0.01",
+                "--timeout-seconds", "5",
+                "--merge", str(merged),
+                "--newline-between",
+                env={"CRUCIBLE_RUNS_DIR": str(root / "runs")},
+            )
+
+            self.assertEqual("", result.stderr)
+            self.assertEqual(0, result.returncode)
+            self.assertIn("deploy: tasks complete", result.stdout)
+            self.assertIn("tasks=4/4", result.stdout)
+            self.assertIn("ok", result.stdout)
+            self.assertIn("run-job: ok", result.stdout)
+            self.assertEqual("0\n\n1\n\n2\n\n3\n\n", merged.read_text(encoding="utf-8"))
+
+    def test_run_job_does_not_merge_failed_tasks(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            subprocess.run(["git", "init", "-b", "main", str(repo)], check=True, stdout=subprocess.DEVNULL)
+            subprocess.run(["git", "config", "user.name", "Petter Wahlman"], cwd=repo, check=True)
+            subprocess.run(["git", "config", "user.email", "petter@wahlman.no"], cwd=repo, check=True)
+            (repo / "input.txt").write_text("fixed\n", encoding="utf-8")
+            subprocess.run(["git", "add", "input.txt"], cwd=repo, check=True)
+            subprocess.run(["git", "commit", "-m", "test"], cwd=repo, check=True, stdout=subprocess.DEVNULL)
+
+            manifest = root / "template.json"
+            plan = self.run_cli(
+                "plan",
+                "--name", "run-job-fail",
+                "--shards", "2",
+                "--work-dir", str(repo),
+                "--out", str(manifest),
+                "--command-template", "if [ {index} -eq 0 ]; then printf ok > {output}; else false; fi",
+                "--output-template", str(repo / "out" / "task.{index}.txt"),
+            )
+            self.assertEqual(0, plan.returncode)
+
+            workers = root / "workers.json"
+            crucible.write_json(workers, {
+                "schema": "crucible.workers.v1",
+                "workers": [{
+                    "host": "localhost",
+                    "profile": "localhost",
+                    "local": True,
+                    "cache_dir": str(root / "worker-cache"),
+                    "python": sys.executable,
+                }],
+            })
+
+            merged = root / "merged.txt"
+            result = self.run_cli(
+                "run-job", str(manifest),
+                "--workers", str(workers),
+                "--jobs", "1",
+                "--wait",
+                "--merge", str(merged),
+                env={"CRUCIBLE_RUNS_DIR": str(root / "runs")},
+            )
+
+            self.assertNotEqual(0, result.returncode)
+            self.assertIn("deploy: tasks failed", result.stdout)
+            self.assertIn("run-job: deploy failed", result.stderr)
+            self.assertFalse(merged.exists())
 
     def test_plan_rejects_duplicate_output_paths(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -162,6 +307,86 @@ class CrucibleTests(unittest.TestCase):
 
             self.assertNotEqual(0, result.returncode)
             self.assertIn("duplicate output path", result.stderr)
+
+    def test_plan_can_skip_git_requirement_for_ad_hoc_jobs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest = root / "manifest.json"
+
+            result = self.run_cli(
+                "plan",
+                "--name", "ad-hoc",
+                "--shards", "1",
+                "--work-dir", str(root),
+                "--out", str(manifest),
+                "--command-template", "printf ok > {output}",
+                "--output-template", str(root / "out.txt"),
+                "--no-git-requirement",
+            )
+
+            self.assertEqual("", result.stderr)
+            self.assertEqual(0, result.returncode)
+            payload = json.loads(manifest.read_text(encoding="utf-8"))
+            self.assertNotIn("git", payload["requirements"])
+
+    def test_plan_accepts_user_facing_aliases(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest = root / "manifest.json"
+
+            result = self.run_cli(
+                "plan",
+                "--name", "simple-plan",
+                "--tasks", "1",
+                "--work-dir", str(root),
+                "--manifest", str(manifest),
+                "--command", "printf ok > {output_dir}/out.txt",
+                "--output-dir", str(root / "outputs"),
+                "--output-template", "{output_dir}/out.txt",
+                "--progress-regex", r"done=(?P<done>\d+)",
+                "--no-git-requirement",
+            )
+
+            self.assertEqual("", result.stderr)
+            self.assertEqual(0, result.returncode)
+            payload = json.loads(manifest.read_text(encoding="utf-8"))
+            self.assertEqual("printf ok > {output_dir}/out.txt", payload["tasks"][0]["command"])
+            self.assertEqual(str(root / "outputs"), payload["vars"]["output_dir"])
+            self.assertEqual(str(root / "outputs" / "out.txt"), payload["tasks"][0]["outputs"][0])
+            self.assertEqual(r"done=(?P<done>\d+)", payload["tasks"][0]["progress"]["log_regex"])
+
+    def test_plan_allows_deferred_output_dir_templates(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest = root / "manifest.json"
+
+            result = self.run_cli(
+                "plan",
+                "--name", "deferred-output",
+                "--shards", "2",
+                "--work-dir", str(root),
+                "--out", str(manifest),
+                "--command-template", "printf ok > {output}",
+                "--output-template", "{output_dir}/{task_id}.txt",
+                "--no-git-requirement",
+            )
+
+            self.assertEqual("", result.stderr)
+            self.assertEqual(0, result.returncode)
+            payload = json.loads(manifest.read_text(encoding="utf-8"))
+            self.assertEqual(
+                ["{output_dir}/task_0000.txt", "{output_dir}/task_0001.txt"],
+                [task["outputs"][0] for task in payload["tasks"]],
+            )
+            materialized = crucible.materialize_manifest(
+                payload,
+                run_name="deferred-output-run",
+                run_dir=root / "runs" / "deferred-output-run",
+            )
+            self.assertEqual(
+                str(root / "runs" / "deferred-output-run" / "outputs" / "task_0000.txt"),
+                materialized["tasks"][0]["outputs"][0],
+            )
 
     def test_write_json_replaces_existing_file_without_temp_leftover(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -388,6 +613,33 @@ class CrucibleTests(unittest.TestCase):
 
             manifest["requirements"]["inputs"][1]["sha256"] = crucible.sha256_file(mac_input)
             crucible.check_requirements(crucible.apply_profile(manifest, "mac"))
+
+    def test_add_command_accepts_path_only_requirement(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            tool = root / "tool"
+            tool.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+            tool.chmod(0o755)
+            manifest = root / "manifest.json"
+            crucible.write_json(manifest, {
+                "schema": "crucible.task.v1",
+                "name": "path-only-command",
+                "work_dir": str(root),
+                "requirements": {"inputs": []},
+                "tasks": [],
+            })
+
+            result = self.run_cli(
+                "add-command",
+                "--manifest", str(manifest),
+                "--name", "tool",
+                "--path", str(tool),
+            )
+
+            self.assertEqual("", result.stderr)
+            self.assertEqual(0, result.returncode)
+            payload = json.loads(manifest.read_text(encoding="utf-8"))
+            self.assertEqual(str(tool), payload["requirements"]["commands"][0]["path"])
 
     def test_worker_claims_runs_and_syncs_to_coordinator(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

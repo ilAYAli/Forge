@@ -121,7 +121,7 @@ def materialize_manifest(template: dict[str, Any], *, run_name: str, run_dir: Pa
         raise SystemExit("vars must be an object")
     vars_obj = dict(vars_obj)
     vars_obj["run_dir"] = str(run_dir)
-    vars_obj["output_dir"] = str(run_dir / "outputs")
+    vars_obj.setdefault("output_dir", str(run_dir / "outputs"))
     manifest["vars"] = vars_obj
     for task in manifest["tasks"]:
         outputs = task.get("outputs", [])
@@ -333,6 +333,8 @@ def cmd_plan(args: argparse.Namespace) -> int:
         if not sep or not key:
             raise SystemExit(f"invalid --var {item!r}; expected KEY=VALUE")
         vars_obj[key] = value
+    if args.output_dir:
+        vars_obj["output_dir"] = str(expand_path(args.output_dir))
 
     path_maps: dict[str, dict[str, str]] = {}
     for item in args.path_map:
@@ -369,7 +371,15 @@ def cmd_plan(args: argparse.Namespace) -> int:
         ]
     for index in range(args.shards):
         task_id = f"{args.task_prefix}_{index:0{width}d}"
-        format_vars = {"index": index, "shard": index, "task_id": task_id, "shards": args.shards, **vars_obj}
+        format_vars = {
+            "index": index,
+            "shard": index,
+            "task_id": task_id,
+            "shards": args.shards,
+            "run_dir": "{run_dir}",
+            "output_dir": vars_obj.get("output_dir", "{output_dir}"),
+            **vars_obj,
+        }
         outputs = [
             template.format(**format_vars)
             for template in args.output_template
@@ -411,8 +421,15 @@ def cmd_plan(args: argparse.Namespace) -> int:
             task["progress"] = progress
         tasks.append(task)
 
-    git_repo = expand_path(args.git_repo or args.work_dir)
-    git_commit = args.git_commit or git_output(git_repo, "rev-parse", "HEAD")
+    git_requirement = None
+    if not args.no_git_requirement:
+        git_repo = expand_path(args.git_repo or args.work_dir)
+        git_commit = args.git_commit or git_output(git_repo, "rev-parse", "HEAD")
+        git_requirement = git_requirement_record(
+            git_repo,
+            git_commit,
+            require_clean=args.require_clean_git,
+        )
     manifest = {
         "schema": SCHEMA,
         "name": args.name,
@@ -426,11 +443,12 @@ def cmd_plan(args: argparse.Namespace) -> int:
         "requirements": {
             "python_min": args.python_min,
             "git_min": args.git_min,
-            "git": git_requirement_record(git_repo, git_commit, require_clean=args.require_clean_git),
             "inputs": [],
         },
         "tasks": tasks,
     }
+    if git_requirement is not None:
+        manifest["requirements"]["git"] = git_requirement
     if kind:
         manifest["kind"] = kind
     if description:
@@ -453,6 +471,8 @@ def cmd_add_input(args: argparse.Namespace) -> int:
         if not input_path.exists():
             raise SystemExit(f"input does not exist: {input_path}")
         record = file_record(input_path)
+        if args.name:
+            record["name"] = str(args.name)
         inputs[:] = [
             item for item in inputs
             if not isinstance(item, dict) or item.get("path") != str(input_path)
