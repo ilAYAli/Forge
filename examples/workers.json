@@ -1,20 +1,20 @@
 {
   "schema": "crucible.workers.v1",
   "workers": [
-    "pwa-5090",
-    "pwa-rce",
+    "worker-a",
+    "worker-b",
     {
-      "host": "pwa-wsl",
-      "profile": "pwa-wsl"
+      "host": "worker-wsl",
+      "profile": "wsl"
     },
     {
-      "host": "pwa-mbp",
-      "profile": "pwa-mbp",
+      "host": "worker-mac",
+      "profile": "macos-arm64",
       "python": "/opt/homebrew/bin/python3"
     },
     {
-      "host": "pwa-mbp0",
-      "profile": "pwa-mbp0",
+      "host": "worker-mac-2",
+      "profile": "macos-arm64",
       "python": "/opt/homebrew/bin/python3"
     },
     {
