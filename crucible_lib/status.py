@@ -271,6 +271,14 @@ def infer_progress_rate(
     inferred["text"] = progress_text(inferred)
     return inferred
 
+def progress_output_rate(progress_data: dict[str, Any] | None, elapsed_s: float | None) -> float | None:
+    if not isinstance(progress_data, dict) or elapsed_s is None or elapsed_s <= 0:
+        return None
+    output = progress_data.get("output")
+    if not isinstance(output, int) or output <= 0:
+        return None
+    return output / elapsed_s
+
 def progress_config_unit_total(task: dict[str, Any]) -> tuple[str, int] | None:
     progress_config = task.get("progress")
     if not isinstance(progress_config, dict):
@@ -475,6 +483,7 @@ def active_worker_metrics(summary: dict[str, Any]) -> dict[str, dict[str, Any]]:
     for row in summary["active"]:
         worker = worker_group_name(str(row.get("worker") or "unknown"))
         output_metric = summary.get("worker_outputs", {}).get(worker, {})
+        rate_metric = summary.get("worker_rates", {}).get(worker, 0.0)
         entry = workers.setdefault(
             worker,
             {
@@ -482,6 +491,7 @@ def active_worker_metrics(summary: dict[str, Any]) -> dict[str, dict[str, Any]]:
                 "tasks": 0,
                 "output": int(output_metric.get("output", 0)) if isinstance(output_metric, dict) else 0,
                 "output_seen": bool(output_metric.get("output_seen")) if isinstance(output_metric, dict) else False,
+                "rate": float(rate_metric) if isinstance(rate_metric, (int, float)) else 0.0,
             },
         )
         entry["tasks"] += 1
@@ -502,8 +512,11 @@ def active_worker_summary(summary: dict[str, Any]) -> str:
         max_output = int(ordered[-1]["output"])
         parts.append(f"min={ordered[0]['worker']}:{compact_count(int(ordered[0]['output']))}")
         parts.append(f"max={ordered[-1]['worker']}:{compact_count(max_output)}")
-        if max_output > 0:
-            parts.append(f"speedup={total_output / max_output:.1f}x")
+        rates = [float(metric.get("rate", 0.0)) for metric in values if float(metric.get("rate", 0.0)) > 0]
+        if rates:
+            max_rate = max(rates)
+            if max_rate > 0:
+                parts.append(f"speedup={sum(rates) / max_rate:.1f}x")
     return " ".join(parts)
 
 def sorted_worker_metrics(summary: dict[str, Any]) -> list[dict[str, Any]]:
@@ -908,6 +921,8 @@ def status_summary(manifest: dict[str, Any], *, lease_seconds: int) -> dict[str,
     progress_done: dict[str, int] = {}
     progress_outputs: dict[str, int] = {}
     worker_outputs: dict[str, dict[str, Any]] = {}
+    worker_rates: dict[str, float] = {}
+    completed_worker_task_rates: dict[str, list[float]] = {}
     completed_units: dict[str, int] = {}
     completed_elapsed: dict[str, float] = {}
 
@@ -921,10 +936,20 @@ def status_summary(manifest: dict[str, Any], *, lease_seconds: int) -> dict[str,
         if isinstance(elapsed, (int, float)) and elapsed > 0:
             completed_units[unit] = completed_units.get(unit, 0) + total
             completed_elapsed[unit] = completed_elapsed.get(unit, 0.0) + float(elapsed)
+            progress_data = task_log_progress_data(manifest, task)
+            output_rate = progress_output_rate(progress_data, float(elapsed))
+            if output_rate is not None:
+                worker = status_worker(manifest, task, "done") or "unknown"
+                completed_worker_task_rates.setdefault(worker, []).append(output_rate)
     fallback_rates = {
         unit: completed_units[unit] / completed_elapsed[unit]
         for unit in completed_units
         if completed_elapsed.get(unit, 0.0) > 0
+    }
+    fallback_worker_rates = {
+        worker: sum(rates) / len(rates)
+        for worker, rates in completed_worker_task_rates.items()
+        if rates
     }
 
     for task in manifest["tasks"]:
@@ -976,6 +1001,15 @@ def status_summary(manifest: dict[str, Any], *, lease_seconds: int) -> dict[str,
                     )
                     worker_metric["output"] += output
                     worker_metric["output_seen"] = True
+        if state in {"running", "claimed", "stale"}:
+            key = worker or "unknown"
+            elapsed = running_elapsed_seconds(running_payload)
+            output_rate = progress_output_rate(progress_data, elapsed)
+            fallback_rate = fallback_worker_rates.get(worker or "unknown")
+            if output_rate is None and isinstance(fallback_rate, (int, float)) and fallback_rate > 0:
+                output_rate = float(fallback_rate)
+            if output_rate is not None:
+                worker_rates[key] = worker_rates.get(key, 0.0) + output_rate
         rows.append(row)
 
         if state in {"done", "fail"}:
@@ -1000,6 +1034,7 @@ def status_summary(manifest: dict[str, Any], *, lease_seconds: int) -> dict[str,
         "progress_done": progress_done,
         "progress_outputs": progress_outputs,
         "worker_outputs": worker_outputs,
+        "worker_rates": worker_rates,
         "diagnostics": state_diagnostics(),
     }
 

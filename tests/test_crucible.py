@@ -2230,10 +2230,10 @@ class CrucibleTests(unittest.TestCase):
                 ],
             }
             (run / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
-            (state / "task_0.running.json").write_text(json.dumps({"task": "task_0", "host": "worker-a"}))
-            (state / "task_1.running.json").write_text(json.dumps({"task": "task_1", "host": "worker-a-slot2"}))
-            (state / "task_2.running.json").write_text(json.dumps({"task": "task_2", "host": "worker-b"}))
-            (state / "task_3.done.json").write_text(json.dumps({"task": "task_3", "host": "worker-b"}))
+            (state / "task_0.running.json").write_text(json.dumps({"task": "task_0", "host": "worker-a", "started_epoch": 1000.0}))
+            (state / "task_1.running.json").write_text(json.dumps({"task": "task_1", "host": "worker-a-slot2", "started_epoch": 1000.0}))
+            (state / "task_2.running.json").write_text(json.dumps({"task": "task_2", "host": "worker-b", "started_epoch": 1000.0}))
+            (state / "task_3.done.json").write_text(json.dumps({"task": "task_3", "host": "worker-b", "elapsed_s": 100.0}))
             (logs / "task_0.log").write_text(
                 "shard 0/2: selected=50000 written=48010 rate=6.7/s\n",
                 encoding="utf-8",
@@ -2251,7 +2251,7 @@ class CrucibleTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            with self.patch_runs_dir(runs):
+            with self.patch_runs_dir(runs), mock.patch("crucible_lib.status.epoch", return_value=1100.0):
                 stdout = io.StringIO()
                 with contextlib.redirect_stdout(stdout):
                     rc = crucible.cmd_status(
@@ -2269,7 +2269,7 @@ class CrucibleTests(unittest.TestCase):
                 )
                 self.assertEqual(0, rc)
                 text = stdout.getvalue()
-                self.assertIn("active: 3 workers=2 output=68k min=worker-b:20k max=worker-a:48k speedup=1.4x", text)
+                self.assertIn("active: 3 workers=2 output=68k min=worker-b:20k max=worker-a:48k speedup=1.0x", text)
                 self.assertNotIn("active workers:", text)
                 self.assertIn("worker-a tasks=2 output=48k", text)
                 self.assertIn("worker-b tasks=1 output=20k", text)
@@ -2277,6 +2277,23 @@ class CrucibleTests(unittest.TestCase):
                 self.assertNotIn("rows", worker_section)
                 self.assertNotIn("rate", worker_section)
                 self.assertNotIn("avg", worker_section)
+
+    def test_status_speedup_uses_rates_not_output_share(self) -> None:
+        summary = {
+            "active": [{"worker": "fast"}, {"worker": "slow"}],
+            "worker_outputs": {
+                "fast": {"output": 80000, "output_seen": True},
+                "slow": {"output": 10000, "output_seen": True},
+            },
+            "worker_rates": {
+                "fast": 10.0,
+                "slow": 10.0,
+            },
+        }
+        self.assertEqual(
+            "workers=2 output=90k min=slow:10k max=fast:80k speedup=2.0x",
+            crucible.active_worker_summary(summary),
+        )
 
     def test_status_normalizes_localhost_worker_name(self) -> None:
         with mock.patch("crucible_lib.status.socket.gethostname", return_value="coordinator"):
