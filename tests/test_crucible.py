@@ -2163,7 +2163,7 @@ class CrucibleTests(unittest.TestCase):
                 self.assertEqual(0, rc)
                 self.assertIn("progress=50k/125k rows, output=48k, eta=3h06m", named_stdout.getvalue())
 
-    def test_status_shows_active_output_spread(self) -> None:
+    def test_status_shows_active_worker_throughput(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             runs = root / "runs"
@@ -2203,17 +2203,34 @@ class CrucibleTests(unittest.TestCase):
                             "output_unit": "output",
                         },
                     },
+                    {
+                        "id": "task_2",
+                        "index": 2,
+                        "command": "true",
+                        "outputs": [],
+                        "progress": {
+                            "unit": "rows",
+                            "total": 125000,
+                            "log_regex": r"selected=(?P<done>\d+)\s+written=(?P<output>\d+)\s+rate=(?P<rate>[0-9.]+)/s",
+                            "output_unit": "output",
+                        },
+                    },
                 ],
             }
             (run / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
             (state / "task_0.running.json").write_text(json.dumps({"task": "task_0", "host": "worker-a"}))
-            (state / "task_1.running.json").write_text(json.dumps({"task": "task_1", "host": "worker-b"}))
+            (state / "task_1.running.json").write_text(json.dumps({"task": "task_1", "host": "worker-a-slot2"}))
+            (state / "task_2.running.json").write_text(json.dumps({"task": "task_2", "host": "worker-b"}))
             (logs / "task_0.log").write_text(
                 "shard 0/2: selected=50000 written=48010 rate=6.7/s\n",
                 encoding="utf-8",
             )
             (logs / "task_1.log").write_text(
                 "shard 1/2: selected=1000 written=120 rate=2.0/s\n",
+                encoding="utf-8",
+            )
+            (logs / "task_2.log").write_text(
+                "shard 2/2: selected=1000 written=777 rate=1.0/s\n",
                 encoding="utf-8",
             )
 
@@ -2232,9 +2249,22 @@ class CrucibleTests(unittest.TestCase):
                             verbose=True,
                             show_done=False,
                         )
-                    )
+                )
                 self.assertEqual(0, rc)
-                self.assertIn("active: 2 (output: min=120, max=48k, total=48k)", stdout.getvalue())
+                text = stdout.getvalue()
+                self.assertIn(
+                    "active: 3 (workers=2, output=48k, fastest=worker-a[2] avg_rows/s=4.35, slowest=worker-b[1] avg_rows/s=1)",
+                    text,
+                )
+                self.assertIn("active workers:", text)
+                self.assertIn(
+                    "worker-a [2]: rows=51k/250k, rows/s=8.7 total, avg_rows/s=4.35, output=48k total, avg_output=24k",
+                    text,
+                )
+                self.assertIn(
+                    "worker-b [1]: rows=1000/125k, rows/s=1 total, avg_rows/s=1, output=777 total, avg_output=777",
+                    text,
+                )
 
     def test_status_infers_eta_from_elapsed_declared_progress(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

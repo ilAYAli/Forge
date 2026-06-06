@@ -182,6 +182,13 @@ def compact_count(value: int) -> str:
         return f"{value // 1000}k"
     return str(value)
 
+def compact_rate(value: float) -> str:
+    if value >= 100:
+        return f"{value:.0f}"
+    if value >= 10:
+        return f"{value:.1f}"
+    return f"{value:.2f}".rstrip("0").rstrip(".")
+
 def compact_duration(seconds: float) -> str:
     remaining = max(0, int(round(seconds)))
     minutes, seconds = divmod(remaining, 60)
@@ -446,30 +453,131 @@ def summary_progress(summary: dict[str, Any]) -> str:
     parts.extend(etas)
     return f"progress={', '.join(parts)}" if parts else ""
 
-def active_output_summary(summary: dict[str, Any]) -> str:
-    active_count = int(summary.get("active_count") or 0)
-    if active_count <= 0:
-        return ""
-    by_unit: dict[str, list[int]] = {}
+def worker_group_name(worker: str) -> str:
+    name = worker.strip() or "unknown"
+    hash_slot = re.fullmatch(r"(.+)#\d+", name)
+    if hash_slot:
+        return hash_slot.group(1)
+    for pattern in (r"(.+)-slot\d+", r"(.+)-extra-\d+", r"(.+)-reclaim-\d+"):
+        match = re.fullmatch(pattern, name)
+        if match:
+            return match.group(1)
+    return name
+
+def active_worker_metrics(summary: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    workers: dict[str, dict[str, Any]] = {}
     for row in summary["active"]:
+        worker = worker_group_name(str(row.get("worker") or "unknown"))
+        entry = workers.setdefault(
+            worker,
+            {
+                "worker": worker,
+                "slots": 0,
+                "done": {},
+                "total": {},
+                "rate": {},
+                "output": {},
+            },
+        )
+        entry["slots"] += 1
         data = row.get("progress_data")
         if not isinstance(data, dict) or data.get("kind") != "metadata":
             continue
+        done = data.get("done")
+        unit = str(data.get("unit") or "items").strip() or "items"
+        if isinstance(done, int):
+            entry["done"][unit] = entry["done"].get(unit, 0) + done
+        total = data.get("total")
+        if isinstance(total, int) and total > 0:
+            entry["total"][unit] = entry["total"].get(unit, 0) + total
+        rate = data.get("rate")
+        if isinstance(rate, (int, float)) and rate > 0:
+            entry["rate"][unit] = entry["rate"].get(unit, 0.0) + float(rate)
         output = data.get("output")
         if not isinstance(output, int):
             continue
         unit = str(data.get("output_unit") or "output").strip() or "output"
-        by_unit.setdefault(unit, []).append(output)
+        entry["output"][unit] = entry["output"].get(unit, 0) + output
+    return workers
+
+def worker_primary_rate(metric: dict[str, Any]) -> float:
+    rates = metric.get("rate")
+    if not isinstance(rates, dict) or not rates:
+        return -1.0
+    slots = max(1, int(metric.get("slots") or 1))
+    return max(float(value) / slots for value in rates.values())
+
+def format_worker_brief(metric: dict[str, Any]) -> str:
+    worker = str(metric["worker"])
+    slots = max(1, int(metric["slots"]))
+    rates = metric.get("rate")
+    if isinstance(rates, dict) and rates:
+        unit, rate = max(rates.items(), key=lambda item: float(item[1]))
+        return f"{worker}[{slots}] avg_{unit}/s={compact_rate(float(rate) / slots)}"
+    return f"{worker}[{slots}]"
+
+def format_worker_detail(metric: dict[str, Any]) -> str:
     parts: list[str] = []
-    for unit, values in sorted(by_unit.items()):
-        if not values:
+    slots = max(1, int(metric.get("slots") or 1))
+    done_by_unit = metric.get("done")
+    total_by_unit = metric.get("total")
+    if isinstance(done_by_unit, dict):
+        for unit, done in sorted(done_by_unit.items()):
+            if not isinstance(done, int):
+                continue
+            total = total_by_unit.get(unit) if isinstance(total_by_unit, dict) else None
+            if isinstance(total, int) and total > 0:
+                parts.append(f"{unit}={compact_count(done)}/{compact_count(total)}")
+            else:
+                parts.append(f"{unit}=~{compact_count(done)}")
+    rates = metric.get("rate")
+    if isinstance(rates, dict):
+        for unit, rate in sorted(rates.items()):
+            if isinstance(rate, (int, float)) and rate > 0:
+                parts.append(f"{unit}/s={compact_rate(float(rate))} total")
+                parts.append(f"avg_{unit}/s={compact_rate(float(rate) / slots)}")
+    outputs = metric.get("output")
+    if isinstance(outputs, dict):
+        for unit, output in sorted(outputs.items()):
+            if isinstance(output, int):
+                parts.append(f"{unit}={compact_count(output)} total")
+                parts.append(f"avg_{unit}={compact_count(int(round(output / slots)))}")
+    detail = ", ".join(parts) if parts else "no parsed progress"
+    return f"{metric['worker']} [{slots}]: {detail}"
+
+def active_worker_summary(summary: dict[str, Any]) -> str:
+    metrics = active_worker_metrics(summary)
+    if not metrics:
+        return ""
+    parts = [f"workers={len(metrics)}"]
+    output_totals: dict[str, int] = {}
+    for metric in metrics.values():
+        outputs = metric.get("output")
+        if not isinstance(outputs, dict):
             continue
-        prefix = f"{len(values)}/{active_count} " if len(values) != active_count else ""
-        parts.append(
-            f"{unit}: {prefix}min={compact_count(min(values))}, "
-            f"max={compact_count(max(values))}, total={compact_count(sum(values))}"
-        )
-    return "; ".join(parts)
+        for unit, value in outputs.items():
+            if isinstance(value, int):
+                output_totals[unit] = output_totals.get(unit, 0) + value
+    for unit, value in sorted(output_totals.items()):
+        parts.append(f"{unit}={compact_count(value)}")
+    rated = [metric for metric in metrics.values() if worker_primary_rate(metric) >= 0]
+    if rated:
+        rated.sort(key=worker_primary_rate, reverse=True)
+        parts.append(f"fastest={format_worker_brief(rated[0])}")
+        parts.append(f"slowest={format_worker_brief(rated[-1])}")
+    return ", ".join(parts)
+
+def sorted_worker_metrics(summary: dict[str, Any]) -> list[dict[str, Any]]:
+    metrics = list(active_worker_metrics(summary).values())
+    return sorted(metrics, key=lambda item: (-worker_primary_rate(item), str(item["worker"])))
+
+def print_active_worker_metrics(summary: dict[str, Any]) -> None:
+    metrics = sorted_worker_metrics(summary)
+    if not metrics:
+        return
+    print("active workers:")
+    for metric in metrics:
+        print(f"  {format_worker_detail(metric)}")
 
 def run_status_payload(summary: dict[str, Any]) -> dict[str, Any]:
     counts = summary["counts"]
@@ -1018,9 +1126,10 @@ def print_status_details(
     if show_done:
         print_status_group("done", summary["groups"]["done"], color_enabled=color_enabled)
     if summary["active"]:
-        output = active_output_summary(summary)
-        suffix = f" ({output})" if output else ""
+        worker_summary = active_worker_summary(summary)
+        suffix = f" ({worker_summary})" if worker_summary else ""
         print(colorize(f"active: {len(summary['active'])}{suffix}", "yellow", enabled=color_enabled))
+        print_active_worker_metrics(summary)
         for row in sorted(summary["active"], key=active_status_sort_key):
             state_name = str(row.get("state") or "")
             progress = f" [{row['progress']}]" if state_name == "running" and row.get("progress") else ""
