@@ -2215,12 +2215,25 @@ class CrucibleTests(unittest.TestCase):
                             "output_unit": "output",
                         },
                     },
+                    {
+                        "id": "task_3",
+                        "index": 3,
+                        "command": "true",
+                        "outputs": [],
+                        "progress": {
+                            "unit": "rows",
+                            "total": 125000,
+                            "log_regex": r"selected=(?P<done>\d+)\s+written=(?P<output>\d+)\s+rate=(?P<rate>[0-9.]+)/s",
+                            "output_unit": "output",
+                        },
+                    },
                 ],
             }
             (run / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
             (state / "task_0.running.json").write_text(json.dumps({"task": "task_0", "host": "worker-a"}))
             (state / "task_1.running.json").write_text(json.dumps({"task": "task_1", "host": "worker-a-slot2"}))
             (state / "task_2.running.json").write_text(json.dumps({"task": "task_2", "host": "worker-b"}))
+            (state / "task_3.done.json").write_text(json.dumps({"task": "task_3", "host": "worker-b"}))
             (logs / "task_0.log").write_text(
                 "shard 0/2: selected=50000 written=48010 rate=6.7/s\n",
                 encoding="utf-8",
@@ -2231,6 +2244,10 @@ class CrucibleTests(unittest.TestCase):
             )
             (logs / "task_2.log").write_text(
                 "shard 2/2: selected=1000 written=777 rate=1.0/s\n",
+                encoding="utf-8",
+            )
+            (logs / "task_3.log").write_text(
+                "shard 3/3: selected=20000 written=20000 rate=4.0/s\n",
                 encoding="utf-8",
             )
 
@@ -2252,10 +2269,10 @@ class CrucibleTests(unittest.TestCase):
                 )
                 self.assertEqual(0, rc)
                 text = stdout.getvalue()
-                self.assertIn("active: 3 workers=2 output=48k min=worker-b:777 max=worker-a:48k speedup=1.0x", text)
+                self.assertIn("active: 3 workers=2 output=68k min=worker-b:20k max=worker-a:48k speedup=1.4x", text)
                 self.assertNotIn("active workers:", text)
                 self.assertIn("worker-a tasks=2 output=48k", text)
-                self.assertIn("worker-b tasks=1 output=777", text)
+                self.assertIn("worker-b tasks=1 output=20k", text)
                 worker_section = text.split("active: 3", 1)[1].split("  worker-a task=0", 1)[0]
                 self.assertNotIn("rows", worker_section)
                 self.assertNotIn("rate", worker_section)

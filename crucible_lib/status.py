@@ -382,10 +382,6 @@ def summary_progress(summary: dict[str, Any]) -> str:
                 eta_s = data.get("eta_s")
                 if isinstance(eta_s, (int, float)):
                     bucket["etas"].append(max(0.0, float(eta_s)))
-            output = data.get("output")
-            if isinstance(output, int):
-                output_unit = str(data.get("output_unit") or "output")
-                outputs[output_unit] = outputs.get(output_unit, 0) + output
             continue
         if isinstance(data, dict) and data.get("kind") == "subtask":
             done = data.get("done")
@@ -448,6 +444,14 @@ def summary_progress(summary: dict[str, Any]) -> str:
             parts.append(text)
         else:
             parts.append(f"~{compact_count(active_done)} {unit}")
+    if not outputs:
+        summary_outputs = summary.get("progress_outputs", {})
+        if isinstance(summary_outputs, dict):
+            outputs = {
+                str(output_unit): value
+                for output_unit, value in summary_outputs.items()
+                if isinstance(value, int)
+            }
     for output_unit, value in sorted(outputs.items()):
         parts.append(f"{output_unit}={compact_count(value)}")
     parts.extend(etas)
@@ -470,24 +474,17 @@ def active_worker_metrics(summary: dict[str, Any]) -> dict[str, dict[str, Any]]:
     workers: dict[str, dict[str, Any]] = {}
     for row in summary["active"]:
         worker = worker_group_name(str(row.get("worker") or "unknown"))
+        output_metric = summary.get("worker_outputs", {}).get(worker, {})
         entry = workers.setdefault(
             worker,
             {
                 "worker": worker,
                 "tasks": 0,
-                "output": 0,
-                "output_seen": False,
+                "output": int(output_metric.get("output", 0)) if isinstance(output_metric, dict) else 0,
+                "output_seen": bool(output_metric.get("output_seen")) if isinstance(output_metric, dict) else False,
             },
         )
         entry["tasks"] += 1
-        data = row.get("progress_data")
-        if not isinstance(data, dict) or data.get("kind") != "metadata":
-            continue
-        output = data.get("output")
-        if not isinstance(output, int):
-            continue
-        entry["output"] += output
-        entry["output_seen"] = True
     return workers
 
 def format_worker_detail(metric: dict[str, Any]) -> str:
@@ -909,6 +906,8 @@ def status_summary(manifest: dict[str, Any], *, lease_seconds: int) -> dict[str,
     pending_groups: dict[str, list[int | str]] = {}
     progress_totals: dict[str, int] = {}
     progress_done: dict[str, int] = {}
+    progress_outputs: dict[str, int] = {}
+    worker_outputs: dict[str, dict[str, Any]] = {}
     completed_units: dict[str, int] = {}
     completed_elapsed: dict[str, float] = {}
 
@@ -940,7 +939,7 @@ def status_summary(manifest: dict[str, Any], *, lease_seconds: int) -> dict[str,
             progress_totals[unit] = progress_totals.get(unit, 0) + total
             if state == "done":
                 progress_done[unit] = progress_done.get(unit, 0) + total
-        progress_data = task_log_progress_data(manifest, task) if state == "running" else None
+        progress_data = task_log_progress_data(manifest, task) if state in {"done", "running"} else None
         if progress_data is None and state in {"running", "claimed", "stale"}:
             progress_data = task_heartbeat_progress_data(manifest, task)
         running_payload = task_running_payload(manifest, task) if state in {"running", "claimed", "stale"} else None
@@ -965,6 +964,18 @@ def status_summary(manifest: dict[str, Any], *, lease_seconds: int) -> dict[str,
         }
         if progress_data:
             row["progress_data"] = progress_data
+            if progress_data.get("kind") == "metadata":
+                output = progress_data.get("output")
+                if isinstance(output, int):
+                    output_unit = str(progress_data.get("output_unit") or "output")
+                    progress_outputs[output_unit] = progress_outputs.get(output_unit, 0) + output
+                    key = worker or "unknown"
+                    worker_metric = worker_outputs.setdefault(
+                        key,
+                        {"worker": key, "output": 0, "output_seen": False},
+                    )
+                    worker_metric["output"] += output
+                    worker_metric["output_seen"] = True
         rows.append(row)
 
         if state in {"done", "fail"}:
@@ -987,6 +998,8 @@ def status_summary(manifest: dict[str, Any], *, lease_seconds: int) -> dict[str,
         "rows": rows,
         "progress_totals": progress_totals,
         "progress_done": progress_done,
+        "progress_outputs": progress_outputs,
+        "worker_outputs": worker_outputs,
         "diagnostics": state_diagnostics(),
     }
 
