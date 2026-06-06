@@ -71,3 +71,7 @@ crucible status nnue-sprt --verbose
 
 The manifest pins and installs the `sprt` wrapper from Git, then probes the
 exact option used by the task command before any games are started.
+Use worker `slots` for parallelism. Keep each SPRT task at low internal
+concurrency, usually `--concurrency 1`, and create more chunks than total
+worker slots. Chunks of 50-100 games are usually small enough to avoid a slow
+tail while still keeping startup overhead reasonable.
