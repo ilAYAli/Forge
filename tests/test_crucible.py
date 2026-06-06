@@ -173,7 +173,7 @@ class CrucibleTests(unittest.TestCase):
             self.assertIn("tasks=3/3", status.stdout)
             self.assertIn("kind=sprt", status.stdout)
             self.assertIn("desc=native check", status.stdout)
-            self.assertRegex(status.stdout.splitlines()[1], r"^tasks=3/3 kind=sprt desc=native check")
+            self.assertRegex(status.stdout.splitlines()[1], r"^state=done tasks=3/3 kind=sprt desc=native check")
 
             merged = root / "merged.txt"
             merge = self.run_cli(
@@ -1516,7 +1516,7 @@ class CrucibleTests(unittest.TestCase):
             compact = self.run_cli("status", str(root))
             self.assertEqual(1, compact.returncode)
             self.assertIn(
-                "tasks=1/4 active=1 running=1 claimed=0 progress=subtask=42/1000 fail=1 pending=1 stale=0",
+                "state=failed tasks=1/4 active=1 running=1 claimed=0 progress=subtask=42/1000 fail=1 pending=1 stale=0",
                 compact.stdout,
             )
             self.assertNotIn("host-done [1]: 0", compact.stdout)
@@ -1778,7 +1778,7 @@ class CrucibleTests(unittest.TestCase):
                 self.assertEqual(0, rc)
                 status_text = stdout.getvalue()
                 self.assertIn("main", status_text)
-                self.assertRegex(status_text, r"main\s+current tasks=0/1")
+                self.assertRegex(status_text, r"main\s+state=current tasks=0/1")
                 self.assertNotIn("bonus", status_text)
                 self.assertNotIn("setup", status_text)
                 self.assertNotIn("nnue-selfplay", status_text)
@@ -1905,7 +1905,7 @@ class CrucibleTests(unittest.TestCase):
             self.assertEqual(0, all_status.returncode)
             self.assertIn("active", all_status.stdout)
             self.assertIn("queued", all_status.stdout)
-            self.assertRegex(all_status.stdout, r"queued\s+queued tasks=0/1")
+            self.assertRegex(all_status.stdout, r"queued\s+state=queued tasks=0/1")
 
     def test_status_empty_active_message_is_specific(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -597,8 +597,8 @@ def print_run_status(
         state_color = "red" if state == "failed" else "yellow" if state in {"current", "queued"} else "green"
         progress = summary_progress(summary)
         fields = [
-            f"{summary['run']:<36} "
-            f"{colorize(state, state_color, enabled=color_enabled)}",
+            str(summary["run"]),
+            f"state={colorize(state, state_color, enabled=color_enabled)}",
             f"tasks={counts['done']}/{summary['tasks']}",
             *run_metadata_fields(summary),
             f"active={active}",
@@ -1146,6 +1146,7 @@ def print_compact_status(
 ) -> None:
     counts = summary["counts"]
     fields = [
+        f"state={run_state(summary)}",
         f"tasks={counts['done']}/{summary['tasks']}",
         *run_metadata_fields(summary),
         f"active={summary['active_count']}",
