@@ -502,8 +502,11 @@ def active_worker_summary(summary: dict[str, Any]) -> str:
     parts = [f"workers={len(values)}", f"output={compact_count(total_output)}"]
     if any(bool(metric.get("output_seen")) for metric in values):
         ordered = sorted(values, key=lambda metric: (int(metric["output"]), str(metric["worker"])))
+        max_output = int(ordered[-1]["output"])
         parts.append(f"min={ordered[0]['worker']}:{compact_count(int(ordered[0]['output']))}")
-        parts.append(f"max={ordered[-1]['worker']}:{compact_count(int(ordered[-1]['output']))}")
+        parts.append(f"max={ordered[-1]['worker']}:{compact_count(max_output)}")
+        if max_output > 0:
+            parts.append(f"speedup={total_output / max_output:.1f}x")
     return " ".join(parts)
 
 def sorted_worker_metrics(summary: dict[str, Any]) -> list[dict[str, Any]]:

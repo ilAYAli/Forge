@@ -2252,7 +2252,7 @@ class CrucibleTests(unittest.TestCase):
                 )
                 self.assertEqual(0, rc)
                 text = stdout.getvalue()
-                self.assertIn("active: 3 workers=2 output=48k min=worker-b:777 max=worker-a:48k", text)
+                self.assertIn("active: 3 workers=2 output=48k min=worker-b:777 max=worker-a:48k speedup=1.0x", text)
                 self.assertNotIn("active workers:", text)
                 self.assertIn("worker-a tasks=2 output=48k", text)
                 self.assertIn("worker-b tasks=1 output=777", text)
