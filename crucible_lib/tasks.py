@@ -514,6 +514,7 @@ def coordinator_result_payload(
     local_manifest: dict[str, Any],
     coordinator_task: dict[str, Any],
     local_task: dict[str, Any],
+    worker: str,
     state: str,
 ) -> tuple[dict[str, Any], Path]:
     coordinator_outputs = task_outputs(coordinator_task)
@@ -539,6 +540,7 @@ def coordinator_result_payload(
     payload["log"] = str(task_log_path(coordinator_manifest, coordinator_task))
     payload["outputs"] = output_records
     payload["worker"] = {
+        "name": worker,
         "host": local_payload.get("host"),
         "platform": local_payload.get("platform"),
         "profile_manifest_sha256": manifest_checksum(local_manifest),
@@ -618,6 +620,7 @@ def sync_task_result(
         local_manifest=local_manifest,
         coordinator_task=coordinator_task,
         local_task=local_task,
+        worker=worker,
         state=state,
     )
     sync_payload_path = local_state_path.with_suffix(local_state_path.suffix + ".sync.json")

@@ -759,7 +759,7 @@ def status_worker(manifest: dict[str, Any], task: dict[str, Any], state: str) ->
             continue
         worker = payload.get("worker")
         if isinstance(worker, dict):
-            worker = worker.get("host")
+            worker = worker.get("name") or worker.get("host")
         worker = worker or payload.get("host")
         if worker:
             return worker_group_name(str(worker))
