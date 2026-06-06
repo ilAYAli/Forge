@@ -2252,20 +2252,14 @@ class CrucibleTests(unittest.TestCase):
                 )
                 self.assertEqual(0, rc)
                 text = stdout.getvalue()
-                self.assertIn(
-                    "active: 3 (workers=2, max=worker-a avg_rows/s=4.35, min=worker-b avg_rows/s=1)",
-                    text,
-                )
-                self.assertIn("active workers:", text)
-                self.assertIn(
-                    "worker-a: slots=2, rows=51k/250k, avg_rows/s=4.35",
-                    text,
-                )
-                self.assertIn(
-                    "worker-b: slots=1, rows=1000/125k, avg_rows/s=1",
-                    text,
-                )
-                self.assertNotIn("avg_output", text)
+                self.assertIn("active: 3 workers=2, output=48k, min=worker-b 777, max=worker-a 48k", text)
+                self.assertNotIn("active workers:", text)
+                self.assertIn("worker-a tasks=2 output=48k", text)
+                self.assertIn("worker-b tasks=1 output=777", text)
+                worker_section = text.split("active: 3", 1)[1].split("  worker-a task=0", 1)[0]
+                self.assertNotIn("rows", worker_section)
+                self.assertNotIn("rate", worker_section)
+                self.assertNotIn("avg", worker_section)
 
     def test_status_normalizes_localhost_worker_name(self) -> None:
         with mock.patch("crucible_lib.status.socket.gethostname", return_value="coordinator"):
