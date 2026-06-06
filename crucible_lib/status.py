@@ -504,7 +504,7 @@ def active_worker_summary(summary: dict[str, Any]) -> str:
         ordered = sorted(values, key=lambda metric: (int(metric["output"]), str(metric["worker"])))
         parts.append(f"min={ordered[0]['worker']} {compact_count(int(ordered[0]['output']))}")
         parts.append(f"max={ordered[-1]['worker']} {compact_count(int(ordered[-1]['output']))}")
-    return ", ".join(parts)
+    return " ".join(parts)
 
 def sorted_worker_metrics(summary: dict[str, Any]) -> list[dict[str, Any]]:
     metrics = list(active_worker_metrics(summary).values())
