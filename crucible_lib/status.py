@@ -446,6 +446,31 @@ def summary_progress(summary: dict[str, Any]) -> str:
     parts.extend(etas)
     return f"progress={', '.join(parts)}" if parts else ""
 
+def active_output_summary(summary: dict[str, Any]) -> str:
+    active_count = int(summary.get("active_count") or 0)
+    if active_count <= 0:
+        return ""
+    by_unit: dict[str, list[int]] = {}
+    for row in summary["active"]:
+        data = row.get("progress_data")
+        if not isinstance(data, dict) or data.get("kind") != "metadata":
+            continue
+        output = data.get("output")
+        if not isinstance(output, int):
+            continue
+        unit = str(data.get("output_unit") or "output").strip() or "output"
+        by_unit.setdefault(unit, []).append(output)
+    parts: list[str] = []
+    for unit, values in sorted(by_unit.items()):
+        if not values:
+            continue
+        prefix = f"{len(values)}/{active_count} " if len(values) != active_count else ""
+        parts.append(
+            f"{unit}: {prefix}min={compact_count(min(values))}, "
+            f"max={compact_count(max(values))}, total={compact_count(sum(values))}"
+        )
+    return "; ".join(parts)
+
 def run_status_payload(summary: dict[str, Any]) -> dict[str, Any]:
     counts = summary["counts"]
     payload = {
@@ -993,7 +1018,9 @@ def print_status_details(
     if show_done:
         print_status_group("done", summary["groups"]["done"], color_enabled=color_enabled)
     if summary["active"]:
-        print(colorize(f"active: {len(summary['active'])}", "yellow", enabled=color_enabled))
+        output = active_output_summary(summary)
+        suffix = f" ({output})" if output else ""
+        print(colorize(f"active: {len(summary['active'])}{suffix}", "yellow", enabled=color_enabled))
         for row in sorted(summary["active"], key=active_status_sort_key):
             state_name = str(row.get("state") or "")
             progress = f" [{row['progress']}]" if state_name == "running" and row.get("progress") else ""

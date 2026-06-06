@@ -2163,6 +2163,79 @@ class CrucibleTests(unittest.TestCase):
                 self.assertEqual(0, rc)
                 self.assertIn("progress=50k/125k rows, output=48k, eta=3h06m", named_stdout.getvalue())
 
+    def test_status_shows_active_output_spread(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            runs = root / "runs"
+            run = runs / "score"
+            state = run / "state"
+            logs = run / "logs"
+            state.mkdir(parents=True)
+            logs.mkdir(parents=True)
+            manifest = {
+                "schema": "crucible.task.v1",
+                "name": "score",
+                "work_dir": str(run),
+                "state_dir": str(state),
+                "log_dir": str(logs),
+                "tasks": [
+                    {
+                        "id": "task_0",
+                        "index": 0,
+                        "command": "true",
+                        "outputs": [],
+                        "progress": {
+                            "unit": "rows",
+                            "total": 125000,
+                            "log_regex": r"selected=(?P<done>\d+)\s+written=(?P<output>\d+)\s+rate=(?P<rate>[0-9.]+)/s",
+                            "output_unit": "output",
+                        },
+                    },
+                    {
+                        "id": "task_1",
+                        "index": 1,
+                        "command": "true",
+                        "outputs": [],
+                        "progress": {
+                            "unit": "rows",
+                            "total": 125000,
+                            "log_regex": r"selected=(?P<done>\d+)\s+written=(?P<output>\d+)\s+rate=(?P<rate>[0-9.]+)/s",
+                            "output_unit": "output",
+                        },
+                    },
+                ],
+            }
+            (run / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+            (state / "task_0.running.json").write_text(json.dumps({"task": "task_0", "host": "worker-a"}))
+            (state / "task_1.running.json").write_text(json.dumps({"task": "task_1", "host": "worker-b"}))
+            (logs / "task_0.log").write_text(
+                "shard 0/2: selected=50000 written=48010 rate=6.7/s\n",
+                encoding="utf-8",
+            )
+            (logs / "task_1.log").write_text(
+                "shard 1/2: selected=1000 written=120 rate=2.0/s\n",
+                encoding="utf-8",
+            )
+
+            with self.patch_runs_dir(runs):
+                stdout = io.StringIO()
+                with contextlib.redirect_stdout(stdout):
+                    rc = crucible.cmd_status(
+                        argparse.Namespace(
+                            run=None,
+                            all=False,
+                            done=False,
+                            failed=False,
+                            json=False,
+                            no_color=True,
+                            lease_seconds=600,
+                            verbose=True,
+                            show_done=False,
+                        )
+                    )
+                self.assertEqual(0, rc)
+                self.assertIn("active: 2 (output: min=120, max=48k, total=48k)", stdout.getvalue())
+
     def test_status_infers_eta_from_elapsed_declared_progress(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
