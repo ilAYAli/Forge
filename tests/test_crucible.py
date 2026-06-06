@@ -696,6 +696,42 @@ class CrucibleTests(unittest.TestCase):
             self.assertEqual("0\n", (coordinator / "out" / "shard.0.txt").read_text(encoding="utf-8"))
             self.assertEqual("1\n", (coordinator / "out" / "shard.1.txt").read_text(encoding="utf-8"))
 
+    def test_worker_execution_manifest_keeps_state_local(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest_path = root / "cache" / "manifest.json"
+            manifest_path.parent.mkdir()
+            manifest = {
+                "schema": "crucible.task.v1",
+                "name": "worker-paths",
+                "work_dir": "/home/petter/code/cpp/chess/nnue",
+                "state_dir": "/home/petter/code/cpp/chess/crucible/runs/job/state",
+                "log_dir": "/home/petter/code/cpp/chess/crucible/runs/job/logs",
+                "claim_dir": "/home/petter/code/cpp/chess/crucible/runs/job/claims",
+                "path_maps": {
+                    "mac": {
+                        "/home/petter/code/cpp/chess/nnue": "/Users/pwahlman/code/cpp/chess/nnue_worker",
+                    },
+                },
+                "tasks": [{
+                    "id": "task_0000",
+                    "index": 0,
+                    "command": "printf x > {output}",
+                    "outputs": ["/home/petter/code/cpp/chess/nnue/runs/job/out.txt"],
+                }],
+            }
+
+            local = crucible.worker_execution_manifest(manifest, profile="mac", manifest_path=manifest_path)
+
+            self.assertEqual("/Users/pwahlman/code/cpp/chess/nnue_worker", local["work_dir"])
+            self.assertEqual(
+                "/Users/pwahlman/code/cpp/chess/nnue_worker/runs/job/out.txt",
+                local["tasks"][0]["outputs"][0],
+            )
+            self.assertEqual(str(manifest_path.parent / "worker-state" / "state"), local["state_dir"])
+            self.assertEqual(str(manifest_path.parent / "worker-state" / "logs"), local["log_dir"])
+            self.assertEqual(str(manifest_path.parent / "worker-state" / "claims"), local["claim_dir"])
+
     def test_worker_waits_when_no_claim_but_coordinator_has_work(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

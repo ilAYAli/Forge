@@ -473,6 +473,40 @@ def run_coordinator_cli(coordinator: str, args: list[str]) -> subprocess.Complet
         check=False,
     )
 
+def load_coordinator_manifest(coordinator: str) -> dict[str, Any]:
+    host, manifest_path = parse_coordinator(coordinator)
+    if host:
+        code = (
+            "from pathlib import Path; "
+            "import sys; "
+            "sys.stdout.write(Path(sys.argv[1]).read_text(encoding='utf-8'))"
+        )
+        result = subprocess.run(
+            ["ssh", *SSH_OPTS, host, shell_join(["python3", "-c", code, manifest_path])],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        if result.returncode != 0:
+            detail = result.stderr.strip() or result.stdout.strip() or "coordinator manifest load failed"
+            raise SystemExit(detail)
+        return json.loads(result.stdout)
+    return load_manifest(expand_path(manifest_path))
+
+def worker_execution_manifest(
+    manifest: dict[str, Any],
+    *,
+    profile: str | None,
+    manifest_path: Path,
+) -> dict[str, Any]:
+    local_manifest = apply_profile(copy.deepcopy(manifest), profile)
+    local_run_dir = expand_path(manifest_path).parent / "worker-state"
+    local_manifest["state_dir"] = str(local_run_dir / "state")
+    local_manifest["log_dir"] = str(local_run_dir / "logs")
+    local_manifest["claim_dir"] = str(local_run_dir / "claims")
+    return local_manifest
+
 def coordinator_result_payload(
     *,
     coordinator_manifest: dict[str, Any],
@@ -774,8 +808,14 @@ def check_coordinator_cli(coordinator: str) -> None:
         raise SystemExit(detail)
 
 def cmd_work(args: argparse.Namespace) -> int:
-    coordinator_manifest = load_manifest(expand_path(args.manifest))
-    local_manifest = apply_profile(copy.deepcopy(coordinator_manifest), args.profile)
+    local_manifest_path = expand_path(args.manifest)
+    local_manifest_base = load_manifest(local_manifest_path)
+    coordinator_manifest = load_coordinator_manifest(args.coordinator)
+    local_manifest = worker_execution_manifest(
+        local_manifest_base,
+        profile=args.profile,
+        manifest_path=local_manifest_path,
+    )
     check_coordinator_cli(args.coordinator)
     check_requirements(local_manifest)
     completed = 0
