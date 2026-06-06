@@ -455,6 +455,8 @@ def summary_progress(summary: dict[str, Any]) -> str:
 
 def worker_group_name(worker: str) -> str:
     name = worker.strip() or "unknown"
+    if name.lower() in {"localhost", "127.0.0.1", "::1"}:
+        name = socket.gethostname()
     hash_slot = re.fullmatch(r"(.+)#\d+", name)
     if hash_slot:
         return hash_slot.group(1)
@@ -563,8 +565,8 @@ def active_worker_summary(summary: dict[str, Any]) -> str:
     rated = [metric for metric in metrics.values() if worker_primary_rate(metric) >= 0]
     if rated:
         rated.sort(key=worker_primary_rate, reverse=True)
-        parts.append(f"fastest={format_worker_brief(rated[0])}")
-        parts.append(f"slowest={format_worker_brief(rated[-1])}")
+        parts.append(f"max={format_worker_brief(rated[0])}")
+        parts.append(f"min={format_worker_brief(rated[-1])}")
     return ", ".join(parts)
 
 def sorted_worker_metrics(summary: dict[str, Any]) -> list[dict[str, Any]]:
@@ -824,7 +826,7 @@ def status_worker(manifest: dict[str, Any], task: dict[str, Any], state: str) ->
             worker = worker.get("host")
         worker = worker or payload.get("host")
         if worker:
-            return str(worker)
+            return worker_group_name(str(worker))
     return ""
 
 def log_tail(path: Path, *, max_bytes: int = 8192) -> str:

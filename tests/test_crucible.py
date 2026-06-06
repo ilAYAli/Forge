@@ -2253,7 +2253,7 @@ class CrucibleTests(unittest.TestCase):
                 self.assertEqual(0, rc)
                 text = stdout.getvalue()
                 self.assertIn(
-                    "active: 3 (workers=2, output=48k, fastest=worker-a[2] avg_rows/s=4.35, slowest=worker-b[1] avg_rows/s=1)",
+                    "active: 3 (workers=2, output=48k, max=worker-a[2] avg_rows/s=4.35, min=worker-b[1] avg_rows/s=1)",
                     text,
                 )
                 self.assertIn("active workers:", text)
@@ -2265,6 +2265,12 @@ class CrucibleTests(unittest.TestCase):
                     "worker-b [1]: rows=1000/125k, rows/s=1 total, avg_rows/s=1, output=777 total, avg_output=777",
                     text,
                 )
+
+    def test_status_normalizes_localhost_worker_name(self) -> None:
+        with mock.patch("crucible_lib.status.socket.gethostname", return_value="coordinator"):
+            self.assertEqual("coordinator", crucible.worker_group_name("localhost"))
+            self.assertEqual("coordinator", crucible.worker_group_name("127.0.0.1"))
+            self.assertEqual("coordinator", crucible.worker_group_name("::1"))
 
     def test_status_infers_eta_from_elapsed_declared_progress(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
