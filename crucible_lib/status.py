@@ -515,12 +515,13 @@ def format_worker_brief(metric: dict[str, Any]) -> str:
     rates = metric.get("rate")
     if isinstance(rates, dict) and rates:
         unit, rate = max(rates.items(), key=lambda item: float(item[1]))
-        return f"{worker}[{slots}] avg_{unit}/s={compact_rate(float(rate) / slots)}"
-    return f"{worker}[{slots}]"
+        return f"{worker} avg_{unit}/s={compact_rate(float(rate) / slots)}"
+    return worker
 
 def format_worker_detail(metric: dict[str, Any]) -> str:
     parts: list[str] = []
     slots = max(1, int(metric.get("slots") or 1))
+    parts.append(f"slots={slots}")
     done_by_unit = metric.get("done")
     total_by_unit = metric.get("total")
     if isinstance(done_by_unit, dict):
@@ -536,32 +537,15 @@ def format_worker_detail(metric: dict[str, Any]) -> str:
     if isinstance(rates, dict):
         for unit, rate in sorted(rates.items()):
             if isinstance(rate, (int, float)) and rate > 0:
-                parts.append(f"{unit}/s={compact_rate(float(rate))} total")
                 parts.append(f"avg_{unit}/s={compact_rate(float(rate) / slots)}")
-    outputs = metric.get("output")
-    if isinstance(outputs, dict):
-        for unit, output in sorted(outputs.items()):
-            if isinstance(output, int):
-                parts.append(f"{unit}={compact_count(output)} total")
-                parts.append(f"avg_{unit}={compact_count(int(round(output / slots)))}")
     detail = ", ".join(parts) if parts else "no parsed progress"
-    return f"{metric['worker']} [{slots}]: {detail}"
+    return f"{metric['worker']}: {detail}"
 
 def active_worker_summary(summary: dict[str, Any]) -> str:
     metrics = active_worker_metrics(summary)
     if not metrics:
         return ""
     parts = [f"workers={len(metrics)}"]
-    output_totals: dict[str, int] = {}
-    for metric in metrics.values():
-        outputs = metric.get("output")
-        if not isinstance(outputs, dict):
-            continue
-        for unit, value in outputs.items():
-            if isinstance(value, int):
-                output_totals[unit] = output_totals.get(unit, 0) + value
-    for unit, value in sorted(output_totals.items()):
-        parts.append(f"{unit}={compact_count(value)}")
     rated = [metric for metric in metrics.values() if worker_primary_rate(metric) >= 0]
     if rated:
         rated.sort(key=worker_primary_rate, reverse=True)
