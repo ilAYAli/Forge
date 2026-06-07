@@ -585,7 +585,7 @@ def run_status_payload(summary: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 def run_title(summary: dict[str, Any]) -> str:
-    return json.dumps(str(summary["run"]))
+    return f"run={json.dumps(str(summary['run']))}"
 
 def run_description_field(summary: dict[str, Any]) -> str:
     metadata = summary.get("metadata")

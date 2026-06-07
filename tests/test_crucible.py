@@ -171,7 +171,7 @@ class CrucibleTests(unittest.TestCase):
             status = self.run_cli("status", str(run_dir))
             self.assertEqual(0, status.returncode)
             self.assertIn("tasks=3/3", status.stdout)
-            self.assertIn('"test"\n  desc="native check"', status.stdout)
+            self.assertIn('run="test"\n  desc="native check"', status.stdout)
             self.assertNotIn("kind=", status.stdout)
             self.assertRegex(status.stdout.splitlines()[2], r"^  tasks=3/3")
 
@@ -1778,7 +1778,7 @@ class CrucibleTests(unittest.TestCase):
                 self.assertEqual(0, rc)
                 status_text = stdout.getvalue()
                 self.assertIn("main", status_text)
-                self.assertRegex(status_text, r'"main"\s+tasks=0/1')
+                self.assertRegex(status_text, r'run="main"\s+tasks=0/1')
                 self.assertNotIn("bonus", status_text)
                 self.assertNotIn("setup", status_text)
                 self.assertNotIn("nnue-selfplay", status_text)
@@ -1949,7 +1949,7 @@ class CrucibleTests(unittest.TestCase):
             self.assertEqual(1, all_status.returncode)
             self.assertIn("active", all_status.stdout)
             self.assertIn("queued", all_status.stdout)
-            self.assertRegex(all_status.stdout, r'"queued"\n  tasks=0/1')
+            self.assertRegex(all_status.stdout, r'run="queued"\n  tasks=0/1')
 
     def test_status_empty_active_message_is_specific(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
