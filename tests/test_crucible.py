@@ -1932,6 +1932,10 @@ class CrucibleTests(unittest.TestCase):
             self.assertEqual(1, failed_status.returncode)
             self.assertIn("zzz-active", failed_status.stdout)
             self.assertIn("failed: 1 run (use crucible status --failed)", failed_status.stdout)
+            self.assertLess(
+                failed_status.stdout.index("failed: 1 run (use crucible status --failed)"),
+                failed_status.stdout.index('"zzz-active"'),
+            )
             self.assertNotIn("aaa-failed", failed_status.stdout)
             self.assertNotIn("waiting", failed_status.stdout)
 

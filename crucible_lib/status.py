@@ -669,6 +669,10 @@ def print_run_status(
         summary for summary in filtered
         if id(summary) not in collapsed_ids
     ]
+    if collapsed_failures:
+        print(colorize(failure_summary_text(len(collapsed_failures)), "red", enabled=color_enabled))
+        if visible and show_details:
+            print()
     for index, summary in enumerate(visible):
         if show_details and index:
             print()
@@ -709,10 +713,6 @@ def print_run_status(
                 show_diagnostics=True,
                 indent="  ",
             )
-    if collapsed_failures:
-        if visible and show_details:
-            print()
-        print(colorize(failure_summary_text(len(collapsed_failures)), "red", enabled=color_enabled))
     return 0 if all(item["counts"]["fail"] == 0 for item in filtered) else 1
 
 def load_run_manifest(run: str | Path) -> tuple[Path, dict[str, Any]]:
