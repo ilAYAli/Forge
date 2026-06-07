@@ -9,6 +9,26 @@ from .status import *
 def update_worker_label(worker: dict[str, Any]) -> str:
     return str(worker.get("name") or worker.get("host") or "local")
 
+def update_worker_key(worker: dict[str, Any]) -> tuple[Any, ...]:
+    if is_local_worker(worker):
+        return ("local", str(worker.get("host") or "localhost"))
+    return ("remote", str(worker.get("host") or ""))
+
+def update_workers_from_arg(value: str | None, *, default_ok: bool) -> list[dict[str, Any]]:
+    workers = load_workers_arg(value, default_ok=default_ok)
+    unique: list[dict[str, Any]] = []
+    seen: set[tuple[Any, ...]] = set()
+    for worker in workers:
+        key = update_worker_key(worker)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped = dict(worker)
+        deduped.pop("_slot", None)
+        deduped.pop("_slots", None)
+        unique.append(deduped)
+    return unique
+
 def default_workers_path() -> Path:
     candidates = [
         runs_dir() / RUN_WORKERS_NAME,
@@ -87,7 +107,7 @@ def cmd_update(args: argparse.Namespace) -> int:
     remote = str(args.remote)
     branch = str(args.branch or "main")
     timeout = max(0.0, float(args.timeout_seconds))
-    workers = load_workers_arg(args.workers, default_ok=True)
+    workers = update_workers_from_arg(args.workers, default_ok=True)
     failed = 0
 
     if args.all:

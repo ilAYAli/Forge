@@ -3837,6 +3837,45 @@ class CrucibleTests(unittest.TestCase):
             self.assertEqual(0, rc)
             self.assertEqual(1, run_mock.call_count)
 
+    def test_update_deduplicates_worker_slots(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            workers = root / "workers.json"
+            workers.write_text(
+                json.dumps({
+                    "schema": "crucible.workers.v1",
+                    "workers": [
+                        {"host": "pwa-5090", "profile": "linux", "slots": 8},
+                        {"host": "pwa-rce", "profile": "linux", "slots": 2},
+                    ],
+                }),
+                encoding="utf-8",
+            )
+            result = subprocess.CompletedProcess(
+                args=["sh"],
+                returncode=0,
+                stdout="crucible abc main\n",
+                stderr="",
+            )
+            with mock.patch("crucible_lib.workers.run_worker_shell", return_value=result) as run_mock:
+                stdout = io.StringIO()
+                with contextlib.redirect_stdout(stdout):
+                    rc = crucible.cmd_update(
+                        argparse.Namespace(
+                            workers=str(workers),
+                            all=False,
+                            remote="origin",
+                            branch="main",
+                            require_clean=True,
+                            timeout_seconds=30.0,
+                        )
+                    )
+
+            self.assertEqual(0, rc)
+            self.assertEqual(2, run_mock.call_count)
+            self.assertIn("pwa-5090: OK crucible abc main", stdout.getvalue())
+            self.assertIn("pwa-rce: OK crucible abc main", stdout.getvalue())
+
     def test_remote_crucible_command_uses_path(self) -> None:
         command = crucible.remote_crucible_command(["status", "run name"])
 
