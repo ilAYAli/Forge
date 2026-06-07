@@ -501,6 +501,8 @@ def active_worker_summary(summary: dict[str, Any]) -> str:
     if not any(bool(metric.get("output_seen")) for metric in values):
         return ""
     total_output = sum(int(metric["output"]) for metric in values)
+    if len(values) == 1:
+        return f"output={compact_count(total_output)}"
     parts = [f"workers={len(values)}", f"output={compact_count(total_output)}"]
     ordered = sorted(values, key=lambda metric: (int(metric["output"]), str(metric["worker"])))
     max_output = int(ordered[-1]["output"])

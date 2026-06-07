@@ -2161,7 +2161,9 @@ class CrucibleTests(unittest.TestCase):
                         )
                 )
                 self.assertEqual(0, rc)
-                self.assertIn("active: 1 workers=1 output=48k", named_stdout.getvalue())
+                self.assertIn('active: 1 output=48k eta="3h06m"', named_stdout.getvalue())
+                self.assertNotIn("workers=1", named_stdout.getvalue())
+                self.assertNotIn("speedup=1.0x", named_stdout.getvalue())
                 self.assertIn('"worker" task=0 [50k/125k rows, output=48k, eta="3h06m"]', named_stdout.getvalue())
 
     def test_status_shows_active_worker_throughput(self) -> None:
@@ -2295,6 +2297,18 @@ class CrucibleTests(unittest.TestCase):
             'workers=2 output=90k min="slow":10k max="fast":80k speedup=2.0x',
             crucible.active_worker_summary(summary),
         )
+
+    def test_status_single_worker_summary_omits_redundant_fields(self) -> None:
+        summary = {
+            "active": [{"worker": "solo"}],
+            "worker_outputs": {
+                "solo": {"output": 67000, "output_seen": True},
+            },
+            "worker_rates": {
+                "solo": 10.0,
+            },
+        }
+        self.assertEqual("output=67k", crucible.active_worker_summary(summary))
 
     def test_status_normalizes_localhost_worker_name(self) -> None:
         with mock.patch("crucible_lib.status.socket.gethostname", return_value="coordinator"):
