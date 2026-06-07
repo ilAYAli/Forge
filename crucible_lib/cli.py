@@ -321,7 +321,7 @@ def build_parser() -> argparse.ArgumentParser:
         nargs="?",
         help="Run name or run directory. Omit to show active runs.",
     )
-    status.add_argument("-v", "--verbose", action="store_true", help="Show one row per task.")
+    status.add_argument("-v", "--verbose", action="store_true", help="Show detailed task sections and diagnostics.")
     status.add_argument("--show-done", action="store_true", help="Show completed task breakdown for one run.")
     status.add_argument("--all", action="store_true", help="Show all runs, including completed runs.")
     status.add_argument("--done", action="store_true", help="Show completed runs only.")

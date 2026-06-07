@@ -171,10 +171,9 @@ class CrucibleTests(unittest.TestCase):
             status = self.run_cli("status", str(run_dir))
             self.assertEqual(0, status.returncode)
             self.assertIn("tasks=3/3", status.stdout)
-            self.assertIn('"test" ("native check")', status.stdout)
+            self.assertIn('"test"\n  desc="native check"', status.stdout)
             self.assertNotIn("kind=", status.stdout)
-            self.assertNotIn("desc=", status.stdout)
-            self.assertRegex(status.stdout.splitlines()[1], r"^  tasks=3/3")
+            self.assertRegex(status.stdout.splitlines()[2], r"^  tasks=3/3")
 
             merged = root / "merged.txt"
             merge = self.run_cli(
@@ -1527,11 +1526,11 @@ class CrucibleTests(unittest.TestCase):
 
             result = self.run_cli("status", str(root), "--verbose")
             self.assertEqual(1, result.returncode)
-            self.assertIn('"host-done" [1]: 0', result.stdout)
-            self.assertIn("task_0\tdone\thost-done", result.stdout)
-            self.assertIn("task_1\trunning\tworker-claimed", result.stdout)
-            self.assertIn("task_2\tfail\thost-fail", result.stdout)
-            self.assertIn("task_3\tpending\t", result.stdout)
+            self.assertNotIn('"host-done" [1]: 0', result.stdout)
+            self.assertNotIn("task_0\tdone\thost-done", result.stdout)
+            self.assertIn('    "worker-claimed" task=1 [subtask=42/1000]', result.stdout)
+            self.assertIn('    "host-fail" [1]: 2', result.stdout)
+            self.assertIn('    "score:uci" [1]: 3', result.stdout)
 
             show_done = self.run_cli("status", str(root), "--show-done")
             self.assertEqual(1, show_done.returncode)

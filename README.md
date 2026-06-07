@@ -188,9 +188,9 @@ crucible run-job run.manifest.json \
   --merge merged.txt
 ```
 
-Use `--task-label` when planning so `status --verbose` shows readable task
-names. Use `--progress-regex` and progress totals for long-running tools that
-emit parseable progress lines.
+Use `--task-label` when planning so verbose status shows readable task names.
+Use `--progress-regex` and progress totals for long-running tools that emit
+parseable progress lines.
 
 ## Common Commands
 
@@ -226,7 +226,7 @@ Lower-level commands remain available for diagnostics and custom automation:
 ### Status
 
 `crucible status` shows active runs under `runs/`. Pass a run name for one
-run, and add `--verbose` for one row per task:
+run, and add `--verbose` for detailed task sections and diagnostics:
 
 ```sh
 crucible status

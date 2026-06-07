@@ -21,8 +21,8 @@ def cmd_status(args: argparse.Namespace) -> int:
             color_enabled=color_enabled,
             as_json=args.json,
             filter_name=filter_name,
-            show_details=bool(args.all or getattr(args, "show_done", False) or getattr(args, "verbose", False)),
-            show_done=bool(getattr(args, "show_done", False) or getattr(args, "verbose", False)),
+            show_details=bool(args.all or args.done or getattr(args, "show_done", False) or getattr(args, "verbose", False)),
+            show_done=bool(args.done or getattr(args, "show_done", False)),
         )
     if selected:
         raise SystemExit("--all, --done, and --failed cannot be used with a run name")
@@ -41,12 +41,9 @@ def cmd_status(args: argparse.Namespace) -> int:
     print_compact_status(
         summary,
         color_enabled=color_enabled,
-        show_done=args.show_done or args.verbose,
+        show_done=args.show_done,
         show_diagnostics=args.verbose,
     )
-    if args.verbose:
-        for row in summary["rows"]:
-            print(f"{row['id']}\t{row['state']}\t{row['worker']}\t{row.get('label', '')}")
     return 0 if summary["counts"]["fail"] == 0 else 1
 
 def status_can_delegate(run: str | None) -> bool:
@@ -540,30 +537,16 @@ def run_status_payload(summary: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 def run_title(summary: dict[str, Any]) -> str:
-    title = json.dumps(str(summary["run"]))
-    metadata = summary.get("metadata")
-    if not isinstance(metadata, dict):
-        return title
-    description = str(metadata.get("description") or "").strip()
-    kind = metadata.get("kind")
-    if description:
-        return f"{title} ({json.dumps(description)})"
-    if kind:
-        return f"{title} ({json.dumps(str(kind))})"
-    return title
+    return json.dumps(str(summary["run"]))
 
-def run_metadata_fields(summary: dict[str, Any]) -> list[str]:
+def run_description_field(summary: dict[str, Any]) -> str:
     metadata = summary.get("metadata")
     if not isinstance(metadata, dict):
-        return []
-    fields: list[str] = []
-    kind = metadata.get("kind")
-    description = metadata.get("description")
-    if kind:
-        fields.append(f"kind={json.dumps(str(kind))}")
+        return ""
+    description = str(metadata.get("description") or "").strip()
     if description:
-        fields.append(f"desc={json.dumps(str(description))}")
-    return fields
+        return f"desc={json.dumps(description)}"
+    return ""
 
 def summary_progress_fields(summary: dict[str, Any]) -> list[str]:
     progress = summary_progress(summary)
@@ -626,6 +609,8 @@ def print_run_status(
         active = counts["running"] + counts["claimed"] + counts["stale"]
         if show_details:
             print(colorize(run_title(summary), "cyan", enabled=color_enabled))
+            if description := run_description_field(summary):
+                print(f"  {description}")
         fields = [
             f"tasks={counts['done']}/{summary['tasks']}",
         ]
@@ -1210,6 +1195,8 @@ def print_compact_status(
 ) -> None:
     counts = summary["counts"]
     print(colorize(run_title(summary), "cyan", enabled=color_enabled))
+    if description := run_description_field(summary):
+        print(f"  {description}")
     fields = [
         f"tasks={counts['done']}/{summary['tasks']}",
     ]
