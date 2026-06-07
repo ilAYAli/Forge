@@ -2143,7 +2143,7 @@ class CrucibleTests(unittest.TestCase):
                         )
                 )
                 self.assertEqual(0, rc)
-                self.assertIn('50k/125k rows output=48k eta="3h06m"', stdout.getvalue())
+                self.assertIn("50k/125k rows output=48k eta=3h06m", stdout.getvalue())
 
                 named_stdout = io.StringIO()
                 with contextlib.redirect_stdout(named_stdout):
@@ -2161,10 +2161,81 @@ class CrucibleTests(unittest.TestCase):
                         )
                 )
                 self.assertEqual(0, rc)
-                self.assertIn('active: 1 output=48k eta="3h06m"', named_stdout.getvalue())
+                self.assertIn("active: 1 output=48k eta=3h06m", named_stdout.getvalue())
                 self.assertNotIn("workers=1", named_stdout.getvalue())
                 self.assertNotIn("speedup=1.0x", named_stdout.getvalue())
-                self.assertIn('"worker" task=0 [50k/125k rows, output=48k, eta="3h06m"]', named_stdout.getvalue())
+                self.assertIn('"worker" task=0 [50k/125k rows, output=48k, eta=3h06m]', named_stdout.getvalue())
+
+    def test_status_eta_counts_down_from_log_timestamp(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            runs = root / "runs"
+            run = runs / "score"
+            state = run / "state"
+            logs = run / "logs"
+            state.mkdir(parents=True)
+            logs.mkdir(parents=True)
+            manifest = {
+                "schema": "crucible.task.v1",
+                "name": "score",
+                "work_dir": str(run),
+                "state_dir": str(state),
+                "log_dir": str(logs),
+                "tasks": [{
+                    "id": "task_0",
+                    "index": 0,
+                    "command": "true",
+                    "outputs": [],
+                    "progress": {
+                        "unit": "rows",
+                        "total": 100,
+                        "log_regex": r"selected=(?P<done>\d+)\s+rate=(?P<rate>[0-9.]+)/s",
+                    },
+                }],
+            }
+            (run / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+            (state / "task_0.running.json").write_text(json.dumps({"task": "task_0", "host": "worker"}))
+            log = logs / "task_0.log"
+            log.write_text("selected=50 rate=10/s\n", encoding="utf-8")
+            os.utime(log, (1000.0, 1000.0))
+
+            with self.patch_runs_dir(runs), mock.patch("crucible_lib.status.epoch", return_value=1002.0):
+                stdout = io.StringIO()
+                with contextlib.redirect_stdout(stdout):
+                    rc = crucible.cmd_status(
+                        argparse.Namespace(
+                            run="score",
+                            all=False,
+                            done=False,
+                            failed=False,
+                            json=False,
+                            no_color=True,
+                            lease_seconds=600,
+                            verbose=False,
+                            show_done=False,
+                        )
+                )
+                self.assertEqual(0, rc)
+                self.assertIn("eta=3s", stdout.getvalue())
+
+            with self.patch_runs_dir(runs), mock.patch("crucible_lib.status.epoch", return_value=1006.0):
+                stdout = io.StringIO()
+                with contextlib.redirect_stdout(stdout):
+                    rc = crucible.cmd_status(
+                        argparse.Namespace(
+                            run="score",
+                            all=False,
+                            done=False,
+                            failed=False,
+                            json=False,
+                            no_color=True,
+                            lease_seconds=600,
+                            verbose=False,
+                            show_done=False,
+                        )
+                )
+                self.assertEqual(0, rc)
+                self.assertIn("eta=unknown", stdout.getvalue())
 
     def test_status_shows_active_worker_throughput(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -2382,9 +2453,9 @@ class CrucibleTests(unittest.TestCase):
                 )
                 self.assertEqual(0, rc)
                 text = stdout.getvalue()
-                self.assertIn('  tasks=1/2 eta="1m40s"', text)
-                self.assertIn('  active: 1 1500/2000 games eta="1m40s"', text)
-                self.assertIn('"worker-a" task=1 [500/1000 games, eta="1m40s"]', text)
+                self.assertIn("  tasks=1/2 eta=1m40s", text)
+                self.assertIn("  active: 1 1500/2000 games eta=1m40s", text)
+                self.assertIn('"worker-a" task=1 [500/1000 games, eta=1m40s]', text)
 
     def test_status_uses_completed_rate_when_running_task_has_no_progress_yet(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -2455,9 +2526,9 @@ class CrucibleTests(unittest.TestCase):
                 )
                 self.assertEqual(0, rc)
                 text = stdout.getvalue()
-                self.assertIn('  tasks=1/2 eta="1m39s"', text)
-                self.assertIn('  active: 1 1000/2000 games eta="1m39s"', text)
-                self.assertIn('"worker-a" task=1 [0/1000 games, eta="1m39s"]', text)
+                self.assertIn("  tasks=1/2 eta=1m39s", text)
+                self.assertIn("  active: 1 1000/2000 games eta=1m39s", text)
+                self.assertIn('"worker-a" task=1 [0/1000 games, eta=1m39s]', text)
 
     def test_status_labels_overdue_fallback_eta_as_unknown(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -2528,9 +2599,9 @@ class CrucibleTests(unittest.TestCase):
                 )
                 self.assertEqual(0, rc)
                 text = stdout.getvalue()
-                self.assertIn('  tasks=1/2 eta="unknown"', text)
-                self.assertIn('  active: 1 1000/2000 games eta="unknown"', text)
-                self.assertIn('"worker-a" task=1 [0/1000 games, eta="unknown"]', text)
+                self.assertIn("  tasks=1/2 eta=unknown", text)
+                self.assertIn("  active: 1 1000/2000 games eta=unknown", text)
+                self.assertIn('"worker-a" task=1 [0/1000 games, eta=unknown]', text)
 
     def test_status_ignores_undeclared_domain_progress(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

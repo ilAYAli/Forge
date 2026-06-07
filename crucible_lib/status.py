@@ -205,19 +205,38 @@ def progress_eta_seconds(done: Any, total: Any, rate: Any) -> float | None:
         return None
     return max(0.0, (total - done) / float(rate))
 
+def eta_field(seconds: float, *, unknown_when_elapsed: bool = False) -> str:
+    if seconds <= 0 and unknown_when_elapsed:
+        return "eta=unknown"
+    return f"eta={compact_duration(max(0.0, seconds))}"
+
 def progress_eta_text(done: Any, total: Any, rate: Any) -> str:
     eta_s = progress_eta_seconds(done, total, rate)
     if eta_s is None:
         return ""
-    return f"eta={json.dumps(compact_duration(eta_s))}"
+    return eta_field(eta_s)
+
+def progress_data_eta_seconds(data: dict[str, Any], done: Any, total: Any) -> tuple[float, bool] | None:
+    eta_s = data.get("eta_s")
+    unknown_when_elapsed = bool(data.get("eta_overdue"))
+    if isinstance(eta_s, (int, float)):
+        seconds = float(eta_s)
+        eta_epoch = data.get("eta_epoch")
+        if isinstance(eta_epoch, (int, float)):
+            seconds -= max(0.0, epoch() - float(eta_epoch))
+            unknown_when_elapsed = True
+        return seconds, unknown_when_elapsed
+    computed = progress_eta_seconds(done, total, data.get("rate"))
+    if computed is None:
+        return None
+    return computed, False
 
 def progress_data_eta_text(data: dict[str, Any], done: Any, total: Any) -> str:
-    eta_s = data.get("eta_s")
-    if isinstance(eta_s, (int, float)):
-        if eta_s <= 0 and data.get("eta_overdue"):
-            return 'eta="unknown"'
-        return f"eta={json.dumps(compact_duration(eta_s))}"
-    return progress_eta_text(done, total, data.get("rate"))
+    eta = progress_data_eta_seconds(data, done, total)
+    if eta is None:
+        return ""
+    seconds, unknown_when_elapsed = eta
+    return eta_field(seconds, unknown_when_elapsed=unknown_when_elapsed)
 
 def parse_timestamp_epoch(value: Any) -> float | None:
     if isinstance(value, (int, float)):
@@ -383,9 +402,9 @@ def summary_progress(summary: dict[str, Any]) -> str:
                     bucket["rate"] += float(rate)
                 else:
                     bucket["all_rate"] = False
-                eta_s = data.get("eta_s")
-                if isinstance(eta_s, (int, float)):
-                    bucket["etas"].append(max(0.0, float(eta_s)))
+                eta = progress_data_eta_seconds(data, done, total)
+                if eta is not None:
+                    bucket["etas"].append(eta)
             continue
         if isinstance(data, dict) and data.get("kind") == "subtask":
             done = data.get("done")
@@ -425,8 +444,8 @@ def summary_progress(summary: dict[str, Any]) -> str:
             done = min(total_work, int(done_work) + active_done)
             text = f"{compact_count(done)}/{compact_count(total_work)} {unit}"
             if summary["counts"]["pending"] == 0 and bucket["etas"]:
-                max_eta = max(bucket["etas"])
-                etas.append('eta="unknown"' if max_eta <= 0 else f"eta={json.dumps(compact_duration(max_eta))}")
+                max_eta, unknown_when_elapsed = max(bucket["etas"], key=lambda item: item[0])
+                etas.append(eta_field(max_eta, unknown_when_elapsed=unknown_when_elapsed))
             elif bucket["rate"] > 0:
                 eta = progress_eta_text(done, total_work, bucket["rate"])
                 if eta:
@@ -439,8 +458,8 @@ def summary_progress(summary: dict[str, Any]) -> str:
                 and summary["counts"]["pending"] == 0
             ):
                 if bucket["etas"]:
-                    max_eta = max(bucket["etas"])
-                    eta = 'eta="unknown"' if max_eta <= 0 else f"eta={json.dumps(compact_duration(max_eta))}"
+                    max_eta, unknown_when_elapsed = max(bucket["etas"], key=lambda item: item[0])
+                    eta = eta_field(max_eta, unknown_when_elapsed=unknown_when_elapsed)
                 else:
                     eta = progress_eta_text(active_done, active_total, bucket["rate"])
                 if eta:
@@ -871,6 +890,11 @@ def normalize_progress_data(raw: Any) -> dict[str, Any] | None:
             data["eta_s"] = eta_s
         else:
             data.pop("eta_s", None)
+    eta_epoch = data.get("eta_epoch")
+    if isinstance(eta_epoch, (int, float)):
+        data["eta_epoch"] = float(eta_epoch)
+    else:
+        data.pop("eta_epoch", None)
     data["text"] = progress_text(data)
     return data
 
@@ -878,6 +902,7 @@ def task_log_progress_data(manifest: dict[str, Any], task: dict[str, Any]) -> di
     path = task_log_path(manifest, task)
     try:
         text = log_tail(path)
+        eta_epoch = path.stat().st_mtime
     except OSError:
         return None
 
@@ -905,6 +930,7 @@ def task_log_progress_data(manifest: dict[str, Any], task: dict[str, Any]) -> di
                 "unit": str(config.get("unit") or ""),
                 "output_unit": str(config.get("output_unit") or "output"),
                 "kind": "metadata",
+                "eta_epoch": eta_epoch,
             }
             if total is not None:
                 data["total"] = total
@@ -920,14 +946,21 @@ def task_log_progress_data(manifest: dict[str, Any], task: dict[str, Any]) -> di
         if match:
             done = int(match.group(1))
             total = int(match.group(2))
-            return normalize_progress_data({"kind": "subtask", "done": done, "total": total})
+            return normalize_progress_data({"kind": "subtask", "done": done, "total": total, "eta_epoch": eta_epoch})
     return None
 
 def task_heartbeat_progress_data(manifest: dict[str, Any], task: dict[str, Any]) -> dict[str, Any] | None:
-    payload = read_state_json(task_heartbeat_path(manifest, task))
+    path = task_heartbeat_path(manifest, task)
+    payload = read_state_json(path)
     if payload is None:
         return None
-    return normalize_progress_data(payload.get("progress_data"))
+    progress_data = payload.get("progress_data")
+    if isinstance(progress_data, dict) and "eta_epoch" not in progress_data:
+        try:
+            progress_data = {**progress_data, "eta_epoch": path.stat().st_mtime}
+        except OSError:
+            pass
+    return normalize_progress_data(progress_data)
 
 def status_summary(manifest: dict[str, Any], *, lease_seconds: int) -> dict[str, Any]:
     clear_state_diagnostics()
@@ -1138,9 +1171,12 @@ def active_status_sort_key(row: dict[str, Any]) -> tuple[int, float, tuple[bool,
         return (0, 0.0, status_value_key(row["index"]))
     data = row.get("progress_data")
     if isinstance(data, dict):
-        eta_s = data.get("eta_s")
-        if isinstance(eta_s, (int, float)):
-            return (1, float(eta_s), status_value_key(row["index"]))
+        done = data.get("done")
+        total = data.get("total")
+        eta = progress_data_eta_seconds(data, done, total)
+        if eta is not None:
+            eta_s, _unknown_when_elapsed = eta
+            return (1, max(0.0, float(eta_s)), status_value_key(row["index"]))
         done = data.get("done")
         total = data.get("total")
         if isinstance(done, int) and isinstance(total, int) and total > 0:
