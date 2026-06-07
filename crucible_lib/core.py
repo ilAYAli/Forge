@@ -29,6 +29,7 @@ RUN_WORKERS_NAME = "workers.json"
 RUNS_DIR_ENV = "CRUCIBLE_RUNS_DIR"
 COORDINATOR_RUNS_ENV = "CRUCIBLE_COORDINATOR_RUNS"
 COORDINATOR_RUNS_FILE = "coordinator"
+COLOR_ENV = "CRUCIBLE_COLOR"
 RUN_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 SSH_CONNECT_TIMEOUT_SECONDS = 15
 SSH_SERVER_ALIVE_INTERVAL_SECONDS = 30
@@ -494,6 +495,42 @@ def cmd_self_update(args: argparse.Namespace) -> int:
 def cmd_version(args: argparse.Namespace) -> int:
     print_version_payload(crucible_version_payload(), as_json=args.json)
     return 0
+
+def terminal_color_enabled(*, no_color: bool = False) -> bool:
+    if no_color:
+        return False
+    mode = os.environ.get(COLOR_ENV, "").strip().lower()
+    if mode in {"1", "always", "force", "on", "true", "yes"}:
+        return True
+    if mode in {"0", "false", "never", "no", "off"}:
+        return False
+    return sys.stdout.isatty() or running_under_watch()
+
+def running_under_watch() -> bool:
+    pid = os.getppid()
+    for _ in range(3):
+        if pid <= 1:
+            return False
+        try:
+            output = subprocess.check_output(
+                ["ps", "-o", "ppid=,comm=", "-p", str(pid)],
+                text=True,
+                stderr=subprocess.DEVNULL,
+            ).strip()
+        except (OSError, subprocess.CalledProcessError):
+            return False
+        if not output:
+            return False
+        fields = output.split(None, 1)
+        if len(fields) < 2:
+            return False
+        try:
+            pid = int(fields[0])
+        except ValueError:
+            return False
+        if Path(fields[1]).name == "watch":
+            return True
+    return False
 
 def colorize(text: str, color: str, *, enabled: bool) -> str:
     if not enabled:

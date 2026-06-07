@@ -174,6 +174,26 @@ class CrucibleTests(unittest.TestCase):
         self.assertNotEqual(0, self.run_cli("run", "--help").returncode)
         self.assertNotEqual(0, self.run_cli("run-job", "--help").returncode)
 
+    def test_terminal_color_enabled_detects_watch_parent(self) -> None:
+        calls = iter([
+            "111 sh\n",
+            "1 watch\n",
+        ])
+        with (
+            mock.patch.dict(os.environ, {}, clear=True),
+            mock.patch("crucible_lib.core.sys.stdout.isatty", return_value=False),
+            mock.patch("crucible_lib.core.os.getppid", return_value=222),
+            mock.patch("crucible_lib.core.subprocess.check_output", side_effect=lambda *args, **kwargs: next(calls)),
+        ):
+            self.assertTrue(crucible.terminal_color_enabled())
+
+    def test_terminal_color_no_color_overrides_watch_parent(self) -> None:
+        with (
+            mock.patch("crucible_lib.core.sys.stdout.isatty", return_value=False),
+            mock.patch("crucible_lib.core.running_under_watch", return_value=True),
+        ):
+            self.assertFalse(crucible.terminal_color_enabled(no_color=True))
+
     def test_list_subcommand_is_not_supported(self) -> None:
         result = self.run_cli("list", "--help")
         self.assertNotEqual(0, result.returncode)
@@ -2295,6 +2315,61 @@ class CrucibleTests(unittest.TestCase):
             self.assertEqual(0, result.returncode)
             self.assertIn("main", result.stdout)
 
+    def test_status_colors_human_output_when_forced(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runs = Path(tmp) / "runs"
+            run = self.write_retry_run(runs, "color", failed=None)
+            manifest = json.loads((run / "manifest.json").read_text(encoding="utf-8"))
+            manifest["description"] = "Run description"
+            crucible.write_json(run / "manifest.json", manifest)
+            stdout = io.StringIO()
+            with mock.patch.dict(os.environ, {"CRUCIBLE_COLOR": "always"}), contextlib.redirect_stdout(stdout):
+                rc = crucible.cmd_status(
+                    argparse.Namespace(
+                        run=str(run),
+                        all=False,
+                        done=False,
+                        failed=False,
+                        json=False,
+                        no_color=False,
+                        lease_seconds=600,
+                        show_done=False,
+                        verbose=False,
+                    )
+                )
+
+            self.assertEqual(0, rc)
+            text = stdout.getvalue()
+            self.assertIn('run="color"', text)
+            self.assertIn('desc="Run description"', text)
+            self.assertNotIn("run=\033[", text)
+            self.assertNotIn("desc=\033[", text)
+            self.assertIn("tasks=\033[33m0/1", text)
+            self.assertIn("pending: \033[33m1", text)
+
+    def test_status_no_color_overrides_forced_color(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runs = Path(tmp) / "runs"
+            run = self.write_retry_run(runs, "color", failed=None)
+            stdout = io.StringIO()
+            with mock.patch.dict(os.environ, {"CRUCIBLE_COLOR": "always"}), contextlib.redirect_stdout(stdout):
+                rc = crucible.cmd_status(
+                    argparse.Namespace(
+                        run=str(run),
+                        all=False,
+                        done=False,
+                        failed=False,
+                        json=False,
+                        no_color=True,
+                        lease_seconds=600,
+                        show_done=False,
+                        verbose=False,
+                    )
+                )
+
+            self.assertEqual(0, rc)
+            self.assertNotIn("\033[", stdout.getvalue())
+
     def test_status_delegates_to_coordinator_runs_env(self) -> None:
         remote_result = subprocess.CompletedProcess(
             args=["ssh"],
@@ -2332,6 +2407,42 @@ class CrucibleTests(unittest.TestCase):
         self.assertIn("pwa-5090", command)
         self.assertIn("CRUCIBLE_RUNS_DIR=/home/petter/code/cpp/chess/crucible/runs", command[-1])
         self.assertIn("CRUCIBLE_COORDINATOR_RUNS=", command[-1])
+        self.assertIn("CRUCIBLE_COLOR=never", command[-1])
+
+    def test_status_delegation_forces_color_when_local_output_is_colored(self) -> None:
+        remote_result = subprocess.CompletedProcess(
+            args=["ssh"],
+            returncode=0,
+            stdout="remote status\n",
+            stderr="",
+        )
+        with mock.patch.dict(
+            os.environ,
+            {
+                "CRUCIBLE_COLOR": "always",
+                "CRUCIBLE_COORDINATOR_RUNS": "pwa-5090:/home/petter/code/cpp/chess/crucible/runs",
+            },
+        ), mock.patch("crucible.subprocess.run", return_value=remote_result) as run_mock:
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout):
+                rc = crucible.cmd_status(
+                    argparse.Namespace(
+                        run=None,
+                        all=False,
+                        done=False,
+                        failed=False,
+                        json=False,
+                        no_color=False,
+                        lease_seconds=600,
+                        show_done=False,
+                        verbose=False,
+                    )
+                )
+
+        self.assertEqual(0, rc)
+        command = run_mock.call_args.args[0]
+        self.assertEqual("ssh", command[0])
+        self.assertIn("CRUCIBLE_COLOR=always", command[-1])
 
     def test_status_delegates_to_runs_coordinator_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -2427,7 +2538,7 @@ class CrucibleTests(unittest.TestCase):
                         )
                 )
                 self.assertEqual(0, rc)
-                self.assertIn('    "worker" task=0 [50k/125k rows, output=48k, eta=3h06m]', stdout.getvalue())
+                self.assertIn('    "worker" task=0 [rows=50k/125k, output=48k, eta=3h06m]', stdout.getvalue())
 
                 named_stdout = io.StringIO()
                 with contextlib.redirect_stdout(named_stdout):
@@ -2448,7 +2559,7 @@ class CrucibleTests(unittest.TestCase):
                 self.assertIn("active: 1 output=48k eta=3h06m", named_stdout.getvalue())
                 self.assertNotIn("workers=1", named_stdout.getvalue())
                 self.assertNotIn("speedup=1.0x", named_stdout.getvalue())
-                self.assertIn('"worker" task=0 [50k/125k rows, output=48k, eta=3h06m]', named_stdout.getvalue())
+                self.assertIn('"worker" task=0 [rows=50k/125k, output=48k, eta=3h06m]', named_stdout.getvalue())
 
     def test_status_eta_counts_down_from_log_timestamp(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -2570,7 +2681,7 @@ class CrucibleTests(unittest.TestCase):
                     )
                 self.assertEqual(0, rc)
                 text = stdout.getvalue()
-                self.assertIn('"worker" task=0 [50/50 games, finalizing]', text)
+                self.assertIn('"worker" task=0 [games=50/50, finalizing]', text)
                 self.assertNotIn("eta=0s", text)
 
     def test_status_shows_active_worker_throughput(self) -> None:
@@ -2688,6 +2799,96 @@ class CrucibleTests(unittest.TestCase):
                 self.assertNotIn("rate", worker_section)
                 self.assertNotIn("avg", worker_section)
 
+                color_stdout = io.StringIO()
+                with mock.patch.dict(os.environ, {"CRUCIBLE_COLOR": "always"}), contextlib.redirect_stdout(color_stdout):
+                    rc = crucible.cmd_status(
+                        argparse.Namespace(
+                            run=None,
+                            all=False,
+                            done=False,
+                            failed=False,
+                            json=False,
+                            no_color=False,
+                            lease_seconds=600,
+                            verbose=True,
+                            show_done=False,
+                        )
+                )
+                self.assertEqual(0, rc)
+                color_line = next(
+                    line for line in color_stdout.getvalue().splitlines()
+                    if "active:" in line and "workers=" in line
+                )
+                self.assertIn("active: \033[33m3\033[0m", color_line)
+                self.assertIn('workers=2 output=68k min="worker-b":20k max="worker-a":48k speedup=1.0x', color_line)
+                self.assertNotIn("workers=\033[", color_line)
+                self.assertNotIn("output=\033[", color_line)
+                self.assertNotIn("min=\033[", color_line)
+                self.assertNotIn("max=\033[", color_line)
+                self.assertNotIn("speedup=\033[", color_line)
+
+    def test_summary_eta_includes_pending_work(self) -> None:
+        summary = {
+            "active": [
+                {
+                    "progress_data": {
+                        "kind": "metadata",
+                        "done": 50,
+                        "total": 100,
+                        "unit": "rows",
+                        "rate": 10.0,
+                        "eta_s": 5.0,
+                    },
+                },
+                {
+                    "progress_data": {
+                        "kind": "metadata",
+                        "done": 50,
+                        "total": 100,
+                        "unit": "rows",
+                        "rate": 10.0,
+                        "eta_s": 5.0,
+                    },
+                },
+            ],
+            "active_count": 2,
+            "counts": {"pending": 1},
+            "progress_done": {"rows": 100},
+            "progress_totals": {"rows": 400},
+        }
+        self.assertEqual("progress=rows=200/400, eta=10s", crucible.summary_progress(summary))
+
+    def test_summary_eta_not_less_than_slowest_active_task(self) -> None:
+        summary = {
+            "active": [
+                {
+                    "progress_data": {
+                        "kind": "metadata",
+                        "done": 50,
+                        "total": 100,
+                        "unit": "rows",
+                        "rate": 10.0,
+                        "eta_s": 5.0,
+                    },
+                },
+                {
+                    "progress_data": {
+                        "kind": "metadata",
+                        "done": 50,
+                        "total": 100,
+                        "unit": "rows",
+                        "rate": 10.0,
+                        "eta_s": 30.0,
+                    },
+                },
+            ],
+            "active_count": 2,
+            "counts": {"pending": 1},
+            "progress_done": {"rows": 100},
+            "progress_totals": {"rows": 400},
+        }
+        self.assertEqual("progress=rows=200/400, eta=30s", crucible.summary_progress(summary))
+
     def test_status_speedup_uses_rates_not_output_share(self) -> None:
         summary = {
             "active": [{"worker": "fast"}, {"worker": "slow"}],
@@ -2790,8 +2991,8 @@ class CrucibleTests(unittest.TestCase):
                 self.assertEqual(0, rc)
                 text = stdout.getvalue()
                 self.assertIn("  tasks=1/2 eta=1m40s", text)
-                self.assertIn("  active: 1 1500/2000 games eta=1m40s", text)
-                self.assertIn('"worker-a" task=1 [500/1000 games, eta=1m40s]', text)
+                self.assertIn("  active: 1 games=1500/2000 eta=1m40s", text)
+                self.assertIn('"worker-a" task=1 [games=500/1000, eta=1m40s]', text)
 
     def test_status_uses_completed_rate_when_running_task_has_no_progress_yet(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -2863,8 +3064,8 @@ class CrucibleTests(unittest.TestCase):
                 self.assertEqual(0, rc)
                 text = stdout.getvalue()
                 self.assertIn("  tasks=1/2 eta=1m39s", text)
-                self.assertIn("  active: 1 1000/2000 games eta=1m39s", text)
-                self.assertIn('"worker-a" task=1 [0/1000 games, eta=1m39s]', text)
+                self.assertIn("  active: 1 games=1000/2000 eta=1m39s", text)
+                self.assertIn('"worker-a" task=1 [games=0/1000, eta=1m39s]', text)
 
     def test_status_labels_overdue_fallback_eta_as_unknown(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -2936,8 +3137,8 @@ class CrucibleTests(unittest.TestCase):
                 self.assertEqual(0, rc)
                 text = stdout.getvalue()
                 self.assertIn("  tasks=1/2 eta=unknown", text)
-                self.assertIn("  active: 1 1000/2000 games eta=unknown", text)
-                self.assertIn('"worker-a" task=1 [0/1000 games, eta=unknown]', text)
+                self.assertIn("  active: 1 games=1000/2000 eta=unknown", text)
+                self.assertIn('"worker-a" task=1 [games=0/1000, eta=unknown]', text)
 
     def test_status_ignores_undeclared_domain_progress(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
