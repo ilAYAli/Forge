@@ -1930,13 +1930,16 @@ class CrucibleTests(unittest.TestCase):
 
             failed_status = self.run_cli("status", cwd=root, env=env)
             self.assertEqual(1, failed_status.returncode)
-            self.assertIn("active", failed_status.stdout)
-            self.assertIn("failed", failed_status.stdout)
+            self.assertIn("zzz-active", failed_status.stdout)
+            self.assertIn("failed: 1 run (use crucible status --failed)", failed_status.stdout)
+            self.assertNotIn("aaa-failed", failed_status.stdout)
             self.assertNotIn("waiting", failed_status.stdout)
-            self.assertLess(
-                failed_status.stdout.index('"zzz-active"'),
-                failed_status.stdout.index('"aaa-failed"'),
-            )
+
+            detailed_failed = self.run_cli("status", "--failed", cwd=root, env=env)
+            self.assertEqual(1, detailed_failed.returncode)
+            self.assertIn('"aaa-failed"', detailed_failed.stdout)
+            self.assertIn("  fail: 1", detailed_failed.stdout)
+            self.assertIn('"worker-fail" [1]: 0', detailed_failed.stdout)
 
             all_status = self.run_cli("status", "--all", cwd=root, env=env)
             self.assertEqual(1, all_status.returncode)

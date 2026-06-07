@@ -22,7 +22,8 @@ def cmd_status(args: argparse.Namespace) -> int:
             as_json=args.json,
             filter_name=filter_name,
             include_started_pending=bool(getattr(args, "verbose", False)),
-            show_details=bool(filter_name is None or args.all or args.done or getattr(args, "show_done", False) or getattr(args, "verbose", False)),
+            collapse_inactive_failures=bool(filter_name is None and not getattr(args, "verbose", False)),
+            show_details=bool(filter_name is None or args.all or args.done or args.failed or getattr(args, "show_done", False) or getattr(args, "verbose", False)),
             show_done=bool(args.done or getattr(args, "show_done", False)),
         )
     if selected:
@@ -625,6 +626,10 @@ def section_progress_fields(summary: dict[str, Any]) -> list[str]:
 def quote_status_key(key: str, values: list[int | str]) -> str:
     return json.dumps(key)
 
+def failure_summary_text(count: int) -> str:
+    noun = "run" if count == 1 else "runs"
+    return f"failed: {count} {noun} (use crucible status --failed)"
+
 def print_run_status(
     summaries: list[dict[str, Any]],
     *,
@@ -632,6 +637,7 @@ def print_run_status(
     as_json: bool,
     filter_name: str | None,
     include_started_pending: bool = False,
+    collapse_inactive_failures: bool = False,
     show_details: bool = False,
     show_done: bool = False,
 ) -> int:
@@ -654,7 +660,16 @@ def print_run_status(
         qualifier = f"{label} " if label else ""
         print(f"no {qualifier}Crucible runs found in {runs_dir()}")
         return 0
-    for index, summary in enumerate(filtered):
+    collapsed_failures = [
+        summary for summary in filtered
+        if collapse_inactive_failures and run_failed(summary) and run_active_count(summary) == 0
+    ]
+    collapsed_ids = {id(summary) for summary in collapsed_failures}
+    visible = [
+        summary for summary in filtered
+        if id(summary) not in collapsed_ids
+    ]
+    for index, summary in enumerate(visible):
         if show_details and index:
             print()
         counts = summary["counts"]
@@ -694,6 +709,10 @@ def print_run_status(
                 show_diagnostics=True,
                 indent="  ",
             )
+    if collapsed_failures:
+        if visible and show_details:
+            print()
+        print(colorize(failure_summary_text(len(collapsed_failures)), "red", enabled=color_enabled))
     return 0 if all(item["counts"]["fail"] == 0 for item in filtered) else 1
 
 def load_run_manifest(run: str | Path) -> tuple[Path, dict[str, Any]]:
