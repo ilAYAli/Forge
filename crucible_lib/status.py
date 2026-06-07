@@ -748,8 +748,9 @@ def cmd_stop(args: argparse.Namespace) -> int:
             "host": socket.gethostname(),
         }
         write_json(stop_request_path(manifest), payload)
+        released = release_active_claims(manifest, lease_seconds=args.lease_seconds)
         stopped += 1
-        print(f"stop requested: {path.parent.name}")
+        print(f"stop requested: {path.parent.name} released={len(released)}")
     if stopped == 0:
         print("no current runs to stop")
     return 0

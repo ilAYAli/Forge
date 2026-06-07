@@ -379,6 +379,15 @@ def release_claim(
     shutil.rmtree(task_claim_dir(manifest, task), ignore_errors=True)
     task_running_path(manifest, task).unlink(missing_ok=True)
 
+def release_active_claims(manifest: dict[str, Any], *, lease_seconds: int) -> list[str]:
+    released: list[str] = []
+    for task in sorted(manifest["tasks"], key=lambda item: int(item.get("index", 0))):
+        if task_state(manifest, task, lease_seconds=lease_seconds) not in {"claimed", "running", "stale"}:
+            continue
+        release_claim(manifest, task)
+        released.append(str(task["id"]))
+    return released
+
 def claim_payload_worker(payload: dict[str, Any]) -> str:
     worker = payload.get("worker")
     if isinstance(worker, dict):

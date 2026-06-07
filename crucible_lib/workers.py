@@ -21,6 +21,38 @@ def default_workers_path() -> Path:
         f"no workers file found; pass workers path or create {runs_dir() / RUN_WORKERS_NAME}"
     )
 
+def worker_arg_looks_like_path(value: str) -> bool:
+    return (
+        value.endswith(".json")
+        or value.startswith(("/", "./", "../", "~"))
+        or os.path.sep in value
+    )
+
+def parse_inline_workers(value: str) -> dict[str, Any]:
+    entries = [entry.strip() for entry in value.split(",")]
+    if not entries or any(not entry for entry in entries):
+        raise SystemExit("inline workers must be a comma-separated host list")
+    return {
+        "schema": "crucible.workers.v1",
+        "workers": entries,
+    }
+
+def workers_payload_from_arg(value: str | None, *, default_ok: bool) -> dict[str, Any]:
+    if value is None:
+        if not default_ok:
+            raise SystemExit("workers are required")
+        return read_json(default_workers_path())
+    path = expand_path(value)
+    if path.exists():
+        return read_json(path)
+    if worker_arg_looks_like_path(value):
+        raise SystemExit(f"workers file not found: {value}")
+    return parse_inline_workers(value)
+
+def load_workers_arg(value: str | None, *, default_ok: bool = False) -> list[dict[str, Any]]:
+    payload = workers_payload_from_arg(value, default_ok=default_ok)
+    return workers_from_payload(payload, label=value or str(default_workers_path()))
+
 def worker_update_script(*, commit: str, remote: str, branch: str, require_clean: bool) -> str:
     clean_check = (
         "if [ -n \"$(git -C \"$repo\" status --porcelain)\" ]; then "
@@ -55,8 +87,7 @@ def cmd_update(args: argparse.Namespace) -> int:
     remote = str(args.remote)
     branch = str(args.branch or "main")
     timeout = max(0.0, float(args.timeout_seconds))
-    workers_path = expand_path(args.workers) if args.workers else default_workers_path()
-    workers = load_workers(workers_path)
+    workers = load_workers_arg(args.workers, default_ok=True)
     failed = 0
 
     if args.all:
@@ -166,18 +197,21 @@ def expand_worker_record(worker: dict[str, Any]) -> list[dict[str, Any]]:
 
 def load_workers(path: Path) -> list[dict[str, Any]]:
     payload = read_json(path)
+    return workers_from_payload(payload, label=str(path))
+
+def workers_from_payload(payload: dict[str, Any], *, label: str) -> list[dict[str, Any]]:
     if payload.get("schema") not in (None, "crucible.workers.v1"):
-        raise SystemExit(f"{path}: unsupported schema {payload.get('schema')!r}")
+        raise SystemExit(f"{label}: unsupported schema {payload.get('schema')!r}")
     raw_workers = payload.get("workers")
     if not isinstance(raw_workers, list):
-        raise SystemExit(f"{path}: workers must be a list")
+        raise SystemExit(f"{label}: workers must be a list")
     workers: list[dict[str, Any]] = []
     for item in raw_workers:
         worker = parse_worker_record(item)
         if worker:
             workers.extend(expand_worker_record(worker))
     if not workers:
-        raise SystemExit(f"{path}: no enabled workers")
+        raise SystemExit(f"{label}: no enabled workers")
     return workers
 
 def worker_cache_dir(worker: dict[str, Any]) -> str:
@@ -494,7 +528,7 @@ def default_run_name(template_path: Path, manifest: dict[str, Any]) -> str:
 def materialize_run(
     *,
     template_path: Path,
-    workers_path: Path,
+    workers_arg: str,
     run_name_arg: str | None,
     resume: bool,
     replace: bool,
@@ -510,6 +544,7 @@ def materialize_run(
     if resume:
         if not manifest_path.exists() or not workers_snapshot.exists():
             raise SystemExit(f"{run_name}: cannot resume; run manifest or workers file is missing")
+        write_json(workers_snapshot, workers_payload_from_arg(workers_arg, default_ok=False))
         return run_dir, manifest_path, workers_snapshot
     if run_dir.exists():
         if not replace:
@@ -523,16 +558,15 @@ def materialize_run(
     claim_dir(materialized).mkdir(parents=True)
     (run_dir / "outputs").mkdir(parents=True)
     write_json(manifest_path, materialized)
-    shutil.copy2(workers_path, workers_snapshot)
+    write_json(workers_snapshot, workers_payload_from_arg(workers_arg, default_ok=False))
     return run_dir, manifest_path, workers_snapshot
 
 def cmd_deploy(args: argparse.Namespace) -> int:
     started_at = time.monotonic()
-    workers_arg = expand_path(args.workers)
     template_path = expand_path(args.manifest)
     run_dir, manifest_path, workers_path = materialize_run(
         template_path=template_path,
-        workers_path=workers_arg,
+        workers_arg=str(args.workers),
         run_name_arg=getattr(args, "run", None),
         resume=bool(getattr(args, "resume", False)),
         replace=bool(getattr(args, "replace", False)),
@@ -755,16 +789,17 @@ def command_rc_from_system_exit(exc: SystemExit) -> int:
         return 1
     return 0
 
-def run_command_stage(name: str, func: Any, args: argparse.Namespace) -> int:
+def run_command_stage(label: str, name: str, func: Any, args: argparse.Namespace) -> int:
     try:
         rc = int(func(args))
     except SystemExit as exc:
         rc = command_rc_from_system_exit(exc)
     if rc:
-        print(f"run-job: {name} failed rc={rc}", file=sys.stderr)
+        print(f"{label}: {name} failed rc={rc}", file=sys.stderr)
     return rc
 
 def cmd_run_job(args: argparse.Namespace) -> int:
+    label = str(getattr(args, "command_label", "start"))
     template_path = expand_path(args.manifest)
     run_dir, manifest_path = planned_run_paths(template_path, getattr(args, "run", None))
     run_name = run_dir.name
@@ -783,9 +818,9 @@ def cmd_run_job(args: argparse.Namespace) -> int:
         no_color=args.no_color,
         verbose=args.verbose,
     )
-    rc = run_command_stage("deploy", cmd_deploy, deploy_args)
+    rc = run_command_stage(label, "deploy", cmd_deploy, deploy_args)
     if rc:
-        print(f"run-job: inspect with: crucible status {run_name} --verbose", file=sys.stderr)
+        print(f"{label}: inspect with: crucible status {run_name} --verbose", file=sys.stderr)
         return rc
 
     if args.wait:
@@ -798,15 +833,15 @@ def cmd_run_job(args: argparse.Namespace) -> int:
             fail_on_fail=args.fail_on_fail,
             notify_command=args.notify_command,
         )
-        rc = run_command_stage("wait", cmd_wait, wait_args)
+        rc = run_command_stage(label, "wait", cmd_wait, wait_args)
         if rc:
-            print(f"run-job: inspect with: crucible status {run_name} --verbose", file=sys.stderr)
+            print(f"{label}: inspect with: crucible status {run_name} --verbose", file=sys.stderr)
             return rc
 
     if args.verify or args.merge:
-        rc = run_command_stage("verify", cmd_verify, argparse.Namespace(run=str(manifest_path.parent)))
+        rc = run_command_stage(label, "verify", cmd_verify, argparse.Namespace(run=str(manifest_path.parent)))
         if rc:
-            print(f"run-job: inspect with: crucible status {run_name} --verbose", file=sys.stderr)
+            print(f"{label}: inspect with: crucible status {run_name} --verbose", file=sys.stderr)
             return rc
 
     if args.merge:
@@ -816,10 +851,117 @@ def cmd_run_job(args: argparse.Namespace) -> int:
             force=args.merge_force,
             newline_between=args.newline_between,
         )
-        rc = run_command_stage("merge", cmd_merge, merge_args)
+        rc = run_command_stage(label, "merge", cmd_merge, merge_args)
         if rc:
-            print(f"run-job: inspect with: crucible status {run_name} --verbose", file=sys.stderr)
+            print(f"{label}: inspect with: crucible status {run_name} --verbose", file=sys.stderr)
             return rc
 
-    print(f"run-job: ok; status: crucible status {run_name} --verbose")
+    print(f"{label}: ok; status: crucible status {run_name} --verbose")
     return 0
+
+def materialized_run_paths(run_dir: Path, *, label: str) -> tuple[str, Path, Path]:
+    manifest_path = run_dir / RUN_MANIFEST_NAME
+    workers_path = run_dir / RUN_WORKERS_NAME
+    if not manifest_path.exists() or not workers_path.exists():
+        raise SystemExit(f"{label}: no materialized Crucible run found")
+    return run_dir.name, manifest_path, workers_path
+
+def resume_run_paths(run: str | None, *, lease_seconds: int) -> list[tuple[str, Path, Path]]:
+    if run:
+        return [materialized_run_paths(run_dir_from_arg(run), label=run)]
+
+    incomplete = [
+        summary for summary in load_run_summaries(lease_seconds=lease_seconds)
+        if not run_done(summary)
+    ]
+    if not incomplete:
+        raise SystemExit("no incomplete Crucible run found")
+    if len(incomplete) > 1:
+        names = ", ".join(str(summary["run"]) for summary in sorted(incomplete, key=lambda item: str(item["run"])))
+        raise SystemExit(f"multiple incomplete Crucible runs found; specify one: {names}")
+    summary = incomplete[0]
+    return [materialized_run_paths(run_dir_for_name(str(summary["run"])), label=str(summary["run"]))]
+
+def cmd_resume(args: argparse.Namespace) -> int:
+    targets = resume_run_paths(args.run, lease_seconds=args.lease_seconds)
+    failed = 0
+    for run_name, manifest_path, workers_path in targets:
+        manifest = load_manifest(manifest_path)
+        stop_path = stop_request_path(manifest)
+        if stop_path.exists():
+            stop_path.unlink()
+            print(f"resume: cleared stop request for {run_name}")
+        resume_args = argparse.Namespace(
+            manifest=str(manifest_path),
+            workers=str(args.workers) if args.workers else str(workers_path),
+            jobs=args.jobs,
+            run=run_name,
+            resume=True,
+            replace=False,
+            retry_failed=False,
+            coordinator_host=args.coordinator_host,
+            remote_timeout_seconds=args.remote_timeout_seconds,
+            wait=args.wait,
+            lease_seconds=args.lease_seconds,
+            interval_seconds=args.interval_seconds,
+            timeout_seconds=args.timeout_seconds,
+            fail_on_fail=args.fail_on_fail,
+            verify=args.verify,
+            merge=args.merge,
+            merge_force=args.merge_force,
+            newline_between=args.newline_between,
+            notify_command=args.notify_command,
+            no_color=args.no_color,
+            verbose=args.verbose,
+            command_label="resume",
+        )
+        failed += 1 if cmd_run_job(resume_args) else 0
+    return 1 if failed else 0
+
+def retry_run_paths(run: str | None, *, lease_seconds: int) -> list[tuple[str, Path, Path]]:
+    if run:
+        return [materialized_run_paths(run_dir_from_arg(run), label=run)]
+
+    failed = [
+        summary for summary in load_run_summaries(lease_seconds=lease_seconds)
+        if summary["counts"]["fail"] > 0 and not run_done(summary)
+    ]
+    if not failed:
+        raise SystemExit("no failed Crucible run found")
+    return [
+        materialized_run_paths(run_dir_for_name(str(summary["run"])), label=str(summary["run"]))
+        for summary in sorted(failed, key=lambda item: str(item["run"]))
+    ]
+
+def cmd_retry(args: argparse.Namespace) -> int:
+    targets = retry_run_paths(args.run, lease_seconds=args.lease_seconds)
+    failed = 0
+    for index, (run_name, manifest_path, workers_path) in enumerate(targets):
+        if len(targets) > 1:
+            print(f"retry: {run_name} ({index + 1}/{len(targets)})")
+        retry_args = argparse.Namespace(
+            manifest=str(manifest_path),
+            workers=str(args.workers) if args.workers else str(workers_path),
+            jobs=args.jobs,
+            run=run_name,
+            resume=True,
+            replace=False,
+            retry_failed=True,
+            coordinator_host=args.coordinator_host,
+            remote_timeout_seconds=args.remote_timeout_seconds,
+            wait=args.wait,
+            lease_seconds=args.lease_seconds,
+            interval_seconds=args.interval_seconds,
+            timeout_seconds=args.timeout_seconds,
+            fail_on_fail=args.fail_on_fail,
+            verify=args.verify,
+            merge=args.merge,
+            merge_force=args.merge_force,
+            newline_between=args.newline_between,
+            notify_command=args.notify_command,
+            no_color=args.no_color,
+            verbose=args.verbose,
+            command_label="retry",
+        )
+        failed += 1 if cmd_run_job(retry_args) else 0
+    return 1 if failed else 0

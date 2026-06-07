@@ -11,33 +11,38 @@ from .workers import *
 
 COMMAND_GROUPS = [
     (
-        "Common workflow",
+        "Common",
+        [
+            "start",
+            "stop",
+            "resume",
+            "retry",
+            "status",
+            "update",
+        ],
+    ),
+    (
+        "Advanced",
         [
             "plan",
             "add-input",
             "add-repo",
             "add-command",
-            "run-job",
-            "status",
-            "wait",
-            "stop",
-            "del",
-        ],
-    ),
-    ("Result handling", ["verify", "merge"]),
-    ("Maintenance", ["update", "self-update", "version"]),
-    (
-        "Advanced/internal",
-        [
             "deploy",
             "doctor",
             "sync-repos",
             "work",
-            "run",
+            "run-task",
             "claim",
             "release",
             "heartbeat",
             "drain",
+            "wait",
+            "verify",
+            "merge",
+            "del",
+            "self-update",
+            "version",
         ],
     ),
 ]
@@ -92,8 +97,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = CrucibleArgumentParser(
         description=(
             "Crucible distributes manifest-defined work across workers. "
-            "Use the common workflow commands first; advanced/internal "
-            "commands remain available for diagnostics and custom automation."
+            "Start with start, stop, resume, retry, status, and update."
         ),
         formatter_class=CrucibleHelpFormatter,
         command_groups=COMMAND_GROUPS,
@@ -224,17 +228,17 @@ def build_parser() -> argparse.ArgumentParser:
     sync_repos.add_argument("--profile", help="Path-map/profile name for this worker.")
     sync_repos.set_defaults(func=cmd_sync_repos)
 
-    run = sub.add_parser(
-        "run",
+    run_task = sub.add_parser(
+        "run-task",
         help="Run one task by id or index.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    run.add_argument("--manifest", required=True, help="Manifest containing the task.")
-    run.add_argument("--task", help="Task id to run.")
-    run.add_argument("--index", type=int, help="Task index to run.")
-    run.add_argument("--profile", help="Path-map/profile name for this worker.")
-    run.add_argument("--force", action="store_true", help="Re-run even if the task is complete.")
-    run.set_defaults(func=cmd_run)
+    run_task.add_argument("--manifest", required=True, help="Manifest containing the task.")
+    run_task.add_argument("--task", help="Task id to run.")
+    run_task.add_argument("--index", type=int, help="Task index to run.")
+    run_task.add_argument("--profile", help="Path-map/profile name for this worker.")
+    run_task.add_argument("--force", action="store_true", help="Re-run even if the task is complete.")
+    run_task.set_defaults(func=cmd_run)
 
     claim = sub.add_parser(
         "claim",
@@ -371,7 +375,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     stop = sub.add_parser(
         "stop",
-        help="Request a run stop.",
+        help="Stop new claims and release active task claims.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     stop.add_argument("run", nargs="?", help="Run name or run directory to stop.")
@@ -429,7 +433,7 @@ def build_parser() -> argparse.ArgumentParser:
             "to that new HEAD."
         ),
     )
-    update.add_argument("workers", nargs="?", help="workers.json file. Defaults to runs/workers.json, then ./workers.json.")
+    update.add_argument("workers", nargs="?", help="workers.json file or comma-separated worker hosts. Defaults to runs/workers.json, then ./workers.json.")
     update.add_argument(
         "--all",
         action="store_true",
@@ -457,7 +461,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Verify workers and run manifest tasks.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    deploy.add_argument("workers", help="workers.json file.")
+    deploy.add_argument("workers", help="workers.json file or comma-separated worker hosts.")
     deploy.add_argument("manifest", help="Manifest template to materialize into runs/<name>.")
     deploy.add_argument("--jobs", type=int, default=4, help="Maximum workers to prepare/run concurrently.")
     deploy.add_argument("--run", help="Run directory name under runs/. Defaults to manifest name.")
@@ -475,12 +479,19 @@ def build_parser() -> argparse.ArgumentParser:
     deploy.set_defaults(func=cmd_deploy)
 
     run_job = sub.add_parser(
-        "run-job",
-        help="Deploy a manifest, run workers, verify, and optionally merge outputs.",
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+        "start",
+        help="Start a manifest on workers, verify, and optionally merge outputs.",
+        formatter_class=CrucibleHelpFormatter,
+        description=(
+            "Start a manifest on workers.\n\n"
+            "Examples:\n"
+            "  crucible start manifest.json --workers worker-a,worker-b\n"
+            "  crucible start manifest.json --workers workers.json --wait\n"
+            "  crucible start manifest.json --workers worker-a,worker-b --merge merged.txt"
+        ),
     )
     run_job.add_argument("manifest", help="Manifest template to materialize into runs/<name>.")
-    run_job.add_argument("--workers", required=True, help="workers.json file.")
+    run_job.add_argument("--workers", required=True, help="workers.json file or comma-separated worker hosts.")
     run_job.add_argument("--jobs", type=int, default=4, help="Maximum workers to prepare/run concurrently.")
     run_job.add_argument("--run", help="Run directory name under runs/. Defaults to manifest name.")
     run_job.add_argument("--resume", action="store_true", help="Resume an existing materialized run.")
@@ -507,7 +518,73 @@ def build_parser() -> argparse.ArgumentParser:
     )
     run_job.add_argument("--no-color", action="store_true", help="Disable ANSI color output.")
     run_job.add_argument("--verbose", action="store_true", help="Print setup and worker phase details.")
-    run_job.set_defaults(func=cmd_run_job)
+    run_job.set_defaults(func=cmd_run_job, command_label="start")
+
+    resume = sub.add_parser(
+        "resume",
+        help="Resume stopped or incomplete work in a materialized run.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    resume.add_argument("run", nargs="?", help="Run name or run directory. Omit to resume the single current incomplete run.")
+    resume.add_argument("--workers", help="workers.json file or comma-separated worker hosts. Defaults to the run's workers.json.")
+    resume.add_argument("--jobs", type=int, default=4, help="Maximum workers to prepare/run concurrently.")
+    resume.add_argument("--coordinator-host", help="Coordinator hostname workers should SSH back to.")
+    resume.add_argument("--remote-timeout-seconds", type=float, default=1800.0, help="Timeout for remote setup/work commands.")
+    resume.add_argument(
+        "--wait",
+        action="store_true",
+        help="Poll the materialized run after workers exit and fail on incomplete or failed tasks.",
+    )
+    resume.add_argument("--lease-seconds", type=int, default=600, help="Claim lease duration before stale.")
+    resume.add_argument("--interval-seconds", type=float, default=30.0, help="Polling interval for --wait.")
+    resume.add_argument("--timeout-seconds", type=float, default=0.0, help="Overall --wait timeout; 0 means no timeout.")
+    resume.add_argument("--fail-on-fail", action=argparse.BooleanOptionalAction, default=True, help="Return failure when --wait sees failed tasks.")
+    resume.add_argument("--verify", action=argparse.BooleanOptionalAction, default=True, help="Verify task completion and outputs before returning success.")
+    resume.add_argument("--merge", metavar="OUTPUT", help="Merge first task outputs into this file after verification.")
+    resume.add_argument("--merge-force", action="store_true", help="Overwrite an existing merged output.")
+    resume.add_argument("--newline-between", action="store_true", help="Insert a newline between task outputs.")
+    resume.add_argument(
+        "--notify-command",
+        help="Command run on deploy/wait completion with CRUCIBLE_EVENT_JSON and JSON on stdin.",
+    )
+    resume.add_argument("--no-color", action="store_true", help="Disable ANSI color output.")
+    resume.add_argument("--verbose", action="store_true", help="Print setup and worker phase details.")
+    resume.set_defaults(func=cmd_resume)
+
+    retry = sub.add_parser(
+        "retry",
+        help="Retry failed tasks in a materialized run.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    retry.add_argument(
+        "run",
+        nargs="?",
+        help="Run name or run directory. Omit to retry all failed incomplete runs.",
+    )
+    retry.add_argument("--workers", help="workers.json file or comma-separated worker hosts. Defaults to each run's workers.json.")
+    retry.add_argument("--jobs", type=int, default=4, help="Maximum workers to prepare/run concurrently.")
+    retry.add_argument("--coordinator-host", help="Coordinator hostname workers should SSH back to.")
+    retry.add_argument("--remote-timeout-seconds", type=float, default=1800.0, help="Timeout for remote setup/work commands.")
+    retry.add_argument(
+        "--wait",
+        action="store_true",
+        help="Poll the materialized run after workers exit and fail on incomplete or failed tasks.",
+    )
+    retry.add_argument("--lease-seconds", type=int, default=600, help="Claim lease duration before stale.")
+    retry.add_argument("--interval-seconds", type=float, default=30.0, help="Polling interval for --wait.")
+    retry.add_argument("--timeout-seconds", type=float, default=0.0, help="Overall --wait timeout; 0 means no timeout.")
+    retry.add_argument("--fail-on-fail", action=argparse.BooleanOptionalAction, default=True, help="Return failure when --wait sees failed tasks.")
+    retry.add_argument("--verify", action=argparse.BooleanOptionalAction, default=True, help="Verify task completion and outputs before returning success.")
+    retry.add_argument("--merge", metavar="OUTPUT", help="Merge first task outputs into this file after verification.")
+    retry.add_argument("--merge-force", action="store_true", help="Overwrite an existing merged output.")
+    retry.add_argument("--newline-between", action="store_true", help="Insert a newline between task outputs.")
+    retry.add_argument(
+        "--notify-command",
+        help="Command run on deploy/wait completion with CRUCIBLE_EVENT_JSON and JSON on stdin.",
+    )
+    retry.add_argument("--no-color", action="store_true", help="Disable ANSI color output.")
+    retry.add_argument("--verbose", action="store_true", help="Print setup and worker phase details.")
+    retry.set_defaults(func=cmd_retry)
 
     parser.command_help = {
         action.dest: str(action.help)
@@ -526,8 +603,8 @@ def main() -> int:
         return cmd_version(args)
     if getattr(args, "subcommand", None) is None:
         parser.error("a command is required")
-    if getattr(args, "subcommand", None) == "run" and args.task is None and args.index is None:
-        parser.error("run requires --task or --index")
+    if getattr(args, "subcommand", None) == "run-task" and args.task is None and args.index is None:
+        parser.error("run-task requires --task or --index")
     try:
         return int(args.func(args))
     except KeyboardInterrupt:
