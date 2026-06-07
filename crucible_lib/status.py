@@ -21,7 +21,8 @@ def cmd_status(args: argparse.Namespace) -> int:
             color_enabled=color_enabled,
             as_json=args.json,
             filter_name=filter_name,
-            show_details=bool(args.all or args.done or getattr(args, "show_done", False) or getattr(args, "verbose", False)),
+            include_started_pending=bool(getattr(args, "verbose", False)),
+            show_details=bool(filter_name is None or args.all or args.done or getattr(args, "show_done", False) or getattr(args, "verbose", False)),
             show_done=bool(args.done or getattr(args, "show_done", False)),
         )
     if selected:
@@ -148,6 +149,11 @@ def run_current(summary: dict[str, Any]) -> bool:
     active = counts["running"] + counts["claimed"] + counts["stale"]
     return active > 0 or (counts["pending"] > 0 and run_started(summary))
 
+def run_attention(summary: dict[str, Any]) -> bool:
+    counts = summary["counts"]
+    active = counts["running"] + counts["claimed"] + counts["stale"]
+    return active > 0 or counts["fail"] > 0
+
 def run_state(summary: dict[str, Any]) -> str:
     if run_failed(summary):
         return "failed"
@@ -159,11 +165,19 @@ def run_state(summary: dict[str, Any]) -> str:
         return "done"
     return "empty"
 
-def filtered_run_summaries(summaries: list[dict[str, Any]], filter_name: str | None) -> list[dict[str, Any]]:
+def filtered_run_summaries(
+    summaries: list[dict[str, Any]],
+    filter_name: str | None,
+    *,
+    include_started_pending: bool = False,
+) -> list[dict[str, Any]]:
     if filter_name == "done":
         return [item for item in summaries if run_done(item)]
     if filter_name in {None, "current"}:
-        return [item for item in summaries if run_current(item)]
+        return [
+            item for item in summaries
+            if run_attention(item) or (include_started_pending and run_current(item))
+        ]
     if filter_name == "all":
         return summaries
     if filter_name == "failed":
@@ -605,10 +619,15 @@ def print_run_status(
     color_enabled: bool,
     as_json: bool,
     filter_name: str | None,
+    include_started_pending: bool = False,
     show_details: bool = False,
     show_done: bool = False,
 ) -> int:
-    filtered = filtered_run_summaries(summaries, filter_name)
+    filtered = filtered_run_summaries(
+        summaries,
+        filter_name,
+        include_started_pending=include_started_pending,
+    )
     if as_json:
         print(json.dumps({"runs": [run_status_payload(item) for item in filtered]}, sort_keys=True))
         return 0 if all(item["counts"]["fail"] == 0 for item in filtered) else 1

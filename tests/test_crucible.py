@@ -1782,7 +1782,7 @@ class CrucibleTests(unittest.TestCase):
                 self.assertNotIn("bonus", status_text)
                 self.assertNotIn("setup", status_text)
                 self.assertNotIn("nnue-selfplay", status_text)
-                self.assertNotIn('"worker-main" task=0', status_text)
+                self.assertIn('"worker-main" task=0', status_text)
 
                 stdout = io.StringIO()
                 with contextlib.redirect_stdout(stdout):
@@ -1801,7 +1801,8 @@ class CrucibleTests(unittest.TestCase):
                 active_text = stdout.getvalue()
                 self.assertIn("main", active_text)
                 self.assertNotIn("bonus", active_text)
-                self.assertIn("running=1 claimed=0", active_text)
+                self.assertIn("  active: 1", active_text)
+                self.assertIn('"worker-main" task=0', active_text)
 
                 stdout = io.StringIO()
                 with contextlib.redirect_stdout(stdout):
@@ -1870,7 +1871,7 @@ class CrucibleTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
 
-            def write_run(name: str) -> Path:
+            def write_run(name: str, task_count: int = 1) -> Path:
                 run = root / "runs" / name
                 manifest = run / "manifest.json"
                 manifest.parent.mkdir(parents=True)
@@ -1880,13 +1881,23 @@ class CrucibleTests(unittest.TestCase):
                         "name": name,
                         "work_dir": str(run),
                         "state_dir": str(run / "state"),
-                        "tasks": [{"id": "task_0", "index": 0, "command": "true", "outputs": []}],
+                        "tasks": [
+                            {"id": f"task_{index}", "index": index, "command": "true", "outputs": []}
+                            for index in range(task_count)
+                        ],
                     }),
                     encoding="utf-8",
                 )
                 return run
 
             write_run("queued")
+            waiting = write_run("waiting", task_count=2)
+            waiting_state = waiting / "state"
+            waiting_state.mkdir()
+            (waiting_state / "task_0.done.json").write_text(
+                json.dumps({"task": "task_0", "host": "worker-waiting"}),
+                encoding="utf-8",
+            )
             active = write_run("active")
             state = active / "state"
             state.mkdir()
@@ -1899,10 +1910,32 @@ class CrucibleTests(unittest.TestCase):
             active_status = self.run_cli("status", cwd=root, env=env)
             self.assertEqual(0, active_status.returncode)
             self.assertIn("active", active_status.stdout)
+            self.assertIn('    "worker-a" task=0', active_status.stdout)
             self.assertNotIn("queued", active_status.stdout)
+            self.assertNotIn("waiting", active_status.stdout)
+
+            verbose_status = self.run_cli("status", "--verbose", cwd=root, env=env)
+            self.assertEqual(0, verbose_status.returncode)
+            self.assertIn("active", verbose_status.stdout)
+            self.assertIn("waiting", verbose_status.stdout)
+            self.assertNotIn("queued", verbose_status.stdout)
+
+            failed = write_run("failed")
+            failed_state = failed / "state"
+            failed_state.mkdir()
+            (failed_state / "task_0.fail.json").write_text(
+                json.dumps({"task": "task_0", "host": "worker-fail", "rc": 1}),
+                encoding="utf-8",
+            )
+
+            failed_status = self.run_cli("status", cwd=root, env=env)
+            self.assertEqual(1, failed_status.returncode)
+            self.assertIn("active", failed_status.stdout)
+            self.assertIn("failed", failed_status.stdout)
+            self.assertNotIn("waiting", failed_status.stdout)
 
             all_status = self.run_cli("status", "--all", cwd=root, env=env)
-            self.assertEqual(0, all_status.returncode)
+            self.assertEqual(1, all_status.returncode)
             self.assertIn("active", all_status.stdout)
             self.assertIn("queued", all_status.stdout)
             self.assertRegex(all_status.stdout, r'"queued"\n  tasks=0/1')
@@ -2143,7 +2176,7 @@ class CrucibleTests(unittest.TestCase):
                         )
                 )
                 self.assertEqual(0, rc)
-                self.assertIn("50k/125k rows output=48k eta=3h06m", stdout.getvalue())
+                self.assertIn('    "worker" task=0 [50k/125k rows, output=48k, eta=3h06m]', stdout.getvalue())
 
                 named_stdout = io.StringIO()
                 with contextlib.redirect_stdout(named_stdout):
