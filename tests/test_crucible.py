@@ -1898,7 +1898,7 @@ class CrucibleTests(unittest.TestCase):
                 json.dumps({"task": "task_0", "host": "worker-waiting"}),
                 encoding="utf-8",
             )
-            active = write_run("active")
+            active = write_run("zzz-active")
             state = active / "state"
             state.mkdir()
             (state / "task_0.running.json").write_text(
@@ -1920,7 +1920,7 @@ class CrucibleTests(unittest.TestCase):
             self.assertIn("waiting", verbose_status.stdout)
             self.assertNotIn("queued", verbose_status.stdout)
 
-            failed = write_run("failed")
+            failed = write_run("aaa-failed")
             failed_state = failed / "state"
             failed_state.mkdir()
             (failed_state / "task_0.fail.json").write_text(
@@ -1933,6 +1933,10 @@ class CrucibleTests(unittest.TestCase):
             self.assertIn("active", failed_status.stdout)
             self.assertIn("failed", failed_status.stdout)
             self.assertNotIn("waiting", failed_status.stdout)
+            self.assertLess(
+                failed_status.stdout.index('"zzz-active"'),
+                failed_status.stdout.index('"aaa-failed"'),
+            )
 
             all_status = self.run_cli("status", "--all", cwd=root, env=env)
             self.assertEqual(1, all_status.returncode)

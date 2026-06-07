@@ -149,10 +149,21 @@ def run_current(summary: dict[str, Any]) -> bool:
     active = counts["running"] + counts["claimed"] + counts["stale"]
     return active > 0 or (counts["pending"] > 0 and run_started(summary))
 
-def run_attention(summary: dict[str, Any]) -> bool:
+def run_active_count(summary: dict[str, Any]) -> int:
     counts = summary["counts"]
-    active = counts["running"] + counts["claimed"] + counts["stale"]
-    return active > 0 or counts["fail"] > 0
+    return int(counts["running"] + counts["claimed"] + counts["stale"])
+
+def run_attention(summary: dict[str, Any]) -> bool:
+    return run_active_count(summary) > 0 or summary["counts"]["fail"] > 0
+
+def run_attention_sort_key(summary: dict[str, Any]) -> tuple[int, int, str]:
+    active = run_active_count(summary)
+    fail = int(summary["counts"]["fail"])
+    if active > 0:
+        return (0, -active, str(summary["run"]))
+    if fail > 0:
+        return (1, -fail, str(summary["run"]))
+    return (2, 0, str(summary["run"]))
 
 def run_state(summary: dict[str, Any]) -> str:
     if run_failed(summary):
@@ -174,10 +185,11 @@ def filtered_run_summaries(
     if filter_name == "done":
         return [item for item in summaries if run_done(item)]
     if filter_name in {None, "current"}:
-        return [
+        filtered = [
             item for item in summaries
             if run_attention(item) or (include_started_pending and run_current(item))
         ]
+        return sorted(filtered, key=run_attention_sort_key)
     if filter_name == "all":
         return summaries
     if filter_name == "failed":
