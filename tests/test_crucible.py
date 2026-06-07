@@ -171,10 +171,10 @@ class CrucibleTests(unittest.TestCase):
             status = self.run_cli("status", str(run_dir))
             self.assertEqual(0, status.returncode)
             self.assertIn("tasks=3/3", status.stdout)
-            self.assertIn('== "test" ("native check") ==', status.stdout)
+            self.assertIn('"test" ("native check")', status.stdout)
             self.assertNotIn("kind=", status.stdout)
             self.assertNotIn("desc=", status.stdout)
-            self.assertRegex(status.stdout.splitlines()[1], r"^state=done tasks=3/3")
+            self.assertRegex(status.stdout.splitlines()[1], r"^  tasks=3/3")
 
             merged = root / "merged.txt"
             merge = self.run_cli(
@@ -1348,8 +1348,8 @@ class CrucibleTests(unittest.TestCase):
 
             status = self.run_cli("status", str(coordinator))
             self.assertEqual(0, status.returncode)
-            self.assertIn("state=queued tasks=0/1", status.stdout)
-            self.assertIn("pending: 1", status.stdout)
+            self.assertIn("  tasks=0/1", status.stdout)
+            self.assertIn("  pending: 1", status.stdout)
 
     def test_worker_doctor_checks_coordinator_callback(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1517,13 +1517,13 @@ class CrucibleTests(unittest.TestCase):
 
             compact = self.run_cli("status", str(root))
             self.assertEqual(1, compact.returncode)
-            self.assertIn('== "', compact.stdout)
-            self.assertIn("state=failed tasks=1/4 fail=1", compact.stdout)
-            self.assertIn("active: 1 subtask=42/1000", compact.stdout)
+            self.assertIn('"tmp', compact.stdout)
+            self.assertIn("  tasks=1/4 fail=1", compact.stdout)
+            self.assertIn("  active: 1 subtask=42/1000", compact.stdout)
             self.assertNotIn("host-done [1]: 0", compact.stdout)
-            self.assertIn('"worker-claimed" task=1 [subtask=42/1000]', compact.stdout)
-            self.assertIn('"host-fail" [1]: 2', compact.stdout)
-            self.assertIn('pending: 1\n  "score:uci" [1]: 3', compact.stdout)
+            self.assertIn('    "worker-claimed" task=1 [subtask=42/1000]', compact.stdout)
+            self.assertIn('    "host-fail" [1]: 2', compact.stdout)
+            self.assertIn('  pending: 1\n    "score:uci" [1]: 3', compact.stdout)
 
             result = self.run_cli("status", str(root), "--verbose")
             self.assertEqual(1, result.returncode)
@@ -1698,7 +1698,7 @@ class CrucibleTests(unittest.TestCase):
 
             status = self.run_cli("status", str(root))
             self.assertEqual(0, status.returncode)
-            self.assertIn('pending: 4\n  "label:uci" [1]: 1\n  "score:uci" [1]: 0\n  "unlabeled" [2]: 2-3', status.stdout)
+            self.assertIn('  pending: 4\n    "label:uci" [1]: 1\n    "score:uci" [1]: 0\n    "unlabeled" [2]: 2-3', status.stdout)
 
     def test_status_uses_runs_directory(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1779,7 +1779,7 @@ class CrucibleTests(unittest.TestCase):
                 self.assertEqual(0, rc)
                 status_text = stdout.getvalue()
                 self.assertIn("main", status_text)
-                self.assertRegex(status_text, r'"main"\s+state=current tasks=0/1')
+                self.assertRegex(status_text, r'"main"\s+tasks=0/1')
                 self.assertNotIn("bonus", status_text)
                 self.assertNotIn("setup", status_text)
                 self.assertNotIn("nnue-selfplay", status_text)
@@ -1906,7 +1906,7 @@ class CrucibleTests(unittest.TestCase):
             self.assertEqual(0, all_status.returncode)
             self.assertIn("active", all_status.stdout)
             self.assertIn("queued", all_status.stdout)
-            self.assertRegex(all_status.stdout, r'== "queued" ==\nstate=queued tasks=0/1')
+            self.assertRegex(all_status.stdout, r'"queued"\n  tasks=0/1')
 
     def test_status_empty_active_message_is_specific(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -2041,7 +2041,7 @@ class CrucibleTests(unittest.TestCase):
 
         self.assertEqual(0, rc)
         self.assertEqual(
-            "coordinator: pwa-5090:/home/petter/code/cpp/chess/crucible/runs\nremote status\n",
+            'coordinator: "pwa-5090:/home/petter/code/cpp/chess/crucible/runs"\nremote status\n',
             stdout.getvalue(),
         )
         command = run_mock.call_args.args[0]
@@ -2087,7 +2087,7 @@ class CrucibleTests(unittest.TestCase):
 
             self.assertEqual(0, rc)
             self.assertEqual(
-                "coordinator: pwa-5090:/home/petter/code/cpp/chess/crucible/runs\nremote status\n",
+                'coordinator: "pwa-5090:/home/petter/code/cpp/chess/crucible/runs"\nremote status\n',
                 stdout.getvalue(),
             )
             command = run_mock.call_args.args[0]
@@ -2144,7 +2144,7 @@ class CrucibleTests(unittest.TestCase):
                         )
                 )
                 self.assertEqual(0, rc)
-                self.assertIn("50k/125k rows output=48k eta=3h06m", stdout.getvalue())
+                self.assertIn('50k/125k rows output=48k eta="3h06m"', stdout.getvalue())
 
                 named_stdout = io.StringIO()
                 with contextlib.redirect_stdout(named_stdout):
@@ -2163,7 +2163,7 @@ class CrucibleTests(unittest.TestCase):
                 )
                 self.assertEqual(0, rc)
                 self.assertIn("active: 1 workers=1 output=48k", named_stdout.getvalue())
-                self.assertIn('"worker" task=0 [50k/125k rows, output=48k, eta=3h06m]', named_stdout.getvalue())
+                self.assertIn('"worker" task=0 [50k/125k rows, output=48k, eta="3h06m"]', named_stdout.getvalue())
 
     def test_status_shows_active_worker_throughput(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -2369,9 +2369,9 @@ class CrucibleTests(unittest.TestCase):
                 )
                 self.assertEqual(0, rc)
                 text = stdout.getvalue()
-                self.assertIn("state=current tasks=1/2 eta=1m40s", text)
-                self.assertIn("active: 1 1500/2000 games eta=1m40s", text)
-                self.assertIn('"worker-a" task=1 [500/1000 games, eta=1m40s]', text)
+                self.assertIn('  tasks=1/2 eta="1m40s"', text)
+                self.assertIn('  active: 1 1500/2000 games eta="1m40s"', text)
+                self.assertIn('"worker-a" task=1 [500/1000 games, eta="1m40s"]', text)
 
     def test_status_uses_completed_rate_when_running_task_has_no_progress_yet(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -2442,9 +2442,9 @@ class CrucibleTests(unittest.TestCase):
                 )
                 self.assertEqual(0, rc)
                 text = stdout.getvalue()
-                self.assertIn("state=current tasks=1/2 eta=1m39s", text)
-                self.assertIn("active: 1 1000/2000 games eta=1m39s", text)
-                self.assertIn('"worker-a" task=1 [0/1000 games, eta=1m39s]', text)
+                self.assertIn('  tasks=1/2 eta="1m39s"', text)
+                self.assertIn('  active: 1 1000/2000 games eta="1m39s"', text)
+                self.assertIn('"worker-a" task=1 [0/1000 games, eta="1m39s"]', text)
 
     def test_status_labels_overdue_fallback_eta_as_unknown(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -2515,9 +2515,9 @@ class CrucibleTests(unittest.TestCase):
                 )
                 self.assertEqual(0, rc)
                 text = stdout.getvalue()
-                self.assertIn("state=current tasks=1/2 eta=unknown", text)
-                self.assertIn("active: 1 1000/2000 games eta=unknown", text)
-                self.assertIn('"worker-a" task=1 [0/1000 games, eta=unknown]', text)
+                self.assertIn('  tasks=1/2 eta="unknown"', text)
+                self.assertIn('  active: 1 1000/2000 games eta="unknown"', text)
+                self.assertIn('"worker-a" task=1 [0/1000 games, eta="unknown"]', text)
 
     def test_status_ignores_undeclared_domain_progress(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -3040,8 +3040,8 @@ class CrucibleTests(unittest.TestCase):
 
             status = self.run_cli("status", str(coordinator))
             self.assertEqual(0, status.returncode)
-            self.assertIn("state=queued tasks=0/1", status.stdout)
-            self.assertIn("pending: 1", status.stdout)
+            self.assertIn("  tasks=0/1", status.stdout)
+            self.assertIn("  pending: 1", status.stdout)
 
     def test_version_reports_current_checkout(self) -> None:
         result = self.run_cli("version", "--json")

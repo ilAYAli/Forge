@@ -96,7 +96,7 @@ def run_status_on_coordinator(args: argparse.Namespace, coordinator_runs: str) -
             env=env,
         )
     if not bool(getattr(args, "json", False)):
-        print(f"coordinator: {coordinator_runs}")
+        print(f"coordinator: {json.dumps(coordinator_runs)}")
     if result.stdout:
         print(result.stdout, end="")
     if result.stderr:
@@ -212,14 +212,14 @@ def progress_eta_text(done: Any, total: Any, rate: Any) -> str:
     eta_s = progress_eta_seconds(done, total, rate)
     if eta_s is None:
         return ""
-    return f"eta={compact_duration(eta_s)}"
+    return f"eta={json.dumps(compact_duration(eta_s))}"
 
 def progress_data_eta_text(data: dict[str, Any], done: Any, total: Any) -> str:
     eta_s = data.get("eta_s")
     if isinstance(eta_s, (int, float)):
         if eta_s <= 0 and data.get("eta_overdue"):
-            return "eta=unknown"
-        return f"eta={compact_duration(eta_s)}"
+            return 'eta="unknown"'
+        return f"eta={json.dumps(compact_duration(eta_s))}"
     return progress_eta_text(done, total, data.get("rate"))
 
 def parse_timestamp_epoch(value: Any) -> float | None:
@@ -429,7 +429,7 @@ def summary_progress(summary: dict[str, Any]) -> str:
             text = f"{compact_count(done)}/{compact_count(total_work)} {unit}"
             if summary["counts"]["pending"] == 0 and bucket["etas"]:
                 max_eta = max(bucket["etas"])
-                etas.append("eta=unknown" if max_eta <= 0 else f"eta={compact_duration(max_eta)}")
+                etas.append('eta="unknown"' if max_eta <= 0 else f"eta={json.dumps(compact_duration(max_eta))}")
             elif bucket["rate"] > 0:
                 eta = progress_eta_text(done, total_work, bucket["rate"])
                 if eta:
@@ -443,7 +443,7 @@ def summary_progress(summary: dict[str, Any]) -> str:
             ):
                 if bucket["etas"]:
                     max_eta = max(bucket["etas"])
-                    eta = "eta=unknown" if max_eta <= 0 else f"eta={compact_duration(max_eta)}"
+                    eta = 'eta="unknown"' if max_eta <= 0 else f"eta={json.dumps(compact_duration(max_eta))}"
                 else:
                     eta = progress_eta_text(active_done, active_total, bucket["rate"])
                 if eta:
@@ -624,12 +624,9 @@ def print_run_status(
             print()
         counts = summary["counts"]
         active = counts["running"] + counts["claimed"] + counts["stale"]
-        state = run_state(summary)
-        state_color = "red" if state == "failed" else "yellow" if state in {"current", "queued"} else "green"
         if show_details:
-            print(colorize(f"== {run_title(summary)} ==", "cyan", enabled=color_enabled))
+            print(colorize(run_title(summary), "cyan", enabled=color_enabled))
         fields = [
-            f"state={colorize(state, state_color, enabled=color_enabled)}",
             f"tasks={counts['done']}/{summary['tasks']}",
         ]
         if not show_details:
@@ -650,13 +647,15 @@ def print_run_status(
                 f"pending={counts['pending']}",
                 f"stale={counts['stale']}",
             ])
-        print(" ".join(fields))
+        indent = "  " if show_details else ""
+        print(f"{indent}{' '.join(fields)}")
         if show_details:
             print_status_details(
                 summary,
                 color_enabled=color_enabled,
                 show_done=show_done,
                 show_diagnostics=True,
+                indent="  ",
             )
     return 0 if all(item["counts"]["fail"] == 0 for item in filtered) else 1
 
@@ -1114,29 +1113,37 @@ def print_status_group(
     *,
     color_enabled: bool,
     show_empty: bool = False,
+    indent: str = "",
 ) -> None:
     if not groups:
         if show_empty:
-            print(colorize(f"{title}: 0", status_color(title), enabled=color_enabled))
+            print(f"{indent}{colorize(f'{title}: 0', status_color(title), enabled=color_enabled)}")
         return
     count = sum(len(values) for values in groups.values())
-    print(colorize(f"{title}: {count}", status_color(title), enabled=color_enabled))
+    print(f"{indent}{colorize(f'{title}: {count}', status_color(title), enabled=color_enabled)}")
     for worker, values in sorted(groups.items()):
-        print(f"  {quote_status_key(worker, values)} [{len(values)}]: {format_status_values(values)}")
+        print(f"{indent}  {quote_status_key(worker, values)} [{len(values)}]: {format_status_values(values)}")
 
-def print_pending_status(summary: dict[str, Any], *, color_enabled: bool, show_empty: bool = False) -> None:
+def print_pending_status(
+    summary: dict[str, Any],
+    *,
+    color_enabled: bool,
+    show_empty: bool = False,
+    indent: str = "",
+) -> None:
     if not summary["pending"]:
         if show_empty:
-            print(colorize("pending: 0", "yellow", enabled=color_enabled))
+            print(f"{indent}{colorize('pending: 0', 'yellow', enabled=color_enabled)}")
         return
-    print(colorize(f"pending: {len(summary['pending'])}", "yellow", enabled=color_enabled))
+    pending_title = f"pending: {len(summary['pending'])}"
+    print(f"{indent}{colorize(pending_title, 'yellow', enabled=color_enabled)}")
     groups = summary.get("pending_groups")
     if not isinstance(groups, dict) or not groups:
-        print(f"  {format_status_values(summary['pending'])}")
+        print(f"{indent}  {format_status_values(summary['pending'])}")
         return
     for label, values in sorted(groups.items(), key=lambda item: (not item[0], item[0])):
         label_text = json.dumps(label if label else "unlabeled")
-        print(f"  {label_text} [{len(values)}]: {format_status_values(values)}")
+        print(f"{indent}  {label_text} [{len(values)}]: {format_status_values(values)}")
 
 def active_status_sort_key(row: dict[str, Any]) -> tuple[int, float, tuple[bool, int | str]]:
     state = str(row.get("state") or "")
@@ -1159,10 +1166,11 @@ def print_status_details(
     color_enabled: bool = False,
     show_done: bool = False,
     show_diagnostics: bool = False,
+    indent: str = "",
 ) -> None:
     show_empty = show_diagnostics
     if show_done:
-        print_status_group("done", summary["groups"]["done"], color_enabled=color_enabled, show_empty=show_empty)
+        print_status_group("done", summary["groups"]["done"], color_enabled=color_enabled, show_empty=show_empty, indent=indent)
     if summary["active"]:
         worker_summary = active_worker_summary(summary)
         section_fields = (
@@ -1171,7 +1179,8 @@ def print_status_details(
             section_progress_fields(summary)
         )
         suffix = f" {' '.join(split_eta_last(section_fields))}" if section_fields else ""
-        print(colorize(f"active: {len(summary['active'])}{suffix}", "yellow", enabled=color_enabled))
+        active_title = f"active: {len(summary['active'])}{suffix}"
+        print(f"{indent}{colorize(active_title, 'yellow', enabled=color_enabled)}")
         for row in sorted(summary["active"], key=active_status_sort_key):
             state_name = str(row.get("state") or "")
             progress = f" [{row['progress']}]" if state_name == "running" and row.get("progress") else ""
@@ -1182,15 +1191,15 @@ def print_status_details(
                 if state_name != "running"
                 else ""
             )
-            print(f"  {worker}{state}{label} task={row['index']}{progress}")
+            print(f"{indent}  {worker}{state}{label} task={row['index']}{progress}")
     elif show_empty:
-        print(colorize("active: 0", "yellow", enabled=color_enabled))
-    print_pending_status(summary, color_enabled=color_enabled, show_empty=show_empty)
-    print_status_group("fail", summary["groups"]["fail"], color_enabled=color_enabled, show_empty=show_empty)
+        print(f"{indent}{colorize('active: 0', 'yellow', enabled=color_enabled)}")
+    print_pending_status(summary, color_enabled=color_enabled, show_empty=show_empty, indent=indent)
+    print_status_group("fail", summary["groups"]["fail"], color_enabled=color_enabled, show_empty=show_empty, indent=indent)
     if show_diagnostics and summary.get("diagnostics"):
-        print(colorize("diagnostics:", "yellow", enabled=color_enabled))
+        print(f"{indent}{colorize('diagnostics:', 'yellow', enabled=color_enabled)}")
         for item in summary["diagnostics"]:
-            print(f"  {item}")
+            print(f"{indent}  {item}")
 
 def print_compact_status(
     summary: dict[str, Any],
@@ -1200,9 +1209,8 @@ def print_compact_status(
     show_diagnostics: bool = False,
 ) -> None:
     counts = summary["counts"]
-    print(colorize(f"== {run_title(summary)} ==", "cyan", enabled=color_enabled))
+    print(colorize(run_title(summary), "cyan", enabled=color_enabled))
     fields = [
-        f"state={run_state(summary)}",
         f"tasks={counts['done']}/{summary['tasks']}",
     ]
     if counts["fail"]:
@@ -1210,12 +1218,13 @@ def print_compact_status(
     if counts["stale"]:
         fields.append(f"stale={counts['stale']}")
     fields.extend(run_progress_fields(summary))
-    print(" ".join(fields))
+    print(f"  {' '.join(fields)}")
     print_status_details(
         summary,
         color_enabled=color_enabled,
         show_done=show_done,
         show_diagnostics=show_diagnostics,
+        indent="  ",
     )
 
 def cmd_wait(args: argparse.Namespace) -> int:
