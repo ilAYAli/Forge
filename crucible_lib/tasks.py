@@ -146,14 +146,14 @@ def task_running_state(manifest: dict[str, Any], task: dict[str, Any], *, lease_
 def task_state(manifest: dict[str, Any], task: dict[str, Any], *, lease_seconds: int = 600) -> str:
     if task_complete(manifest, task):
         return "done"
-    if task_fail_path(manifest, task).exists():
-        return "fail"
     running_state = task_running_state(manifest, task, lease_seconds=lease_seconds)
     if running_state:
         return running_state
     claim_state = task_claim_state(manifest, task, lease_seconds=lease_seconds)
     if claim_state:
         return claim_state
+    if task_fail_path(manifest, task).exists():
+        return "fail"
     return "pending"
 
 class TaskSignalInterrupt(Exception):

@@ -1087,6 +1087,48 @@ class CrucibleTests(unittest.TestCase):
             status = self.run_cli("status", str(root))
             self.assertIn("pending: 1", status.stdout)
 
+    def test_active_retry_status_wins_over_stale_fail_marker(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest = {
+                "schema": "crucible.task.v1",
+                "name": "retry",
+                "work_dir": str(root),
+                "state_dir": str(root / "state"),
+                "log_dir": str(root / "logs"),
+                "claim_dir": str(root / "claims"),
+                "tasks": [{"id": "task_0", "index": 0, "command": "true", "outputs": []}],
+            }
+            task = manifest["tasks"][0]
+            run = root / "runs" / "retry"
+            run.mkdir(parents=True)
+            crucible.write_json(run / "manifest.json", manifest)
+            claim_epoch = crucible.epoch()
+            fail_payload = {"schema": "crucible.task.v1", "task": "task_0", "index": 0, "worker": "old", "rc": 1}
+            running_payload = {"schema": "crucible.task.v1", "task": "task_0", "index": 0, "worker": "new"}
+            claim_payload = {
+                "schema": "crucible.task.v1",
+                "task": "task_0",
+                "index": 0,
+                "claim_id": "claim",
+                "worker": "new",
+                "claimed_epoch": claim_epoch,
+                "heartbeat_epoch": claim_epoch,
+                "lease_seconds": 600,
+            }
+            crucible.write_json(crucible.task_fail_path(manifest, task), fail_payload)
+            crucible.write_json(crucible.task_running_path(manifest, task), running_payload)
+            crucible.task_claim_dir(manifest, task).mkdir(parents=True)
+            crucible.write_json(crucible.task_claim_path(manifest, task), claim_payload)
+            crucible.write_json(crucible.task_heartbeat_path(manifest, task), claim_payload)
+
+            status = self.run_cli("status", str(run), "--verbose")
+
+            self.assertEqual(0, status.returncode)
+            self.assertIn("active: 1", status.stdout)
+            self.assertIn('"new" task=0', status.stdout)
+            self.assertIn("fail: 0", status.stdout)
+
     def test_malformed_claim_is_claimed_until_stale(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
