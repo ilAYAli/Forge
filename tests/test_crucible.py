@@ -514,6 +514,29 @@ class CrucibleTests(unittest.TestCase):
             self.assertNotEqual(0, result.returncode)
             self.assertIn("git commit", result.stderr)
 
+    def test_sync_git_requirement_honors_require_clean_false(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            subprocess.run(["git", "init", "-b", "main"], cwd=root, check=True, stdout=subprocess.DEVNULL)
+            subprocess.run(["git", "config", "user.name", "Petter Wahlman"], cwd=root, check=True)
+            subprocess.run(["git", "config", "user.email", "petter@wahlman.no"], cwd=root, check=True)
+            (root / "input.txt").write_text("fixed\n", encoding="utf-8")
+            subprocess.run(["git", "add", "input.txt"], cwd=root, check=True)
+            subprocess.run(["git", "commit", "-m", "test"], cwd=root, check=True, stdout=subprocess.DEVNULL)
+            commit = subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip()
+            (root / "dirty.txt").write_text("dirty\n", encoding="utf-8")
+
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout):
+                crucible.sync_git_requirement({
+                    "name": "repo",
+                    "path": str(root),
+                    "commit": commit,
+                    "require_clean": False,
+                })
+
+            self.assertIn(commit, stdout.getvalue())
+
     def test_profile_path_map_translates_manifest_strings(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

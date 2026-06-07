@@ -562,6 +562,13 @@ def cmd_add_command(args: argparse.Namespace) -> int:
     print(path)
     return 0
 
+def git_requirement_allows_dirty(item: dict[str, Any]) -> bool:
+    if bool(item.get("allow_dirty", False)):
+        return True
+    if "require_clean" in item:
+        return not bool(item.get("require_clean", False))
+    return False
+
 def sync_git_requirement(item: dict[str, Any]) -> None:
     repo = expand_path(str(item.get("path") or item.get("repo") or "."))
     label = str(item.get("name") or repo)
@@ -572,7 +579,7 @@ def sync_git_requirement(item: dict[str, Any]) -> None:
     if not (repo / ".git").exists():
         raise SystemExit(f"{label}: not a git checkout: {repo}")
     status = git_output(repo, "status", "--porcelain")
-    if status and not bool(item.get("allow_dirty", False)):
+    if status and not git_requirement_allows_dirty(item):
         raise SystemExit(f"{label}: git worktree is not clean")
     remote = str(item.get("remote") or "").strip()
     ensure_git_remote(repo, remote, url)
