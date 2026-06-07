@@ -2521,6 +2521,58 @@ class CrucibleTests(unittest.TestCase):
                 self.assertEqual(0, rc)
                 self.assertIn("eta=unknown", stdout.getvalue())
 
+    def test_status_marks_complete_running_progress_as_finalizing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            runs = root / "runs"
+            run = runs / "score"
+            state = run / "state"
+            logs = run / "logs"
+            state.mkdir(parents=True)
+            logs.mkdir(parents=True)
+            manifest = {
+                "schema": "crucible.task.v1",
+                "name": "score",
+                "work_dir": str(run),
+                "state_dir": str(state),
+                "log_dir": str(logs),
+                "tasks": [{
+                    "id": "task_0",
+                    "index": 0,
+                    "command": "true",
+                    "outputs": [],
+                    "progress": {
+                        "unit": "games",
+                        "total": 50,
+                        "log_regex": r"games=(?P<done>\d+)/(?P<total>\d+)\s+rate=(?P<rate>[0-9.]+)/s",
+                    },
+                }],
+            }
+            (run / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+            (state / "task_0.running.json").write_text(json.dumps({"task": "task_0", "host": "worker"}))
+            (logs / "task_0.log").write_text("games=50/50 rate=10/s\n", encoding="utf-8")
+
+            with self.patch_runs_dir(runs):
+                stdout = io.StringIO()
+                with contextlib.redirect_stdout(stdout):
+                    rc = crucible.cmd_status(
+                        argparse.Namespace(
+                            run="score",
+                            all=False,
+                            done=False,
+                            failed=False,
+                            json=False,
+                            no_color=True,
+                            lease_seconds=600,
+                            verbose=False,
+                            show_done=False,
+                        )
+                    )
+                self.assertEqual(0, rc)
+                text = stdout.getvalue()
+                self.assertIn('"worker" task=0 [50/50 games, finalizing]', text)
+                self.assertNotIn("eta=0s", text)
+
     def test_status_shows_active_worker_throughput(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

@@ -228,6 +228,8 @@ def compact_duration(seconds: float) -> str:
 def progress_eta_seconds(done: Any, total: Any, rate: Any) -> float | None:
     if not isinstance(done, int) or not isinstance(total, int) or total <= 0:
         return None
+    if done >= total:
+        return None
     if not isinstance(rate, (int, float)) or rate <= 0:
         return None
     return max(0.0, (total - done) / float(rate))
@@ -361,6 +363,9 @@ def progress_text(data: dict[str, Any]) -> str:
         done_text = str(done) if isinstance(done, int) else "?"
         total_text = str(total) if isinstance(total, int) and total > 0 else "?"
         parts = [f"subtask={done_text}/{total_text}"]
+        if isinstance(done, int) and isinstance(total, int) and total > 0 and done >= total:
+            parts.append("finalizing")
+            return ", ".join(parts)
         eta = progress_data_eta_text(data, done, total)
         if eta:
             parts.append(eta)
@@ -384,6 +389,9 @@ def progress_text(data: dict[str, Any]) -> str:
     parts = [main] if main else []
     if isinstance(output, int):
         parts.append(f"{output_unit}={compact_count(output)}")
+    if isinstance(done, int) and isinstance(total, int) and total > 0 and done >= total:
+        parts.append("finalizing")
+        return ", ".join(parts)
     eta = progress_data_eta_text(data, done, total)
     if eta:
         parts.append(eta)
