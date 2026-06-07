@@ -68,6 +68,11 @@ directory. Default output is an ordered per-worker summary. Use `--verbose` for
 live phase details. TTY output is colored by default; use `--no-color` to
 disable it.
 
+`plan` and `run-job` are separate on purpose: `plan` defines reproducible work,
+and `run-job` executes a materialized manifest. A combined convenience command
+can still be useful, but it should keep writing `runs/<run>/manifest.json`
+before work starts so the run can be inspected, resumed, verified, and merged.
+
 ## Workers
 
 Example `workers.json`:
@@ -200,6 +205,8 @@ crucible plan --help
 crucible run-job run.manifest.json --workers workers.json --run my-run --wait
 crucible status
 watch -n 2 'crucible status --verbose'
+crucible status --failed
+crucible run-job runs/my-run/manifest.json --workers runs/my-run/workers.json --run my-run --resume --retry-failed --wait
 crucible wait --manifest runs/my-run/manifest.json --notify-command ./notify
 crucible verify my-run
 crucible merge my-run --output merged.txt
@@ -233,11 +240,56 @@ crucible status
 crucible status my-run --verbose
 ```
 
-Default `status` shows started runs: active work, stale claims, failures, or
-partially completed queues. Never-started pending-only runs are shown as
-`queued` under `--all`, so abandoned setup/test manifests do not look active.
+Default `status` focuses on active work. Inactive failed runs are collapsed near
+the top as `failed: N runs (use crucible status --failed)`, so old failures do
+not hide the active run. Run headers are printed as `run="..."`; descriptions
+are printed on their own `desc="..."` line. Active task rows stay visible in
+the default view. Add `--verbose` for pending/fail sections and diagnostics.
 Use `--all`, `--done`, or `--failed` to change which runs are listed. Use
 `--show-done` to include completed task breakdowns by worker.
+
+### Restart Failed Tasks
+
+First inspect the run:
+
+```sh
+crucible status my-run --verbose
+crucible status --failed
+```
+
+To retry failed tasks in an existing run, resume the materialized run and allow
+failed tasks to be claimed again:
+
+```sh
+crucible run-job runs/my-run/manifest.json \
+  --workers runs/my-run/workers.json \
+  --run my-run \
+  --resume \
+  --retry-failed \
+  --wait
+```
+
+`--resume` reuses `runs/my-run/manifest.json` and `runs/my-run/workers.json`.
+`--retry-failed` lets worker loops claim tasks that already have `.fail.json`.
+Tasks with valid `.done.json` and declared outputs are skipped. Active retries
+are shown as active even if an older fail marker exists for the same task.
+
+If a worker died and left only reserved claims, release those claims before
+restarting:
+
+```sh
+crucible release --manifest runs/my-run/manifest.json --worker worker-name
+```
+
+Release one known claim when you need to be precise:
+
+```sh
+crucible release \
+  --manifest runs/my-run/manifest.json \
+  --task task_0044 \
+  --worker worker-name \
+  --claim-id claim-id
+```
 
 ### Coordinator Runs
 

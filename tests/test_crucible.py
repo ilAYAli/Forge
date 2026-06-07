@@ -3500,11 +3500,19 @@ class CrucibleTests(unittest.TestCase):
             manifest=manifest,
             coordinator="pwa-5090:/tmp/manifest.json",
         )
+        retry_work = crucible.deploy_work_command(
+            worker=worker,
+            manifest=manifest,
+            coordinator="pwa-5090:/tmp/manifest.json",
+            retry_failed=True,
+        )
 
         self.assertIn("/opt/homebrew/bin/python3 .cache/crucible/crucible.py doctor", prereq)
         self.assertIn("--coordinator pwa-5090:/tmp/manifest.json", prereq)
         self.assertIn("/opt/homebrew/bin/python3 .cache/crucible/crucible.py work", work)
         self.assertIn("--idle-seconds 120.0", work)
+        self.assertNotIn("--retry-failed", work)
+        self.assertIn("--retry-failed", retry_work)
 
     def test_coordinator_host_override_is_used_for_remote_workers(self) -> None:
         manifest = Path("/tmp/run/manifest.json")

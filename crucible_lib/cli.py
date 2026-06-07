@@ -463,6 +463,7 @@ def build_parser() -> argparse.ArgumentParser:
     deploy.add_argument("--run", help="Run directory name under runs/. Defaults to manifest name.")
     deploy.add_argument("--resume", action="store_true", help="Resume an existing materialized run.")
     deploy.add_argument("--replace", action="store_true", help="Delete and recreate an existing run.")
+    deploy.add_argument("--retry-failed", action="store_true", help="Allow failed tasks to be claimed again.")
     deploy.add_argument("--coordinator-host", help="Coordinator hostname workers should SSH back to.")
     deploy.add_argument("--remote-timeout-seconds", type=float, default=1800.0, help="Timeout for remote setup/work commands.")
     deploy.add_argument(
@@ -484,6 +485,7 @@ def build_parser() -> argparse.ArgumentParser:
     run_job.add_argument("--run", help="Run directory name under runs/. Defaults to manifest name.")
     run_job.add_argument("--resume", action="store_true", help="Resume an existing materialized run.")
     run_job.add_argument("--replace", action="store_true", help="Delete and recreate an existing run.")
+    run_job.add_argument("--retry-failed", action="store_true", help="Allow failed tasks to be claimed again.")
     run_job.add_argument("--coordinator-host", help="Coordinator hostname workers should SSH back to.")
     run_job.add_argument("--remote-timeout-seconds", type=float, default=1800.0, help="Timeout for remote setup/work commands.")
     run_job.add_argument(

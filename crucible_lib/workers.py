@@ -430,12 +430,18 @@ def deploy_prereq_command(
     commands.append(shell_join(doctor_command))
     return "\n".join(commands)
 
-def deploy_work_command(*, worker: dict[str, Any], manifest: dict[str, Any], coordinator: str) -> str:
+def deploy_work_command(
+    *,
+    worker: dict[str, Any],
+    manifest: dict[str, Any],
+    coordinator: str,
+    retry_failed: bool = False,
+) -> str:
     runner = worker_cache_file(worker, "crucible.py")
     manifest_path = worker_cache_file(worker, "manifest.json")
     profile_args = worker_profile_args(manifest, worker)
     python = worker_python(worker)
-    return shell_join([
+    command = [
         python, runner,
         "work",
         "--manifest", manifest_path,
@@ -443,7 +449,10 @@ def deploy_work_command(*, worker: dict[str, Any], manifest: dict[str, Any], coo
         "--worker", str(worker["host"]),
         "--idle-seconds", str(DEFAULT_DEPLOY_WORK_IDLE_SECONDS),
         *profile_args,
-    ])
+    ]
+    if retry_failed:
+        command.append("--retry-failed")
+    return shell_join(command)
 
 def coordinator_for_worker(worker: dict[str, Any], manifest_path: Path, coordinator_host: str | None = None) -> str:
     if is_local_worker(worker):
@@ -634,6 +643,7 @@ def cmd_deploy(args: argparse.Namespace) -> int:
             worker=worker,
             manifest=manifest,
             coordinator=coordinator_for_worker(worker, manifest_path, getattr(args, "coordinator_host", None)),
+            retry_failed=bool(getattr(args, "retry_failed", False)),
         )
         result = run_worker_shell(worker, script, timeout=remote_timeout, tracker=tracker)
         if result.returncode == 0:
@@ -768,6 +778,7 @@ def cmd_run_job(args: argparse.Namespace) -> int:
         replace=args.replace,
         coordinator_host=args.coordinator_host,
         remote_timeout_seconds=args.remote_timeout_seconds,
+        retry_failed=args.retry_failed,
         notify_command=args.notify_command,
         no_color=args.no_color,
         verbose=args.verbose,
