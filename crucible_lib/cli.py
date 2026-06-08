@@ -9,6 +9,20 @@ from .status import *
 from .workers import *
 
 
+WORKERS_ARG_HELP = (
+    "workers.json file or comma-separated workers, e.g. worker-a,worker-b:4,worker-c:0."
+)
+WORKERS_ARG_HELP_WITH_DEFAULT = (
+    WORKERS_ARG_HELP + " Defaults to runs/workers.json, then ./workers.json."
+)
+WORKERS_ARG_HELP_RUN_DEFAULT = (
+    WORKERS_ARG_HELP + " Defaults to the run's workers.json."
+)
+WORKERS_ARG_HELP_RETRY_DEFAULT = (
+    WORKERS_ARG_HELP + " Defaults to each run's workers.json."
+)
+
+
 COMMAND_GROUPS = [
     (
         "Common",
@@ -433,7 +447,7 @@ def build_parser() -> argparse.ArgumentParser:
             "to that new HEAD."
         ),
     )
-    update.add_argument("workers", nargs="?", help="workers.json file or comma-separated worker hosts. Defaults to runs/workers.json, then ./workers.json.")
+    update.add_argument("workers", nargs="?", help=WORKERS_ARG_HELP_WITH_DEFAULT)
     update.add_argument(
         "--all",
         action="store_true",
@@ -461,7 +475,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Verify workers and run manifest tasks.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    deploy.add_argument("workers", help="workers.json file or comma-separated worker hosts.")
+    deploy.add_argument("workers", help=WORKERS_ARG_HELP)
     deploy.add_argument("manifest", help="Manifest template to materialize into runs/<name>.")
     deploy.add_argument("--jobs", type=int, default=4, help="Maximum workers to prepare/run concurrently.")
     deploy.add_argument("--run", help="Run directory name under runs/. Defaults to manifest name.")
@@ -485,13 +499,13 @@ def build_parser() -> argparse.ArgumentParser:
         description=(
             "Start a manifest on workers.\n\n"
             "Examples:\n"
-            "  crucible start manifest.json --workers worker-a,worker-b\n"
+            "  crucible start manifest.json --workers worker-a,worker-b:4\n"
             "  crucible start manifest.json --workers workers.json --wait\n"
-            "  crucible start manifest.json --workers worker-a,worker-b --merge merged.txt"
+            "  crucible start manifest.json --workers worker-a,worker-b:4 --merge merged.txt"
         ),
     )
     run_job.add_argument("manifest", help="Manifest template to materialize into runs/<name>.")
-    run_job.add_argument("--workers", required=True, help="workers.json file or comma-separated worker hosts.")
+    run_job.add_argument("--workers", required=True, help=WORKERS_ARG_HELP)
     run_job.add_argument("--jobs", type=int, default=4, help="Maximum workers to prepare/run concurrently.")
     run_job.add_argument("--run", help="Run directory name under runs/. Defaults to manifest name.")
     run_job.add_argument("--resume", action="store_true", help="Resume an existing materialized run.")
@@ -526,7 +540,7 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     resume.add_argument("run", nargs="?", help="Run name or run directory. Omit to resume the single current incomplete run.")
-    resume.add_argument("--workers", help="workers.json file or comma-separated worker hosts. Defaults to the run's workers.json.")
+    resume.add_argument("--workers", help=WORKERS_ARG_HELP_RUN_DEFAULT)
     resume.add_argument("--jobs", type=int, default=4, help="Maximum workers to prepare/run concurrently.")
     resume.add_argument("--coordinator-host", help="Coordinator hostname workers should SSH back to.")
     resume.add_argument("--remote-timeout-seconds", type=float, default=1800.0, help="Timeout for remote setup/work commands.")
@@ -561,7 +575,7 @@ def build_parser() -> argparse.ArgumentParser:
         nargs="?",
         help="Run name or run directory. Omit to retry all failed incomplete runs.",
     )
-    retry.add_argument("--workers", help="workers.json file or comma-separated worker hosts. Defaults to each run's workers.json.")
+    retry.add_argument("--workers", help=WORKERS_ARG_HELP_RETRY_DEFAULT)
     retry.add_argument("--jobs", type=int, default=4, help="Maximum workers to prepare/run concurrently.")
     retry.add_argument("--coordinator-host", help="Coordinator hostname workers should SSH back to.")
     retry.add_argument("--remote-timeout-seconds", type=float, default=1800.0, help="Timeout for remote setup/work commands.")

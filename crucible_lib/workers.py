@@ -6,6 +6,9 @@ from .tasks import *
 from .status import *
 
 
+DEFAULT_INLINE_WORKER_SLOTS = 8
+
+
 def update_worker_label(worker: dict[str, Any]) -> str:
     return str(worker.get("name") or worker.get("host") or "local")
 
@@ -48,13 +51,63 @@ def worker_arg_looks_like_path(value: str) -> bool:
         or os.path.sep in value
     )
 
+def default_inline_worker_records() -> dict[str, dict[str, Any]]:
+    try:
+        path = default_workers_path()
+    except SystemExit:
+        return {}
+    payload = read_json(path)
+    if payload.get("schema") not in (None, "crucible.workers.v1"):
+        raise SystemExit(f"{path}: unsupported schema {payload.get('schema')!r}")
+    raw_workers = payload.get("workers")
+    if not isinstance(raw_workers, list):
+        raise SystemExit(f"{path}: workers must be a list")
+    records: dict[str, dict[str, Any]] = {}
+    for item in raw_workers:
+        record = parse_worker_record(item)
+        if not record:
+            continue
+        host = str(record["host"])
+        records.setdefault(host, record)
+    return records
+
+def parse_inline_worker_entry(entry: str, defaults: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    spec = entry
+    slots_override: int | None = None
+    if ":" in entry:
+        spec, slots_text = entry.rsplit(":", 1)
+        slots_override = parse_worker_slots(slots_text, label=spec.strip() or entry)
+    host, profile = parse_worker_spec(spec)
+    record = dict(defaults.get(host) or {
+        "host": host,
+        "profile": profile,
+        "local": host in ("localhost", "127.0.0.1"),
+        "slots": DEFAULT_INLINE_WORKER_SLOTS,
+    })
+    if "=" in spec:
+        record["profile"] = profile
+    if slots_override is not None:
+        if slots_override == 0:
+            return {}
+        if slots_override == 1:
+            record.pop("slots", None)
+        else:
+            record["slots"] = slots_override
+    return record
+
 def parse_inline_workers(value: str) -> dict[str, Any]:
     entries = [entry.strip() for entry in value.split(",")]
     if not entries or any(not entry for entry in entries):
         raise SystemExit("inline workers must be a comma-separated host list")
+    defaults = default_inline_worker_records()
+    workers = [
+        worker
+        for entry in entries
+        if (worker := parse_inline_worker_entry(entry, defaults))
+    ]
     return {
         "schema": "crucible.workers.v1",
-        "workers": entries,
+        "workers": workers,
     }
 
 def workers_payload_from_arg(value: str | None, *, default_ok: bool) -> dict[str, Any]:
@@ -183,6 +236,8 @@ def parse_worker_record(item: Any) -> dict[str, Any]:
         "local": bool(item.get("local", host in ("localhost", "127.0.0.1"))),
     }
     slots = parse_worker_slots(item.get("slots", 1), label=host)
+    if slots == 0:
+        return {}
     if slots != 1:
         record["slots"] = slots
     if item.get("cache_dir"):
@@ -193,13 +248,13 @@ def parse_worker_record(item: Any) -> dict[str, Any]:
 
 def parse_worker_slots(value: Any, *, label: str) -> int:
     if isinstance(value, bool):
-        raise SystemExit(f"{label}: worker slots must be a positive integer")
+        raise SystemExit(f"{label}: worker slots must be a non-negative integer")
     try:
         slots = int(value)
     except (TypeError, ValueError) as exc:
-        raise SystemExit(f"{label}: worker slots must be a positive integer") from exc
-    if slots < 1:
-        raise SystemExit(f"{label}: worker slots must be a positive integer")
+        raise SystemExit(f"{label}: worker slots must be a non-negative integer") from exc
+    if slots < 0:
+        raise SystemExit(f"{label}: worker slots must be a non-negative integer")
     return slots
 
 def expand_worker_record(worker: dict[str, Any]) -> list[dict[str, Any]]:

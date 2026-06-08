@@ -165,12 +165,12 @@ class CrucibleTests(unittest.TestCase):
                 self.assertIn("usage:", result.stdout)
         self.assertIn("--progress-log-regex", self.run_cli("plan", "--help").stdout)
         self.assertIn("Coordinator manifest", self.run_cli("claim", "--help").stdout)
-        self.assertIn("comma-separated worker hosts", self.run_cli("deploy", "--help").stdout)
+        self.assertIn("comma-separated workers", self.run_cli("deploy", "--help").stdout)
         self.assertIn("--merge", self.run_cli("start", "--help").stdout)
         self.assertIn("--merge", self.run_cli("resume", "--help").stdout)
         self.assertIn("--index", self.run_cli("run-task", "--help").stdout)
         self.assertIn("--coordinator", self.run_cli("doctor", "--help").stdout)
-        self.assertIn("comma-separated worker hosts", self.run_cli("update", "--help").stdout)
+        self.assertIn("comma-separated workers", self.run_cli("update", "--help").stdout)
         self.assertNotEqual(0, self.run_cli("run", "--help").returncode)
         self.assertNotEqual(0, self.run_cli("run-job", "--help").returncode)
 
@@ -4069,16 +4069,105 @@ class CrucibleTests(unittest.TestCase):
                 workers,
             )
 
-    def test_load_workers_arg_accepts_inline_csv(self) -> None:
-        workers = crucible.load_workers_arg("pwa-mbp,pwa-5090,localhost")
+    def test_load_workers_arg_inline_csv_without_defaults_uses_eight_slots(self) -> None:
+        with mock.patch("crucible_lib.workers.default_workers_path", side_effect=SystemExit("no workers")):
+            workers = crucible.load_workers_arg("pwa-mbp,pwa-5090,localhost")
+
+        self.assertEqual(24, len(workers))
+        self.assertEqual({"pwa-mbp", "pwa-5090", "localhost"}, {worker["host"] for worker in workers})
+        self.assertEqual([1, 2, 3, 4, 5, 6, 7, 8], [worker["_slot"] for worker in workers if worker["host"] == "pwa-mbp"])
+        self.assertTrue(all(worker["_slots"] == 8 for worker in workers))
+        self.assertTrue(all(worker["local"] for worker in workers if worker["host"] == "localhost"))
+
+    def test_load_workers_arg_inline_inherits_default_records(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workers_path = Path(tmp) / "workers.json"
+            workers_path.write_text(
+                json.dumps({
+                    "schema": "crucible.workers.v1",
+                    "workers": [
+                        {
+                            "host": "pwa-mbp",
+                            "profile": "mac",
+                            "python": "/opt/homebrew/bin/python3",
+                            "cache_dir": str(Path(tmp) / "cache"),
+                            "slots": 2,
+                        },
+                        {"host": "pwa-5090", "profile": "linux", "slots": 4},
+                    ],
+                }),
+                encoding="utf-8",
+            )
+
+            with mock.patch("crucible_lib.workers.default_workers_path", return_value=workers_path):
+                workers = crucible.load_workers_arg("pwa-mbp,pwa-5090:1")
+
+        self.assertEqual(3, len(workers))
+        self.assertEqual(["pwa-mbp", "pwa-mbp", "pwa-5090"], [worker["host"] for worker in workers])
+        self.assertEqual(["mac", "mac", "linux"], [worker["profile"] for worker in workers])
+        self.assertEqual([1, 2], [worker["_slot"] for worker in workers if worker["host"] == "pwa-mbp"])
+        self.assertTrue(all(worker.get("python") == "/opt/homebrew/bin/python3" for worker in workers[:2]))
+        self.assertNotIn("_slot", workers[2])
+
+    def test_load_workers_arg_inline_overrides_slots_and_disables_zero(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workers_path = Path(tmp) / "workers.json"
+            workers_path.write_text(
+                json.dumps({
+                    "schema": "crucible.workers.v1",
+                    "workers": [
+                        {"host": "pwa-mbp", "profile": "mac", "slots": 8},
+                        {"host": "pwa-5090", "profile": "linux", "slots": 24},
+                    ],
+                }),
+                encoding="utf-8",
+            )
+
+            with mock.patch("crucible_lib.workers.default_workers_path", return_value=workers_path):
+                workers = crucible.load_workers_arg("pwa-mbp:3,pwa-5090:0,unknown:2")
+
+        self.assertEqual(5, len(workers))
+        self.assertEqual(["pwa-mbp", "pwa-mbp", "pwa-mbp", "unknown", "unknown"], [worker["host"] for worker in workers])
+        self.assertEqual(["mac", "mac", "mac", "unknown", "unknown"], [worker["profile"] for worker in workers])
+        self.assertNotIn("pwa-5090", [worker["host"] for worker in workers])
+
+    def test_load_workers_arg_inline_overrides_profile_and_keeps_defaults(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workers_path = Path(tmp) / "workers.json"
+            workers_path.write_text(
+                json.dumps({
+                    "schema": "crucible.workers.v1",
+                    "workers": [
+                        {
+                            "host": "pwa-mbp",
+                            "profile": "mac",
+                            "python": "/opt/homebrew/bin/python3",
+                            "slots": 8,
+                        },
+                    ],
+                }),
+                encoding="utf-8",
+            )
+
+            with mock.patch("crucible_lib.workers.default_workers_path", return_value=workers_path):
+                workers = crucible.load_workers_arg("pwa-mbp=linux:2")
+
+        self.assertEqual(2, len(workers))
+        self.assertTrue(all(worker["profile"] == "linux" for worker in workers))
+        self.assertTrue(all(worker["python"] == "/opt/homebrew/bin/python3" for worker in workers))
+
+    def test_workers_payload_from_inline_omits_disabled_workers(self) -> None:
+        with mock.patch("crucible_lib.workers.default_workers_path", side_effect=SystemExit("no workers")):
+            payload = crucible.workers_payload_from_arg("pwa-mbp:0,pwa-5090:2", default_ok=False)
 
         self.assertEqual(
-            [
-                {"host": "pwa-mbp", "profile": "pwa-mbp", "local": False},
-                {"host": "pwa-5090", "profile": "pwa-5090", "local": False},
-                {"host": "localhost", "profile": "localhost", "local": True},
-            ],
-            workers,
+            {
+                "schema": "crucible.workers.v1",
+                "workers": [
+                    {"host": "pwa-5090", "profile": "pwa-5090", "local": False, "slots": 2},
+                ],
+            },
+            payload,
         )
 
     def test_load_workers_arg_rejects_invalid_inline_csv(self) -> None:
@@ -4086,6 +4175,14 @@ class CrucibleTests(unittest.TestCase):
             crucible.load_workers_arg("pwa-mbp,,pwa-5090")
 
         self.assertIn("comma-separated host list", str(raised.exception))
+
+    def test_load_workers_arg_rejects_invalid_inline_slots(self) -> None:
+        for value in ("pwa-mbp:-1", "pwa-mbp:x"):
+            with self.subTest(value=value):
+                with self.assertRaises(SystemExit) as raised:
+                    crucible.load_workers_arg(value)
+
+                self.assertIn("worker slots must be a non-negative integer", str(raised.exception))
 
     def test_load_workers_arg_treats_json_name_as_missing_file(self) -> None:
         with self.assertRaises(SystemExit) as raised:
@@ -4108,7 +4205,7 @@ class CrucibleTests(unittest.TestCase):
             workers_path.write_text(
                 json.dumps({
                     "schema": "crucible.workers.v1",
-                    "workers": [{"host": "pwa-5090", "slots": 0}],
+                    "workers": [{"host": "pwa-5090", "slots": -1}],
                 }),
                 encoding="utf-8",
             )
@@ -4117,6 +4214,43 @@ class CrucibleTests(unittest.TestCase):
                 crucible.load_workers(workers_path)
 
             self.assertIn("pwa-5090: worker slots", str(raised.exception))
+
+    def test_load_workers_omits_zero_slot_workers(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workers_path = Path(tmp) / "workers.json"
+            workers_path.write_text(
+                json.dumps({
+                    "schema": "crucible.workers.v1",
+                    "workers": [
+                        {"host": "pwa-mbp", "slots": 0},
+                        {"host": "pwa-5090", "profile": "linux"},
+                    ],
+                }),
+                encoding="utf-8",
+            )
+
+            workers = crucible.load_workers(workers_path)
+
+        self.assertEqual([{"host": "pwa-5090", "profile": "linux", "local": False}], workers)
+
+    def test_load_workers_rejects_all_zero_slot_workers(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workers_path = Path(tmp) / "workers.json"
+            workers_path.write_text(
+                json.dumps({
+                    "schema": "crucible.workers.v1",
+                    "workers": [
+                        {"host": "pwa-mbp", "slots": 0},
+                        {"host": "pwa-5090", "slots": 0},
+                    ],
+                }),
+                encoding="utf-8",
+            )
+
+            with self.assertRaises(SystemExit) as raised:
+                crucible.load_workers(workers_path)
+
+        self.assertIn("no enabled workers", str(raised.exception))
 
     def test_deploy_commands_use_worker_python(self) -> None:
         worker = {
@@ -4252,7 +4386,7 @@ class CrucibleTests(unittest.TestCase):
             )
             args = argparse.Namespace(
                 manifest=str(template),
-                workers="worker-a,worker-b",
+                workers="worker-a:2,worker-b:0",
                 jobs=1,
                 run="inline-workers",
                 resume=False,
@@ -4274,7 +4408,9 @@ class CrucibleTests(unittest.TestCase):
             self.assertEqual(
                 {
                     "schema": "crucible.workers.v1",
-                    "workers": ["worker-a", "worker-b"],
+                    "workers": [
+                        {"host": "worker-a", "profile": "worker-a", "local": False, "slots": 2},
+                    ],
                 },
                 payload,
             )

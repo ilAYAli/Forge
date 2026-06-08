@@ -10,7 +10,7 @@ connect out through SSH/rsync; no daemon or database is required.
 
 ```sh
 crucible --help
-crucible start manifest.json --workers worker-a,worker-b
+crucible start manifest.json --workers worker-a,worker-b:4
 crucible stop my-run
 crucible resume my-run
 crucible retry
@@ -28,11 +28,11 @@ options.
 Start a manifest on a short inline worker list:
 
 ```sh
-crucible start manifest.json --workers worker-a,worker-b
+crucible start manifest.json --workers worker-a,worker-b:4
 ```
 
-Start with a workers file when workers need profiles, custom Python paths, local
-execution, cache directories, disabled entries, or slots:
+Start with a workers file when workers need defaults for profiles, custom
+Python paths, local execution, cache directories, disabled entries, or slots:
 
 ```sh
 crucible start manifest.json --workers workers.json --run my-run --wait
@@ -46,7 +46,7 @@ It returns non-zero on setup, task, wait, verification, or merge failure.
 Useful options:
 
 ```sh
-crucible start manifest.json --workers worker-a,worker-b --run my-run
+crucible start manifest.json --workers worker-a,worker-b:4 --run my-run
 crucible start manifest.json --workers workers.json --wait
 crucible start manifest.json --workers workers.json --merge merged.txt
 crucible start manifest.json --workers workers.json --replace
@@ -118,7 +118,7 @@ crucible retry my-run
 Retry with a different worker pool:
 
 ```sh
-crucible retry my-run --workers worker-c,worker-d
+crucible retry my-run --workers worker-c,worker-d:4
 crucible retry my-run --workers alternate-workers.json
 ```
 
@@ -136,11 +136,22 @@ crucible release --manifest runs/my-run/manifest.json --worker worker-name
 
 ## Workers
 
-Inline workers are a comma-separated host list:
+Inline workers are comma-separated. If `runs/workers.json` or
+`./workers.json` contains that host, the inline entry inherits the file's
+profile, Python path, local flag, cache directory, and slot default. If no
+default worker record exists for that host, an inline entry without `:N` uses
+8 slots.
 
 ```sh
 crucible start manifest.json --workers worker-a,worker-b
+crucible start manifest.json --workers worker-a:8,worker-b:4
+crucible start manifest.json --workers worker-a=linux:8,worker-b=mac:4
+crucible start manifest.json --workers worker-a:0,worker-b
 ```
+
+Use `:N` to override the slot count for that invocation. Use `:0` to omit a
+worker without rewriting the workers file. Negative and non-integer slot counts
+are invalid.
 
 Workers files as JSON:
 
@@ -160,8 +171,8 @@ Workers files as JSON:
       "slots": 2
     },
     {
-      "host": "localhost",
-      "local": true
+      "host": "worker-d",
+      "enabled": false
     }
   ]
 }
@@ -169,8 +180,9 @@ Workers files as JSON:
 
 A string worker uses the same value as host and profile. Object workers support
 `host`, `profile`, `python`, `local`, `cache_dir`, `slots`, and `enabled`.
-`slots` starts multiple worker loops on the same host; use it only when the task
-does not already saturate the machine.
+`slots` starts multiple worker loops on the same host; use it only when the
+task does not already saturate the machine. Set `enabled` to `false`, or set
+`slots` to `0`, to omit a worker from the expanded pool.
 
 ## Manifests
 
@@ -273,7 +285,7 @@ It updates workers to the coordinator's exact current Crucible commit.
 
 ```sh
 crucible update
-crucible update worker-a,worker-b
+crucible update worker-a,worker-b:4
 crucible update workers.json
 crucible update --all
 ```
