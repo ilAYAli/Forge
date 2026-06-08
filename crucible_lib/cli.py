@@ -264,6 +264,7 @@ def build_parser() -> argparse.ArgumentParser:
     claim.add_argument("--profile", help="Profile name recorded with the claim.")
     claim.add_argument("--lease-seconds", type=int, default=600, help="Claim lease duration before stale.")
     claim.add_argument("--retry-failed", action="store_true", help="Allow failed tasks to be claimed again.")
+    claim.add_argument("--max-attempts", type=int, default=0, help="Maximum total attempts for failed-task retry; 0 means no cap.")
     claim.add_argument("--json", action="store_true", help="Print claim payload as JSON.")
     claim.set_defaults(func=cmd_claim)
 
@@ -310,6 +311,7 @@ def build_parser() -> argparse.ArgumentParser:
     work.add_argument("--max-tasks", type=int, default=0, help="Maximum tasks to run; 0 means until no work remains.")
     work.add_argument("--idle-seconds", type=float, default=0.0, help="Wait this long for more coordinator work after a no-claim result.")
     work.add_argument("--retry-failed", action="store_true", help="Allow failed tasks to be claimed again.")
+    work.add_argument("--task-attempts", type=int, default=1, help="Total attempts per task before final failure.")
     work.add_argument("--force", action="store_true", help="Re-run tasks even if local state says complete.")
     work.add_argument("--fail-fast", action="store_true", help="Stop after the first task failure.")
     work.set_defaults(func=cmd_work)
@@ -482,6 +484,7 @@ def build_parser() -> argparse.ArgumentParser:
     deploy.add_argument("--resume", action="store_true", help="Resume an existing materialized run.")
     deploy.add_argument("--replace", action="store_true", help="Delete and recreate an existing run.")
     deploy.add_argument("--retry-failed", action="store_true", help="Allow failed tasks to be claimed again.")
+    deploy.add_argument("--task-attempts", type=int, default=2, help="Total attempts per task before final failure.")
     deploy.add_argument("--coordinator-host", help="Coordinator hostname workers should SSH back to.")
     deploy.add_argument("--remote-timeout-seconds", type=float, default=1800.0, help="Timeout for remote setup/work commands.")
     deploy.add_argument(
@@ -511,6 +514,7 @@ def build_parser() -> argparse.ArgumentParser:
     run_job.add_argument("--resume", action="store_true", help="Resume an existing materialized run.")
     run_job.add_argument("--replace", action="store_true", help="Delete and recreate an existing run.")
     run_job.add_argument("--retry-failed", action="store_true", help="Allow failed tasks to be claimed again.")
+    run_job.add_argument("--task-attempts", type=int, default=2, help="Total attempts per task before final failure.")
     run_job.add_argument("--coordinator-host", help="Coordinator hostname workers should SSH back to.")
     run_job.add_argument("--remote-timeout-seconds", type=float, default=1800.0, help="Timeout for remote setup/work commands.")
     run_job.add_argument(
@@ -542,6 +546,7 @@ def build_parser() -> argparse.ArgumentParser:
     resume.add_argument("run", nargs="?", help="Run name or run directory. Omit to resume the single current incomplete run.")
     resume.add_argument("--workers", help=WORKERS_ARG_HELP_RUN_DEFAULT)
     resume.add_argument("--jobs", type=int, default=4, help="Maximum workers to prepare/run concurrently.")
+    resume.add_argument("--task-attempts", type=int, default=2, help="Total attempts per task before final failure.")
     resume.add_argument("--coordinator-host", help="Coordinator hostname workers should SSH back to.")
     resume.add_argument("--remote-timeout-seconds", type=float, default=1800.0, help="Timeout for remote setup/work commands.")
     resume.add_argument(
@@ -577,6 +582,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     retry.add_argument("--workers", help=WORKERS_ARG_HELP_RETRY_DEFAULT)
     retry.add_argument("--jobs", type=int, default=4, help="Maximum workers to prepare/run concurrently.")
+    retry.add_argument("--task-attempts", type=int, default=2, help="Total attempts per task before final failure.")
     retry.add_argument("--coordinator-host", help="Coordinator hostname workers should SSH back to.")
     retry.add_argument("--remote-timeout-seconds", type=float, default=1800.0, help="Timeout for remote setup/work commands.")
     retry.add_argument(

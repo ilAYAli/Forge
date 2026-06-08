@@ -51,6 +51,29 @@ def worker_arg_looks_like_path(value: str) -> bool:
         or os.path.sep in value
     )
 
+def parse_inline_worker_spec(value: str) -> tuple[str, str | None, int | None]:
+    spec = value.strip()
+    slots: int | None = None
+    if ":" in spec:
+        spec, slot_text = spec.rsplit(":", 1)
+        try:
+            slots = int(slot_text)
+        except ValueError as exc:
+            raise SystemExit(f"{value}: worker slots must be a non-negative integer") from exc
+        if slots < 0:
+            raise SystemExit(f"{value}: worker slots must be a non-negative integer")
+    if "=" in spec:
+        host, profile = spec.split("=", 1)
+        profile = profile.strip()
+    else:
+        host, profile = spec, None
+    host = host.strip()
+    if not host:
+        raise SystemExit("worker host must not be empty")
+    if profile is not None and not profile:
+        raise SystemExit(f"{host}: worker profile must not be empty")
+    return host, profile, slots
+
 def default_inline_worker_records() -> dict[str, dict[str, Any]]:
     try:
         path = default_workers_path()
@@ -58,41 +81,44 @@ def default_inline_worker_records() -> dict[str, dict[str, Any]]:
         return {}
     payload = read_json(path)
     if payload.get("schema") not in (None, "crucible.workers.v1"):
-        raise SystemExit(f"{path}: unsupported schema {payload.get('schema')!r}")
+        return {}
     raw_workers = payload.get("workers")
     if not isinstance(raw_workers, list):
-        raise SystemExit(f"{path}: workers must be a list")
+        return {}
     records: dict[str, dict[str, Any]] = {}
     for item in raw_workers:
-        record = parse_worker_record(item)
-        if not record:
+        try:
+            worker = parse_worker_record(item)
+        except SystemExit:
             continue
-        host = str(record["host"])
-        records.setdefault(host, record)
+        if not worker:
+            continue
+        records[str(worker["host"])] = worker
     return records
 
-def parse_inline_worker_entry(entry: str, defaults: dict[str, dict[str, Any]]) -> dict[str, Any]:
-    spec = entry
-    slots_override: int | None = None
-    if ":" in entry:
-        spec, slots_text = entry.rsplit(":", 1)
-        slots_override = parse_worker_slots(slots_text, label=spec.strip() or entry)
-    host, profile = parse_worker_spec(spec)
-    record = dict(defaults.get(host) or {
+def inline_worker_record(entry: str, defaults: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    host, profile, slots = parse_inline_worker_spec(entry)
+    base = dict(defaults.get(host, {}))
+    record = base if base else {
         "host": host,
-        "profile": profile,
+        "profile": host,
         "local": host in ("localhost", "127.0.0.1"),
-        "slots": DEFAULT_INLINE_WORKER_SLOTS,
-    })
-    if "=" in spec:
+    }
+    record["host"] = host
+    if profile is not None:
         record["profile"] = profile
-    if slots_override is not None:
-        if slots_override == 0:
-            return {}
-        if slots_override == 1:
-            record.pop("slots", None)
-        else:
-            record["slots"] = slots_override
+    elif not record.get("profile"):
+        record["profile"] = host
+    if "local" not in record:
+        record["local"] = host in ("localhost", "127.0.0.1")
+    if slots is None:
+        slots = int(record.get("slots", DEFAULT_INLINE_WORKER_SLOTS if not base else 1))
+    if slots == 0:
+        return {}
+    if slots == 1:
+        record.pop("slots", None)
+    else:
+        record["slots"] = slots
     return record
 
 def parse_inline_workers(value: str) -> dict[str, Any]:
@@ -100,11 +126,7 @@ def parse_inline_workers(value: str) -> dict[str, Any]:
     if not entries or any(not entry for entry in entries):
         raise SystemExit("inline workers must be a comma-separated host list")
     defaults = default_inline_worker_records()
-    workers = [
-        worker
-        for entry in entries
-        if (worker := parse_inline_worker_entry(entry, defaults))
-    ]
+    workers = [worker for entry in entries if (worker := inline_worker_record(entry, defaults))]
     return {
         "schema": "crucible.workers.v1",
         "workers": workers,
@@ -236,8 +258,6 @@ def parse_worker_record(item: Any) -> dict[str, Any]:
         "local": bool(item.get("local", host in ("localhost", "127.0.0.1"))),
     }
     slots = parse_worker_slots(item.get("slots", 1), label=host)
-    if slots == 0:
-        return {}
     if slots != 1:
         record["slots"] = slots
     if item.get("cache_dir"):
@@ -260,6 +280,8 @@ def parse_worker_slots(value: Any, *, label: str) -> int:
 def expand_worker_record(worker: dict[str, Any]) -> list[dict[str, Any]]:
     record = dict(worker)
     slots = int(record.pop("slots", 1))
+    if slots == 0:
+        return []
     if slots == 1:
         return [record]
     workers = []
@@ -873,6 +895,72 @@ def run_command_stage(label: str, name: str, func: Any, args: argparse.Namespace
         print(f"{label}: {name} failed rc={rc}", file=sys.stderr)
     return rc
 
+def run_control_command_args(name: str, args: argparse.Namespace) -> list[str]:
+    command = [name]
+    if args.run is not None:
+        command.append(str(args.run))
+    if getattr(args, "workers", None):
+        command.extend(["--workers", str(args.workers)])
+    if bool(getattr(args, "wait", False)):
+        command.append("--wait")
+    if not bool(getattr(args, "verify", True)):
+        command.append("--no-verify")
+    if getattr(args, "merge", None):
+        command.extend(["--merge", str(args.merge)])
+    if bool(getattr(args, "merge_force", False)):
+        command.append("--merge-force")
+    if bool(getattr(args, "newline_between", False)):
+        command.append("--newline-between")
+    if getattr(args, "notify_command", None):
+        command.extend(["--notify-command", str(args.notify_command)])
+    if bool(getattr(args, "no_color", False)):
+        command.append("--no-color")
+    if bool(getattr(args, "verbose", False)):
+        command.append("--verbose")
+    if int(getattr(args, "jobs", 4)) != 4:
+        command.extend(["--jobs", str(args.jobs)])
+    if int(getattr(args, "task_attempts", 2)) != 2:
+        command.extend(["--task-attempts", str(args.task_attempts)])
+    command.extend(["--lease-seconds", str(args.lease_seconds)])
+    return command
+
+def run_control_on_coordinator(name: str, args: argparse.Namespace, coordinator_runs: str) -> int:
+    host, runs_path = parse_coordinator(coordinator_runs)
+    command = run_control_command_args(name, args)
+    if host:
+        remote = (
+            "command -v crucible >/dev/null 2>&1 || "
+            "{ echo 'crucible not found in PATH on coordinator' >&2; exit 127; }; "
+            f"exec env {shlex.quote(COORDINATOR_RUNS_ENV)}= "
+            f"{shlex.quote(RUNS_DIR_ENV)}={shlex.quote(runs_path)} "
+            f"crucible {shell_join(command)}"
+        )
+        result = subprocess.run(
+            ["ssh", *SSH_OPTS, host, remote],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+    else:
+        env = os.environ.copy()
+        env[COORDINATOR_RUNS_ENV] = ""
+        env[RUNS_DIR_ENV] = runs_path
+        result = subprocess.run(
+            [sys.executable, str(script_path()), *command],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+            env=env,
+        )
+    print(f"coordinator: {json.dumps(coordinator_runs)}")
+    if result.stdout:
+        print(result.stdout, end="")
+    if result.stderr:
+        print(result.stderr, end="", file=sys.stderr)
+    return result.returncode
+
 def cmd_run_job(args: argparse.Namespace) -> int:
     label = str(getattr(args, "command_label", "start"))
     template_path = expand_path(args.manifest)
@@ -889,6 +977,7 @@ def cmd_run_job(args: argparse.Namespace) -> int:
         coordinator_host=args.coordinator_host,
         remote_timeout_seconds=args.remote_timeout_seconds,
         retry_failed=args.retry_failed,
+        task_attempts=getattr(args, "task_attempts", 2),
         notify_command=args.notify_command,
         no_color=args.no_color,
         verbose=args.verbose,
@@ -941,86 +1030,6 @@ def materialized_run_paths(run_dir: Path, *, label: str) -> tuple[str, Path, Pat
         raise SystemExit(f"{label}: no materialized Crucible run found")
     return run_dir.name, manifest_path, workers_path
 
-def worker_control_can_delegate(run: str | None) -> bool:
-    if run is None:
-        return True
-    path = Path(str(run))
-    return not path.is_absolute() and len(path.parts) == 1
-
-def worker_control_command_args(command_name: str, args: argparse.Namespace) -> list[str]:
-    command = [command_name]
-    if args.run is not None:
-        command.append(str(args.run))
-    if args.workers:
-        command.extend(["--workers", str(args.workers)])
-    command.extend(["--jobs", str(args.jobs)])
-    if args.coordinator_host:
-        command.extend(["--coordinator-host", str(args.coordinator_host)])
-    command.extend(["--remote-timeout-seconds", str(args.remote_timeout_seconds)])
-    if args.wait:
-        command.append("--wait")
-    command.extend(["--lease-seconds", str(args.lease_seconds)])
-    command.extend(["--interval-seconds", str(args.interval_seconds)])
-    command.extend(["--timeout-seconds", str(args.timeout_seconds)])
-    if not args.fail_on_fail:
-        command.append("--no-fail-on-fail")
-    if not args.verify:
-        command.append("--no-verify")
-    if args.merge:
-        command.extend(["--merge", str(args.merge)])
-    if args.merge_force:
-        command.append("--merge-force")
-    if args.newline_between:
-        command.append("--newline-between")
-    if args.notify_command:
-        command.extend(["--notify-command", str(args.notify_command)])
-    if args.no_color:
-        command.append("--no-color")
-    if args.verbose:
-        command.append("--verbose")
-    return command
-
-def run_worker_control_on_coordinator(
-    command_name: str,
-    args: argparse.Namespace,
-    coordinator_runs: str,
-) -> int:
-    host, runs_path = parse_coordinator(coordinator_runs)
-    command = worker_control_command_args(command_name, args)
-    if host:
-        remote = (
-            "command -v crucible >/dev/null 2>&1 || "
-            "{ echo 'crucible not found in PATH on coordinator' >&2; exit 127; }; "
-            f"exec env {shlex.quote(COORDINATOR_RUNS_ENV)}= "
-            f"{shlex.quote(RUNS_DIR_ENV)}={shlex.quote(runs_path)} "
-            f"crucible {shell_join(command)}"
-        )
-        result = subprocess.run(
-            ["ssh", *SSH_OPTS, host, remote],
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=False,
-        )
-    else:
-        env = os.environ.copy()
-        env[COORDINATOR_RUNS_ENV] = ""
-        env[RUNS_DIR_ENV] = runs_path
-        result = subprocess.run(
-            [sys.executable, str(script_path()), *command],
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=False,
-            env=env,
-        )
-    print(f"coordinator: {json.dumps(coordinator_runs)}")
-    if result.stdout:
-        print(result.stdout, end="")
-    if result.stderr:
-        print(result.stderr, end="", file=sys.stderr)
-    return result.returncode
-
 def resume_run_paths(run: str | None, *, lease_seconds: int) -> list[tuple[str, Path, Path]]:
     if run:
         return [materialized_run_paths(run_dir_from_arg(run), label=run)]
@@ -1039,9 +1048,8 @@ def resume_run_paths(run: str | None, *, lease_seconds: int) -> list[tuple[str, 
 
 def cmd_resume(args: argparse.Namespace) -> int:
     coordinator_runs = configured_coordinator_runs()
-    if coordinator_runs and worker_control_can_delegate(args.run):
-        return run_worker_control_on_coordinator("resume", args, coordinator_runs)
-
+    if coordinator_runs and status_can_delegate(args.run):
+        return run_control_on_coordinator("resume", args, coordinator_runs)
     targets = resume_run_paths(args.run, lease_seconds=args.lease_seconds)
     failed = 0
     for run_name, manifest_path, workers_path in targets:
@@ -1058,6 +1066,7 @@ def cmd_resume(args: argparse.Namespace) -> int:
             resume=True,
             replace=False,
             retry_failed=False,
+            task_attempts=getattr(args, "task_attempts", 2),
             coordinator_host=args.coordinator_host,
             remote_timeout_seconds=args.remote_timeout_seconds,
             wait=args.wait,
@@ -1094,9 +1103,8 @@ def retry_run_paths(run: str | None, *, lease_seconds: int) -> list[tuple[str, P
 
 def cmd_retry(args: argparse.Namespace) -> int:
     coordinator_runs = configured_coordinator_runs()
-    if coordinator_runs and worker_control_can_delegate(args.run):
-        return run_worker_control_on_coordinator("retry", args, coordinator_runs)
-
+    if coordinator_runs and status_can_delegate(args.run):
+        return run_control_on_coordinator("retry", args, coordinator_runs)
     targets = retry_run_paths(args.run, lease_seconds=args.lease_seconds)
     failed = 0
     for index, (run_name, manifest_path, workers_path) in enumerate(targets):
@@ -1110,6 +1118,7 @@ def cmd_retry(args: argparse.Namespace) -> int:
             resume=True,
             replace=False,
             retry_failed=True,
+            task_attempts=getattr(args, "task_attempts", 2),
             coordinator_host=args.coordinator_host,
             remote_timeout_seconds=args.remote_timeout_seconds,
             wait=args.wait,

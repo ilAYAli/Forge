@@ -398,6 +398,10 @@ def progress_text(data: dict[str, Any]) -> str:
     parts = [main] if main else []
     if isinstance(output, int):
         parts.append(f"{output_unit}={compact_count(output)}")
+    fields = data.get("fields")
+    if isinstance(fields, dict):
+        for key, value in fields.items():
+            parts.append(f"{key}={value}")
     if isinstance(done, int) and isinstance(total, int) and total > 0 and done >= total:
         parts.append("finalizing")
         return ", ".join(parts)
@@ -652,7 +656,7 @@ def split_eta_last(fields: list[str]) -> list[str]:
 def status_field_color(field: str, summary: dict[str, Any] | None = None) -> str | None:
     key = field.split("=", 1)[0]
     if key == "tasks":
-        if summary and summary["counts"]["fail"] and not summary["active"] and not summary["pending"]:
+        if summary and summary["counts"]["fail"]:
             return "red"
         if summary and run_done(summary):
             return "green"
@@ -997,6 +1001,38 @@ def parse_float(value: str | None) -> float | None:
     except ValueError:
         return None
 
+PROGRESS_RESERVED_FIELDS = {"done", "total", "output", "rate"}
+
+def normalize_progress_fields(raw: Any) -> dict[str, str]:
+    if not isinstance(raw, dict):
+        return {}
+    fields: dict[str, str] = {}
+    for key, value in raw.items():
+        name = str(key).strip()
+        text = str(value).strip() if value is not None else ""
+        if name and text:
+            fields[name] = text
+    return fields
+
+def progress_display_fields(config: dict[str, Any]) -> dict[str, str]:
+    for key in ("display_fields", "fields"):
+        fields = config.get(key)
+        if isinstance(fields, dict):
+            return {str(k): str(v) for k, v in fields.items()}
+    return {}
+
+def progress_match_fields(match: re.Match[str], config: dict[str, Any]) -> dict[str, str]:
+    display_fields = progress_display_fields(config)
+    fields: dict[str, str] = {}
+    for key, value in match.groupdict().items():
+        if key in PROGRESS_RESERVED_FIELDS or value is None:
+            continue
+        name = display_fields.get(key, key)
+        text = str(value).strip()
+        if name and text:
+            fields[str(name)] = text
+    return fields
+
 def normalize_progress_data(raw: Any) -> dict[str, Any] | None:
     if not isinstance(raw, dict):
         return None
@@ -1025,6 +1061,11 @@ def normalize_progress_data(raw: Any) -> dict[str, Any] | None:
         rate = parse_float(str(rate)) if rate is not None else None
     if isinstance(rate, (int, float)) and rate > 0:
         data["rate"] = float(rate)
+    fields = normalize_progress_fields(data.get("fields"))
+    if fields:
+        data["fields"] = fields
+    else:
+        data.pop("fields", None)
 
     kind = str(data.get("kind") or "").strip()
     if kind not in {"metadata", "subtask"}:
@@ -1091,6 +1132,9 @@ def task_log_progress_data(manifest: dict[str, Any], task: dict[str, Any]) -> di
                 data["output"] = output
             if rate is not None:
                 data["rate"] = rate
+            fields = progress_match_fields(match, config)
+            if fields:
+                data["fields"] = fields
             return normalize_progress_data(data)
 
     progress_re = re.compile(r"\[\s*\d+/\d+\s+(\d+)\s*/\s*(\d+)\]")

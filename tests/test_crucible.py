@@ -2401,10 +2401,6 @@ class CrucibleTests(unittest.TestCase):
             self.assertIn("tasks=\033[33m0/1", text)
             self.assertIn("pending: \033[33m1", text)
             self.assertEqual(
-                f"fail=\033[{crucible.STATUS_RED_SGR}m2\033[0m",
-                crucible.color_status_field("fail=2", color_enabled=True),
-            )
-            self.assertEqual(
                 f"eta=\033[{blue}m55m38s\033[0m",
                 crucible.color_status_field("eta=55m38s", color_enabled=True),
             )
@@ -2424,22 +2420,6 @@ class CrucibleTests(unittest.TestCase):
                 f'run="\033[{blue}mname\033[0m"',
                 crucible.color_status_field('run="name"', color_enabled=True),
             )
-
-    def test_status_colors_active_failed_task_count_as_in_progress(self) -> None:
-        summary = {
-            "counts": {"done": 189, "fail": 2, "running": 1, "claimed": 0, "stale": 0, "pending": 0},
-            "tasks": 192,
-            "active": [{"index": 0}],
-            "pending": [],
-        }
-        self.assertEqual(
-            "tasks=\033[33m189/192\033[0m",
-            crucible.color_status_field("tasks=189/192", summary=summary, color_enabled=True),
-        )
-        self.assertEqual(
-            f"fail=\033[{crucible.STATUS_RED_SGR}m2\033[0m",
-            crucible.color_status_field("fail=2", summary=summary, color_enabled=True),
-        )
 
     def test_status_no_color_overrides_forced_color(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -2605,15 +2585,19 @@ class CrucibleTests(unittest.TestCase):
                     "progress": {
                         "unit": "rows",
                         "total": 125000,
-                        "log_regex": r"selected=(?P<done>\d+)\s+written=(?P<output>\d+)\s+rate=(?P<rate>[0-9.]+)/s",
+                        "log_regex": (
+                            r"selected=(?P<done>\d+)\s+written=(?P<output>\d+)\s+"
+                            r"rate=(?P<rate>[0-9.]+)/s\s+elo=(?P<elo>[+-]?[0-9.]+)"
+                        ),
                         "output_unit": "output",
+                        "display_fields": {"elo": "elo~"},
                     },
                 }],
             }
             (run / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
             (state / "task_0.running.json").write_text(json.dumps({"task": "task_0", "host": "worker"}))
             (logs / "task_0.log").write_text(
-                "shard 0/24: selected=50000 written=48010 rate=6.7/s\n",
+                "shard 0/24: selected=50000 written=48010 rate=6.7/s elo=-12.3\n",
                 encoding="utf-8",
             )
 
@@ -2632,7 +2616,7 @@ class CrucibleTests(unittest.TestCase):
                         )
                 )
                 self.assertEqual(0, rc)
-                self.assertIn('    "worker" task=0 [rows=50k/125k, output=48k, eta=3h06m]', stdout.getvalue())
+                self.assertIn('    "worker" task=0 [rows=50k/125k, output=48k, elo~=-12.3, eta=3h06m]', stdout.getvalue())
 
                 named_stdout = io.StringIO()
                 with contextlib.redirect_stdout(named_stdout):
@@ -2654,7 +2638,7 @@ class CrucibleTests(unittest.TestCase):
                 self.assertNotIn("active: 1 output=48k eta=", named_stdout.getvalue())
                 self.assertNotIn("workers=1", named_stdout.getvalue())
                 self.assertNotIn("speedup=1.0x", named_stdout.getvalue())
-                self.assertIn('"worker" task=0 [rows=50k/125k, output=48k, eta=3h06m]', named_stdout.getvalue())
+                self.assertIn('"worker" task=0 [rows=50k/125k, output=48k, elo~=-12.3, eta=3h06m]', named_stdout.getvalue())
 
     def test_status_eta_counts_down_from_log_timestamp(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

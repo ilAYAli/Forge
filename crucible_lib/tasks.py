@@ -98,6 +98,16 @@ def task_complete(manifest: dict[str, Any], task: dict[str, Any]) -> bool:
         return False
     return all(path.exists() for path in task_outputs(task))
 
+def task_attempt_from_payload(payload: dict[str, Any] | None) -> int:
+    if not isinstance(payload, dict):
+        return 1
+    value = payload.get("attempt")
+    try:
+        attempt = int(value)
+    except (TypeError, ValueError):
+        return 1
+    return max(1, attempt)
+
 def task_claim_state(manifest: dict[str, Any], task: dict[str, Any], *, lease_seconds: int) -> str | None:
     claim = task_claim_dir(manifest, task)
     if not claim.exists():
@@ -184,7 +194,14 @@ def terminate_process_group(proc: subprocess.Popen[Any], log: Any, reason: str) 
         log.write(f"{now()} process still alive after SIGKILL {reason}: pid={proc.pid}\n")
         log.flush()
 
-def run_task(manifest: dict[str, Any], task: dict[str, Any], *, force: bool) -> int:
+def run_task(
+    manifest: dict[str, Any],
+    task: dict[str, Any],
+    *,
+    force: bool,
+    attempt: int = 1,
+    max_attempts: int = 0,
+) -> int:
     if task_complete(manifest, task) and not force:
         print(f"skip {task['id']}: already complete")
         return 0
@@ -269,10 +286,13 @@ def run_task(manifest: dict[str, Any], task: dict[str, Any], *, force: bool) -> 
         "elapsed_s": elapsed,
         "command": command,
         "rc": rc,
+        "attempt": max(1, int(attempt)),
         "log": str(log_path),
         "manifest_sha256": manifest_checksum(manifest),
         "outputs": [file_record(path) for path in task_outputs(task) if path.exists()],
     }
+    if max_attempts > 0:
+        payload["max_attempts"] = max_attempts
     if rc == 0 and all(path.exists() for path in task_outputs(task)):
         write_json(task_done_path(manifest, task), payload)
     else:
@@ -286,6 +306,7 @@ def claim_task(
     profile: str | None,
     lease_seconds: int,
     retry_failed: bool,
+    max_attempts: int = 0,
 ) -> dict[str, Any] | None:
     if stop_requested(manifest):
         return None
@@ -293,11 +314,24 @@ def claim_task(
         return None
     claim_dir(manifest).mkdir(parents=True, exist_ok=True)
     digest = manifest_checksum(manifest)
-    for task in sorted(manifest["tasks"], key=lambda item: int(item.get("index", 0))):
+    max_attempts = max(0, int(max_attempts))
+
+    def claim_order(item: dict[str, Any]) -> tuple[bool, int]:
+        return (task_fail_path(manifest, item).exists(), int(item.get("index", 0)))
+
+    for task in sorted(manifest["tasks"], key=claim_order):
         if task_complete(manifest, task):
             continue
-        if task_fail_path(manifest, task).exists() and not retry_failed:
-            continue
+        fail_path = task_fail_path(manifest, task)
+        fail_payload: dict[str, Any] | None = None
+        attempt = 1
+        if fail_path.exists():
+            if not retry_failed:
+                continue
+            fail_payload = read_state_json(fail_path)
+            attempt = task_attempt_from_payload(fail_payload) + 1
+            if max_attempts > 0 and attempt > max_attempts:
+                continue
         running_state = task_running_state(manifest, task, lease_seconds=lease_seconds)
         if running_state == "running":
             continue
@@ -326,7 +360,10 @@ def claim_task(
             "heartbeat_epoch": epoch(),
             "lease_seconds": lease_seconds,
             "manifest_sha256": digest,
+            "attempt": attempt,
         }
+        if max_attempts > 0:
+            payload["max_attempts"] = max_attempts
         write_json(task_claim_path(manifest, task), payload)
         write_json(task_heartbeat_path(manifest, task), payload)
         return {"task": task["id"], "index": task.get("index"), "claim": payload}
@@ -652,6 +689,7 @@ def cmd_claim(args: argparse.Namespace) -> int:
         profile=args.profile,
         lease_seconds=args.lease_seconds,
         retry_failed=args.retry_failed,
+        max_attempts=getattr(args, "max_attempts", 0),
     )
     if args.json:
         print(json.dumps(result or {"task": None}, sort_keys=True))
@@ -698,8 +736,11 @@ def claim_from_coordinator(args: argparse.Namespace) -> dict[str, Any] | None:
     ]
     if args.profile:
         command.extend(["--profile", args.profile])
-    if args.retry_failed:
+    task_attempts = max(0, int(getattr(args, "task_attempts", 1)))
+    if args.retry_failed or task_attempts > 1:
         command.append("--retry-failed")
+    if task_attempts > 1:
+        command.extend(["--max-attempts", str(task_attempts)])
     result = run_coordinator_cli(args.coordinator, command)
     if result.returncode != 0:
         raise SystemExit(result.stderr.strip() or result.stdout.strip() or "coordinator claim failed")
@@ -853,6 +894,8 @@ def cmd_work(args: argparse.Namespace) -> int:
         task_id = str(claim["task"])
         claim_payload = claim.get("claim") if isinstance(claim.get("claim"), dict) else {}
         claim_id = str(claim_payload.get("claim_id") or "")
+        attempt = task_attempt_from_payload(claim_payload)
+        task_attempts = max(0, int(getattr(args, "task_attempts", 1)))
         coordinator_task = find_task(coordinator_manifest, task_id=task_id, index=None)
         local_task = find_task(local_manifest, task_id=task_id, index=None)
         stop_heartbeat = threading.Event()
@@ -881,7 +924,13 @@ def cmd_work(args: argparse.Namespace) -> int:
                 claim_id,
                 running=True,
             )
-            rc = run_task(local_manifest, local_task, force=args.force)
+            rc = run_task(
+                local_manifest,
+                local_task,
+                force=args.force,
+                attempt=attempt,
+                max_attempts=task_attempts,
+            )
             sync_task_result(
                 coordinator=args.coordinator,
                 coordinator_manifest=coordinator_manifest,
@@ -917,8 +966,16 @@ def cmd_work(args: argparse.Namespace) -> int:
             return error_rc
         completed += 1
         if rc != 0:
-            failed += 1
-            if args.fail_fast or rc in {130, 143}:
+            retryable = (
+                task_attempts > attempt
+                and not args.fail_fast
+                and rc not in {124, 130, 143}
+            )
+            if retryable:
+                print(f"{task_id}: attempt {attempt}/{task_attempts} failed rc={rc}; retry pending")
+            else:
+                failed += 1
+            if args.fail_fast or rc in {124, 130, 143} or (args.retry_failed and task_attempts <= 1):
                 return rc
 
     print(f"worker={args.worker} completed={completed} failed={failed}")
