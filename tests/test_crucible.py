@@ -2409,6 +2409,18 @@ class CrucibleTests(unittest.TestCase):
                 crucible.color_status_field("eta=55m38s", color_enabled=True),
             )
             self.assertEqual(
+                "eta=\033[33munknown\033[0m",
+                crucible.color_status_field("eta=unknown", color_enabled=True),
+            )
+            self.assertEqual(
+                "rows=1/2, eta=\033[33munknown\033[0m",
+                crucible.color_progress_text("rows=1/2, eta=unknown", color_enabled=True),
+            )
+            self.assertEqual(
+                f"speedup=\033[{blue}m1.5x\033[0m",
+                crucible.color_status_field("speedup=1.5x", color_enabled=True),
+            )
+            self.assertEqual(
                 f'run="\033[{blue}mname\033[0m"',
                 crucible.color_status_field('run="name"', color_enabled=True),
             )
@@ -2873,6 +2885,8 @@ class CrucibleTests(unittest.TestCase):
                 )
                 self.assertEqual(0, rc)
                 text = stdout.getvalue()
+                self.assertIn("tasks=1/4", text)
+                self.assertNotIn("tasks=1/4 speedup=", text)
                 self.assertIn('active: 3 workers=2 output=68k min="worker-b":20k max="worker-a":48k speedup=1.0x', text)
                 self.assertNotIn("active workers:", text)
                 self.assertNotIn("tasks=2 output=48k", text)
@@ -2903,12 +2917,11 @@ class CrucibleTests(unittest.TestCase):
                     if "active:" in line and "workers=" in line
                 )
                 self.assertIn("active: \033[33m3\033[0m", color_line)
-                self.assertIn('workers=2 output=68k min="worker-b":20k max="worker-a":48k speedup=1.0x', color_line)
+                self.assertIn(f'workers=2 output=68k min="worker-b":20k max="worker-a":48k speedup=\033[{crucible.STATUS_BLUE_SGR}m1.0x\033[0m', color_line)
                 self.assertNotIn("workers=\033[", color_line)
                 self.assertNotIn("output=\033[", color_line)
                 self.assertNotIn("min=\033[", color_line)
                 self.assertNotIn("max=\033[", color_line)
-                self.assertNotIn("speedup=\033[", color_line)
 
     def test_summary_eta_includes_pending_work(self) -> None:
         summary = {
@@ -2988,6 +3001,7 @@ class CrucibleTests(unittest.TestCase):
             'workers=2 output=90k min="slow":10k max="fast":80k speedup=2.0x',
             crucible.active_worker_summary(summary),
         )
+        self.assertEqual("speedup=2.0x", crucible.run_speedup_field(summary))
 
     def test_status_single_worker_summary_omits_redundant_fields(self) -> None:
         summary = {

@@ -584,12 +584,22 @@ def active_worker_summary(summary: dict[str, Any]) -> str:
     max_output = int(ordered[-1]["output"])
     parts.append(f"min={json.dumps(str(ordered[0]['worker']))}:{compact_count(int(ordered[0]['output']))}")
     parts.append(f"max={json.dumps(str(ordered[-1]['worker']))}:{compact_count(max_output)}")
-    rates = [float(metric.get("rate", 0.0)) for metric in values if float(metric.get("rate", 0.0)) > 0]
-    if rates:
-        max_rate = max(rates)
-        if max_rate > 0:
-            parts.append(f"speedup={sum(rates) / max_rate:.1f}x")
+    if speedup := run_speedup_field(summary):
+        parts.append(speedup)
     return " ".join(parts)
+
+def run_speedup_field(summary: dict[str, Any]) -> str:
+    metrics = active_worker_metrics(summary)
+    if len(metrics) <= 1:
+        return ""
+    values = list(metrics.values())
+    rates = [float(metric.get("rate", 0.0)) for metric in values if float(metric.get("rate", 0.0)) > 0]
+    if not rates:
+        return ""
+    max_rate = max(rates)
+    if max_rate <= 0:
+        return ""
+    return f"speedup={sum(rates) / max_rate:.1f}x"
 
 def run_status_payload(summary: dict[str, Any]) -> dict[str, Any]:
     counts = summary["counts"]
@@ -651,7 +661,9 @@ def status_field_color(field: str, summary: dict[str, Any] | None = None) -> str
         return "red"
     if key in {"active", "claimed", "pending", "running"}:
         return "yellow"
-    if key in {"run", "eta"}:
+    if key == "eta" and field == "eta=unknown":
+        return "yellow"
+    if key in {"run", "eta", "speedup"}:
         return "blue"
     return None
 
@@ -661,6 +673,10 @@ def color_progress_text(text: str, *, color_enabled: bool) -> str:
     for field in fields:
         if field == "finalizing":
             colored.append(colorize(field, "green", enabled=color_enabled))
+        elif field == "eta=unknown":
+            colored.append(color_status_field(field, color_enabled=color_enabled))
+        elif field.startswith("eta="):
+            colored.append(color_status_field(field, color_enabled=color_enabled))
         else:
             colored.append(field)
     return ", ".join(colored)
