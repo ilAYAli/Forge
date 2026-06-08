@@ -2340,12 +2340,40 @@ class CrucibleTests(unittest.TestCase):
 
             self.assertEqual(0, rc)
             text = stdout.getvalue()
-            self.assertIn('run="color"', text)
+            blue = crucible.STATUS_BLUE_SGR
+            self.assertIn(f'run="\033[{blue}mcolor\033[0m"', text)
             self.assertIn('desc="Run description"', text)
-            self.assertNotIn("run=\033[", text)
             self.assertNotIn("desc=\033[", text)
             self.assertIn("tasks=\033[33m0/1", text)
             self.assertIn("pending: \033[33m1", text)
+            self.assertEqual(
+                f"fail=\033[{crucible.STATUS_RED_SGR}m2\033[0m",
+                crucible.color_status_field("fail=2", color_enabled=True),
+            )
+            self.assertEqual(
+                f"eta=\033[{blue}m55m38s\033[0m",
+                crucible.color_status_field("eta=55m38s", color_enabled=True),
+            )
+            self.assertEqual(
+                f'run="\033[{blue}mname\033[0m"',
+                crucible.color_status_field('run="name"', color_enabled=True),
+            )
+
+    def test_status_colors_active_failed_task_count_as_in_progress(self) -> None:
+        summary = {
+            "counts": {"done": 189, "fail": 2, "running": 1, "claimed": 0, "stale": 0, "pending": 0},
+            "tasks": 192,
+            "active": [{"index": 0}],
+            "pending": [],
+        }
+        self.assertEqual(
+            "tasks=\033[33m189/192\033[0m",
+            crucible.color_status_field("tasks=189/192", summary=summary, color_enabled=True),
+        )
+        self.assertEqual(
+            f"fail=\033[{crucible.STATUS_RED_SGR}m2\033[0m",
+            crucible.color_status_field("fail=2", summary=summary, color_enabled=True),
+        )
 
     def test_status_no_color_overrides_forced_color(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -2556,7 +2584,8 @@ class CrucibleTests(unittest.TestCase):
                         )
                 )
                 self.assertEqual(0, rc)
-                self.assertIn("active: 1 output=48k eta=3h06m", named_stdout.getvalue())
+                self.assertIn("active: 1 output=48k", named_stdout.getvalue())
+                self.assertNotIn("active: 1 output=48k eta=", named_stdout.getvalue())
                 self.assertNotIn("workers=1", named_stdout.getvalue())
                 self.assertNotIn("speedup=1.0x", named_stdout.getvalue())
                 self.assertIn('"worker" task=0 [rows=50k/125k, output=48k, eta=3h06m]', named_stdout.getvalue())
@@ -2991,7 +3020,8 @@ class CrucibleTests(unittest.TestCase):
                 self.assertEqual(0, rc)
                 text = stdout.getvalue()
                 self.assertIn("  tasks=1/2 eta=1m40s", text)
-                self.assertIn("  active: 1 games=1500/2000 eta=1m40s", text)
+                self.assertIn("  active: 1 games=1500/2000", text)
+                self.assertNotIn("  active: 1 games=1500/2000 eta=", text)
                 self.assertIn('"worker-a" task=1 [games=500/1000, eta=1m40s]', text)
 
     def test_status_uses_completed_rate_when_running_task_has_no_progress_yet(self) -> None:
@@ -3064,7 +3094,8 @@ class CrucibleTests(unittest.TestCase):
                 self.assertEqual(0, rc)
                 text = stdout.getvalue()
                 self.assertIn("  tasks=1/2 eta=1m39s", text)
-                self.assertIn("  active: 1 games=1000/2000 eta=1m39s", text)
+                self.assertIn("  active: 1 games=1000/2000", text)
+                self.assertNotIn("  active: 1 games=1000/2000 eta=", text)
                 self.assertIn('"worker-a" task=1 [games=0/1000, eta=1m39s]', text)
 
     def test_status_labels_overdue_fallback_eta_as_unknown(self) -> None:
@@ -3137,7 +3168,8 @@ class CrucibleTests(unittest.TestCase):
                 self.assertEqual(0, rc)
                 text = stdout.getvalue()
                 self.assertIn("  tasks=1/2 eta=unknown", text)
-                self.assertIn("  active: 1 games=1000/2000 eta=unknown", text)
+                self.assertIn("  active: 1 games=1000/2000", text)
+                self.assertNotIn("  active: 1 games=1000/2000 eta=", text)
                 self.assertIn('"worker-a" task=1 [games=0/1000, eta=unknown]', text)
 
     def test_status_ignores_undeclared_domain_progress(self) -> None:

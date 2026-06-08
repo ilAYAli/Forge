@@ -642,7 +642,7 @@ def split_eta_last(fields: list[str]) -> list[str]:
 def status_field_color(field: str, summary: dict[str, Any] | None = None) -> str | None:
     key = field.split("=", 1)[0]
     if key == "tasks":
-        if summary and summary["counts"]["fail"]:
+        if summary and summary["counts"]["fail"] and not summary["active"] and not summary["pending"]:
             return "red"
         if summary and run_done(summary):
             return "green"
@@ -651,6 +651,8 @@ def status_field_color(field: str, summary: dict[str, Any] | None = None) -> str
         return "red"
     if key in {"active", "claimed", "pending", "running"}:
         return "yellow"
+    if key in {"run", "eta"}:
+        return "blue"
     return None
 
 def color_progress_text(text: str, *, color_enabled: bool) -> str:
@@ -674,6 +676,8 @@ def color_status_field(
         return field
     if "=" in field:
         key, value = field.split("=", 1)
+        if len(value) >= 2 and value[0] == '"' and value[-1] == '"':
+            return f'{key}="{colorize(value[1:-1], color, enabled=color_enabled)}"'
         return f"{key}={colorize(value, color, enabled=color_enabled)}"
     return colorize(field, color, enabled=color_enabled)
 
@@ -696,11 +700,11 @@ def run_progress_fields(summary: dict[str, Any]) -> list[str]:
         if field.startswith("eta=")
     ])
 
-def section_eta_fields(summary: dict[str, Any]) -> list[str]:
-    return run_progress_fields(summary)
-
 def section_progress_fields(summary: dict[str, Any]) -> list[str]:
-    return split_eta_last(summary_progress_fields(summary))
+    return [
+        field for field in summary_progress_fields(summary)
+        if not field.startswith("eta=")
+    ]
 
 def quote_status_key(key: str, values: list[int | str]) -> str:
     return json.dumps(key)
@@ -1330,7 +1334,7 @@ def print_status_details(
         worker_summary = active_worker_summary(summary)
         worker_summary_fields = worker_summary.split() if worker_summary else []
         section_fields = (
-            [*worker_summary_fields, *section_eta_fields(summary)]
+            worker_summary_fields
             if worker_summary_fields else
             section_progress_fields(summary)
         )

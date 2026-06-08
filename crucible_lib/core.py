@@ -30,6 +30,8 @@ RUNS_DIR_ENV = "CRUCIBLE_RUNS_DIR"
 COORDINATOR_RUNS_ENV = "CRUCIBLE_COORDINATOR_RUNS"
 COORDINATOR_RUNS_FILE = "coordinator"
 COLOR_ENV = "CRUCIBLE_COLOR"
+STATUS_BLUE_SGR = "38;5;004"
+STATUS_RED_SGR = "38;5;009"
 RUN_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 SSH_CONNECT_TIMEOUT_SECONDS = 15
 SSH_SERVER_ALIVE_INTERVAL_SECONDS = 30
@@ -536,9 +538,10 @@ def colorize(text: str, color: str, *, enabled: bool) -> str:
     if not enabled:
         return text
     colors = {
-        "red": "31",
+        "red": STATUS_RED_SGR,
         "green": "32",
         "yellow": "33",
+        "blue": STATUS_BLUE_SGR,
         "cyan": "36",
     }
     return f"\033[{colors[color]}m{text}\033[0m"
