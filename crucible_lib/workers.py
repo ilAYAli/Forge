@@ -886,6 +886,86 @@ def materialized_run_paths(run_dir: Path, *, label: str) -> tuple[str, Path, Pat
         raise SystemExit(f"{label}: no materialized Crucible run found")
     return run_dir.name, manifest_path, workers_path
 
+def worker_control_can_delegate(run: str | None) -> bool:
+    if run is None:
+        return True
+    path = Path(str(run))
+    return not path.is_absolute() and len(path.parts) == 1
+
+def worker_control_command_args(command_name: str, args: argparse.Namespace) -> list[str]:
+    command = [command_name]
+    if args.run is not None:
+        command.append(str(args.run))
+    if args.workers:
+        command.extend(["--workers", str(args.workers)])
+    command.extend(["--jobs", str(args.jobs)])
+    if args.coordinator_host:
+        command.extend(["--coordinator-host", str(args.coordinator_host)])
+    command.extend(["--remote-timeout-seconds", str(args.remote_timeout_seconds)])
+    if args.wait:
+        command.append("--wait")
+    command.extend(["--lease-seconds", str(args.lease_seconds)])
+    command.extend(["--interval-seconds", str(args.interval_seconds)])
+    command.extend(["--timeout-seconds", str(args.timeout_seconds)])
+    if not args.fail_on_fail:
+        command.append("--no-fail-on-fail")
+    if not args.verify:
+        command.append("--no-verify")
+    if args.merge:
+        command.extend(["--merge", str(args.merge)])
+    if args.merge_force:
+        command.append("--merge-force")
+    if args.newline_between:
+        command.append("--newline-between")
+    if args.notify_command:
+        command.extend(["--notify-command", str(args.notify_command)])
+    if args.no_color:
+        command.append("--no-color")
+    if args.verbose:
+        command.append("--verbose")
+    return command
+
+def run_worker_control_on_coordinator(
+    command_name: str,
+    args: argparse.Namespace,
+    coordinator_runs: str,
+) -> int:
+    host, runs_path = parse_coordinator(coordinator_runs)
+    command = worker_control_command_args(command_name, args)
+    if host:
+        remote = (
+            "command -v crucible >/dev/null 2>&1 || "
+            "{ echo 'crucible not found in PATH on coordinator' >&2; exit 127; }; "
+            f"exec env {shlex.quote(COORDINATOR_RUNS_ENV)}= "
+            f"{shlex.quote(RUNS_DIR_ENV)}={shlex.quote(runs_path)} "
+            f"crucible {shell_join(command)}"
+        )
+        result = subprocess.run(
+            ["ssh", *SSH_OPTS, host, remote],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+    else:
+        env = os.environ.copy()
+        env[COORDINATOR_RUNS_ENV] = ""
+        env[RUNS_DIR_ENV] = runs_path
+        result = subprocess.run(
+            [sys.executable, str(script_path()), *command],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+            env=env,
+        )
+    print(f"coordinator: {json.dumps(coordinator_runs)}")
+    if result.stdout:
+        print(result.stdout, end="")
+    if result.stderr:
+        print(result.stderr, end="", file=sys.stderr)
+    return result.returncode
+
 def resume_run_paths(run: str | None, *, lease_seconds: int) -> list[tuple[str, Path, Path]]:
     if run:
         return [materialized_run_paths(run_dir_from_arg(run), label=run)]
@@ -903,6 +983,10 @@ def resume_run_paths(run: str | None, *, lease_seconds: int) -> list[tuple[str, 
     return [materialized_run_paths(run_dir_for_name(str(summary["run"])), label=str(summary["run"]))]
 
 def cmd_resume(args: argparse.Namespace) -> int:
+    coordinator_runs = configured_coordinator_runs()
+    if coordinator_runs and worker_control_can_delegate(args.run):
+        return run_worker_control_on_coordinator("resume", args, coordinator_runs)
+
     targets = resume_run_paths(args.run, lease_seconds=args.lease_seconds)
     failed = 0
     for run_name, manifest_path, workers_path in targets:
@@ -954,6 +1038,10 @@ def retry_run_paths(run: str | None, *, lease_seconds: int) -> list[tuple[str, P
     ]
 
 def cmd_retry(args: argparse.Namespace) -> int:
+    coordinator_runs = configured_coordinator_runs()
+    if coordinator_runs and worker_control_can_delegate(args.run):
+        return run_worker_control_on_coordinator("retry", args, coordinator_runs)
+
     targets = retry_run_paths(args.run, lease_seconds=args.lease_seconds)
     failed = 0
     for index, (run_name, manifest_path, workers_path) in enumerate(targets):

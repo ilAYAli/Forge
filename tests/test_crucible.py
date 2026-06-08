@@ -434,6 +434,33 @@ class CrucibleTests(unittest.TestCase):
             self.assertTrue(retry_args.resume)
             self.assertTrue(retry_args.retry_failed)
 
+    def test_retry_named_run_delegates_to_coordinator(self) -> None:
+        remote_result = subprocess.CompletedProcess(
+            args=["ssh"],
+            returncode=0,
+            stdout="remote retry\n",
+            stderr="",
+        )
+        with mock.patch.dict(
+            os.environ,
+            {"CRUCIBLE_COORDINATOR_RUNS": "pwa-5090:/home/petter/code/cpp/chess/crucible/runs"},
+        ), mock.patch("crucible.subprocess.run", return_value=remote_result) as run_mock:
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout):
+                rc = crucible.cmd_retry(self.retry_args(run="failed-a"))
+
+        self.assertEqual(0, rc)
+        self.assertEqual(
+            'coordinator: "pwa-5090:/home/petter/code/cpp/chess/crucible/runs"\nremote retry\n',
+            stdout.getvalue(),
+        )
+        command = run_mock.call_args.args[0]
+        self.assertEqual("ssh", command[0])
+        self.assertIn("pwa-5090", command)
+        self.assertIn("CRUCIBLE_RUNS_DIR=/home/petter/code/cpp/chess/crucible/runs", command[-1])
+        self.assertIn("CRUCIBLE_COORDINATOR_RUNS=", command[-1])
+        self.assertIn("crucible retry failed-a", command[-1])
+
     def test_retry_without_failed_runs_errors(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             runs = Path(tmp) / "runs"
@@ -471,6 +498,33 @@ class CrucibleTests(unittest.TestCase):
             self.assertTrue(resume_args.resume)
             self.assertFalse(resume_args.retry_failed)
             self.assertEqual("resume", resume_args.command_label)
+
+    def test_resume_named_run_delegates_to_coordinator(self) -> None:
+        remote_result = subprocess.CompletedProcess(
+            args=["ssh"],
+            returncode=0,
+            stdout="remote resume\n",
+            stderr="",
+        )
+        with mock.patch.dict(
+            os.environ,
+            {"CRUCIBLE_COORDINATOR_RUNS": "pwa-5090:/home/petter/code/cpp/chess/crucible/runs"},
+        ), mock.patch("crucible.subprocess.run", return_value=remote_result) as run_mock:
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout):
+                rc = crucible.cmd_resume(self.retry_args(run="paused"))
+
+        self.assertEqual(0, rc)
+        self.assertEqual(
+            'coordinator: "pwa-5090:/home/petter/code/cpp/chess/crucible/runs"\nremote resume\n',
+            stdout.getvalue(),
+        )
+        command = run_mock.call_args.args[0]
+        self.assertEqual("ssh", command[0])
+        self.assertIn("pwa-5090", command)
+        self.assertIn("CRUCIBLE_RUNS_DIR=/home/petter/code/cpp/chess/crucible/runs", command[-1])
+        self.assertIn("CRUCIBLE_COORDINATOR_RUNS=", command[-1])
+        self.assertIn("crucible resume paused", command[-1])
 
     def test_resume_without_run_requires_single_incomplete_run(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
