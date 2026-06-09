@@ -38,7 +38,7 @@ def cmd_status(args: argparse.Namespace) -> int:
     summary["run"] = manifest_path.parent.name
     summary["metadata"] = manifest_metadata(manifest)
     if args.json:
-        print(json.dumps(summary, sort_keys=True))
+        print(json.dumps(run_status_payload(summary), sort_keys=True))
         return 0 if summary["counts"]["fail"] == 0 else 1
     print_compact_status(
         summary,
@@ -592,6 +592,40 @@ def active_worker_summary(summary: dict[str, Any]) -> str:
         parts.append(speedup)
     return " ".join(parts)
 
+def active_worker_summary_payload(summary: dict[str, Any]) -> dict[str, Any]:
+    metrics = active_worker_metrics(summary)
+    if not metrics:
+        return {}
+    values = list(metrics.values())
+    payload: dict[str, Any] = {
+        "workers": len(values),
+        "tasks": sum(int(metric.get("tasks", 0)) for metric in values),
+    }
+    if any(bool(metric.get("output_seen")) for metric in values):
+        total_output = sum(int(metric["output"]) for metric in values)
+        payload["output"] = total_output
+        payload["output_text"] = compact_count(total_output)
+        if len(values) > 1:
+            ordered = sorted(values, key=lambda metric: (int(metric["output"]), str(metric["worker"])))
+            payload["min"] = {
+                "worker": str(ordered[0]["worker"]),
+                "output": int(ordered[0]["output"]),
+                "output_text": compact_count(int(ordered[0]["output"])),
+            }
+            payload["max"] = {
+                "worker": str(ordered[-1]["worker"]),
+                "output": int(ordered[-1]["output"]),
+                "output_text": compact_count(int(ordered[-1]["output"])),
+            }
+    rates = [float(metric.get("rate", 0.0)) for metric in values if float(metric.get("rate", 0.0)) > 0]
+    if len(values) > 1 and rates:
+        max_rate = max(rates)
+        if max_rate > 0:
+            speedup = sum(rates) / max_rate
+            payload["speedup"] = round(speedup, 3)
+            payload["speedup_text"] = f"{speedup:.1f}x"
+    return payload
+
 def run_speedup_field(summary: dict[str, Any]) -> str:
     metrics = active_worker_metrics(summary)
     if len(metrics) <= 1:
@@ -607,25 +641,74 @@ def run_speedup_field(summary: dict[str, Any]) -> str:
 
 def run_status_payload(summary: dict[str, Any]) -> dict[str, Any]:
     counts = summary["counts"]
-    payload = {
+    fields = [
+        f"tasks={counts['done']}/{summary['tasks']}",
+    ]
+    if counts["fail"]:
+        fields.append(f"fail={counts['fail']}")
+    if counts["stale"]:
+        fields.append(f"stale={counts['stale']}")
+    fields.extend(run_progress_fields(summary))
+    active_summary = active_worker_summary(summary)
+    active_fields = (
+        split_eta_last(active_summary.split())
+        if active_summary else
+        split_eta_last(section_progress_fields(summary))
+    )
+    payload = copy.deepcopy(summary)
+    payload.update({
         "run": summary["run"],
         "state": run_state(summary),
         "manifest": summary["manifest"],
         "tasks": summary["tasks"],
         "done": counts["done"],
-        "active": counts["running"] + counts["claimed"] + counts["stale"],
         "running": counts["running"],
         "claimed": counts["claimed"],
         "pending": counts["pending"],
         "fail": counts["fail"],
         "stale": counts["stale"],
-    }
+        "display": {
+            "title": run_title(summary),
+            "description": run_description_field(summary),
+            "fields": split_eta_last(fields),
+            "active_fields": active_fields,
+            "active_summary": active_worker_summary_payload(summary),
+            "active_summary_text": active_summary,
+        },
+        "sections": {
+            "done": {
+                "count": counts["done"],
+                "groups": copy.deepcopy(summary["groups"]["done"]),
+            },
+            "active": {
+                "count": counts["running"] + counts["claimed"] + counts["stale"],
+                "tasks": copy.deepcopy(summary["active"]),
+                "fields": active_fields,
+                "summary": active_worker_summary_payload(summary),
+                "summary_text": active_summary,
+            },
+            "pending": {
+                "count": counts["pending"],
+                "tasks": copy.deepcopy(summary["pending"]),
+                "groups": copy.deepcopy(summary.get("pending_groups", {})),
+            },
+            "fail": {
+                "count": counts["fail"],
+                "groups": copy.deepcopy(summary["groups"]["fail"]),
+            },
+            "stale": {
+                "count": counts["stale"],
+                "groups": copy.deepcopy(summary["groups"]["stale"]),
+            },
+        },
+    })
     metadata = summary.get("metadata")
     if isinstance(metadata, dict):
         payload.update(metadata)
     progress = summary_progress(summary)
     if progress:
         payload["progress"] = progress
+        payload["progress_fields"] = summary_progress_fields(summary)
     return payload
 
 def run_title(summary: dict[str, Any]) -> str:
@@ -753,7 +836,16 @@ def print_run_status(
         include_started_pending=include_started_pending,
     )
     if as_json:
-        print(json.dumps({"runs": [run_status_payload(item) for item in filtered]}, sort_keys=True))
+        collapsed_failures = [
+            summary for summary in filtered
+            if collapse_inactive_failures and run_failed(summary) and run_active_count(summary) == 0
+        ]
+        payload = {
+            "runs": [run_status_payload(item) for item in filtered],
+            "collapsed_failures": [str(item["run"]) for item in collapsed_failures],
+            "collapsed_failures_count": len(collapsed_failures),
+        }
+        print(json.dumps(payload, sort_keys=True))
         return 0 if all(item["counts"]["fail"] == 0 for item in filtered) else 1
     if not filtered:
         labels = {

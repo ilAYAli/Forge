@@ -1986,6 +1986,10 @@ class CrucibleTests(unittest.TestCase):
             self.assertEqual([0], payload["groups"]["done"]["host-done"])
             self.assertEqual("subtask=42/1000", payload["active"][0]["progress"])
             self.assertEqual("", payload["active"][0]["label"])
+            self.assertEqual(1, payload["sections"]["active"]["count"])
+            self.assertEqual([3], payload["sections"]["pending"]["tasks"])
+            self.assertEqual([2], payload["sections"]["fail"]["groups"]["host-fail"])
+            self.assertEqual(["tasks=1/4", "fail=1"], payload["display"]["fields"])
 
     def test_status_sorts_active_tasks_by_completeness(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -2261,9 +2265,15 @@ class CrucibleTests(unittest.TestCase):
                 self.assertEqual(0, rc)
                 payload = json.loads(stdout.getvalue())
                 self.assertEqual(["bonus", "main"], sorted(item["run"] for item in payload["runs"]))
-                self.assertNotIn("rows", payload["runs"][0])
-                self.assertNotIn("groups", payload["runs"][0])
-                self.assertIn("state", payload["runs"][0])
+                self.assertEqual(0, payload["collapsed_failures_count"])
+                bonus_payload = next(item for item in payload["runs"] if item["run"] == "bonus")
+                main_payload = next(item for item in payload["runs"] if item["run"] == "main")
+                self.assertIn("groups", bonus_payload)
+                self.assertIn("sections", bonus_payload)
+                self.assertIn("state", bonus_payload)
+                self.assertEqual("done", bonus_payload["state"])
+                self.assertEqual(1, main_payload["sections"]["active"]["count"])
+                self.assertEqual("worker-main", main_payload["sections"]["active"]["tasks"][0]["worker"])
 
                 stdout = io.StringIO()
                 with contextlib.redirect_stdout(stdout):
@@ -2379,6 +2389,13 @@ class CrucibleTests(unittest.TestCase):
             )
             self.assertNotIn("aaa-failed", failed_status.stdout)
             self.assertNotIn("waiting", failed_status.stdout)
+
+            failed_json = self.run_cli("status", "--json", cwd=root, env=env)
+            self.assertEqual(1, failed_json.returncode)
+            failed_payload = json.loads(failed_json.stdout)
+            self.assertEqual(["aaa-failed"], failed_payload["collapsed_failures"])
+            failed_run = next(item for item in failed_payload["runs"] if item["run"] == "aaa-failed")
+            self.assertEqual([0], failed_run["sections"]["fail"]["groups"]["worker-fail"])
 
             detailed_failed = self.run_cli("status", "--failed", cwd=root, env=env)
             self.assertEqual(1, detailed_failed.returncode)
@@ -3098,7 +3115,15 @@ class CrucibleTests(unittest.TestCase):
 
     def test_status_speedup_uses_rates_not_output_share(self) -> None:
         summary = {
+            "run": "run-a",
+            "manifest": "runs/run-a/manifest.json",
+            "tasks": 2,
+            "counts": {"done": 0, "fail": 0, "running": 2, "claimed": 0, "stale": 0, "pending": 0},
+            "active_count": 2,
             "active": [{"worker": "fast"}, {"worker": "slow"}],
+            "groups": {"done": {}, "fail": {}, "stale": {}},
+            "pending": [],
+            "pending_groups": {},
             "worker_outputs": {
                 "fast": {"output": 80000, "output_seen": True},
                 "slow": {"output": 10000, "output_seen": True},
@@ -3107,12 +3132,22 @@ class CrucibleTests(unittest.TestCase):
                 "fast": 10.0,
                 "slow": 10.0,
             },
+            "progress_totals": {},
+            "progress_done": {},
+            "progress_outputs": {},
+            "rows": [],
+            "diagnostics": [],
+            "metadata": {},
         }
         self.assertEqual(
             'workers=2 output=90k min="slow":10k max="fast":80k speedup=2.0x',
             crucible.active_worker_summary(summary),
         )
         self.assertEqual("speedup=2.0x", crucible.run_speedup_field(summary))
+        payload = crucible.run_status_payload(summary)
+        self.assertEqual("2.0x", payload["display"]["active_summary"]["speedup_text"])
+        self.assertEqual("90k", payload["display"]["active_summary"]["output_text"])
+        self.assertEqual("slow", payload["sections"]["active"]["summary"]["min"]["worker"])
 
     def test_status_single_worker_summary_omits_redundant_fields(self) -> None:
         summary = {
