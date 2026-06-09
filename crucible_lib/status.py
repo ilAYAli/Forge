@@ -57,12 +57,14 @@ def status_can_delegate(run: str | None) -> bool:
     path = Path(str(run))
     return not path.is_absolute() and len(path.parts) == 1
 
-def status_command_args(args: argparse.Namespace) -> list[str]:
+def status_command_args(args: argparse.Namespace, *, force_json: bool = False) -> list[str]:
     command = ["status"]
     if args.run is not None:
         command.append(str(args.run))
     for name in ("verbose", "show_done", "all", "done", "failed", "json", "no_color"):
-        if bool(getattr(args, name)):
+        if name == "json" and force_json:
+            command.append("--json")
+        elif bool(getattr(args, name)):
             command.append("--" + name.replace("_", "-"))
     command.extend(["--lease-seconds", str(args.lease_seconds)])
     return command
@@ -75,7 +77,7 @@ def status_color_mode(args: argparse.Namespace) -> str:
 
 def run_status_on_coordinator(args: argparse.Namespace, coordinator_runs: str) -> int:
     host, runs_path = parse_coordinator(coordinator_runs)
-    command = status_command_args(args)
+    command = status_command_args(args, force_json=True)
     color_mode = status_color_mode(args)
     if host:
         remote = (
@@ -106,13 +108,97 @@ def run_status_on_coordinator(args: argparse.Namespace, coordinator_runs: str) -
             check=False,
             env=env,
         )
-    if not bool(getattr(args, "json", False)):
-        print(f"coordinator: {json.dumps(coordinator_runs)}")
-    if result.stdout:
-        print(result.stdout, end="")
+    if result.returncode not in (0, 1):
+        if not bool(getattr(args, "json", False)):
+            print(f"coordinator: {coordinator_runs}")
+        if result.stdout:
+            print(result.stdout, end="")
+        if result.stderr:
+            print(result.stderr, end="", file=sys.stderr)
+        return result.returncode
+    try:
+        payload = normalize_status_json_payload(json.loads(result.stdout))
+    except json.JSONDecodeError:
+        if not bool(getattr(args, "json", False)):
+            print(f"coordinator: {coordinator_runs}")
+        if result.stdout:
+            print(result.stdout, end="")
+        if result.stderr:
+            print(result.stderr, end="", file=sys.stderr)
+        return result.returncode
+    if bool(getattr(args, "json", False)):
+        print(json.dumps(payload, sort_keys=True))
+        if result.stderr:
+            print(result.stderr, end="", file=sys.stderr)
+        return result.returncode
+    print(f"coordinator: {coordinator_runs}")
+    rc = print_delegated_status_payload(args, payload)
     if result.stderr:
         print(result.stderr, end="", file=sys.stderr)
-    return result.returncode
+    return rc
+
+def normalize_status_summary_payload(summary: Any) -> Any:
+    if not isinstance(summary, dict):
+        return summary
+    summary = status_summary_from_payload(summary)
+    try:
+        return run_status_payload(summary)
+    except (KeyError, TypeError, ValueError):
+        return summary
+
+def status_summary_from_payload(summary: Any) -> Any:
+    if not isinstance(summary, dict):
+        return summary
+    normalized = copy.deepcopy(summary)
+    sections = normalized.get("sections")
+    pending_section = sections.get("pending") if isinstance(sections, dict) else None
+    if not isinstance(normalized.get("pending"), list):
+        tasks = pending_section.get("tasks") if isinstance(pending_section, dict) else None
+        normalized["pending"] = tasks if isinstance(tasks, list) else []
+    if not isinstance(normalized.get("pending_groups"), dict):
+        groups = pending_section.get("groups") if isinstance(pending_section, dict) else None
+        normalized["pending_groups"] = groups if isinstance(groups, dict) else {}
+    return normalized
+
+def normalize_status_json_payload(payload: Any) -> Any:
+    if isinstance(payload, dict) and isinstance(payload.get("runs"), list):
+        normalized = copy.deepcopy(payload)
+        normalized["runs"] = [
+            normalize_status_summary_payload(summary)
+            for summary in normalized["runs"]
+        ]
+        return normalized
+    return normalize_status_summary_payload(payload)
+
+def print_delegated_status_payload(args: argparse.Namespace, payload: Any) -> int:
+    selected = [name for name in ("all", "done", "failed") if bool(getattr(args, name))]
+    filter_name = selected[0] if selected else None
+    color_enabled = status_color_enabled(args)
+    if args.run is None and isinstance(payload, dict) and isinstance(payload.get("runs"), list):
+        summaries = [
+            status_summary_from_payload(summary)
+            for summary in payload["runs"]
+        ]
+        return print_run_status(
+            summaries,
+            color_enabled=color_enabled,
+            as_json=False,
+            filter_name=filter_name,
+            include_started_pending=bool(getattr(args, "verbose", False)),
+            collapse_inactive_failures=bool(filter_name is None and not getattr(args, "verbose", False)),
+            show_details=bool(filter_name is None or args.all or args.done or args.failed or getattr(args, "show_done", False) or getattr(args, "verbose", False)),
+            show_done=bool(args.done or getattr(args, "show_done", False)),
+        )
+    if args.run is not None and isinstance(payload, dict) and isinstance(payload.get("counts"), dict):
+        summary = status_summary_from_payload(payload)
+        print_compact_status(
+            summary,
+            color_enabled=color_enabled,
+            show_done=args.show_done,
+            show_diagnostics=args.verbose,
+        )
+        return 0 if summary["counts"]["fail"] == 0 else 1
+    raise SystemExit("coordinator returned unexpected status JSON")
 
 def run_manifest_paths() -> list[Path]:
     root = runs_dir()
@@ -434,6 +520,9 @@ def summary_progress(summary: dict[str, Any]) -> str:
     subtask_count = 0
     subtask_known_total = True
     subtask_known_rate = True
+    counts = summary.get("counts", {})
+    running_count = int(counts.get("running") or 0)
+    waiting_count = sum(int(counts.get(name) or 0) for name in ("pending", "claimed", "stale"))
     by_unit: dict[str, dict[str, Any]] = {}
     outputs: dict[str, int] = {}
     etas: list[str] = []
@@ -451,6 +540,8 @@ def summary_progress(summary: dict[str, Any]) -> str:
         etas.append(eta_field(aggregate_eta, unknown_when_elapsed=unknown_when_elapsed))
 
     for row in summary["active"]:
+        if row.get("state", "running") != "running":
+            continue
         data = row.get("progress_data")
         if isinstance(data, dict) and data.get("kind") == "metadata":
             done = data.get("done")
@@ -506,8 +597,8 @@ def summary_progress(summary: dict[str, Any]) -> str:
         total = str(subtask_total) if subtask_known_total and subtask_total > 0 else "?"
         text = f"subtask={subtask_done}/{total}"
         if (
-            subtask_known_total and subtask_known_rate and subtask_count == summary["active_count"]
-            and summary["counts"]["pending"] == 0
+            subtask_known_total and subtask_known_rate and subtask_count == running_count
+            and waiting_count == 0
         ):
             eta = progress_eta_text(subtask_done, subtask_total, subtask_rate)
             if eta:
@@ -521,7 +612,7 @@ def summary_progress(summary: dict[str, Any]) -> str:
         if isinstance(total_work, int) and total_work > 0:
             done = min(total_work, int(done_work) + active_done)
             text = f"{unit}={compact_count(done)}/{compact_count(total_work)}"
-            if summary["counts"]["pending"] == 0 and bucket["etas"]:
+            if waiting_count == 0 and bucket["etas"]:
                 max_eta, unknown_when_elapsed = max(bucket["etas"], key=lambda item: item[0])
                 etas.append(eta_field(max_eta, unknown_when_elapsed=unknown_when_elapsed))
             elif bucket["rate"] > 0:
@@ -530,8 +621,8 @@ def summary_progress(summary: dict[str, Any]) -> str:
         elif bucket["all_total"] and active_total > 0:
             text = f"{unit}={compact_count(active_done)}/{compact_count(active_total)}"
             if (
-                bucket["all_rate"] and bucket["count"] == summary["active_count"]
-                and summary["counts"]["pending"] == 0
+                bucket["all_rate"] and bucket["count"] == running_count
+                and waiting_count == 0
             ):
                 if bucket["etas"]:
                     max_eta, unknown_when_elapsed = max(bucket["etas"], key=lambda item: item[0])
@@ -603,8 +694,8 @@ def active_worker_summary(summary: dict[str, Any]) -> str:
     parts = [f"workers={len(values)}", f"output={compact_count(total_output)}"]
     ordered = sorted(values, key=lambda metric: (int(metric["output"]), str(metric["worker"])))
     max_output = int(ordered[-1]["output"])
-    parts.append(f"min={json.dumps(str(ordered[0]['worker']))}:{compact_count(int(ordered[0]['output']))}")
-    parts.append(f"max={json.dumps(str(ordered[-1]['worker']))}:{compact_count(max_output)}")
+    parts.append(f"min={str(ordered[0]['worker'])}:{compact_count(int(ordered[0]['output']))}")
+    parts.append(f"max={str(ordered[-1]['worker'])}:{compact_count(max_output)}")
     if speedup := run_speedup_field(summary):
         parts.append(speedup)
     return " ".join(parts)
@@ -729,7 +820,7 @@ def run_status_payload(summary: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 def run_title(summary: dict[str, Any]) -> str:
-    return f"run={json.dumps(str(summary['run']))}"
+    return f"run={str(summary['run'])}"
 
 def run_description_field(summary: dict[str, Any]) -> str:
     metadata = summary.get("metadata")
@@ -737,7 +828,7 @@ def run_description_field(summary: dict[str, Any]) -> str:
         return ""
     description = str(metadata.get("description") or "").strip()
     if description:
-        return f"desc={json.dumps(description)}"
+        return f"desc={description}"
     return ""
 
 def summary_progress_fields(summary: dict[str, Any]) -> list[str]:
@@ -826,8 +917,8 @@ def section_progress_fields(summary: dict[str, Any]) -> list[str]:
         if not field.startswith("eta=")
     ]
 
-def quote_status_key(key: str, values: list[int | str]) -> str:
-    return json.dumps(key)
+def format_status_key(key: str, values: list[int | str]) -> str:
+    return key
 
 def color_count_line(label: str, count: int, color: str, *, color_enabled: bool) -> str:
     return f"{label}: {colorize(str(count), color, enabled=color_enabled)}"
@@ -1364,7 +1455,7 @@ def status_summary(manifest: dict[str, Any], *, lease_seconds: int) -> dict[str,
                     )
                     worker_metric["output"] += output
                     worker_metric["output_seen"] = True
-        if state in {"running", "claimed", "stale"}:
+        if state == "running":
             key = worker or "unknown"
             elapsed = running_elapsed_seconds(running_payload)
             output_rate = progress_output_rate(progress_data, elapsed)
@@ -1448,7 +1539,7 @@ def print_status_group(
     count = sum(len(values) for values in groups.values())
     print(f"{indent}{color_count_line(title, count, status_color(title), color_enabled=color_enabled)}")
     for worker, values in sorted(groups.items()):
-        print(f"{indent}  {quote_status_key(worker, values)} [{len(values)}]: {format_status_values(values)}")
+        print(f"{indent}  {format_status_key(worker, values)} [{len(values)}]: {format_status_values(values)}")
 
 def print_pending_status(
     summary: dict[str, Any],
@@ -1467,7 +1558,7 @@ def print_pending_status(
         print(f"{indent}  {format_status_values(summary['pending'])}")
         return
     for label, values in sorted(groups.items(), key=lambda item: (not item[0], item[0])):
-        label_text = json.dumps(label if label else "unlabeled")
+        label_text = label if label else "unlabeled"
         print(f"{indent}  {label_text} [{len(values)}]: {format_status_values(values)}")
 
 def active_status_sort_key(row: dict[str, Any]) -> tuple[int, float, tuple[bool, int | str]]:
@@ -1519,8 +1610,8 @@ def print_status_details(
                 if state_name == "running" and row.get("progress")
                 else ""
             )
-            label = f" {json.dumps(str(row['label']))}" if row.get("label") else ""
-            worker = quote_status_key(str(row["worker"] or "unknown"), [])
+            label = f" {str(row['label'])}" if row.get("label") else ""
+            worker = format_status_key(str(row["worker"] or "unknown"), [])
             state = (
                 f" [{colorize(state_name, status_color(state_name), enabled=color_enabled)}]"
                 if state_name != "running"
