@@ -109,6 +109,23 @@ class CrucibleTests(unittest.TestCase):
             setattr(args, key, value)
         return args
 
+    def worker_add_args(self, **overrides: Any) -> argparse.Namespace:
+        args = self.retry_args(worker="worker-b:5")
+        for key, value in overrides.items():
+            setattr(args, key, value)
+        return args
+
+    def worker_del_args(self, **overrides: Any) -> argparse.Namespace:
+        args = argparse.Namespace(
+            worker="worker-b",
+            run=None,
+            keep_claims=False,
+            lease_seconds=600,
+        )
+        for key, value in overrides.items():
+            setattr(args, key, value)
+        return args
+
     def test_remote_script_sets_common_user_bin_path(self) -> None:
         script = crucible.managed_remote_script("crucible version")
         self.assertIn("PATH=\"$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH\"; export PATH; ", script)
@@ -130,7 +147,7 @@ class CrucibleTests(unittest.TestCase):
         advanced = stdout.index("Advanced:")
         common_positions = {
             command: stdout.index(f"    {command}")
-            for command in ("start", "stop", "resume", "retry", "status", "update")
+            for command in ("start", "stop", "resume", "retry", "worker", "status", "update")
         }
         for position in common_positions.values():
             self.assertLess(common, position)
@@ -138,7 +155,8 @@ class CrucibleTests(unittest.TestCase):
         self.assertLess(common_positions["start"], common_positions["stop"])
         self.assertLess(common_positions["stop"], common_positions["resume"])
         self.assertLess(common_positions["resume"], common_positions["retry"])
-        self.assertLess(common_positions["retry"], common_positions["status"])
+        self.assertLess(common_positions["retry"], common_positions["worker"])
+        self.assertLess(common_positions["worker"], common_positions["status"])
         self.assertLess(common_positions["status"], common_positions["update"])
         self.assertNotIn("run-job", stdout)
         self.assertLess(advanced, stdout.index("    plan"))
@@ -147,7 +165,7 @@ class CrucibleTests(unittest.TestCase):
         self.assertLess(advanced, stdout.index("    version"))
         self.assertLess(advanced, stdout.index("    claim"))
         self.assertLess(advanced, stdout.index("    heartbeat"))
-        self.assertLess(advanced, stdout.index("    work"))
+        self.assertLess(advanced, stdout.index("\n    work "))
         self.assertNotIn("positional arguments:", stdout)
 
     def test_subcommand_help_is_available(self) -> None:
@@ -155,7 +173,7 @@ class CrucibleTests(unittest.TestCase):
             "plan", "add-input", "add-repo", "add-command", "sync-repos", "start", "run-task", "claim",
             "release", "heartbeat", "work", "doctor", "status",
             "wait", "verify", "merge", "stop", "drain", "del", "self-update",
-            "update", "version", "deploy", "resume", "retry",
+            "update", "version", "deploy", "resume", "retry", "worker",
         ]
         for command in commands:
             with self.subTest(command=command):
@@ -168,6 +186,8 @@ class CrucibleTests(unittest.TestCase):
         self.assertIn("comma-separated workers", self.run_cli("deploy", "--help").stdout)
         self.assertIn("--merge", self.run_cli("start", "--help").stdout)
         self.assertIn("--merge", self.run_cli("resume", "--help").stdout)
+        self.assertIn("worker-a:5", self.run_cli("worker", "add", "--help").stdout)
+        self.assertIn("--keep-claims", self.run_cli("worker", "del", "--help").stdout)
         self.assertIn("--index", self.run_cli("run-task", "--help").stdout)
         self.assertIn("--coordinator", self.run_cli("doctor", "--help").stdout)
         self.assertIn("comma-separated workers", self.run_cli("update", "--help").stdout)
@@ -539,6 +559,113 @@ class CrucibleTests(unittest.TestCase):
             self.assertIn("multiple incomplete Crucible runs found", message)
             self.assertIn("paused-a", message)
             self.assertIn("paused-b", message)
+
+    def test_worker_add_resumes_requested_worker_slots_and_clears_drain(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runs = Path(tmp) / "runs"
+            run = self.write_retry_run(runs, "paused", failed=None)
+            manifest = crucible.load_manifest(run / "manifest.json")
+            crucible.drain_dir(manifest).mkdir(parents=True)
+            crucible.write_json(crucible.worker_drain_path(manifest, "worker-b"), {
+                "schema": "crucible.task.v1",
+                "run": "paused",
+                "worker": "worker-b",
+            })
+
+            with (
+                self.patch_runs_dir(runs),
+                mock.patch("crucible_lib.workers.default_workers_path", side_effect=SystemExit("no workers")),
+                mock.patch("crucible_lib.workers.cmd_run_job", return_value=0) as run_job,
+            ):
+                stdout = io.StringIO()
+                with contextlib.redirect_stdout(stdout):
+                    rc = crucible.cmd_worker_add(self.worker_add_args(run="paused", worker="worker-b:5"))
+
+            self.assertEqual(0, rc)
+            self.assertFalse(crucible.worker_drain_path(manifest, "worker-b").exists())
+            self.assertIn("worker add: cleared drain for paused worker-b", stdout.getvalue())
+            add_args = run_job.call_args.args[0]
+            self.assertEqual("paused", add_args.run)
+            self.assertEqual("worker-b:5", add_args.workers)
+            self.assertTrue(add_args.resume)
+            self.assertFalse(add_args.retry_failed)
+            self.assertEqual("worker add", add_args.command_label)
+
+    def test_worker_add_named_run_delegates_to_coordinator(self) -> None:
+        remote_result = subprocess.CompletedProcess(
+            args=["ssh"],
+            returncode=0,
+            stdout="remote worker add\n",
+            stderr="",
+        )
+        with mock.patch.dict(
+            os.environ,
+            {"CRUCIBLE_COORDINATOR_RUNS": "pwa-5090:/home/petter/code/cpp/chess/crucible/runs"},
+        ), mock.patch("crucible.subprocess.run", return_value=remote_result) as run_mock:
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout):
+                rc = crucible.cmd_worker_add(self.worker_add_args(run="paused", worker="worker-b:5"))
+
+        self.assertEqual(0, rc)
+        self.assertEqual(
+            'coordinator: "pwa-5090:/home/petter/code/cpp/chess/crucible/runs"\nremote worker add\n',
+            stdout.getvalue(),
+        )
+        command = run_mock.call_args.args[0]
+        self.assertEqual("ssh", command[0])
+        self.assertIn("pwa-5090", command)
+        self.assertIn("CRUCIBLE_RUNS_DIR=/home/petter/code/cpp/chess/crucible/runs", command[-1])
+        self.assertIn("CRUCIBLE_COORDINATOR_RUNS=", command[-1])
+        self.assertIn("crucible worker add worker-b:5 paused", command[-1])
+
+    def test_worker_del_drains_worker_and_releases_reserved_claims(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runs = Path(tmp) / "runs"
+            run = self.write_retry_run(runs, "active", failed=None)
+            manifest = crucible.load_manifest(run / "manifest.json")
+            claimed = crucible.claim_task(
+                manifest,
+                worker="worker-b",
+                profile=None,
+                lease_seconds=600,
+                retry_failed=False,
+            )
+            self.assertEqual("task_0", claimed["task"])
+            self.assertTrue(crucible.task_claim_path(manifest, manifest["tasks"][0]).exists())
+
+            with self.patch_runs_dir(runs):
+                stdout = io.StringIO()
+                with contextlib.redirect_stdout(stdout):
+                    rc = crucible.cmd_worker_del(self.worker_del_args(run="active", worker="worker-b"))
+
+            self.assertEqual(0, rc)
+            self.assertTrue(crucible.worker_drain_path(manifest, "worker-b").exists())
+            self.assertFalse(crucible.task_claim_path(manifest, manifest["tasks"][0]).exists())
+            self.assertIn("worker del: active worker-b released=1", stdout.getvalue())
+
+    def test_worker_del_can_keep_reserved_claims(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runs = Path(tmp) / "runs"
+            run = self.write_retry_run(runs, "active", failed=None)
+            manifest = crucible.load_manifest(run / "manifest.json")
+            crucible.claim_task(
+                manifest,
+                worker="worker-b",
+                profile=None,
+                lease_seconds=600,
+                retry_failed=False,
+            )
+
+            with self.patch_runs_dir(runs):
+                stdout = io.StringIO()
+                with contextlib.redirect_stdout(stdout):
+                    rc = crucible.cmd_worker_del(
+                        self.worker_del_args(run="active", worker="worker-b", keep_claims=True)
+                    )
+
+            self.assertEqual(0, rc)
+            self.assertTrue(crucible.worker_drain_path(manifest, "worker-b").exists())
+            self.assertTrue(crucible.task_claim_path(manifest, manifest["tasks"][0]).exists())
 
     def test_plan_rejects_duplicate_output_paths(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

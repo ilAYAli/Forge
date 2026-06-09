@@ -14,14 +14,16 @@ crucible start manifest.json --workers worker-a,worker-b:4
 crucible stop my-run
 crucible resume my-run
 crucible retry
+crucible worker add worker-c:4
+crucible worker del worker-c
 crucible status
 watch 'crucible status --verbose'
 crucible update
 ```
 
 Use `crucible start --help`, `crucible stop --help`, `crucible resume --help`,
-`crucible retry --help`, and `crucible status --help` for normal workflow
-options.
+`crucible retry --help`, `crucible worker --help`, and `crucible status --help`
+for normal workflow options.
 
 ## Start Work
 
@@ -100,6 +102,29 @@ crucible resume my-run
 `resume` clears the stop marker and restarts incomplete non-failed work using
 the run's materialized `manifest.json` and `workers.json`. Omit the run name
 only when exactly one incomplete run exists. Use `retry` for failed tasks.
+
+Add worker slots to an incomplete run:
+
+```sh
+crucible worker add worker-c:4
+crucible worker add worker-c:4 my-run
+```
+
+`worker add` starts the selected worker slots against the materialized run. It
+uses the same inline worker syntax as `start`, clears an existing drain marker
+for that worker, and validates setup before tasks can be claimed. Omit the run
+name only when exactly one incomplete run exists.
+
+Drain a worker from a run:
+
+```sh
+crucible worker del worker-c
+crucible worker del worker-c my-run
+```
+
+`worker del` prevents that worker from claiming new tasks and releases its
+reserved claims. Running tasks are not killed. Use `--keep-claims` if you only
+want to prevent future claims.
 
 ## Retry Failed Work
 

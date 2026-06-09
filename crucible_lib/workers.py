@@ -961,6 +961,83 @@ def run_control_on_coordinator(name: str, args: argparse.Namespace, coordinator_
         print(result.stderr, end="", file=sys.stderr)
     return result.returncode
 
+def worker_control_command_args(action: str, args: argparse.Namespace) -> list[str]:
+    command = ["worker", action, str(args.worker)]
+    if args.run is not None:
+        command.append(str(args.run))
+    if action == "add":
+        if bool(getattr(args, "wait", False)):
+            command.append("--wait")
+        if not bool(getattr(args, "verify", True)):
+            command.append("--no-verify")
+        if getattr(args, "merge", None):
+            command.extend(["--merge", str(args.merge)])
+        if bool(getattr(args, "merge_force", False)):
+            command.append("--merge-force")
+        if bool(getattr(args, "newline_between", False)):
+            command.append("--newline-between")
+        if getattr(args, "notify_command", None):
+            command.extend(["--notify-command", str(args.notify_command)])
+        if bool(getattr(args, "no_color", False)):
+            command.append("--no-color")
+        if bool(getattr(args, "verbose", False)):
+            command.append("--verbose")
+        if int(getattr(args, "jobs", 4)) != 4:
+            command.extend(["--jobs", str(args.jobs)])
+        if int(getattr(args, "task_attempts", 2)) != 2:
+            command.extend(["--task-attempts", str(args.task_attempts)])
+        if getattr(args, "coordinator_host", None):
+            command.extend(["--coordinator-host", str(args.coordinator_host)])
+        if float(getattr(args, "remote_timeout_seconds", 1800.0)) != 1800.0:
+            command.extend(["--remote-timeout-seconds", str(args.remote_timeout_seconds)])
+        if float(getattr(args, "interval_seconds", 30.0)) != 30.0:
+            command.extend(["--interval-seconds", str(args.interval_seconds)])
+        if float(getattr(args, "timeout_seconds", 0.0)) != 0.0:
+            command.extend(["--timeout-seconds", str(args.timeout_seconds)])
+        if not bool(getattr(args, "fail_on_fail", True)):
+            command.append("--no-fail-on-fail")
+    elif bool(getattr(args, "keep_claims", False)):
+        command.append("--keep-claims")
+    command.extend(["--lease-seconds", str(args.lease_seconds)])
+    return command
+
+def run_worker_control_on_coordinator(action: str, args: argparse.Namespace, coordinator_runs: str) -> int:
+    host, runs_path = parse_coordinator(coordinator_runs)
+    command = worker_control_command_args(action, args)
+    if host:
+        remote = (
+            "command -v crucible >/dev/null 2>&1 || "
+            "{ echo 'crucible not found in PATH on coordinator' >&2; exit 127; }; "
+            f"exec env {shlex.quote(COORDINATOR_RUNS_ENV)}= "
+            f"{shlex.quote(RUNS_DIR_ENV)}={shlex.quote(runs_path)} "
+            f"crucible {shell_join(command)}"
+        )
+        result = subprocess.run(
+            ["ssh", *SSH_OPTS, host, remote],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+    else:
+        env = os.environ.copy()
+        env[COORDINATOR_RUNS_ENV] = ""
+        env[RUNS_DIR_ENV] = runs_path
+        result = subprocess.run(
+            [sys.executable, str(script_path()), *command],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+            env=env,
+        )
+    print(f"coordinator: {json.dumps(coordinator_runs)}")
+    if result.stdout:
+        print(result.stdout, end="")
+    if result.stderr:
+        print(result.stderr, end="", file=sys.stderr)
+    return result.returncode
+
 def cmd_run_job(args: argparse.Namespace) -> int:
     label = str(getattr(args, "command_label", "start"))
     template_path = expand_path(args.manifest)
@@ -1045,6 +1122,65 @@ def resume_run_paths(run: str | None, *, lease_seconds: int) -> list[tuple[str, 
         raise SystemExit(f"multiple incomplete Crucible runs found; specify one: {names}")
     summary = incomplete[0]
     return [materialized_run_paths(run_dir_for_name(str(summary["run"])), label=str(summary["run"]))]
+
+def worker_run_paths(run: str | None, *, lease_seconds: int) -> list[tuple[str, Path, Path]]:
+    if run:
+        return [materialized_run_paths(run_dir_from_arg(run), label=run)]
+    return resume_run_paths(run, lease_seconds=lease_seconds)
+
+def worker_hosts_from_inline(value: str) -> list[str]:
+    workers = load_workers_arg(value, default_ok=False)
+    hosts = {str(worker.get("host") or "").strip() for worker in workers}
+    return sorted(host for host in hosts if host)
+
+def clear_worker_drains(manifest: dict[str, Any], hosts: list[str], *, run_name: str) -> int:
+    cleared = 0
+    for host in hosts:
+        marker = worker_drain_path(manifest, host)
+        if not marker.exists():
+            continue
+        marker.unlink()
+        cleared += 1
+        print(f"worker add: cleared drain for {run_name} {host}")
+    return cleared
+
+def cmd_worker_add(args: argparse.Namespace) -> int:
+    coordinator_runs = configured_coordinator_runs()
+    if coordinator_runs and status_can_delegate(args.run):
+        return run_worker_control_on_coordinator("add", args, coordinator_runs)
+    targets = worker_run_paths(args.run, lease_seconds=args.lease_seconds)
+    hosts = worker_hosts_from_inline(str(args.worker))
+    failed = 0
+    for run_name, manifest_path, _workers_path in targets:
+        manifest = load_manifest(manifest_path)
+        clear_worker_drains(manifest, hosts, run_name=run_name)
+        resume_args = argparse.Namespace(
+            manifest=str(manifest_path),
+            workers=str(args.worker),
+            jobs=args.jobs,
+            run=run_name,
+            resume=True,
+            replace=False,
+            retry_failed=False,
+            task_attempts=getattr(args, "task_attempts", 2),
+            coordinator_host=args.coordinator_host,
+            remote_timeout_seconds=args.remote_timeout_seconds,
+            wait=args.wait,
+            lease_seconds=args.lease_seconds,
+            interval_seconds=args.interval_seconds,
+            timeout_seconds=args.timeout_seconds,
+            fail_on_fail=args.fail_on_fail,
+            verify=args.verify,
+            merge=args.merge,
+            merge_force=args.merge_force,
+            newline_between=args.newline_between,
+            notify_command=args.notify_command,
+            no_color=args.no_color,
+            verbose=args.verbose,
+            command_label="worker add",
+        )
+        failed += 1 if cmd_run_job(resume_args) else 0
+    return 1 if failed else 0
 
 def cmd_resume(args: argparse.Namespace) -> int:
     coordinator_runs = configured_coordinator_runs()
@@ -1137,3 +1273,32 @@ def cmd_retry(args: argparse.Namespace) -> int:
         )
         failed += 1 if cmd_run_job(retry_args) else 0
     return 1 if failed else 0
+
+def cmd_worker_del(args: argparse.Namespace) -> int:
+    coordinator_runs = configured_coordinator_runs()
+    if coordinator_runs and status_can_delegate(args.run):
+        return run_worker_control_on_coordinator("del", args, coordinator_runs)
+    worker, _profile, _slots = parse_inline_worker_spec(str(args.worker))
+    targets = worker_run_paths(args.run, lease_seconds=args.lease_seconds)
+    for run_name, manifest_path, _workers_path in targets:
+        manifest = load_manifest(manifest_path)
+        drain_dir(manifest).mkdir(parents=True, exist_ok=True)
+        payload = {
+            "schema": SCHEMA,
+            "run": run_name,
+            "worker": worker,
+            "requested_at": now(),
+            "requested_epoch": epoch(),
+            "host": socket.gethostname(),
+        }
+        write_json(worker_drain_path(manifest, worker), payload)
+        released: list[str] = []
+        if not bool(getattr(args, "keep_claims", False)):
+            released = release_worker_claims(
+                manifest,
+                worker=worker,
+                count=0,
+                lease_seconds=args.lease_seconds,
+            )
+        print(f"worker del: {run_name} {worker} released={len(released)}")
+    return 0

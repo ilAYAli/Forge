@@ -6,6 +6,7 @@ from .core import *
 from .manifest import *
 from .tasks import *
 from .status import *
+from .web import cmd_web
 from .workers import *
 
 
@@ -31,7 +32,9 @@ COMMAND_GROUPS = [
             "stop",
             "resume",
             "retry",
+            "worker",
             "status",
+            "web",
             "update",
         ],
     ),
@@ -111,7 +114,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = CrucibleArgumentParser(
         description=(
             "Crucible distributes manifest-defined work across workers. "
-            "Start with start, stop, resume, retry, status, and update."
+            "Start with start, stop, resume, retry, worker, status, and update."
         ),
         formatter_class=CrucibleHelpFormatter,
         command_groups=COMMAND_GROUPS,
@@ -356,6 +359,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     status.set_defaults(func=cmd_status)
 
+    web = sub.add_parser(
+        "web",
+        help="Serve a live status dashboard in the browser.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    web.add_argument("--port", type=int, default=8080, help="Port to listen on.")
+    web.add_argument("--host", default="127.0.0.1", help="Host/address to bind.")
+    web.set_defaults(func=cmd_web)
+
     wait = sub.add_parser(
         "wait",
         help="Wait until coordinator tasks finish.",
@@ -410,6 +422,56 @@ def build_parser() -> argparse.ArgumentParser:
     drain.add_argument("--clear", action="store_true", help="Clear the drain marker and allow new claims.")
     drain.add_argument("--lease-seconds", type=int, default=600, help="Claim lease duration before stale.")
     drain.set_defaults(func=cmd_drain)
+
+    worker = sub.add_parser(
+        "worker",
+        help="Add or drain worker slots for a materialized run.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    worker_sub = worker.add_subparsers(dest="worker_command", metavar="command", required=True)
+
+    worker_add = worker_sub.add_parser(
+        "add",
+        help="Start extra worker slots for a materialized run.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    worker_add.add_argument("worker", help="Inline worker spec, e.g. worker-a or worker-a:5.")
+    worker_add.add_argument("run", nargs="?", help="Run name or run directory. Omit to use the single incomplete run.")
+    worker_add.add_argument("--jobs", type=int, default=4, help="Maximum workers to prepare/run concurrently.")
+    worker_add.add_argument("--task-attempts", type=int, default=2, help="Total attempts per task before final failure.")
+    worker_add.add_argument("--coordinator-host", help="Coordinator hostname workers should SSH back to.")
+    worker_add.add_argument("--remote-timeout-seconds", type=float, default=1800.0, help="Timeout for remote setup/work commands.")
+    worker_add.add_argument(
+        "--wait",
+        action="store_true",
+        help="Poll the materialized run after workers exit and fail on incomplete or failed tasks.",
+    )
+    worker_add.add_argument("--lease-seconds", type=int, default=600, help="Claim lease duration before stale.")
+    worker_add.add_argument("--interval-seconds", type=float, default=30.0, help="Polling interval for --wait.")
+    worker_add.add_argument("--timeout-seconds", type=float, default=0.0, help="Overall --wait timeout; 0 means no timeout.")
+    worker_add.add_argument("--fail-on-fail", action=argparse.BooleanOptionalAction, default=True, help="Return failure when --wait sees failed tasks.")
+    worker_add.add_argument("--verify", action=argparse.BooleanOptionalAction, default=True, help="Verify task completion and outputs before returning success.")
+    worker_add.add_argument("--merge", metavar="OUTPUT", help="Merge first task outputs into this file after verification.")
+    worker_add.add_argument("--merge-force", action="store_true", help="Overwrite an existing merged output.")
+    worker_add.add_argument("--newline-between", action="store_true", help="Insert a newline between task outputs.")
+    worker_add.add_argument(
+        "--notify-command",
+        help="Command run on deploy/wait completion with CRUCIBLE_EVENT_JSON and JSON on stdin.",
+    )
+    worker_add.add_argument("--no-color", action="store_true", help="Disable ANSI color output.")
+    worker_add.add_argument("--verbose", action="store_true", help="Print setup and worker phase details.")
+    worker_add.set_defaults(func=cmd_worker_add)
+
+    worker_del = worker_sub.add_parser(
+        "del",
+        help="Drain a worker from a materialized run.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    worker_del.add_argument("worker", help="Worker host to drain.")
+    worker_del.add_argument("run", nargs="?", help="Run name or run directory. Omit to use the single incomplete run.")
+    worker_del.add_argument("--keep-claims", action="store_true", help="Do not release this worker's reserved claims.")
+    worker_del.add_argument("--lease-seconds", type=int, default=600, help="Claim lease duration before stale.")
+    worker_del.set_defaults(func=cmd_worker_del)
 
     delete = sub.add_parser(
         "del",
