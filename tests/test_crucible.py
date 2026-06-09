@@ -168,6 +168,45 @@ class CrucibleTests(unittest.TestCase):
         self.assertLess(advanced, stdout.index("\n    work "))
         self.assertNotIn("positional arguments:", stdout)
 
+    def test_web_command_is_optional_when_module_is_missing(self) -> None:
+        script = f"""
+import argparse
+import contextlib
+import importlib.abc
+import io
+import sys
+sys.path.insert(0, {str(ROOT)!r})
+
+class BlockWeb(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname == "crucible_lib.web":
+            raise ModuleNotFoundError("No module named 'crucible_lib.web'", name=fullname)
+        return None
+
+sys.meta_path.insert(0, BlockWeb())
+import crucible_lib.cli as cli
+
+parser = cli.build_parser()
+help_text = parser.format_help()
+if "\\n    web " in help_text:
+    raise SystemExit("web command should be hidden when crucible_lib.web is missing")
+try:
+    with contextlib.redirect_stderr(io.StringIO()):
+        parser.parse_args(["web", "--help"])
+except SystemExit as exc:
+    raise SystemExit(0 if exc.code != 0 else "web command unexpectedly parsed")
+"""
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        self.assertEqual("", result.stdout)
+        self.assertEqual("", result.stderr)
+        self.assertEqual(0, result.returncode)
+
     def test_subcommand_help_is_available(self) -> None:
         commands = [
             "plan", "add-input", "add-repo", "add-command", "sync-repos", "start", "run-task", "claim",

@@ -6,8 +6,14 @@ from .core import *
 from .manifest import *
 from .tasks import *
 from .status import *
-from .web import cmd_web
 from .workers import *
+
+try:
+    from .web import cmd_web
+except ModuleNotFoundError as exc:
+    if exc.name != "crucible_lib.web":
+        raise
+    cmd_web = None
 
 
 WORKERS_ARG_HELP = (
@@ -24,19 +30,23 @@ WORKERS_ARG_HELP_RETRY_DEFAULT = (
 )
 
 
+COMMON_COMMANDS = [
+    "start",
+    "stop",
+    "resume",
+    "retry",
+    "worker",
+    "status",
+    "update",
+]
+if cmd_web is not None:
+    COMMON_COMMANDS.insert(6, "web")
+
+
 COMMAND_GROUPS = [
     (
         "Common",
-        [
-            "start",
-            "stop",
-            "resume",
-            "retry",
-            "worker",
-            "status",
-            "web",
-            "update",
-        ],
+        COMMON_COMMANDS,
     ),
     (
         "Advanced",
@@ -359,14 +369,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     status.set_defaults(func=cmd_status)
 
-    web = sub.add_parser(
-        "web",
-        help="Serve a live status dashboard in the browser.",
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
-    )
-    web.add_argument("--port", type=int, default=8080, help="Port to listen on.")
-    web.add_argument("--host", default="127.0.0.1", help="Host/address to bind.")
-    web.set_defaults(func=cmd_web)
+    if cmd_web is not None:
+        web = sub.add_parser(
+            "web",
+            help="Serve a live status dashboard in the browser.",
+            formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+        )
+        web.add_argument("--port", type=int, default=8080, help="Port to listen on.")
+        web.add_argument("--host", default="127.0.0.1", help="Host/address to bind.")
+        web.set_defaults(func=cmd_web)
 
     wait = sub.add_parser(
         "wait",
