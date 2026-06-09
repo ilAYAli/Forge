@@ -17,6 +17,9 @@ def update_worker_key(worker: dict[str, Any]) -> tuple[Any, ...]:
         return ("local", str(worker.get("host") or "localhost"))
     return ("remote", str(worker.get("host") or ""))
 
+def worker_host(worker: dict[str, Any]) -> str:
+    return str(worker.get("host") or "").strip()
+
 def update_workers_from_arg(value: str | None, *, default_ok: bool) -> list[dict[str, Any]]:
     workers = load_workers_arg(value, default_ok=default_ok)
     unique: list[dict[str, Any]] = []
@@ -74,11 +77,16 @@ def parse_inline_worker_spec(value: str) -> tuple[str, str | None, int | None]:
         raise SystemExit(f"{host}: worker profile must not be empty")
     return host, profile, slots
 
-def default_inline_worker_records() -> dict[str, dict[str, Any]]:
-    try:
-        path = default_workers_path()
-    except SystemExit:
-        return {}
+def default_inline_worker_records(path: str | Path | None = None) -> dict[str, dict[str, Any]]:
+    if path is None:
+        try:
+            path = default_workers_path()
+        except SystemExit:
+            return {}
+    else:
+        path = expand_path(str(path))
+        if not path.exists():
+            return {}
     payload = read_json(path)
     if payload.get("schema") not in (None, "crucible.workers.v1"):
         return {}
@@ -121,18 +129,23 @@ def inline_worker_record(entry: str, defaults: dict[str, dict[str, Any]]) -> dic
         record["slots"] = slots
     return record
 
-def parse_inline_workers(value: str) -> dict[str, Any]:
+def parse_inline_workers(value: str, *, defaults_path: str | Path | None = None) -> dict[str, Any]:
     entries = [entry.strip() for entry in value.split(",")]
     if not entries or any(not entry for entry in entries):
         raise SystemExit("inline workers must be a comma-separated host list")
-    defaults = default_inline_worker_records()
+    defaults = default_inline_worker_records(defaults_path)
     workers = [worker for entry in entries if (worker := inline_worker_record(entry, defaults))]
     return {
         "schema": "crucible.workers.v1",
         "workers": workers,
     }
 
-def workers_payload_from_arg(value: str | None, *, default_ok: bool) -> dict[str, Any]:
+def workers_payload_from_arg(
+    value: str | None,
+    *,
+    default_ok: bool,
+    inline_defaults_path: str | Path | None = None,
+) -> dict[str, Any]:
     if value is None:
         if not default_ok:
             raise SystemExit("workers are required")
@@ -142,10 +155,19 @@ def workers_payload_from_arg(value: str | None, *, default_ok: bool) -> dict[str
         return read_json(path)
     if worker_arg_looks_like_path(value):
         raise SystemExit(f"workers file not found: {value}")
-    return parse_inline_workers(value)
+    return parse_inline_workers(value, defaults_path=inline_defaults_path)
 
-def load_workers_arg(value: str | None, *, default_ok: bool = False) -> list[dict[str, Any]]:
-    payload = workers_payload_from_arg(value, default_ok=default_ok)
+def load_workers_arg(
+    value: str | None,
+    *,
+    default_ok: bool = False,
+    inline_defaults_path: str | Path | None = None,
+) -> list[dict[str, Any]]:
+    payload = workers_payload_from_arg(
+        value,
+        default_ok=default_ok,
+        inline_defaults_path=inline_defaults_path,
+    )
     return workers_from_payload(payload, label=value or str(default_workers_path()))
 
 def worker_update_script(*, commit: str, remote: str, branch: str, require_clean: bool) -> str:
@@ -264,6 +286,11 @@ def parse_worker_record(item: Any) -> dict[str, Any]:
         record["cache_dir"] = str(item["cache_dir"])
     if item.get("python"):
         record["python"] = str(item["python"])
+    if item.get("path_map") is not None:
+        path_map = item["path_map"]
+        if not isinstance(path_map, dict):
+            raise SystemExit(f"{host}: path_map must be an object")
+        record["path_map"] = {str(src): str(dst) for src, dst in path_map.items()}
     return record
 
 def parse_worker_slots(value: Any, *, label: str) -> int:
@@ -296,20 +323,72 @@ def load_workers(path: Path) -> list[dict[str, Any]]:
     payload = read_json(path)
     return workers_from_payload(payload, label=str(path))
 
-def workers_from_payload(payload: dict[str, Any], *, label: str) -> list[dict[str, Any]]:
+def worker_records_from_payload(
+    payload: dict[str, Any],
+    *,
+    label: str,
+    allow_empty: bool = False,
+) -> list[dict[str, Any]]:
     if payload.get("schema") not in (None, "crucible.workers.v1"):
         raise SystemExit(f"{label}: unsupported schema {payload.get('schema')!r}")
     raw_workers = payload.get("workers")
     if not isinstance(raw_workers, list):
         raise SystemExit(f"{label}: workers must be a list")
-    workers: list[dict[str, Any]] = []
+    records: list[dict[str, Any]] = []
     for item in raw_workers:
         worker = parse_worker_record(item)
         if worker:
-            workers.extend(expand_worker_record(worker))
+            records.append(worker)
+    if not records and not allow_empty:
+        raise SystemExit(f"{label}: no enabled workers")
+    return records
+
+def workers_payload_from_records(records: list[dict[str, Any]]) -> dict[str, Any]:
+    return {
+        "schema": "crucible.workers.v1",
+        "workers": records,
+    }
+
+def workers_from_payload(payload: dict[str, Any], *, label: str) -> list[dict[str, Any]]:
+    workers: list[dict[str, Any]] = []
+    for worker in worker_records_from_payload(payload, label=label):
+        workers.extend(expand_worker_record(worker))
     if not workers:
         raise SystemExit(f"{label}: no enabled workers")
     return workers
+
+def merge_worker_payloads(base_payload: dict[str, Any], update_payload: dict[str, Any]) -> dict[str, Any]:
+    merged: list[dict[str, Any]] = []
+    positions: dict[str, int] = {}
+    for worker in worker_records_from_payload(base_payload, label="base workers", allow_empty=True):
+        host = worker_host(worker)
+        if host in positions:
+            merged[positions[host]] = worker
+        else:
+            positions[host] = len(merged)
+            merged.append(worker)
+    for worker in worker_records_from_payload(update_payload, label="updated workers", allow_empty=True):
+        host = worker_host(worker)
+        if host in positions:
+            merged[positions[host]] = worker
+        else:
+            positions[host] = len(merged)
+            merged.append(worker)
+    return workers_payload_from_records(merged)
+
+def remove_worker_from_payload(payload: dict[str, Any], host: str) -> tuple[dict[str, Any], int]:
+    removed = 0
+    records: list[dict[str, Any]] = []
+    for worker in worker_records_from_payload(payload, label="workers", allow_empty=True):
+        if worker_host(worker) == host:
+            removed += 1
+            continue
+        records.append(worker)
+    return workers_payload_from_records(records), removed
+
+def worker_hosts_from_payload(payload: dict[str, Any]) -> list[str]:
+    hosts = {worker_host(worker) for worker in worker_records_from_payload(payload, label="workers", allow_empty=True)}
+    return sorted(host for host in hosts if host)
 
 def worker_cache_dir(worker: dict[str, Any]) -> str:
     if worker.get("cache_dir"):
@@ -466,12 +545,59 @@ def active_worker_profile(manifest: dict[str, Any], worker: dict[str, Any]) -> s
     profile = str(worker.get("profile") or "").strip()
     if not profile:
         return None
-    if profile not in manifest_profile_names(manifest):
+    profiles = manifest_profile_names(manifest)
+    if profile not in profiles:
+        host = worker_host(worker)
+        path_maps = manifest.get("path_maps", {})
+        path_profiles = set(str(item) for item in path_maps) if isinstance(path_maps, dict) else set()
+        if host in path_profiles:
+            return host
         return None
     return profile
 
-def worker_profile_args(manifest: dict[str, Any], worker: dict[str, Any]) -> list[str]:
+def worker_path_map(worker: dict[str, Any]) -> dict[str, str]:
+    raw = worker.get("path_map")
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise SystemExit(f"{worker_host(worker)}: path_map must be an object")
+    return {str(src): str(dst) for src, dst in raw.items()}
+
+def worker_profile_name(manifest: dict[str, Any], worker: dict[str, Any]) -> str | None:
     profile = active_worker_profile(manifest, worker)
+    if profile:
+        return profile
+    if worker_path_map(worker):
+        profile = str(worker.get("profile") or worker_host(worker)).strip()
+        return profile or None
+    return None
+
+def manifest_with_worker_path_map(manifest: dict[str, Any], worker: dict[str, Any]) -> dict[str, Any]:
+    path_map = worker_path_map(worker)
+    if not path_map:
+        return copy.deepcopy(manifest)
+    profile = str(worker.get("profile") or worker_host(worker)).strip()
+    if not profile:
+        raise SystemExit(f"{worker_host(worker)}: worker profile must not be empty")
+    local_manifest = copy.deepcopy(manifest)
+    path_maps = local_manifest.setdefault("path_maps", {})
+    if not isinstance(path_maps, dict):
+        raise SystemExit("path_maps must be an object")
+    path_maps[profile] = path_map
+    return local_manifest
+
+def workers_payload_for_manifest(payload: dict[str, Any], manifest: dict[str, Any]) -> dict[str, Any]:
+    records: list[dict[str, Any]] = []
+    for worker in worker_records_from_payload(payload, label="workers", allow_empty=True):
+        record = dict(worker)
+        profile = active_worker_profile(manifest, record)
+        if profile:
+            record["profile"] = profile
+        records.append(record)
+    return workers_payload_from_records(records)
+
+def worker_profile_args(manifest: dict[str, Any], worker: dict[str, Any]) -> list[str]:
+    profile = worker_profile_name(manifest, worker)
     if not profile:
         return []
     return ["--profile", profile]
@@ -480,11 +606,14 @@ def worker_manifest(manifest: dict[str, Any], worker: dict[str, Any]) -> dict[st
     profile = active_worker_profile(manifest, worker)
     if profile:
         return apply_profile(manifest, profile)
+    if worker_path_map(worker):
+        profile = worker_profile_name(manifest, worker)
+        return apply_profile(manifest_with_worker_path_map(manifest, worker), profile)
     return manifest
 
 def local_manifest_for_worker(manifest: dict[str, Any], worker: dict[str, Any]) -> dict[str, Any]:
-    profile = active_worker_profile(manifest, worker)
-    local_manifest = copy.deepcopy(manifest)
+    profile = worker_profile_name(manifest, worker)
+    local_manifest = manifest_with_worker_path_map(manifest, worker)
     if profile:
         local_manifest["_active_profile"] = profile
     return local_manifest
@@ -501,6 +630,52 @@ def make_parent_command(worker: dict[str, Any], path: str) -> str:
         f"Path({json.dumps(path)}).expanduser().parent.mkdir(parents=True, exist_ok=True)"
     )
     return shell_join([worker_python(worker), "-c", code])
+
+def local_input_matches(path: Path, item: dict[str, Any]) -> bool:
+    if not path.exists():
+        return False
+    expected_bytes = item.get("bytes")
+    if expected_bytes is not None and path.stat().st_size != int(expected_bytes):
+        return False
+    expected_sha = str(item.get("sha256") or "").strip()
+    return not expected_sha or sha256_file(path) == expected_sha
+
+def worker_input_matches(
+    worker: dict[str, Any],
+    path: str,
+    item: dict[str, Any],
+    *,
+    timeout: float | None = None,
+    tracker: ProcessTracker | None = None,
+) -> bool:
+    expected_bytes = item.get("bytes")
+    expected_sha = str(item.get("sha256") or "").strip()
+    if expected_bytes is None and not expected_sha:
+        return False
+    code = "\n".join([
+        "from pathlib import Path",
+        "import hashlib",
+        "import sys",
+        f"path = Path({json.dumps(path)}).expanduser()",
+        "ok = path.exists()",
+        f"expected_bytes = {json.dumps(expected_bytes)}",
+        "ok = ok and (expected_bytes is None or path.stat().st_size == int(expected_bytes))",
+        f"expected_sha = {json.dumps(expected_sha)}",
+        "if ok and expected_sha:",
+        "    h = hashlib.sha256()",
+        "    with path.open('rb') as f:",
+        "        for chunk in iter(lambda: f.read(1024 * 1024), b''):",
+        "            h.update(chunk)",
+        "    ok = h.hexdigest() == expected_sha",
+        "sys.exit(0 if ok else 1)",
+    ])
+    result = run_worker_shell(
+        worker,
+        shell_join([worker_python(worker), "-c", code]),
+        timeout=timeout,
+        tracker=tracker,
+    )
+    return result.returncode == 0
 
 def sync_inputs_to_worker(
     worker: dict[str, Any],
@@ -522,12 +697,14 @@ def sync_inputs_to_worker(
             raise RuntimeError(f"input does not exist: {src}")
         if is_local_worker(worker):
             target = expand_path(dst)
-            if src.resolve() == target.resolve():
+            if src.resolve() == target.resolve() or local_input_matches(target, remote_item):
                 continue
             copy_to_worker(worker, src, dst, timeout=timeout, tracker=tracker)
             synced += 1
             continue
         if worker_is_current_host(worker) and src.resolve() == expand_path(dst).resolve():
+            continue
+        if worker_input_matches(worker, dst, remote_item, timeout=timeout, tracker=tracker):
             continue
         mkdir = run_worker_shell(worker, make_parent_command(worker, dst), timeout=timeout, tracker=tracker)
         if mkdir.returncode != 0:
@@ -585,6 +762,9 @@ def deploy_work_command(
         command.append("--retry-failed")
     return shell_join(command)
 
+def detached_shell_command(script: str) -> str:
+    return "nohup " + shell_join(["sh", "-lc", script]) + " >/dev/null 2>&1 < /dev/null &"
+
 def coordinator_for_worker(worker: dict[str, Any], manifest_path: Path, coordinator_host: str | None = None) -> str:
     if is_local_worker(worker):
         return str(manifest_path)
@@ -626,6 +806,9 @@ def materialize_run(
     *,
     template_path: Path,
     workers_arg: str,
+    inline_worker_defaults: str | Path | None = None,
+    workers_snapshot_payload: dict[str, Any] | None = None,
+    preserve_workers_snapshot: bool = False,
     run_name_arg: str | None,
     resume: bool,
     replace: bool,
@@ -641,7 +824,20 @@ def materialize_run(
     if resume:
         if not manifest_path.exists() or not workers_snapshot.exists():
             raise SystemExit(f"{run_name}: cannot resume; run manifest or workers file is missing")
-        write_json(workers_snapshot, workers_payload_from_arg(workers_arg, default_ok=False))
+        if not preserve_workers_snapshot:
+            payload = (
+                workers_snapshot_payload
+                if workers_snapshot_payload is not None
+                else workers_payload_from_arg(
+                    workers_arg,
+                    default_ok=False,
+                    inline_defaults_path=inline_worker_defaults,
+                )
+            )
+            write_json(
+                workers_snapshot,
+                payload,
+            )
         return run_dir, manifest_path, workers_snapshot
     if run_dir.exists():
         if not replace:
@@ -655,7 +851,19 @@ def materialize_run(
     claim_dir(materialized).mkdir(parents=True)
     (run_dir / "outputs").mkdir(parents=True)
     write_json(manifest_path, materialized)
-    write_json(workers_snapshot, workers_payload_from_arg(workers_arg, default_ok=False))
+    payload = (
+        workers_snapshot_payload
+        if workers_snapshot_payload is not None
+        else workers_payload_from_arg(
+            workers_arg,
+            default_ok=False,
+            inline_defaults_path=inline_worker_defaults,
+        )
+    )
+    write_json(
+        workers_snapshot,
+        payload,
+    )
     return run_dir, manifest_path, workers_snapshot
 
 def cmd_deploy(args: argparse.Namespace) -> int:
@@ -664,11 +872,19 @@ def cmd_deploy(args: argparse.Namespace) -> int:
     run_dir, manifest_path, workers_path = materialize_run(
         template_path=template_path,
         workers_arg=str(args.workers),
+        inline_worker_defaults=getattr(args, "worker_defaults", None),
+        workers_snapshot_payload=getattr(args, "worker_snapshot_payload", None),
+        preserve_workers_snapshot=bool(getattr(args, "preserve_workers_snapshot", False)),
         run_name_arg=getattr(args, "run", None),
         resume=bool(getattr(args, "resume", False)),
         replace=bool(getattr(args, "replace", False)),
     )
-    workers = load_workers(workers_path)
+    launch_workers_payload = getattr(args, "launch_workers_payload", None)
+    workers = (
+        workers_from_payload(launch_workers_payload, label=str(args.workers))
+        if launch_workers_payload is not None
+        else load_workers(workers_path)
+    )
     jobs = max(1, int(args.jobs))
     remote_timeout = max(1.0, float(args.remote_timeout_seconds))
     manifest = load_manifest(manifest_path)
@@ -783,6 +999,29 @@ def cmd_deploy(args: argparse.Namespace) -> int:
         verbose_status(f"{label}: tasks FAILED rc={result.returncode}", error=True)
         return result_payload(index, worker, "tasks", result)
 
+    def launch_worker(index: int, worker: dict[str, Any]) -> dict[str, Any]:
+        host = str(worker["host"])
+        profile = str(worker["profile"])
+        label = worker_label(host, profile, worker.get("_slot"), worker.get("_slots"))
+        verbose_status(f"{label}: launching worker")
+        script = deploy_work_command(
+            worker=worker,
+            manifest=manifest,
+            coordinator=coordinator_for_worker(worker, manifest_path, getattr(args, "coordinator_host", None)),
+            retry_failed=bool(getattr(args, "retry_failed", False)),
+        )
+        result = run_worker_shell(
+            worker,
+            detached_shell_command(script),
+            timeout=remote_timeout,
+            tracker=tracker,
+        )
+        if result.returncode == 0:
+            verbose_status(f"{label}: launch OK")
+            return result_payload(index, worker, "launch", result)
+        verbose_status(f"{label}: launch FAILED rc={result.returncode}", error=True)
+        return result_payload(index, worker, "launch", result)
+
     def print_results(items: list[dict[str, Any]]) -> None:
         for item in sorted(items, key=lambda entry: int(entry["index"])):
             ok = bool(item["ok"])
@@ -829,6 +1068,14 @@ def cmd_deploy(args: argparse.Namespace) -> int:
         setup_failed = sum(1 for item in setup_results_list if not item["ok"])
         if setup_failed or not has_tasks:
             results = setup_results_list
+        elif bool(getattr(args, "launch_only", False)):
+            status(colorize("deploy: setup complete; launching workers", "green", enabled=color_enabled))
+            futures = [
+                executor.submit(launch_worker, index, worker)
+                for index, worker in enumerate(workers)
+            ]
+            results = [future.result() for future in concurrent.futures.as_completed(futures)]
+            print_results(results)
         else:
             status(colorize("deploy: setup complete; starting tasks", "green", enabled=color_enabled))
             futures = [
@@ -853,6 +1100,8 @@ def cmd_deploy(args: argparse.Namespace) -> int:
         status(colorize("deploy: setup complete", "green", enabled=color_enabled) if failed == 0 else colorize("deploy: setup failed", "red", enabled=color_enabled))
     elif any(item["stage"] == "setup" for item in results):
         status(colorize("deploy: setup failed; no tasks started", "red", enabled=color_enabled))
+    elif bool(getattr(args, "launch_only", False)):
+        status(colorize("deploy: launch complete", "green", enabled=color_enabled) if failed == 0 else colorize("deploy: launch failed", "red", enabled=color_enabled))
     else:
         status(colorize("deploy: tasks complete", "green", enabled=color_enabled) if failed == 0 else colorize("deploy: tasks failed", "red", enabled=color_enabled))
     notify_command = getattr(args, "notify_command", None) or os.environ.get("CRUCIBLE_NOTIFY_COMMAND")
@@ -870,6 +1119,9 @@ def cmd_deploy(args: argparse.Namespace) -> int:
                 elapsed_seconds=time.monotonic() - started_at,
             ),
         )
+    commit_payload = getattr(args, "worker_snapshot_commit_payload", None)
+    if failed == 0 and commit_payload is not None:
+        write_json(workers_path, commit_payload)
     return 1 if failed else 0
 
 def planned_run_paths(template_path: Path, run_name_arg: str | None) -> tuple[Path, Path]:
@@ -954,12 +1206,79 @@ def run_control_on_coordinator(name: str, args: argparse.Namespace, coordinator_
             check=False,
             env=env,
         )
-    print(f"coordinator: {json.dumps(coordinator_runs)}")
+    print(f"coordinator: {coordinator_runs}")
     if result.stdout:
         print(result.stdout, end="")
     if result.stderr:
         print(result.stderr, end="", file=sys.stderr)
     return result.returncode
+
+def run_coordinator_command(coordinator_runs: str, command: list[str]) -> subprocess.CompletedProcess[str]:
+    host, runs_path = parse_coordinator(coordinator_runs)
+    if host:
+        remote = (
+            "command -v crucible >/dev/null 2>&1 || "
+            "{ echo 'crucible not found in PATH on coordinator' >&2; exit 127; }; "
+            f"exec env {shlex.quote(COORDINATOR_RUNS_ENV)}= "
+            f"{shlex.quote(COLOR_ENV)}=never "
+            f"{shlex.quote(RUNS_DIR_ENV)}={shlex.quote(runs_path)} "
+            f"crucible {shell_join(command)}"
+        )
+        return subprocess.run(
+            ["ssh", *SSH_OPTS, host, remote],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+    env = os.environ.copy()
+    env[COORDINATOR_RUNS_ENV] = ""
+    env[COLOR_ENV] = "never"
+    env[RUNS_DIR_ENV] = runs_path
+    return subprocess.run(
+        [sys.executable, str(script_path()), *command],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+        env=env,
+    )
+
+def single_active_run_name(summaries: list[dict[str, Any]], *, source: str = "") -> str:
+    active = [
+        status_summary_from_payload(summary)
+        for summary in summaries
+        if isinstance(summary, dict) and run_current(status_summary_from_payload(summary))
+    ]
+    qualifier = f" {source}" if source else ""
+    if not active:
+        raise SystemExit(f"no active Crucible run found{qualifier}")
+    if len(active) > 1:
+        names = ", ".join(str(summary["run"]) for summary in sorted(active, key=lambda item: str(item["run"])))
+        raise SystemExit(f"multiple active Crucible runs found{qualifier}; specify one: {names}")
+    return str(active[0]["run"])
+
+def single_active_local_run_name(*, lease_seconds: int) -> str:
+    return single_active_run_name(load_run_summaries(lease_seconds=lease_seconds))
+
+def single_active_coordinator_run_name(coordinator_runs: str, *, lease_seconds: int) -> str:
+    result = run_coordinator_command(
+        coordinator_runs,
+        ["status", "--json", "--lease-seconds", str(lease_seconds)],
+    )
+    if result.returncode not in (0, 1):
+        if result.stdout:
+            print(result.stdout, end="")
+        if result.stderr:
+            print(result.stderr, end="", file=sys.stderr)
+        raise SystemExit(result.returncode)
+    try:
+        payload = normalize_status_json_payload(json.loads(result.stdout))
+    except json.JSONDecodeError as exc:
+        raise SystemExit("coordinator returned invalid status JSON") from exc
+    if not isinstance(payload, dict) or not isinstance(payload.get("runs"), list):
+        raise SystemExit("coordinator returned unexpected status JSON")
+    return single_active_run_name(payload["runs"], source="on coordinator")
 
 def worker_control_command_args(action: str, args: argparse.Namespace) -> list[str]:
     command = ["worker", action, str(args.worker)]
@@ -1002,6 +1321,12 @@ def worker_control_command_args(action: str, args: argparse.Namespace) -> list[s
     return command
 
 def run_worker_control_on_coordinator(action: str, args: argparse.Namespace, coordinator_runs: str) -> int:
+    if args.run is None:
+        args = copy.copy(args)
+        args.run = single_active_coordinator_run_name(
+            coordinator_runs,
+            lease_seconds=int(args.lease_seconds),
+        )
     host, runs_path = parse_coordinator(coordinator_runs)
     command = worker_control_command_args(action, args)
     if host:
@@ -1031,7 +1356,7 @@ def run_worker_control_on_coordinator(action: str, args: argparse.Namespace, coo
             check=False,
             env=env,
         )
-    print(f"coordinator: {json.dumps(coordinator_runs)}")
+    print(f"coordinator: {coordinator_runs}")
     if result.stdout:
         print(result.stdout, end="")
     if result.stderr:
@@ -1046,6 +1371,12 @@ def cmd_run_job(args: argparse.Namespace) -> int:
 
     deploy_args = argparse.Namespace(
         workers=args.workers,
+        worker_defaults=getattr(args, "worker_defaults", None),
+        worker_snapshot_payload=getattr(args, "worker_snapshot_payload", None),
+        preserve_workers_snapshot=bool(getattr(args, "preserve_workers_snapshot", False)),
+        worker_snapshot_commit_payload=getattr(args, "worker_snapshot_commit_payload", None),
+        launch_workers_payload=getattr(args, "launch_workers_payload", None),
+        launch_only=bool(getattr(args, "launch_only", False)),
         manifest=args.manifest,
         jobs=args.jobs,
         run=args.run,
@@ -1126,7 +1457,8 @@ def resume_run_paths(run: str | None, *, lease_seconds: int) -> list[tuple[str, 
 def worker_run_paths(run: str | None, *, lease_seconds: int) -> list[tuple[str, Path, Path]]:
     if run:
         return [materialized_run_paths(run_dir_from_arg(run), label=run)]
-    return resume_run_paths(run, lease_seconds=lease_seconds)
+    run_name = single_active_local_run_name(lease_seconds=lease_seconds)
+    return [materialized_run_paths(run_dir_for_name(run_name), label=run_name)]
 
 def worker_hosts_from_inline(value: str) -> list[str]:
     workers = load_workers_arg(value, default_ok=False)
@@ -1149,14 +1481,27 @@ def cmd_worker_add(args: argparse.Namespace) -> int:
     if coordinator_runs and status_can_delegate(args.run):
         return run_worker_control_on_coordinator("add", args, coordinator_runs)
     targets = worker_run_paths(args.run, lease_seconds=args.lease_seconds)
-    hosts = worker_hosts_from_inline(str(args.worker))
     failed = 0
-    for run_name, manifest_path, _workers_path in targets:
+    for run_name, manifest_path, workers_path in targets:
+        add_payload = workers_payload_from_arg(
+            str(args.worker),
+            default_ok=False,
+            inline_defaults_path=workers_path,
+        )
         manifest = load_manifest(manifest_path)
+        add_payload = workers_payload_for_manifest(add_payload, manifest)
+        merged_payload = merge_worker_payloads(read_json(workers_path), add_payload)
+        hosts = worker_hosts_from_payload(add_payload)
         clear_worker_drains(manifest, hosts, run_name=run_name)
         resume_args = argparse.Namespace(
             manifest=str(manifest_path),
             workers=str(args.worker),
+            worker_defaults=str(workers_path),
+            worker_snapshot_payload=None,
+            preserve_workers_snapshot=True,
+            worker_snapshot_commit_payload=merged_payload,
+            launch_workers_payload=add_payload,
+            launch_only=True,
             jobs=args.jobs,
             run=run_name,
             resume=True,
@@ -1280,7 +1625,7 @@ def cmd_worker_del(args: argparse.Namespace) -> int:
         return run_worker_control_on_coordinator("del", args, coordinator_runs)
     worker, _profile, _slots = parse_inline_worker_spec(str(args.worker))
     targets = worker_run_paths(args.run, lease_seconds=args.lease_seconds)
-    for run_name, manifest_path, _workers_path in targets:
+    for run_name, manifest_path, workers_path in targets:
         manifest = load_manifest(manifest_path)
         drain_dir(manifest).mkdir(parents=True, exist_ok=True)
         payload = {
@@ -1300,5 +1645,8 @@ def cmd_worker_del(args: argparse.Namespace) -> int:
                 count=0,
                 lease_seconds=args.lease_seconds,
             )
+        next_payload, removed = remove_worker_from_payload(read_json(workers_path), worker)
+        if removed:
+            write_json(workers_path, next_payload)
         print(f"worker del: {run_name} {worker} released={len(released)}")
     return 0

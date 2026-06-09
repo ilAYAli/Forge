@@ -85,6 +85,48 @@ class CrucibleTests(unittest.TestCase):
             })
         return run
 
+    def delegated_status_payload(self) -> str:
+        summary = {
+            "run": "remote-run",
+            "manifest": "/runs/remote-run/manifest.json",
+            "tasks": 2,
+            "counts": {"done": 0, "fail": 0, "running": 1, "claimed": 0, "stale": 0, "pending": 1},
+            "groups": {"done": {}, "fail": {}, "stale": {}},
+            "active": [{
+                "worker": "remote-worker",
+                "state": "running",
+                "index": 0,
+                "label": "score:uci",
+                "progress": "",
+                "progress_data": {},
+            }],
+            "active_count": 1,
+            "pending": [1],
+            "pending_groups": {"score:uci": [1]},
+            "rows": [],
+            "metadata": {"description": "Remote run"},
+            "progress_totals": {},
+            "progress_done": {},
+            "progress_outputs": {},
+            "worker_outputs": {"remote-worker": {"output": 100, "output_seen": True}},
+            "worker_rates": {"remote-worker": 1.0},
+            "diagnostics": [],
+            "display": {
+                "title": 'run="remote-run"',
+                "description": 'desc="Remote run"',
+                "active_summary_text": 'output=100 min="remote-worker":100 max="remote-worker":100',
+            },
+        }
+        payload = crucible.run_status_payload(summary)
+        payload["display"]["title"] = 'run="remote-run"'
+        payload["display"]["description"] = 'desc="Remote run"'
+        payload["display"]["active_summary_text"] = 'output=100 min="remote-worker":100 max="remote-worker":100'
+        return json.dumps({
+            "runs": [payload],
+            "collapsed_failures": [],
+            "collapsed_failures_count": 0,
+        }) + "\n"
+
     def retry_args(self, **overrides: Any) -> argparse.Namespace:
         args = argparse.Namespace(
             run=None,
@@ -147,12 +189,14 @@ class CrucibleTests(unittest.TestCase):
         advanced = stdout.index("Advanced:")
         common_positions = {
             command: stdout.index(f"    {command}")
-            for command in ("start", "stop", "resume", "retry", "worker", "status", "update")
+            for command in ("start", "add", "del", "stop", "resume", "retry", "worker", "status", "update")
         }
         for position in common_positions.values():
             self.assertLess(common, position)
             self.assertLess(position, advanced)
-        self.assertLess(common_positions["start"], common_positions["stop"])
+        self.assertLess(common_positions["start"], common_positions["add"])
+        self.assertLess(common_positions["add"], common_positions["del"])
+        self.assertLess(common_positions["del"], common_positions["stop"])
         self.assertLess(common_positions["stop"], common_positions["resume"])
         self.assertLess(common_positions["resume"], common_positions["retry"])
         self.assertLess(common_positions["retry"], common_positions["worker"])
@@ -211,7 +255,7 @@ except SystemExit as exc:
         commands = [
             "plan", "add-input", "add-repo", "add-command", "sync-repos", "start", "run-task", "claim",
             "release", "heartbeat", "work", "doctor", "status",
-            "wait", "verify", "merge", "stop", "drain", "del", "self-update",
+            "wait", "verify", "merge", "stop", "drain", "add", "del", "self-update",
             "update", "version", "deploy", "resume", "retry", "worker",
         ]
         for command in commands:
@@ -225,6 +269,9 @@ except SystemExit as exc:
         self.assertIn("comma-separated workers", self.run_cli("deploy", "--help").stdout)
         self.assertIn("--merge", self.run_cli("start", "--help").stdout)
         self.assertIn("--merge", self.run_cli("resume", "--help").stdout)
+        self.assertIn("--worker", self.run_cli("add", "--help").stdout)
+        self.assertIn("worker-a:5", self.run_cli("add", "--help").stdout)
+        self.assertIn("--worker", self.run_cli("del", "--help").stdout)
         self.assertIn("worker-a:5", self.run_cli("worker", "add", "--help").stdout)
         self.assertIn("--keep-claims", self.run_cli("worker", "del", "--help").stdout)
         self.assertIn("--index", self.run_cli("run-task", "--help").stdout)
@@ -321,7 +368,7 @@ except SystemExit as exc:
             status = self.run_cli("status", str(run_dir))
             self.assertEqual(0, status.returncode)
             self.assertIn("tasks=3/3", status.stdout)
-            self.assertIn('run="test"\n  desc="native check"', status.stdout)
+            self.assertIn("run=test\n  desc=native check", status.stdout)
             self.assertNotIn("kind=", status.stdout)
             self.assertRegex(status.stdout.splitlines()[2], r"^  tasks=3/3")
 
@@ -510,7 +557,7 @@ except SystemExit as exc:
 
         self.assertEqual(0, rc)
         self.assertEqual(
-            'coordinator: "pwa-5090:/home/petter/code/cpp/chess/crucible/runs"\nremote retry\n',
+            "coordinator: pwa-5090:/home/petter/code/cpp/chess/crucible/runs\nremote retry\n",
             stdout.getvalue(),
         )
         command = run_mock.call_args.args[0]
@@ -575,7 +622,7 @@ except SystemExit as exc:
 
         self.assertEqual(0, rc)
         self.assertEqual(
-            'coordinator: "pwa-5090:/home/petter/code/cpp/chess/crucible/runs"\nremote resume\n',
+            "coordinator: pwa-5090:/home/petter/code/cpp/chess/crucible/runs\nremote resume\n",
             stdout.getvalue(),
         )
         command = run_mock.call_args.args[0]
@@ -626,9 +673,229 @@ except SystemExit as exc:
             add_args = run_job.call_args.args[0]
             self.assertEqual("paused", add_args.run)
             self.assertEqual("worker-b:5", add_args.workers)
+            self.assertEqual(str(run / "workers.json"), add_args.worker_defaults)
+            self.assertEqual(
+                {
+                    "schema": "crucible.workers.v1",
+                    "workers": [
+                        {"host": "worker-b", "profile": "worker-b", "local": False, "slots": 5},
+                    ],
+                },
+                add_args.launch_workers_payload,
+            )
+            self.assertEqual(
+                {
+                    "schema": "crucible.workers.v1",
+                    "workers": [
+                        {"host": "worker-a", "profile": "worker-a", "local": False},
+                        {"host": "worker-b", "profile": "worker-b", "local": False, "slots": 5},
+                    ],
+                },
+                add_args.worker_snapshot_commit_payload,
+            )
+            self.assertIsNone(add_args.worker_snapshot_payload)
+            self.assertTrue(add_args.preserve_workers_snapshot)
+            self.assertTrue(add_args.launch_only)
             self.assertTrue(add_args.resume)
             self.assertFalse(add_args.retry_failed)
             self.assertEqual("worker add", add_args.command_label)
+
+    def test_worker_add_without_run_uses_single_active_run(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runs = Path(tmp) / "runs"
+            self.write_retry_run(runs, "paused", failed=None)
+            active_run = self.write_retry_run(runs, "active", failed=None)
+            manifest = crucible.load_manifest(active_run / "manifest.json")
+            crucible.claim_task(
+                manifest,
+                worker="worker-a",
+                profile=None,
+                lease_seconds=600,
+                retry_failed=False,
+            )
+
+            with (
+                self.patch_runs_dir(runs),
+                mock.patch("crucible_lib.workers.default_workers_path", side_effect=SystemExit("no workers")),
+                mock.patch("crucible_lib.workers.cmd_run_job", return_value=0) as run_job,
+            ):
+                rc = crucible.cmd_worker_add(self.worker_add_args(run=None, worker="worker-b:5"))
+
+            self.assertEqual(0, rc)
+            add_args = run_job.call_args.args[0]
+            self.assertEqual("active", add_args.run)
+            self.assertEqual("worker-b:5", add_args.workers)
+            self.assertEqual(str(active_run / "workers.json"), add_args.worker_defaults)
+
+    def test_worker_add_inline_defaults_come_from_run_workers_snapshot(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runs = Path(tmp) / "runs"
+            run = self.write_retry_run(runs, "active", failed=None)
+            cache = Path(tmp) / "cache"
+            crucible.write_json(run / "workers.json", {
+                "schema": "crucible.workers.v1",
+                "workers": [
+                    "worker-a",
+                    {
+                        "host": "pwa-mbp",
+                        "profile": "mac",
+                        "local": True,
+                        "python": "/opt/homebrew/bin/python3",
+                        "cache_dir": str(cache),
+                        "path_map": {
+                            "/home/petter/code/cpp/chess": "/Users/pwahlman/code/cpp/chess",
+                        },
+                        "slots": 4,
+                    },
+                ],
+            })
+
+            with (
+                self.patch_runs_dir(runs),
+                mock.patch("crucible_lib.workers.cmd_run_job", return_value=0) as run_job,
+            ):
+                rc = crucible.cmd_worker_add(self.worker_add_args(run="active", worker="pwa-mbp:10"))
+
+            self.assertEqual(0, rc)
+            add_args = run_job.call_args.args[0]
+            self.assertEqual(
+                {
+                    "schema": "crucible.workers.v1",
+                    "workers": [{
+                        "host": "pwa-mbp",
+                        "profile": "mac",
+                        "local": True,
+                        "python": "/opt/homebrew/bin/python3",
+                        "cache_dir": str(cache),
+                        "path_map": {
+                            "/home/petter/code/cpp/chess": "/Users/pwahlman/code/cpp/chess",
+                        },
+                        "slots": 10,
+                    }],
+                },
+                add_args.launch_workers_payload,
+            )
+            self.assertEqual(
+                {
+                    "schema": "crucible.workers.v1",
+                    "workers": [
+                        {"host": "worker-a", "profile": "worker-a", "local": False},
+                        {
+                            "host": "pwa-mbp",
+                            "profile": "mac",
+                            "local": True,
+                            "python": "/opt/homebrew/bin/python3",
+                            "cache_dir": str(cache),
+                            "path_map": {
+                                "/home/petter/code/cpp/chess": "/Users/pwahlman/code/cpp/chess",
+                            },
+                            "slots": 10,
+                        },
+                    ],
+                },
+                add_args.worker_snapshot_commit_payload,
+            )
+            self.assertIsNone(add_args.worker_snapshot_payload)
+            self.assertTrue(add_args.preserve_workers_snapshot)
+            self.assertTrue(add_args.launch_only)
+
+    def test_worker_add_does_not_repair_profile_from_prefix_path_map(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runs = Path(tmp) / "runs"
+            run = self.write_retry_run(runs, "active", failed=None)
+            manifest = crucible.load_manifest(run / "manifest.json")
+            manifest["path_maps"] = {
+                "pwa-mbp0": {
+                    "/home/petter/code/cpp/chess": "/Users/petter/code/cpp/chess",
+                },
+            }
+            crucible.write_json(run / "manifest.json", manifest)
+            crucible.write_json(run / "workers.json", {
+                "schema": "crucible.workers.v1",
+                "workers": [{
+                    "host": "pwa-mbp",
+                    "profile": "pwa-mbp",
+                    "local": False,
+                    "python": "/opt/homebrew/bin/python3",
+                    "cache_dir": "/Users/pwahlman/.cache/crucible",
+                    "slots": 8,
+                }],
+            })
+
+            with (
+                self.patch_runs_dir(runs),
+                mock.patch("crucible_lib.workers.cmd_run_job", return_value=0) as run_job,
+            ):
+                rc = crucible.cmd_worker_add(self.worker_add_args(run="active", worker="pwa-mbp:10"))
+
+            self.assertEqual(0, rc)
+            add_args = run_job.call_args.args[0]
+            self.assertEqual("pwa-mbp", add_args.launch_workers_payload["workers"][0]["profile"])
+            self.assertEqual("pwa-mbp", add_args.worker_snapshot_commit_payload["workers"][0]["profile"])
+            self.assertEqual(10, add_args.launch_workers_payload["workers"][0]["slots"])
+
+    def test_worker_path_map_applies_to_worker_manifest_without_coordinator_profile(self) -> None:
+        manifest = {
+            "schema": crucible.SCHEMA,
+            "path_maps": {
+                "pwa-mbp0": {
+                    "/home/petter/code/cpp/chess": "/Users/petter/code/cpp/chess",
+                },
+            },
+            "work_dir": "/home/petter/code/cpp/chess/nnue",
+            "requirements": {
+                "inputs": [{
+                    "path": "/home/petter/code/cpp/chess/nnue/runs/source.jsonl",
+                }],
+            },
+            "tasks": [],
+        }
+        worker = {
+            "host": "pwa-mbp",
+            "profile": "pwa-mbp",
+            "path_map": {
+                "/home/petter/code/cpp/chess": "/Users/pwahlman/code/cpp/chess",
+            },
+        }
+
+        local_manifest = crucible.local_manifest_for_worker(manifest, worker)
+        worker_manifest = crucible.worker_manifest(manifest, worker)
+
+        self.assertNotIn("pwa-mbp", manifest["path_maps"])
+        self.assertEqual(
+            "/Users/pwahlman/code/cpp/chess/nnue",
+            worker_manifest["work_dir"],
+        )
+        self.assertEqual(
+            "/Users/pwahlman/code/cpp/chess/nnue/runs/source.jsonl",
+            worker_manifest["requirements"]["inputs"][0]["path"],
+        )
+        self.assertEqual("pwa-mbp", local_manifest["_active_profile"])
+        self.assertEqual(
+            "/Users/pwahlman/code/cpp/chess",
+            local_manifest["path_maps"]["pwa-mbp"]["/home/petter/code/cpp/chess"],
+        )
+        self.assertEqual(["--profile", "pwa-mbp"], crucible.worker_profile_args(manifest, worker))
+
+    def test_add_command_resumes_requested_worker_slots(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runs = Path(tmp) / "runs"
+            self.write_retry_run(runs, "paused", failed=None)
+
+            with (
+                self.patch_runs_dir(runs),
+                mock.patch("crucible_lib.workers.default_workers_path", side_effect=SystemExit("no workers")),
+                mock.patch("crucible_lib.workers.cmd_run_job", return_value=0) as run_job,
+            ):
+                args = crucible.build_parser().parse_args(["add", "--worker", "worker-b:5", "paused"])
+                rc = args.func(args)
+
+            self.assertEqual(0, rc)
+            add_args = run_job.call_args.args[0]
+            self.assertEqual("paused", add_args.run)
+            self.assertEqual("worker-b:5", add_args.workers)
+            self.assertTrue(add_args.resume)
+            self.assertFalse(add_args.retry_failed)
 
     def test_worker_add_named_run_delegates_to_coordinator(self) -> None:
         remote_result = subprocess.CompletedProcess(
@@ -647,7 +914,7 @@ except SystemExit as exc:
 
         self.assertEqual(0, rc)
         self.assertEqual(
-            'coordinator: "pwa-5090:/home/petter/code/cpp/chess/crucible/runs"\nremote worker add\n',
+            "coordinator: pwa-5090:/home/petter/code/cpp/chess/crucible/runs\nremote worker add\n",
             stdout.getvalue(),
         )
         command = run_mock.call_args.args[0]
@@ -657,10 +924,45 @@ except SystemExit as exc:
         self.assertIn("CRUCIBLE_COORDINATOR_RUNS=", command[-1])
         self.assertIn("crucible worker add worker-b:5 paused", command[-1])
 
+    def test_worker_add_without_run_delegates_explicit_active_run(self) -> None:
+        status_result = subprocess.CompletedProcess(
+            args=["ssh"],
+            returncode=0,
+            stdout=self.delegated_status_payload(),
+            stderr="",
+        )
+        add_result = subprocess.CompletedProcess(
+            args=["ssh"],
+            returncode=0,
+            stdout="remote worker add\n",
+            stderr="",
+        )
+        with mock.patch.dict(
+            os.environ,
+            {"CRUCIBLE_COORDINATOR_RUNS": "pwa-5090:/home/petter/code/cpp/chess/crucible/runs"},
+        ), mock.patch("crucible.subprocess.run", side_effect=[status_result, add_result]) as run_mock:
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout):
+                rc = crucible.cmd_worker_add(self.worker_add_args(run=None, worker="worker-b:5"))
+
+        self.assertEqual(0, rc)
+        self.assertEqual(
+            "coordinator: pwa-5090:/home/petter/code/cpp/chess/crucible/runs\nremote worker add\n",
+            stdout.getvalue(),
+        )
+        status_command = run_mock.call_args_list[0].args[0][-1]
+        add_command = run_mock.call_args_list[1].args[0][-1]
+        self.assertIn("crucible status --json", status_command)
+        self.assertIn("crucible worker add worker-b:5 remote-run", add_command)
+
     def test_worker_del_drains_worker_and_releases_reserved_claims(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             runs = Path(tmp) / "runs"
             run = self.write_retry_run(runs, "active", failed=None)
+            crucible.write_json(run / "workers.json", {
+                "schema": "crucible.workers.v1",
+                "workers": ["worker-a", "worker-b"],
+            })
             manifest = crucible.load_manifest(run / "manifest.json")
             claimed = crucible.claim_task(
                 manifest,
@@ -680,12 +982,23 @@ except SystemExit as exc:
             self.assertEqual(0, rc)
             self.assertTrue(crucible.worker_drain_path(manifest, "worker-b").exists())
             self.assertFalse(crucible.task_claim_path(manifest, manifest["tasks"][0]).exists())
+            self.assertEqual(
+                {
+                    "schema": "crucible.workers.v1",
+                    "workers": [{"host": "worker-a", "profile": "worker-a", "local": False}],
+                },
+                crucible.read_json(run / "workers.json"),
+            )
             self.assertIn("worker del: active worker-b released=1", stdout.getvalue())
 
     def test_worker_del_can_keep_reserved_claims(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             runs = Path(tmp) / "runs"
             run = self.write_retry_run(runs, "active", failed=None)
+            crucible.write_json(run / "workers.json", {
+                "schema": "crucible.workers.v1",
+                "workers": ["worker-a", "worker-b"],
+            })
             manifest = crucible.load_manifest(run / "manifest.json")
             crucible.claim_task(
                 manifest,
@@ -705,6 +1018,99 @@ except SystemExit as exc:
             self.assertEqual(0, rc)
             self.assertTrue(crucible.worker_drain_path(manifest, "worker-b").exists())
             self.assertTrue(crucible.task_claim_path(manifest, manifest["tasks"][0]).exists())
+            self.assertEqual(
+                {
+                    "schema": "crucible.workers.v1",
+                    "workers": [{"host": "worker-a", "profile": "worker-a", "local": False}],
+                },
+                crucible.read_json(run / "workers.json"),
+            )
+
+    def test_worker_del_without_run_uses_single_active_run(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runs = Path(tmp) / "runs"
+            self.write_retry_run(runs, "paused", failed=None)
+            active_run = self.write_retry_run(runs, "active", failed=None)
+            manifest = crucible.load_manifest(active_run / "manifest.json")
+            crucible.claim_task(
+                manifest,
+                worker="worker-b",
+                profile=None,
+                lease_seconds=600,
+                retry_failed=False,
+            )
+
+            with self.patch_runs_dir(runs):
+                stdout = io.StringIO()
+                with contextlib.redirect_stdout(stdout):
+                    rc = crucible.cmd_worker_del(self.worker_del_args(run=None, worker="worker-b"))
+
+            self.assertEqual(0, rc)
+            self.assertTrue(crucible.worker_drain_path(manifest, "worker-b").exists())
+            self.assertFalse(crucible.task_claim_path(manifest, manifest["tasks"][0]).exists())
+            self.assertIn("worker del: active worker-b released=1", stdout.getvalue())
+
+    def test_worker_del_without_run_delegates_explicit_active_run(self) -> None:
+        status_result = subprocess.CompletedProcess(
+            args=["ssh"],
+            returncode=0,
+            stdout=self.delegated_status_payload(),
+            stderr="",
+        )
+        del_result = subprocess.CompletedProcess(
+            args=["ssh"],
+            returncode=0,
+            stdout="remote worker del\n",
+            stderr="",
+        )
+        with mock.patch.dict(
+            os.environ,
+            {"CRUCIBLE_COORDINATOR_RUNS": "pwa-5090:/home/petter/code/cpp/chess/crucible/runs"},
+        ), mock.patch("crucible.subprocess.run", side_effect=[status_result, del_result]) as run_mock:
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout):
+                rc = crucible.cmd_worker_del(self.worker_del_args(run=None, worker="worker-b"))
+
+        self.assertEqual(0, rc)
+        self.assertEqual(
+            "coordinator: pwa-5090:/home/petter/code/cpp/chess/crucible/runs\nremote worker del\n",
+            stdout.getvalue(),
+        )
+        status_command = run_mock.call_args_list[0].args[0][-1]
+        del_command = run_mock.call_args_list[1].args[0][-1]
+        self.assertIn("crucible status --json", status_command)
+        self.assertIn("crucible worker del worker-b remote-run", del_command)
+
+    def test_del_command_with_worker_drains_worker(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runs = Path(tmp) / "runs"
+            run = self.write_retry_run(runs, "active", failed=None)
+            manifest = crucible.load_manifest(run / "manifest.json")
+            crucible.claim_task(
+                manifest,
+                worker="worker-b",
+                profile=None,
+                lease_seconds=600,
+                retry_failed=False,
+            )
+
+            with self.patch_runs_dir(runs):
+                stdout = io.StringIO()
+                with contextlib.redirect_stdout(stdout):
+                    args = crucible.build_parser().parse_args(["del", "--worker", "worker-b", "active"])
+                    rc = args.func(args)
+
+            self.assertEqual(0, rc)
+            self.assertTrue(crucible.worker_drain_path(manifest, "worker-b").exists())
+            self.assertFalse(crucible.task_claim_path(manifest, manifest["tasks"][0]).exists())
+            self.assertIn("worker del: active worker-b released=1", stdout.getvalue())
+
+    def test_del_command_worker_rejects_delete_options(self) -> None:
+        for option in ("--done", "--force"):
+            with self.subTest(option=option):
+                args = crucible.build_parser().parse_args(["del", "--worker", "worker-b", option])
+                with self.assertRaises(SystemExit):
+                    args.func(args)
 
     def test_plan_rejects_duplicate_output_paths(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1454,7 +1860,7 @@ except SystemExit as exc:
             status = self.run_cli("status", str(root))
             self.assertEqual(0, status.returncode)
             self.assertIn("active: 1", status.stdout)
-            self.assertIn('"worker-a" [claimed] task=0', status.stdout)
+            self.assertIn("worker-a [claimed] task=0", status.stdout)
 
             heartbeat = self.run_cli(
                 "heartbeat",
@@ -1468,7 +1874,7 @@ except SystemExit as exc:
 
             status_with_progress = self.run_cli("status", str(root))
             self.assertEqual(0, status_with_progress.returncode)
-            self.assertIn('"worker-a" [claimed] task=0', status_with_progress.stdout)
+            self.assertIn("worker-a [claimed] task=0", status_with_progress.stdout)
             self.assertNotIn("worker-a [claimed] task=0 [subtask=42/1000", status_with_progress.stdout)
 
             unknown_total = self.run_cli(
@@ -1482,7 +1888,7 @@ except SystemExit as exc:
             self.assertEqual(0, unknown_total.returncode)
             status_unknown_total = self.run_cli("status", str(root))
             self.assertEqual(0, status_unknown_total.returncode)
-            self.assertIn('"worker-a" [claimed] task=0', status_unknown_total.stdout)
+            self.assertIn("worker-a [claimed] task=0", status_unknown_total.stdout)
 
             wrong_claim = self.run_cli(
                 "heartbeat",
@@ -1512,7 +1918,7 @@ except SystemExit as exc:
             )
             self.assertNotEqual(0, wrong_release.returncode)
             status = self.run_cli("status", str(root))
-            self.assertIn('"worker-a" [claimed] task=0', status.stdout)
+            self.assertIn("worker-a [claimed] task=0", status.stdout)
 
             release = self.run_cli(
                 "release",
@@ -1564,7 +1970,7 @@ except SystemExit as exc:
 
             self.assertEqual(0, status.returncode)
             self.assertIn("active: 1", status.stdout)
-            self.assertIn('"new" task=0', status.stdout)
+            self.assertIn("new task=0", status.stdout)
             self.assertIn("fail: 0", status.stdout)
 
     def test_malformed_claim_is_claimed_until_stale(self) -> None:
@@ -1996,25 +2402,25 @@ except SystemExit as exc:
 
             compact = self.run_cli("status", str(root))
             self.assertEqual(1, compact.returncode)
-            self.assertIn('"tmp', compact.stdout)
+            self.assertIn("run=", compact.stdout)
             self.assertIn("  tasks=1/4 fail=1", compact.stdout)
             self.assertIn("  active: 1 subtask=42/1000", compact.stdout)
             self.assertNotIn("host-done [1]: 0", compact.stdout)
-            self.assertIn('    "worker-claimed" task=1 [subtask=42/1000]', compact.stdout)
-            self.assertIn('    "host-fail" [1]: 2', compact.stdout)
-            self.assertIn('  pending: 1\n    "score:uci" [1]: 3', compact.stdout)
+            self.assertIn("    worker-claimed task=1 [subtask=42/1000]", compact.stdout)
+            self.assertIn("    host-fail [1]: 2", compact.stdout)
+            self.assertIn("  pending: 1\n    score:uci [1]: 3", compact.stdout)
 
             result = self.run_cli("status", str(root), "--verbose")
             self.assertEqual(1, result.returncode)
-            self.assertNotIn('"host-done" [1]: 0', result.stdout)
+            self.assertNotIn("host-done [1]: 0", result.stdout)
             self.assertNotIn("task_0\tdone\thost-done", result.stdout)
-            self.assertIn('    "worker-claimed" task=1 [subtask=42/1000]', result.stdout)
-            self.assertIn('    "host-fail" [1]: 2', result.stdout)
-            self.assertIn('    "score:uci" [1]: 3', result.stdout)
+            self.assertIn("    worker-claimed task=1 [subtask=42/1000]", result.stdout)
+            self.assertIn("    host-fail [1]: 2", result.stdout)
+            self.assertIn("    score:uci [1]: 3", result.stdout)
 
             show_done = self.run_cli("status", str(root), "--show-done")
             self.assertEqual(1, show_done.returncode)
-            self.assertIn('"host-done" [1]: 0', show_done.stdout)
+            self.assertIn("host-done [1]: 0", show_done.stdout)
 
             result_json = self.run_cli("status", str(root), "--json")
             self.assertEqual(1, result_json.returncode)
@@ -2095,9 +2501,9 @@ except SystemExit as exc:
 
             status = self.run_cli("status", str(root))
             self.assertEqual(0, status.returncode)
-            high = status.stdout.index('"worker-high" task=1')
-            low = status.stdout.index('"worker-low" task=0')
-            none = status.stdout.index('"worker-none" task=2')
+            high = status.stdout.index("worker-high task=1")
+            low = status.stdout.index("worker-low task=0")
+            none = status.stdout.index("worker-none task=2")
             self.assertLess(high, low)
             self.assertLess(low, none)
 
@@ -2156,9 +2562,9 @@ except SystemExit as exc:
 
             status = self.run_cli("status", str(root))
             self.assertEqual(0, status.returncode)
-            self.assertIn('"worker-a" "score:uci" task=0', status.stdout)
-            self.assertIn('"worker-b" [claimed] "score:uci" task=1', status.stdout)
-            self.assertIn('"worker-c" [stale] "score:uci" task=2', status.stdout)
+            self.assertIn("worker-a score:uci task=0", status.stdout)
+            self.assertIn("worker-b [claimed] score:uci task=1", status.stdout)
+            self.assertIn("worker-c [stale] score:uci task=2", status.stdout)
 
     def test_pending_status_groups_by_label(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -2181,7 +2587,7 @@ except SystemExit as exc:
 
             status = self.run_cli("status", str(root))
             self.assertEqual(0, status.returncode)
-            self.assertIn('  pending: 4\n    "label:uci" [1]: 1\n    "score:uci" [1]: 0\n    "unlabeled" [2]: 2-3', status.stdout)
+            self.assertIn("  pending: 4\n    label:uci [1]: 1\n    score:uci [1]: 0\n    unlabeled [2]: 2-3", status.stdout)
 
     def test_status_uses_runs_directory(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -2262,11 +2668,11 @@ except SystemExit as exc:
                 self.assertEqual(0, rc)
                 status_text = stdout.getvalue()
                 self.assertIn("main", status_text)
-                self.assertRegex(status_text, r'run="main"\s+tasks=0/1')
+                self.assertRegex(status_text, r"run=main\s+tasks=0/1")
                 self.assertNotIn("bonus", status_text)
                 self.assertNotIn("setup", status_text)
                 self.assertNotIn("nnue-selfplay", status_text)
-                self.assertIn('"worker-main" task=0', status_text)
+                self.assertIn("worker-main task=0", status_text)
 
                 stdout = io.StringIO()
                 with contextlib.redirect_stdout(stdout):
@@ -2286,7 +2692,7 @@ except SystemExit as exc:
                 self.assertIn("main", active_text)
                 self.assertNotIn("bonus", active_text)
                 self.assertIn("  active: 1", active_text)
-                self.assertIn('"worker-main" task=0', active_text)
+                self.assertIn("worker-main task=0", active_text)
 
                 stdout = io.StringIO()
                 with contextlib.redirect_stdout(stdout):
@@ -2333,7 +2739,7 @@ except SystemExit as exc:
                 all_text = stdout.getvalue()
                 self.assertIn("main", all_text)
                 self.assertIn("bonus", all_text)
-                self.assertIn('"worker-main" task=0', all_text)
+                self.assertIn("worker-main task=0", all_text)
 
                 stdout = io.StringIO()
                 with contextlib.redirect_stdout(stdout):
@@ -2400,7 +2806,7 @@ except SystemExit as exc:
             active_status = self.run_cli("status", cwd=root, env=env)
             self.assertEqual(0, active_status.returncode)
             self.assertIn("active", active_status.stdout)
-            self.assertIn('    "worker-a" task=0', active_status.stdout)
+            self.assertIn("    worker-a task=0", active_status.stdout)
             self.assertNotIn("queued", active_status.stdout)
             self.assertNotIn("waiting", active_status.stdout)
 
@@ -2424,7 +2830,7 @@ except SystemExit as exc:
             self.assertIn("failed: 1 run (use crucible status --failed)", failed_status.stdout)
             self.assertLess(
                 failed_status.stdout.index("failed: 1 run (use crucible status --failed)"),
-                failed_status.stdout.index('"zzz-active"'),
+                failed_status.stdout.index("zzz-active"),
             )
             self.assertNotIn("aaa-failed", failed_status.stdout)
             self.assertNotIn("waiting", failed_status.stdout)
@@ -2438,15 +2844,15 @@ except SystemExit as exc:
 
             detailed_failed = self.run_cli("status", "--failed", cwd=root, env=env)
             self.assertEqual(1, detailed_failed.returncode)
-            self.assertIn('"aaa-failed"', detailed_failed.stdout)
+            self.assertIn("aaa-failed", detailed_failed.stdout)
             self.assertIn("  fail: 1", detailed_failed.stdout)
-            self.assertIn('"worker-fail" [1]: 0', detailed_failed.stdout)
+            self.assertIn("worker-fail [1]: 0", detailed_failed.stdout)
 
             all_status = self.run_cli("status", "--all", cwd=root, env=env)
             self.assertEqual(1, all_status.returncode)
             self.assertIn("active", all_status.stdout)
             self.assertIn("queued", all_status.stdout)
-            self.assertRegex(all_status.stdout, r'run="queued"\n  tasks=0/1')
+            self.assertRegex(all_status.stdout, r"run=queued\n  tasks=0/1")
 
     def test_default_status_prefilters_inactive_runs(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -2639,8 +3045,8 @@ except SystemExit as exc:
             self.assertEqual(0, rc)
             text = stdout.getvalue()
             blue = crucible.STATUS_BLUE_SGR
-            self.assertIn(f'run="\033[{blue}mcolor\033[0m"', text)
-            self.assertIn('desc="Run description"', text)
+            self.assertIn(f"run=\033[{blue}mcolor\033[0m", text)
+            self.assertIn("desc=Run description", text)
             self.assertNotIn("desc=\033[", text)
             self.assertIn("tasks=\033[33m0/1", text)
             self.assertIn("pending: \033[33m1", text)
@@ -2661,8 +3067,8 @@ except SystemExit as exc:
                 crucible.color_status_field("speedup=1.5x", color_enabled=True),
             )
             self.assertEqual(
-                f'run="\033[{blue}mname\033[0m"',
-                crucible.color_status_field('run="name"', color_enabled=True),
+                f"run=\033[{blue}mname\033[0m",
+                crucible.color_status_field("run=name", color_enabled=True),
             )
 
     def test_status_no_color_overrides_forced_color(self) -> None:
@@ -2692,7 +3098,7 @@ except SystemExit as exc:
         remote_result = subprocess.CompletedProcess(
             args=["ssh"],
             returncode=0,
-            stdout="remote status\n",
+            stdout=self.delegated_status_payload(),
             stderr="",
         )
         with mock.patch.dict(
@@ -2716,22 +3122,26 @@ except SystemExit as exc:
                 )
 
         self.assertEqual(0, rc)
-        self.assertEqual(
-            'coordinator: "pwa-5090:/home/petter/code/cpp/chess/crucible/runs"\nremote status\n',
-            stdout.getvalue(),
-        )
+        output = stdout.getvalue()
+        self.assertIn("coordinator: pwa-5090:/home/petter/code/cpp/chess/crucible/runs\n", output)
+        self.assertIn("run=remote-run", output)
+        self.assertIn("desc=Remote run", output)
+        self.assertIn("remote-worker score:uci task=0", output)
+        self.assertNotIn('"remote-run"', output)
+        self.assertNotIn('"score:uci"', output)
         command = run_mock.call_args.args[0]
         self.assertEqual("ssh", command[0])
         self.assertIn("pwa-5090", command)
         self.assertIn("CRUCIBLE_RUNS_DIR=/home/petter/code/cpp/chess/crucible/runs", command[-1])
         self.assertIn("CRUCIBLE_COORDINATOR_RUNS=", command[-1])
         self.assertIn("CRUCIBLE_COLOR=never", command[-1])
+        self.assertIn("--json", command[-1])
 
     def test_status_delegation_forces_color_when_local_output_is_colored(self) -> None:
         remote_result = subprocess.CompletedProcess(
             args=["ssh"],
             returncode=0,
-            stdout="remote status\n",
+            stdout=self.delegated_status_payload(),
             stderr="",
         )
         with mock.patch.dict(
@@ -2774,7 +3184,7 @@ except SystemExit as exc:
             remote_result = subprocess.CompletedProcess(
                 args=["ssh"],
                 returncode=0,
-                stdout="remote status\n",
+                stdout=self.delegated_status_payload(),
                 stderr="",
             )
             with (
@@ -2798,13 +3208,15 @@ except SystemExit as exc:
                     )
 
             self.assertEqual(0, rc)
-            self.assertEqual(
-                'coordinator: "pwa-5090:/home/petter/code/cpp/chess/crucible/runs"\nremote status\n',
-                stdout.getvalue(),
-            )
+            output = stdout.getvalue()
+            self.assertIn("coordinator: pwa-5090:/home/petter/code/cpp/chess/crucible/runs\n", output)
+            self.assertIn("run=remote-run", output)
+            self.assertIn("remote-worker score:uci task=0", output)
+            self.assertNotIn('"remote-run"', output)
             command = run_mock.call_args.args[0]
             self.assertEqual("ssh", command[0])
             self.assertIn("pwa-5090", command)
+            self.assertIn("--json", command[-1])
 
     def test_status_shows_declared_progress(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -2860,7 +3272,7 @@ except SystemExit as exc:
                         )
                 )
                 self.assertEqual(0, rc)
-                self.assertIn('    "worker" task=0 [rows=50k/125k, output=48k, elo~=-12.3, eta=3h06m]', stdout.getvalue())
+                self.assertIn("    worker task=0 [rows=50k/125k, output=48k, elo~=-12.3, eta=3h06m]", stdout.getvalue())
 
                 named_stdout = io.StringIO()
                 with contextlib.redirect_stdout(named_stdout):
@@ -2882,7 +3294,7 @@ except SystemExit as exc:
                 self.assertNotIn("active: 1 output=48k eta=", named_stdout.getvalue())
                 self.assertNotIn("workers=1", named_stdout.getvalue())
                 self.assertNotIn("speedup=1.0x", named_stdout.getvalue())
-                self.assertIn('"worker" task=0 [rows=50k/125k, output=48k, elo~=-12.3, eta=3h06m]', named_stdout.getvalue())
+                self.assertIn("worker task=0 [rows=50k/125k, output=48k, elo~=-12.3, eta=3h06m]", named_stdout.getvalue())
 
     def test_status_eta_counts_down_from_log_timestamp(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -3004,7 +3416,7 @@ except SystemExit as exc:
                     )
                 self.assertEqual(0, rc)
                 text = stdout.getvalue()
-                self.assertIn('"worker" task=0 [games=50/50, finalizing]', text)
+                self.assertIn("worker task=0 [games=50/50, finalizing]", text)
                 self.assertNotIn("eta=0s", text)
 
     def test_status_shows_active_worker_throughput(self) -> None:
@@ -3115,11 +3527,11 @@ except SystemExit as exc:
                 text = stdout.getvalue()
                 self.assertIn("tasks=1/4", text)
                 self.assertNotIn("tasks=1/4 speedup=", text)
-                self.assertIn('active: 3 workers=2 output=68k min="worker-b":20k max="worker-a":48k speedup=1.0x', text)
+                self.assertIn("active: 3 workers=2 output=68k min=worker-b:20k max=worker-a:48k speedup=1.0x", text)
                 self.assertNotIn("active workers:", text)
                 self.assertNotIn("tasks=2 output=48k", text)
                 self.assertNotIn("tasks=1 output=20k", text)
-                worker_section = text.split("active: 3", 1)[1].split('  "worker-a" task=0', 1)[0]
+                worker_section = text.split("active: 3", 1)[1].split("  worker-a task=0", 1)[0]
                 self.assertNotIn("rows", worker_section)
                 self.assertNotIn("rate", worker_section)
                 self.assertNotIn("avg", worker_section)
@@ -3145,7 +3557,7 @@ except SystemExit as exc:
                     if "active:" in line and "workers=" in line
                 )
                 self.assertIn("active: \033[33m3\033[0m", color_line)
-                self.assertIn(f'workers=2 output=68k min="worker-b":20k max="worker-a":48k speedup=\033[{crucible.STATUS_BLUE_SGR}m1.0x\033[0m', color_line)
+                self.assertIn(f"workers=2 output=68k min=worker-b:20k max=worker-a:48k speedup=\033[{crucible.STATUS_BLUE_SGR}m1.0x\033[0m", color_line)
                 self.assertNotIn("workers=\033[", color_line)
                 self.assertNotIn("output=\033[", color_line)
                 self.assertNotIn("min=\033[", color_line)
@@ -3213,6 +3625,72 @@ except SystemExit as exc:
         }
         self.assertEqual("progress=rows=200/400, eta=30s", crucible.summary_progress(summary))
 
+    def test_summary_eta_counts_claimed_work_without_claimed_rate(self) -> None:
+        summary = {
+            "active": [
+                {
+                    "state": "running",
+                    "progress_data": {
+                        "kind": "metadata",
+                        "done": 50,
+                        "total": 100,
+                        "unit": "rows",
+                        "rate": 10.0,
+                        "eta_s": 5.0,
+                    },
+                },
+                {
+                    "state": "claimed",
+                    "progress_data": {
+                        "kind": "metadata",
+                        "done": 0,
+                        "total": 100,
+                        "unit": "rows",
+                        "rate": 10.0,
+                        "eta_s": 10.0,
+                    },
+                },
+            ],
+            "active_count": 2,
+            "counts": {"running": 1, "claimed": 1, "stale": 0, "pending": 0},
+            "progress_done": {"rows": 0},
+            "progress_totals": {"rows": 200},
+        }
+        self.assertEqual("progress=rows=50/200, eta=15s", crucible.summary_progress(summary))
+
+    def test_summary_eta_ignores_stale_rate_but_counts_stale_work(self) -> None:
+        summary = {
+            "active": [
+                {
+                    "state": "running",
+                    "progress_data": {
+                        "kind": "metadata",
+                        "done": 50,
+                        "total": 100,
+                        "unit": "rows",
+                        "rate": 10.0,
+                        "eta_s": 5.0,
+                    },
+                },
+                {
+                    "state": "stale",
+                    "progress_data": {
+                        "kind": "metadata",
+                        "done": 0,
+                        "total": 100,
+                        "unit": "rows",
+                        "rate": 0.1,
+                        "eta_s": 1000.0,
+                    },
+                },
+            ],
+            "active_count": 2,
+            "counts": {"running": 1, "claimed": 0, "stale": 1, "pending": 0},
+            "progress_done": {"rows": 0},
+            "progress_totals": {"rows": 200},
+        }
+        self.assertEqual("progress=rows=50/200, eta=15s", crucible.summary_progress(summary))
+
     def test_status_speedup_uses_rates_not_output_share(self) -> None:
         summary = {
             "run": "run-a",
@@ -3240,7 +3718,7 @@ except SystemExit as exc:
             "metadata": {},
         }
         self.assertEqual(
-            'workers=2 output=90k min="slow":10k max="fast":80k speedup=2.0x',
+            "workers=2 output=90k min=slow:10k max=fast:80k speedup=2.0x",
             crucible.active_worker_summary(summary),
         )
         self.assertEqual("speedup=2.0x", crucible.run_speedup_field(summary))
@@ -3336,7 +3814,7 @@ except SystemExit as exc:
                 self.assertIn("  tasks=1/2 eta=1m40s", text)
                 self.assertIn("  active: 1 games=1500/2000", text)
                 self.assertNotIn("  active: 1 games=1500/2000 eta=", text)
-                self.assertIn('"worker-a" task=1 [games=500/1000, eta=1m40s]', text)
+                self.assertIn("worker-a task=1 [games=500/1000, eta=1m40s]", text)
 
     def test_status_uses_completed_rate_when_running_task_has_no_progress_yet(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -3410,7 +3888,7 @@ except SystemExit as exc:
                 self.assertIn("  tasks=1/2 eta=1m39s", text)
                 self.assertIn("  active: 1 games=1000/2000", text)
                 self.assertNotIn("  active: 1 games=1000/2000 eta=", text)
-                self.assertIn('"worker-a" task=1 [games=0/1000, eta=1m39s]', text)
+                self.assertIn("worker-a task=1 [games=0/1000, eta=1m39s]", text)
 
     def test_status_labels_overdue_fallback_eta_as_unknown(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -3484,7 +3962,7 @@ except SystemExit as exc:
                 self.assertIn("  tasks=1/2 eta=unknown", text)
                 self.assertIn("  active: 1 games=1000/2000", text)
                 self.assertNotIn("  active: 1 games=1000/2000 eta=", text)
-                self.assertIn('"worker-a" task=1 [games=0/1000, eta=unknown]', text)
+                self.assertIn("worker-a task=1 [games=0/1000, eta=unknown]", text)
 
     def test_status_ignores_undeclared_domain_progress(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -3702,8 +4180,8 @@ except SystemExit as exc:
             status = self.run_cli("status", str(root))
             self.assertEqual(0, status.returncode)
             self.assertIn("active: 2", status.stdout)
-            self.assertIn('"worker-a" task=1', status.stdout)
-            self.assertIn('"worker-b" [claimed] task=2', status.stdout)
+            self.assertIn("worker-a task=1", status.stdout)
+            self.assertIn("worker-b [claimed] task=2", status.stdout)
             self.assertIn("pending: 1", status.stdout)
 
     def test_delete_done_runs(self) -> None:
@@ -4247,7 +4725,14 @@ except SystemExit as exc:
                     "workers": [
                         "pwa-5090",
                         {"host": "pwa-wsl", "profile": "pwa-wsl"},
-                        {"host": "pwa-mbp", "profile": "mac", "python": "/opt/homebrew/bin/python3"},
+                        {
+                            "host": "pwa-mbp",
+                            "profile": "mac",
+                            "python": "/opt/homebrew/bin/python3",
+                            "path_map": {
+                                "/home/petter/code/cpp/chess": "/Users/pwahlman/code/cpp/chess",
+                            },
+                        },
                         {"host": "localhost", "local": True},
                         {"host": "disabled", "enabled": False},
                     ],
@@ -4266,6 +4751,9 @@ except SystemExit as exc:
                         "profile": "mac",
                         "local": False,
                         "python": "/opt/homebrew/bin/python3",
+                        "path_map": {
+                            "/home/petter/code/cpp/chess": "/Users/pwahlman/code/cpp/chess",
+                        },
                     },
                     {"host": "localhost", "profile": "localhost", "local": True},
                 ],
@@ -4661,6 +5149,189 @@ except SystemExit as exc:
                 payload,
             )
 
+    def test_deploy_can_write_worker_snapshot_and_launch_subset(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            runs = root / "runs"
+            template = root / "template.manifest.json"
+            template.write_text(
+                json.dumps({
+                    "schema": "crucible.task.v1",
+                    "name": "subset-workers",
+                    "work_dir": str(root),
+                    "requirements": {"python_min": "3.11", "git_min": "2.38"},
+                    "tasks": [{"id": "task_0000", "index": 0, "command": "true", "outputs": []}],
+                }),
+                encoding="utf-8",
+            )
+            snapshot_payload = {
+                "schema": "crucible.workers.v1",
+                "workers": [
+                    {"host": "worker-a", "profile": "worker-a", "local": True, "cache_dir": str(root / "cache-a")},
+                    {"host": "worker-b", "profile": "worker-b", "local": True, "cache_dir": str(root / "cache-b")},
+                ],
+            }
+            launch_payload = {
+                "schema": "crucible.workers.v1",
+                "workers": [
+                    {"host": "worker-b", "profile": "worker-b", "local": True, "cache_dir": str(root / "cache-b")},
+                ],
+            }
+            commands = []
+
+            def fake_run(self, command, **kwargs):
+                commands.append(command)
+                return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+            args = argparse.Namespace(
+                manifest=str(template),
+                workers="worker-b",
+                worker_snapshot_payload=snapshot_payload,
+                launch_workers_payload=launch_payload,
+                jobs=1,
+                run="subset-workers",
+                resume=False,
+                replace=False,
+                remote_timeout_seconds=1800.0,
+                no_color=True,
+                verbose=False,
+            )
+            with self.patch_runs_dir(runs), mock.patch("crucible.ProcessTracker.run", fake_run):
+                stdout = io.StringIO()
+                with contextlib.redirect_stdout(stdout):
+                    rc = crucible.cmd_deploy(args)
+
+            self.assertEqual(0, rc)
+            self.assertIn("deploy: run=subset-workers workers=1 jobs=1", stdout.getvalue())
+            self.assertEqual(snapshot_payload, crucible.read_json(runs / "subset-workers" / "workers.json"))
+            scripts = [command[-1] for command in commands if command[0] == "sh"]
+            self.assertTrue(any("--worker worker-b" in script for script in scripts))
+            self.assertFalse(any("--worker worker-a" in script for script in scripts))
+
+    def test_deploy_launch_only_detaches_workers(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            runs = root / "runs"
+            template = root / "template.manifest.json"
+            template.write_text(
+                json.dumps({
+                    "schema": "crucible.task.v1",
+                    "name": "launch-only-workers",
+                    "work_dir": str(root),
+                    "requirements": {"python_min": "3.11", "git_min": "2.38"},
+                    "tasks": [{"id": "task_0000", "index": 0, "command": "true", "outputs": []}],
+                }),
+                encoding="utf-8",
+            )
+            workers_path = root / "workers.json"
+            workers_path.write_text(
+                json.dumps({
+                    "schema": "crucible.workers.v1",
+                    "workers": [{"host": "worker-b", "profile": "worker-b", "local": True, "cache_dir": str(root / "cache-b")}],
+                }),
+                encoding="utf-8",
+            )
+            commands = []
+
+            def fake_run(self, command, **kwargs):
+                commands.append(command)
+                return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+            args = argparse.Namespace(
+                manifest=str(template),
+                workers=str(workers_path),
+                jobs=1,
+                run="launch-only-workers",
+                resume=False,
+                replace=False,
+                launch_only=True,
+                remote_timeout_seconds=1800.0,
+                no_color=True,
+                verbose=False,
+            )
+            with self.patch_runs_dir(runs), mock.patch("crucible.ProcessTracker.run", fake_run):
+                stdout = io.StringIO()
+                with contextlib.redirect_stdout(stdout):
+                    rc = crucible.cmd_deploy(args)
+
+            self.assertEqual(0, rc)
+            output = stdout.getvalue()
+            self.assertIn("deploy: setup complete; launching workers", output)
+            self.assertIn("  OK     worker-b: launch", output)
+            self.assertIn("deploy: launch complete", output)
+            scripts = [command[-1] for command in commands if command[0] == "sh"]
+            launch_scripts = [script for script in scripts if " work " in script]
+            self.assertEqual(1, len(launch_scripts))
+            self.assertIn("nohup", launch_scripts[0])
+            self.assertIn("--worker worker-b", launch_scripts[0])
+
+    def test_deploy_preserves_worker_snapshot_until_success(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            runs = root / "runs"
+            run_dir = runs / "active"
+            run_dir.mkdir(parents=True)
+            manifest = {
+                "schema": "crucible.task.v1",
+                "name": "active",
+                "work_dir": str(root),
+                "state_dir": str(run_dir / "state"),
+                "log_dir": str(run_dir / "logs"),
+                "claim_dir": str(run_dir / "claims"),
+                "requirements": {"python_min": "3.11", "git_min": "2.38"},
+                "tasks": [],
+            }
+            crucible.write_json(run_dir / "manifest.json", manifest)
+            original_payload = {
+                "schema": "crucible.workers.v1",
+                "workers": [
+                    {"host": "worker-a", "profile": "worker-a", "local": True, "cache_dir": str(root / "cache-a")},
+                ],
+            }
+            commit_payload = {
+                "schema": "crucible.workers.v1",
+                "workers": [
+                    {"host": "worker-a", "profile": "worker-a", "local": True, "cache_dir": str(root / "cache-a")},
+                    {"host": "worker-b", "profile": "worker-b", "local": True, "cache_dir": str(root / "cache-b")},
+                ],
+            }
+            launch_payload = {
+                "schema": "crucible.workers.v1",
+                "workers": [
+                    {"host": "worker-b", "profile": "worker-b", "local": True, "cache_dir": str(root / "cache-b")},
+                ],
+            }
+            crucible.write_json(run_dir / "workers.json", original_payload)
+
+            def fail_doctor(self, command, **kwargs):
+                script = command[-1]
+                rc = 1 if " doctor " in script else 0
+                return subprocess.CompletedProcess(command, rc, stdout="", stderr="")
+
+            args = argparse.Namespace(
+                manifest=str(run_dir / "manifest.json"),
+                workers="worker-b",
+                worker_snapshot_payload=None,
+                preserve_workers_snapshot=True,
+                worker_snapshot_commit_payload=commit_payload,
+                launch_workers_payload=launch_payload,
+                jobs=1,
+                run="active",
+                resume=True,
+                replace=False,
+                remote_timeout_seconds=1800.0,
+                no_color=True,
+                verbose=False,
+            )
+            with self.patch_runs_dir(runs), mock.patch("crucible.ProcessTracker.run", fail_doctor):
+                stdout = io.StringIO()
+                with contextlib.redirect_stdout(stdout):
+                    rc = crucible.cmd_deploy(args)
+
+            self.assertEqual(1, rc)
+            self.assertIn("deploy: setup failed", stdout.getvalue())
+            self.assertEqual(original_payload, crucible.read_json(run_dir / "workers.json"))
+
     def test_deploy_sends_completion_notification_payload(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -4923,6 +5594,83 @@ except SystemExit as exc:
             self.assertEqual(0, rc)
             self.assertEqual(source.read_text(encoding="utf-8"), (worker_root / "source.jsonl").read_text(encoding="utf-8"))
             self.assertIn("localhost/worker: synced 1 input file(s)", stdout.getvalue())
+
+    def test_sync_inputs_skips_matching_remote_input(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            coordinator = root / "coordinator"
+            worker_root = root / "worker"
+            coordinator.mkdir()
+            worker_root.mkdir()
+            source = coordinator / "source.jsonl"
+            source.write_text("{\"x\":1}\n", encoding="utf-8")
+            manifest = {
+                "schema": "crucible.task.v1",
+                "name": "remote-input-skip",
+                "work_dir": str(coordinator),
+                "state_dir": str(coordinator / "state"),
+                "log_dir": str(coordinator / "logs"),
+                "path_maps": {"worker": {str(coordinator): str(worker_root)}},
+                "requirements": {"inputs": [crucible.file_record(source)]},
+                "tasks": [],
+            }
+            worker = {"host": "remote", "profile": "worker", "local": False}
+
+            with (
+                mock.patch(
+                    "crucible_lib.workers.run_worker_shell",
+                    return_value=subprocess.CompletedProcess(["check"], 0, stdout="", stderr=""),
+                ) as run_shell,
+                mock.patch("crucible_lib.workers.copy_to_worker") as copy_to_worker,
+            ):
+                synced = crucible.sync_inputs_to_worker(worker, manifest)
+
+            self.assertEqual(0, synced)
+            self.assertEqual(1, run_shell.call_count)
+            self.assertIn(str(worker_root / "source.jsonl"), run_shell.call_args.args[1])
+            copy_to_worker.assert_not_called()
+
+    def test_sync_inputs_copies_missing_remote_input(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            coordinator = root / "coordinator"
+            worker_root = root / "worker"
+            coordinator.mkdir()
+            worker_root.mkdir()
+            source = coordinator / "source.jsonl"
+            source.write_text("{\"x\":1}\n", encoding="utf-8")
+            manifest = {
+                "schema": "crucible.task.v1",
+                "name": "remote-input-copy",
+                "work_dir": str(coordinator),
+                "state_dir": str(coordinator / "state"),
+                "log_dir": str(coordinator / "logs"),
+                "path_maps": {"worker": {str(coordinator): str(worker_root)}},
+                "requirements": {"inputs": [crucible.file_record(source)]},
+                "tasks": [],
+            }
+            worker = {"host": "remote", "profile": "worker", "local": False}
+
+            with (
+                mock.patch(
+                    "crucible_lib.workers.run_worker_shell",
+                    side_effect=[
+                        subprocess.CompletedProcess(["check"], 1, stdout="", stderr=""),
+                        subprocess.CompletedProcess(["mkdir"], 0, stdout="", stderr=""),
+                    ],
+                ),
+                mock.patch("crucible_lib.workers.copy_to_worker") as copy_to_worker,
+            ):
+                synced = crucible.sync_inputs_to_worker(worker, manifest)
+
+            self.assertEqual(1, synced)
+            copy_to_worker.assert_called_once_with(
+                worker,
+                source,
+                str(worker_root / "source.jsonl"),
+                timeout=None,
+                tracker=None,
+            )
 
     def test_deploy_passes_matching_profile_and_runs_tasks(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
