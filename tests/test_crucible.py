@@ -2448,6 +2448,67 @@ except SystemExit as exc:
             self.assertIn("queued", all_status.stdout)
             self.assertRegex(all_status.stdout, r'run="queued"\n  tasks=0/1')
 
+    def test_default_status_prefilters_inactive_runs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            runs = root / "runs"
+
+            def write_run(name: str, state: str) -> None:
+                run = runs / name
+                state_dir = run / "state"
+                run.mkdir(parents=True)
+                manifest = {
+                    "schema": "crucible.task.v1",
+                    "name": name,
+                    "work_dir": str(run),
+                    "state_dir": str(state_dir),
+                    "claim_dir": str(run / "claims"),
+                    "tasks": [
+                        {"id": "task_0", "index": 0, "command": "true", "outputs": []},
+                    ],
+                }
+                crucible.write_json(run / "manifest.json", manifest)
+                if state == "queued":
+                    return
+                state_dir.mkdir()
+                if state == "done":
+                    crucible.write_json(state_dir / "task_0.done.json", {"task": "task_0", "host": "worker-done"})
+                elif state == "failed":
+                    crucible.write_json(state_dir / "task_0.fail.json", {"task": "task_0", "host": "worker-fail", "rc": 1})
+                elif state == "running":
+                    crucible.write_json(state_dir / "task_0.running.json", {"task": "task_0", "host": "worker-run"})
+
+            write_run("aaa-done", "done")
+            write_run("bbb-queued", "queued")
+            write_run("ccc-failed", "failed")
+            write_run("ddd-running", "running")
+            calls: list[str] = []
+            original = crucible.status_summary
+
+            def wrapped(manifest: dict[str, Any], *, lease_seconds: int) -> dict[str, Any]:
+                calls.append(str(manifest["name"]))
+                return original(manifest, lease_seconds=lease_seconds)
+
+            args = argparse.Namespace(
+                run=None,
+                all=False,
+                done=False,
+                failed=False,
+                json=False,
+                no_color=True,
+                lease_seconds=600,
+                show_done=False,
+                verbose=False,
+            )
+            with (
+                self.patch_runs_dir(runs),
+                mock.patch("crucible_lib.status.status_summary", side_effect=wrapped),
+                contextlib.redirect_stdout(io.StringIO()),
+            ):
+                rc = crucible.cmd_status(args)
+            self.assertEqual(1, rc)
+            self.assertEqual(["ccc-failed", "ddd-running"], calls)
+
     def test_status_empty_active_message_is_specific(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

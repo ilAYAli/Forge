@@ -15,7 +15,10 @@ def cmd_status(args: argparse.Namespace) -> int:
         return run_status_on_coordinator(args, coordinator_runs)
     filter_name = selected[0] if selected else None
     if args.run is None:
-        summaries = load_run_summaries(lease_seconds=args.lease_seconds)
+        summaries = load_run_summaries(
+            lease_seconds=args.lease_seconds,
+            attention_only=bool(filter_name is None and not getattr(args, "verbose", False)),
+        )
         return print_run_status(
             summaries,
             color_enabled=color_enabled,
@@ -121,10 +124,24 @@ def run_manifest_paths() -> list[Path]:
         if path.is_dir() and (path / RUN_MANIFEST_NAME).is_file()
     )
 
-def load_run_summaries(*, lease_seconds: int) -> list[dict[str, Any]]:
+def run_manifest_has_attention_state(manifest: dict[str, Any]) -> bool:
+    try:
+        state = state_dir(manifest)
+        if any(state.glob("*.fail.json")) or any(state.glob("*.running.json")):
+            return True
+        claims = claim_dir(manifest)
+        if any(claims.glob("*.claim/claim.json")):
+            return True
+    except OSError:
+        return True
+    return False
+
+def load_run_summaries(*, lease_seconds: int, attention_only: bool = False) -> list[dict[str, Any]]:
     summaries = []
     for path in run_manifest_paths():
         manifest = load_manifest(path)
+        if attention_only and not run_manifest_has_attention_state(manifest):
+            continue
         summary = status_summary(manifest, lease_seconds=lease_seconds)
         summary["manifest"] = str(path)
         summary["run"] = path.parent.name
