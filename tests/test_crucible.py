@@ -251,6 +251,13 @@ except SystemExit as exc:
         self.assertEqual("", result.stderr)
         self.assertEqual(0, result.returncode)
 
+    def test_web_renders_progress_fields(self) -> None:
+        import crucible_lib.web as web
+
+        self.assertIn("FIELD_TASK_COLS", web._HTML)
+        self.assertIn("firstProgressField(t.progress_data", web._HTML)
+        self.assertIn("active.fields||[]", web._HTML)
+
     def test_subcommand_help_is_available(self) -> None:
         commands = [
             "plan", "add-input", "add-repo", "add-command", "sync-repos", "start", "run-task", "claim",

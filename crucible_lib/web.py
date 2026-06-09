@@ -210,7 +210,13 @@ _HTML = r"""<!DOCTYPE html>
     let taskColWidths = null;
     let taskSort = {col: 'eta', dir: 1};
 
-    const TASK_COLS = ['worker','label','task','rows','output','rate','eta'];
+    const BASE_TASK_COLS = ['worker','label','task','rows','output','rate'];
+    const FIELD_TASK_COLS = [
+      {name: 'elo',  keys: ['elo','elo~','Elo']},
+      {name: 'ci',   keys: ['ci','err','error','+/-','elo_ci']},
+      {name: 'los',  keys: ['los','LOS']},
+      {name: 'draw', keys: ['draw','DrawRatio','draw_ratio']},
+    ];
 
     function sortByCol(col) {
       if (taskSort.col === col) taskSort.dir *= -1;
@@ -220,9 +226,10 @@ _HTML = r"""<!DOCTYPE html>
     }
 
     function applySortToAllTables() {
-      const ci = TASK_COLS.indexOf(taskSort.col);
-      if (ci < 0) return;
       document.querySelectorAll('.task-table').forEach(tbl => {
+        const headers = [...tbl.querySelectorAll('.task-th')];
+        const ci = headers.findIndex(th => th.dataset.col === taskSort.col);
+        if (ci < 0) return;
         const tbody = tbl.querySelector('tbody');
         if (!tbody) return;
         const rows = [...tbody.querySelectorAll('tr')];
@@ -343,6 +350,78 @@ _HTML = r"""<!DOCTYPE html>
       return r.toFixed(2) + (u ? ' '+u+'/s' : '/s');
     }
 
+    function firstProgressField(pd, keys) {
+      const fields = pd?.fields || {};
+      for (const key of keys) {
+        if (fields[key] != null) return String(fields[key]);
+      }
+      return '';
+    }
+
+    function taskColumns(tasks) {
+      const cols = BASE_TASK_COLS.slice();
+      for (const field of FIELD_TASK_COLS) {
+        if ((tasks||[]).some(t => firstProgressField(t.progress_data, field.keys))) {
+          cols.push(field.name);
+        }
+      }
+      cols.push('eta');
+      return cols;
+    }
+
+    function taskCell(t, col) {
+      const pd = t.progress_data;
+      const field = FIELD_TASK_COLS.find(f => f.name === col);
+      if (field) return esc(firstProgressField(pd, field.keys));
+      if (col === 'worker') {
+        const hbTime = t.state==='stale' && pd?.eta_epoch!=null && pd?.eta_s!=null
+          ? pd.eta_epoch - pd.eta_s : null;
+        const stTag = t.state&&t.state!=='running'
+          ? ` <span style="color:var(--dim);font-size:11px"${hbTime!=null?` data-hbt="${hbTime}"`:''}>[${esc(t.state)}${hbTime!=null?' '+fmtAge(Date.now()/1000-hbTime):''}]</span>` : '';
+        return `${esc(t.worker||'?')}${stTag}`;
+      }
+      if (col === 'label') return esc(t.label||'');
+      if (col === 'task') return String(t.index);
+      if (col === 'rows') return esc(pd?.done!=null&&pd?.total ? `${pd.done}/${pd.total}` : (t.progress||''));
+      if (col === 'output') return esc(pd?.output!=null ? String(pd.output) : '');
+      if (col === 'rate') return esc(fmtRate(pd?.rate, pd?.unit));
+      if (col === 'eta') {
+        const etaSec = remainingEtaS(pd);
+        return etaSec!=null ? esc(fmtEta(etaSec)) : '';
+      }
+      return '';
+    }
+
+    function taskSortValue(t, col) {
+      const pd = t.progress_data;
+      const field = FIELD_TASK_COLS.find(f => f.name === col);
+      if (field) {
+        const value = firstProgressField(pd, field.keys);
+        const number = parseFloat(value.replace(/%$/, ''));
+        return value && !Number.isNaN(number) ? String(number) : value;
+      }
+      if (col === 'worker') return t.worker || '';
+      if (col === 'label') return t.label || '';
+      if (col === 'task') return String(t.index);
+      if (col === 'rows') return pd?.done ?? '';
+      if (col === 'output') return pd?.output ?? '';
+      if (col === 'rate') return pd?.rate ?? '';
+      if (col === 'eta') return remainingEtaS(pd) ?? 1e9;
+      return '';
+    }
+
+    function taskCellClass(col) {
+      if (FIELD_TASK_COLS.some(f => f.name === col)) return 'td-output';
+      if (col === 'worker') return 'td-worker';
+      if (col === 'label') return 'td-label';
+      if (col === 'task') return 'td-id';
+      if (col === 'rows') return 'td-rows';
+      if (col === 'output') return 'td-output';
+      if (col === 'rate') return 'td-rate';
+      if (col === 'eta') return 'td-eta';
+      return '';
+    }
+
     // Live ETA countdown — tick every second using eta_s relative to fetch time
     let lastFetchTime = null;
     function tickEtas() {
@@ -362,33 +441,20 @@ _HTML = r"""<!DOCTYPE html>
 
     function renderTasks(tasks) {
       if (!tasks||!tasks.length) return '';
-      const cg = '<colgroup>' + TASK_COLS.map(()=>'<col>').join('') + '</colgroup>';
-      const thead = '<thead><tr>' + TASK_COLS.map(c =>
-        `<th class="task-th" onclick="sortByCol('${c}')">`
+      const cols = taskColumns(tasks);
+      const cg = '<colgroup>' + cols.map(()=>'<col>').join('') + '</colgroup>';
+      const thead = '<thead><tr>' + cols.map(c =>
+        `<th class="task-th" data-col="${esc(c)}" onclick="sortByCol('${c}')">`
         + `<span class="sort-ind">${c}</span>`
         + `<span class="col-resize" onclick="event.stopPropagation()"></span></th>`
       ).join('') + '</tr></thead>';
       const tbody = '<tbody>' + tasks.map(t => {
         const pd = t.progress_data;
-        const hbTime = t.state==='stale' && pd?.eta_epoch!=null && pd?.eta_s!=null
-          ? pd.eta_epoch - pd.eta_s : null;
-        const stTag = t.state&&t.state!=='running'
-          ? ` <span style="color:var(--dim);font-size:11px"${hbTime!=null?` data-hbt="${hbTime}"`:''}>[${esc(t.state)}${hbTime!=null?' '+fmtAge(Date.now()/1000-hbTime):''}]</span>` : '';
-        const rowsStr  = pd?.done!=null&&pd?.total ? `${pd.done}/${pd.total}` : (t.progress||'');
-        const outStr   = pd?.output!=null ? String(pd.output) : '';
-        const rateStr  = fmtRate(pd?.rate, pd?.unit);
         const etaSec  = remainingEtaS(pd);
-        const etaStr  = etaSec!=null ? fmtEta(etaSec) : '';
         const etaAttr = etaSec!=null ? ` data-etas="${etaSec}"` : '';
-        return `<tr class="task-row">`
-          + `<td class="task-td td-worker" data-sort="${esc(t.worker||'')}">${esc(t.worker||'?')}${stTag}</td>`
-          + `<td class="task-td td-label"  data-sort="${esc(t.label||'')}">${esc(t.label||'')}</td>`
-          + `<td class="task-td td-id"     data-sort="${t.index}">${t.index}</td>`
-          + `<td class="task-td td-rows"   data-sort="${pd?.done??''}">${esc(rowsStr)}</td>`
-          + `<td class="task-td td-output" data-sort="${pd?.output??''}">${esc(outStr)}</td>`
-          + `<td class="task-td td-rate"   data-sort="${pd?.rate??''}">${esc(rateStr)}</td>`
-          + `<td class="task-td td-eta"    data-sort="${etaSec??1e9}"${etaAttr}>${esc(etaStr)}</td>`
-          + `</tr>`;
+        return `<tr class="task-row">` + cols.map(c =>
+          `<td class="task-td ${taskCellClass(c)}" data-sort="${esc(taskSortValue(t, c))}"${c==='eta'?etaAttr:''}>${taskCell(t, c)}</td>`
+        ).join('') + `</tr>`;
       }).join('') + '</tbody>';
       return `<table class="task-table">${cg}${thead}${tbody}</table>`;
     }
@@ -401,7 +467,7 @@ _HTML = r"""<!DOCTYPE html>
 
     function renderChips(str) {
       return '<div class="ws-chips">' + (str||'').split(' ').filter(Boolean).map(tok => {
-        const hi = tok.startsWith('speedup=') || tok.startsWith('output=');
+        const hi = tok.startsWith('speedup=') || tok.startsWith('output=') || tok.startsWith('elo=');
         return `<span class="chip${hi?' hi':''}">${esc(tok)}</span>`;
       }).join('') + '</div>';
     }
@@ -450,7 +516,7 @@ _HTML = r"""<!DOCTYPE html>
 
       // active — open by default for current runs
       if (active.count > 0) {
-        const ws = display.active_summary_text ? renderChips(display.active_summary_text) : '';
+        const ws = display.active_summary_text ? renderChips(display.active_summary_text) : renderChips((active.fields||[]).join(' '));
         sections.push(makeSection(r.run, 'active',
           `active: <b>${active.count}</b>`, 'yel',
           ws + renderTasks(active.tasks), isCurrent
