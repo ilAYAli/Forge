@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import math
+
 from .core import *
 from .manifest import *
 from .tasks import *
@@ -646,6 +648,7 @@ def summary_progress(summary: dict[str, Any]) -> str:
             }
     for output_unit, value in sorted(outputs.items()):
         parts.append(f"{output_unit}={compact_count(value)}")
+    parts.extend(sprt_aggregate_fields(summary))
     parts.extend(etas)
     return f"progress={', '.join(parts)}" if parts else ""
 
@@ -908,7 +911,7 @@ def run_progress_fields(summary: dict[str, Any]) -> list[str]:
     return split_eta_last([
         field
         for field in fields
-        if field.startswith("eta=")
+        if field.startswith("eta=") or field.split("=", 1)[0] in SPRT_PROGRESS_FIELD_KEYS
     ])
 
 def section_progress_fields(summary: dict[str, Any]) -> list[str]:
@@ -1201,6 +1204,117 @@ def parse_float(value: str | None) -> float | None:
     except ValueError:
         return None
 
+SPRT_PROGRESS_RE = re.compile(
+    r"\[\s*\d+\s*/\s*\d+\]\s+"
+    r"Elo\s+(?P<elo>[+-]?(?:\d+(?:\.\d+)?|inf|nan))\s+\+/-\s+"
+    r"(?P<err>[+-]?(?:\d+(?:\.\d+)?|inf|nan))\s+\|\s+"
+    r"LLR\s+(?P<llr>[+-]?\d+(?:\.\d+)?)/(?P<llr_bound>[+-]?(?:\d+(?:\.\d+)?|inf|nan))\s+"
+    r"\(\s*(?P<llr_pct>[+-]?\d+(?:\.\d+)?)%\)\s+\|\s+"
+    r"LOS\s+(?P<los>[+-]?(?:\d+(?:\.\d+)?|inf|nan))\s*%\s+\|\s+"
+    r"draw\s+(?P<draw>[+-]?(?:\d+(?:\.\d+)?|inf|nan))\s*%",
+    re.IGNORECASE,
+)
+
+SPRT_PROGRESS_FIELD_KEYS = {"elo", "ci", "los", "draw"}
+
+def sprt_progress_line_fields(line: str) -> dict[str, str]:
+    match = SPRT_PROGRESS_RE.search(line)
+    if not match:
+        return {}
+    values = match.groupdict()
+    return {
+        "elo": values["elo"].strip(),
+        "ci": values["err"].strip(),
+        "los": values["los"].strip(),
+        "draw": values["draw"].strip(),
+    }
+
+def progress_field_float(fields: dict[str, str], *names: str) -> float | None:
+    for name in names:
+        value = parse_float(fields.get(name))
+        if value is not None and math.isfinite(value):
+            return value
+    return None
+
+def elo_score_rate(elo: float) -> float:
+    return 1.0 / (1.0 + math.pow(10.0, -elo / 400.0))
+
+def score_rate_elo(score_rate: float) -> float:
+    bounded = min(1.0 - 1e-12, max(1e-12, score_rate))
+    return 400.0 * math.log10(bounded / (1.0 - bounded))
+
+def sprt_summary_rows(summary: dict[str, Any]) -> list[dict[str, Any]]:
+    rows = summary.get("rows")
+    if isinstance(rows, list):
+        return [row for row in rows if isinstance(row, dict)]
+    active = summary.get("active")
+    if isinstance(active, list):
+        return [row for row in active if isinstance(row, dict)]
+    return []
+
+def summary_is_sprt(summary: dict[str, Any]) -> bool:
+    metadata = summary.get("metadata")
+    if isinstance(metadata, dict) and str(metadata.get("kind") or "").lower() == "sprt":
+        return True
+    for row in sprt_summary_rows(summary):
+        label = str(row.get("label") or "").lower()
+        if label == "sprt" or label.startswith("sprt:") or label.startswith("sprt-"):
+            return True
+    return False
+
+def sprt_aggregate_fields(summary: dict[str, Any]) -> list[str]:
+    if not summary_is_sprt(summary):
+        return []
+
+    weighted_score = 0.0
+    weighted_los = 0.0
+    weighted_draw = 0.0
+    weighted_ci_squares = 0.0
+    weight_total = 0
+    los_weight_total = 0
+    draw_weight_total = 0
+    ci_weight_total = 0
+
+    for row in sprt_summary_rows(summary):
+        data = row.get("progress_data")
+        if not isinstance(data, dict):
+            continue
+        done = data.get("done")
+        if not isinstance(done, int) or done <= 0:
+            continue
+        fields = data.get("fields")
+        if not isinstance(fields, dict):
+            continue
+        normalized_fields = normalize_progress_fields(fields)
+        elo = progress_field_float(normalized_fields, "elo", "elo~", "Elo")
+        if elo is None:
+            continue
+        weighted_score += elo_score_rate(elo) * done
+        weight_total += done
+        ci = progress_field_float(normalized_fields, "ci", "err", "error", "+/-", "elo_ci")
+        if ci is not None and ci >= 0:
+            weighted_ci_squares += (ci * done) ** 2
+            ci_weight_total += done
+        los = progress_field_float(normalized_fields, "los", "LOS")
+        if los is not None:
+            weighted_los += los * done
+            los_weight_total += done
+        draw = progress_field_float(normalized_fields, "draw", "DrawRatio", "draw_ratio")
+        if draw is not None:
+            weighted_draw += draw * done
+            draw_weight_total += done
+
+    if weight_total <= 0:
+        return []
+    fields = [f"elo={score_rate_elo(weighted_score / weight_total):+.1f}"]
+    if ci_weight_total > 0:
+        fields.append(f"ci={math.sqrt(weighted_ci_squares) / ci_weight_total:.1f}")
+    if los_weight_total > 0:
+        fields.append(f"los={weighted_los / los_weight_total:.1f}%")
+    if draw_weight_total > 0:
+        fields.append(f"draw={weighted_draw / draw_weight_total:.1f}%")
+    return fields
+
 PROGRESS_RESERVED_FIELDS = {"done", "total", "output", "rate"}
 
 def normalize_progress_fields(raw: Any) -> dict[str, str]:
@@ -1333,6 +1447,8 @@ def task_log_progress_data(manifest: dict[str, Any], task: dict[str, Any]) -> di
             if rate is not None:
                 data["rate"] = rate
             fields = progress_match_fields(match, config)
+            for key, value in sprt_progress_line_fields(line).items():
+                fields.setdefault(key, value)
             if fields:
                 data["fields"] = fields
             return normalize_progress_data(data)

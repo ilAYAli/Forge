@@ -3296,6 +3296,56 @@ except SystemExit as exc:
                 self.assertNotIn("speedup=1.0x", named_stdout.getvalue())
                 self.assertIn("worker task=0 [rows=50k/125k, output=48k, elo~=-12.3, eta=3h06m]", named_stdout.getvalue())
 
+    def test_status_sprt_header_shows_aggregated_elo(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run = root / "sprt-run"
+            state = run / "state"
+            logs = run / "logs"
+            state.mkdir(parents=True)
+            logs.mkdir(parents=True)
+            tasks = []
+            for index in range(2):
+                tasks.append({
+                    "id": f"task_{index}",
+                    "index": index,
+                    "command": "true",
+                    "outputs": [],
+                    "progress": {
+                        "unit": "games",
+                        "total": 1000,
+                        "log_regex": r"\[\s*(?P<done>\d+)\s*/\s*(?P<total>\d+)\]",
+                    },
+                })
+            manifest = {
+                "schema": "crucible.task.v1",
+                "name": "sprt-run",
+                "kind": "sprt",
+                "work_dir": str(run),
+                "state_dir": str(state),
+                "log_dir": str(logs),
+                "tasks": tasks,
+            }
+            (run / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+            (state / "task_0.running.json").write_text(json.dumps({"task": "task_0", "host": "worker-a"}), encoding="utf-8")
+            (state / "task_1.running.json").write_text(json.dumps({"task": "task_1", "host": "worker-b"}), encoding="utf-8")
+            (logs / "task_0.log").write_text(
+                "[100/1000] Elo  10.0 +/-  20.0 | LLR  0.12/2.94 (  4%) | LOS 70.0% | draw  40.0% | ETA 10m\n",
+                encoding="utf-8",
+            )
+            (logs / "task_1.log").write_text(
+                "[300/1000] Elo  -2.0 +/-  10.0 | LLR -0.24/2.94 ( -8%) | LOS 55.0% | draw  45.0% | ETA 5m\n",
+                encoding="utf-8",
+            )
+
+            status = self.run_cli("status", str(run))
+
+            self.assertEqual(0, status.returncode, status.stderr)
+            self.assertIn("tasks=0/2 elo=+1.0 ci=9.0 los=58.8% draw=43.8%", status.stdout)
+            self.assertIn("active: 2 games=400/2000 elo=+1.0 ci=9.0 los=58.8% draw=43.8%", status.stdout)
+            self.assertIn("worker-a sprt task=0 [games=100/1000, elo=10.0, ci=20.0, los=70.0, draw=40.0]", status.stdout)
+            self.assertIn("worker-b sprt task=1 [games=300/1000, elo=-2.0, ci=10.0, los=55.0, draw=45.0]", status.stdout)
+
     def test_status_eta_counts_down_from_log_timestamp(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
