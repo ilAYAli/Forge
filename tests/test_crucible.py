@@ -303,6 +303,45 @@ except SystemExit as exc:
                     web._STATUS_REFRESHING,
                 ) = previous
 
+    def test_web_status_api_returns_local_payload_before_first_refresh(self) -> None:
+        import crucible_lib.web as web
+
+        with web._STATUS_CACHE_LOCK:
+            previous = (
+                web._STATUS_CACHE,
+                web._STATUS_CACHE_EPOCH,
+                web._STATUS_CACHE_ERROR,
+                web._STATUS_REFRESHING,
+            )
+            web._STATUS_CACHE = None
+            web._STATUS_CACHE_EPOCH = 0.0
+            web._STATUS_CACHE_ERROR = None
+            web._STATUS_REFRESHING = False
+        try:
+            local_payload = {
+                "runs": [{"run": "local"}],
+                "collapsed_failures": [],
+                "collapsed_failures_count": 0,
+            }
+            with (
+                mock.patch("crucible_lib.web.time.time", return_value=10.0),
+                mock.patch("crucible_lib.web._collect_local_status_payload", return_value=local_payload),
+                mock.patch("crucible_lib.web._start_status_refresh") as start_refresh,
+            ):
+                payload = json.loads(web._api_status().decode())
+            start_refresh.assert_called_once_with()
+            self.assertEqual([{"run": "local"}], payload["runs"])
+            self.assertTrue(payload["refreshing"])
+            self.assertNotIn("loading", payload)
+        finally:
+            with web._STATUS_CACHE_LOCK:
+                (
+                    web._STATUS_CACHE,
+                    web._STATUS_CACHE_EPOCH,
+                    web._STATUS_CACHE_ERROR,
+                    web._STATUS_REFRESHING,
+                ) = previous
+
     def test_subcommand_help_is_available(self) -> None:
         commands = [
             "plan", "add-input", "add-repo", "add-command", "sync-repos", "start", "run-task", "claim",

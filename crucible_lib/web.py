@@ -7,6 +7,7 @@ from typing import Any
 
 from .core import *
 from .status import configured_coordinator_runs
+from .tasks import parse_coordinator, shell_join
 
 
 _HTML = r"""<!DOCTYPE html>
@@ -724,18 +725,73 @@ _STATUS_CACHE: dict[str, Any] | None = None
 _STATUS_CACHE_EPOCH = 0.0
 _STATUS_CACHE_ERROR: str | None = None
 _STATUS_REFRESHING = False
+_WEB_STATUS_TIMEOUT_SECONDS = 10.0
+_WEB_SSH_OPTS = [
+    "-o", "BatchMode=yes",
+    "-o", "ConnectTimeout=5",
+    "-o", "ServerAliveInterval=10",
+    "-o", "ServerAliveCountMax=1",
+]
 
 def _collect_status_payload() -> dict[str, Any]:
+    coordinator_runs = configured_coordinator_runs()
+    if coordinator_runs:
+        return _collect_coordinator_status_payload(coordinator_runs)
+    return _collect_local_status_payload()
+
+def _collect_local_status_payload() -> dict[str, Any]:
+    env = os.environ.copy()
+    env[COORDINATOR_RUNS_ENV] = ""
     result = subprocess.run(
         [sys.executable, str(script_path()), "status", "--json"],
         capture_output=True,
         text=True,
         check=False,
+        env=env,
+        timeout=_WEB_STATUS_TIMEOUT_SECONDS,
     )
     if result.returncode not in (0, 1):
         raise RuntimeError(result.stderr.strip() or f"crucible status exit {result.returncode}")
     data = json.loads(result.stdout)
-    data["coordinator"] = configured_coordinator_runs() or None
+    data["coordinator"] = None
+    return data
+
+def _collect_coordinator_status_payload(coordinator_runs: str) -> dict[str, Any]:
+    host, runs_path = parse_coordinator(coordinator_runs)
+    command = ["status", "--json"]
+    if host:
+        remote = (
+            "command -v crucible >/dev/null 2>&1 || "
+            "{ echo 'crucible not found in PATH on coordinator' >&2; exit 127; }; "
+            f"exec env {shlex.quote(COORDINATOR_RUNS_ENV)}= "
+            f"{shlex.quote(COLOR_ENV)}=never "
+            f"{shlex.quote(RUNS_DIR_ENV)}={shlex.quote(runs_path)} "
+            f"crucible {shell_join(command)}"
+        )
+        result = subprocess.run(
+            ["ssh", *_WEB_SSH_OPTS, host, remote],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=_WEB_STATUS_TIMEOUT_SECONDS,
+        )
+    else:
+        env = os.environ.copy()
+        env[COORDINATOR_RUNS_ENV] = ""
+        env[COLOR_ENV] = "never"
+        env[RUNS_DIR_ENV] = runs_path
+        result = subprocess.run(
+            [sys.executable, str(script_path()), *command],
+            capture_output=True,
+            text=True,
+            check=False,
+            env=env,
+            timeout=_WEB_STATUS_TIMEOUT_SECONDS,
+        )
+    if result.returncode not in (0, 1):
+        raise RuntimeError(result.stderr.strip() or f"crucible status exit {result.returncode}")
+    data = json.loads(result.stdout)
+    data["coordinator"] = coordinator_runs
     return data
 
 def _refresh_status_cache() -> None:
@@ -779,12 +835,24 @@ def _empty_status_payload(*, loading: bool, error: str | None) -> dict[str, Any]
     return data
 
 def _api_status() -> bytes:
+    global _STATUS_CACHE, _STATUS_CACHE_EPOCH, _STATUS_CACHE_ERROR
     now = time.time()
     with _STATUS_CACHE_LOCK:
         cached = copy.deepcopy(_STATUS_CACHE)
         cache_epoch = _STATUS_CACHE_EPOCH
         error = _STATUS_CACHE_ERROR
         refreshing = _STATUS_REFRESHING
+    if cached is None:
+        try:
+            cached = _collect_local_status_payload()
+            cached["timestamp"] = now
+            with _STATUS_CACHE_LOCK:
+                _STATUS_CACHE = copy.deepcopy(cached)
+                _STATUS_CACHE_EPOCH = now
+                _STATUS_CACHE_ERROR = None
+            error = None
+        except Exception as exc:
+            error = str(exc)
     if not refreshing and (cached is None or now - cache_epoch >= _STATUS_CACHE_SECONDS):
         _start_status_refresh()
         refreshing = True
