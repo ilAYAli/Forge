@@ -261,6 +261,8 @@ except SystemExit as exc:
         self.assertIn("notifyStartedJobs(data)", web._HTML)
         self.assertIn("playDing()", web._HTML)
         self.assertIn("localStorage.getItem('crucible.sound')", web._HTML)
+        self.assertIn("notify on", web._HTML)
+        self.assertNotIn("ding on", web._HTML)
 
     def test_subcommand_help_is_available(self) -> None:
         commands = [

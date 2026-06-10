@@ -205,7 +205,7 @@ _HTML = r"""<!DOCTYPE html>
       if (!btn) return;
       btn.classList.toggle('on', soundEnabled);
       btn.setAttribute('aria-pressed', soundEnabled ? 'true' : 'false');
-      btn.textContent = soundEnabled ? 'ding on' : 'ding off';
+      btn.textContent = soundEnabled ? 'notify on' : 'ding off';
     }
 
     function ensureAudioContext() {
