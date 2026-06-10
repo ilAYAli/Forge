@@ -9,3 +9,6 @@ out/
 runs/
 config.json
 claude.sh
+
+# Local agent instructions
+AGENTS.md
