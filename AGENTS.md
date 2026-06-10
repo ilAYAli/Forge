@@ -28,15 +28,9 @@ Owns Crucible tooling, CLI, docs, and focused tests only.
   tree.
 - Change one concern at a time: CLI/API behavior, worker orchestration,
   manifest schema, docs/help text, worker config, or tests.
-- Do not mix worker-config edits with tooling/API/docs edits.
-- Do not edit `runs/*` snapshots, generated run directories, caches, or local
-  validation artifacts unless the user explicitly asks for that exact file.
-- Treat `examples/workers.json` as durable example/source worker config.
-- Treat `runs/workers.json` and `runs/<run>/workers.json` as runtime snapshots
-  unless explicitly told otherwise.
 - Do not sync to remote hosts until the local diff is scoped, verified, and
   shown.
-- Do not run cleanup, restore, delete, stash, reset, checkout, or remote sync
+- Do not run push, cleanup, restore, delete, stash, reset, checkout, or remote sync
   commands as a recovery action without explicit approval.
 
 ## 2. Validation Agent
@@ -55,13 +49,12 @@ Owns verification only.
 
 1. Validate parser/help/docs changes with focused CLI tests.
 2. Validate manifest/worker behavior with focused unit tests.
-3. Run the full Crucible test suite when code behavior changes.
+3. Run the full test suite when code behavior changes.
 4. For distributed behavior, prove a small run on the intended coordinator and
    workers before declaring the workflow usable.
 
 Reject immediately if:
 
-- command help no longer exposes the simple path first;
 - advanced/internal commands are accidentally removed;
 - worker output collection or status regressions are detected;
 - generated run artifacts are modified as part of a source change.
@@ -129,6 +122,13 @@ git diff --name-only origin/main..HEAD
 
 ## Shared Long-Run And Notification Rules
 
+- MANDATORY NOTIFICATION RULE: every long-running Crucible job must be launched
+  with completion/failure notifications already attached through
+  `--notify-command` or `CRUCIBLE_NOTIFY_COMMAND`. There are no exceptions for
+  `start`, `resume`, `retry`, `deploy`, `wait`, or ad hoc distributed runs.
+- Polling, watcher scripts, `sleep` loops, tmux tails, or manual status checks
+  are not substitutes for launch-time notifications. They may only be used for
+  diagnosis after the notification hook is already attached.
 - Run long Crucible jobs in tmux and launch distributed jobs from a coordinator
   host that workers can SSH back to.
 - Every long-running Crucible job must have completion and failure
