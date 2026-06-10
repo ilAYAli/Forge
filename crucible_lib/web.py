@@ -549,7 +549,7 @@ _HTML = r"""<!DOCTYPE html>
       return '<div class="ws-chips">' + (str||'').split(' ').filter(Boolean).map(tok => {
         const hi = tok.startsWith('speedup=') || tok.startsWith('output=') || tok.startsWith('elo=');
         return `<span class="chip${hi?' hi':''}">${esc(tok)}</span>`;
-      }).join('') + '</div>';
+      }).join(' ') + '</div>';
     }
 
     function renderRun(r) {

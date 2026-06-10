@@ -3668,7 +3668,7 @@ except SystemExit as exc:
                 text = stdout.getvalue()
                 self.assertIn("tasks=1/4", text)
                 self.assertNotIn("tasks=1/4 speedup=", text)
-                self.assertIn("active: 3 workers=2 output=68k min=worker-b:20k max=worker-a:48k speedup=1.0x", text)
+                self.assertIn("active: 3 workers=2 output=68k min=worker-b:20k max=worker-a:48k speedup=1.4x", text)
                 self.assertNotIn("active workers:", text)
                 self.assertNotIn("tasks=2 output=48k", text)
                 self.assertNotIn("tasks=1 output=20k", text)
@@ -3698,7 +3698,7 @@ except SystemExit as exc:
                     if "active:" in line and "workers=" in line
                 )
                 self.assertIn("active: \033[33m3\033[0m", color_line)
-                self.assertIn(f"workers=2 output=68k min=worker-b:20k max=worker-a:48k speedup=\033[{crucible.STATUS_BLUE_SGR}m1.0x\033[0m", color_line)
+                self.assertIn(f"workers=2 output=68k min=worker-b:20k max=worker-a:48k speedup=\033[{crucible.STATUS_BLUE_SGR}m1.4x\033[0m", color_line)
                 self.assertNotIn("workers=\033[", color_line)
                 self.assertNotIn("output=\033[", color_line)
                 self.assertNotIn("min=\033[", color_line)
@@ -3832,7 +3832,7 @@ except SystemExit as exc:
         }
         self.assertEqual("progress=rows=50/200, eta=15s", crucible.summary_progress(summary))
 
-    def test_status_speedup_uses_rates_not_output_share(self) -> None:
+    def test_status_speedup_uses_output_share(self) -> None:
         summary = {
             "run": "run-a",
             "manifest": "runs/run-a/manifest.json",
@@ -3859,12 +3859,13 @@ except SystemExit as exc:
             "metadata": {},
         }
         self.assertEqual(
-            "workers=2 output=90k min=slow:10k max=fast:80k speedup=2.0x",
+            "workers=2 output=90k min=slow:10k max=fast:80k speedup=1.1x",
             crucible.active_worker_summary(summary),
         )
-        self.assertEqual("speedup=2.0x", crucible.run_speedup_field(summary))
+        self.assertEqual("speedup=1.1x", crucible.run_speedup_field(summary))
         payload = crucible.run_status_payload(summary)
-        self.assertEqual("2.0x", payload["display"]["active_summary"]["speedup_text"])
+        self.assertEqual(1.125, payload["display"]["active_summary"]["speedup"])
+        self.assertEqual("1.1x", payload["display"]["active_summary"]["speedup_text"])
         self.assertEqual("90k", payload["display"]["active_summary"]["output_text"])
         self.assertEqual("slow", payload["sections"]["active"]["summary"]["min"]["worker"])
 

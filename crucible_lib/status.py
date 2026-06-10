@@ -728,13 +728,11 @@ def active_worker_summary_payload(summary: dict[str, Any]) -> dict[str, Any]:
                 "output": int(ordered[-1]["output"]),
                 "output_text": compact_count(int(ordered[-1]["output"])),
             }
-    rates = [float(metric.get("rate", 0.0)) for metric in values if float(metric.get("rate", 0.0)) > 0]
-    if len(values) > 1 and rates:
-        max_rate = max(rates)
-        if max_rate > 0:
-            speedup = sum(rates) / max_rate
-            payload["speedup"] = round(speedup, 3)
-            payload["speedup_text"] = f"{speedup:.1f}x"
+            max_output = int(ordered[-1]["output"])
+            if max_output > 0:
+                speedup = total_output / max_output
+                payload["speedup"] = round(speedup, 3)
+                payload["speedup_text"] = f"{speedup:.1f}x"
     return payload
 
 def run_speedup_field(summary: dict[str, Any]) -> str:
@@ -742,13 +740,13 @@ def run_speedup_field(summary: dict[str, Any]) -> str:
     if len(metrics) <= 1:
         return ""
     values = list(metrics.values())
-    rates = [float(metric.get("rate", 0.0)) for metric in values if float(metric.get("rate", 0.0)) > 0]
-    if not rates:
+    if not any(bool(metric.get("output_seen")) for metric in values):
         return ""
-    max_rate = max(rates)
-    if max_rate <= 0:
+    outputs = [int(metric.get("output", 0)) for metric in values]
+    max_output = max(outputs)
+    if max_output <= 0:
         return ""
-    return f"speedup={sum(rates) / max_rate:.1f}x"
+    return f"speedup={sum(outputs) / max_output:.1f}x"
 
 def run_status_payload(summary: dict[str, Any]) -> dict[str, Any]:
     counts = summary["counts"]
