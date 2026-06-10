@@ -30,6 +30,11 @@ _HTML = r"""<!DOCTYPE html>
     #dot.err { background: var(--red); }
     #coord { color: var(--dim); }
     #ts { color: var(--dim); margin-left: auto; }
+    #sound { background: none; border: 1px solid var(--border); border-radius: 4px;
+             color: var(--dim); font-family: var(--font); font-size: 11px;
+             padding: 1px 7px; cursor: pointer; }
+    #sound.on { color: var(--yel); border-color: rgba(212,168,34,.45); }
+    #sound:hover { color: var(--text); border-color: var(--dim); }
     #err { display: none; padding: 6px 14px; background: rgba(217,95,95,.1);
            color: var(--red); border-bottom: 1px solid rgba(217,95,95,.2); font-size: 13px; }
     #runs { padding: 10px 12px; display: flex; flex-direction: column; gap: 6px; }
@@ -137,6 +142,7 @@ _HTML = r"""<!DOCTYPE html>
     <div id="dot"></div>
     <span id="coord"></span>
     <span id="ts">Loading…</span>
+    <button id="sound" type="button" onclick="toggleSound()" title="Toggle job start sound" aria-pressed="false">ding off</button>
   </header>
   <div id="runs"></div>
   <script>
@@ -188,6 +194,77 @@ _HTML = r"""<!DOCTYPE html>
 
     function statePri(r) {
       return {current:0,failed:1,queued:2,done:3,empty:4}[r.state]??5;
+    }
+
+    let soundEnabled = localStorage.getItem('crucible.sound') === '1';
+    let audioCtx = null;
+    let activeJobKeys = null;
+
+    function updateSoundButton() {
+      const btn = document.getElementById('sound');
+      if (!btn) return;
+      btn.classList.toggle('on', soundEnabled);
+      btn.setAttribute('aria-pressed', soundEnabled ? 'true' : 'false');
+      btn.textContent = soundEnabled ? 'ding on' : 'ding off';
+    }
+
+    function ensureAudioContext() {
+      const Audio = window.AudioContext || window.webkitAudioContext;
+      if (!Audio) return null;
+      if (!audioCtx) audioCtx = new Audio();
+      if (audioCtx.state === 'suspended') audioCtx.resume().catch(()=>{});
+      return audioCtx;
+    }
+
+    function toggleSound() {
+      soundEnabled = !soundEnabled;
+      localStorage.setItem('crucible.sound', soundEnabled ? '1' : '0');
+      if (soundEnabled) ensureAudioContext();
+      updateSoundButton();
+    }
+
+    function playDing() {
+      if (!soundEnabled) return;
+      const ctx = ensureAudioContext();
+      if (!ctx) return;
+      const now = ctx.currentTime;
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(880, now);
+      osc.frequency.exponentialRampToValueAtTime(1320, now + 0.08);
+      gain.gain.setValueAtTime(0.0001, now);
+      gain.gain.exponentialRampToValueAtTime(0.16, now + 0.01);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.18);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(now);
+      osc.stop(now + 0.2);
+    }
+
+    function runningJobKeys(data) {
+      const keys = new Set();
+      for (const run of (data.runs||[])) {
+        for (const task of (run.sections?.active?.tasks||[])) {
+          if ((task.state||'running') !== 'running') continue;
+          keys.add([run.run, task.id ?? task.index, task.worker || ''].join('\x1f'));
+        }
+      }
+      return keys;
+    }
+
+    function notifyStartedJobs(data) {
+      const next = runningJobKeys(data);
+      if (activeJobKeys === null) {
+        activeJobKeys = next;
+        return;
+      }
+      let started = 0;
+      for (const key of next) {
+        if (!activeJobKeys.has(key)) started += 1;
+      }
+      activeJobKeys = next;
+      if (started > 0) playDing();
     }
 
     // URL hash persistence
@@ -583,6 +660,7 @@ _HTML = r"""<!DOCTYPE html>
         const lag = Math.round(Date.now()/1000 - lastFetchTime);
         document.getElementById('ts').textContent = new Date().toLocaleTimeString()
           + (lag > 2 ? ` (${lag}s lag)` : '');
+        notifyStartedJobs(data);
 
         const runs = (data.runs||[]).slice().sort((a,b) => {
           const dp = statePri(a)-statePri(b);
@@ -620,6 +698,10 @@ _HTML = r"""<!DOCTYPE html>
     }
 
     loadFromHash();
+    updateSoundButton();
+    document.addEventListener('click', () => {
+      if (soundEnabled) ensureAudioContext();
+    }, {once: true});
     refresh();
     setInterval(refresh, 5000);
   </script>

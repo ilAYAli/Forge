@@ -257,6 +257,10 @@ except SystemExit as exc:
         self.assertIn("FIELD_TASK_COLS", web._HTML)
         self.assertIn("firstProgressField(t.progress_data", web._HTML)
         self.assertIn("active.fields||[]", web._HTML)
+        self.assertIn("toggleSound()", web._HTML)
+        self.assertIn("notifyStartedJobs(data)", web._HTML)
+        self.assertIn("playDing()", web._HTML)
+        self.assertIn("localStorage.getItem('crucible.sound')", web._HTML)
 
     def test_subcommand_help_is_available(self) -> None:
         commands = [
