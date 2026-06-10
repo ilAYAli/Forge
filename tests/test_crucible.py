@@ -264,6 +264,9 @@ except SystemExit as exc:
         self.assertIn("notify on", web._HTML)
         self.assertNotIn("ding on", web._HTML)
         self.assertIn("loading Crucible status...", web._HTML)
+        self.assertIn(".elo-pos", web._HTML)
+        self.assertIn("function eloFieldClass", web._HTML)
+        self.assertIn("nonEtaFields.map(renderField)", web._HTML)
         self.assertIn("ThreadingHTTPServer", web.ThreadingHTTPServer.__name__)
 
     def test_web_status_api_returns_cached_payload_while_refreshing(self) -> None:
@@ -3156,6 +3159,22 @@ except SystemExit as exc:
             self.assertEqual(
                 f"speedup=\033[{blue}m1.5x\033[0m",
                 crucible.color_status_field("speedup=1.5x", color_enabled=True),
+            )
+            self.assertEqual(
+                "elo=\033[32m+1.8\033[0m",
+                crucible.color_status_field("elo=+1.8", color_enabled=True),
+            )
+            self.assertEqual(
+                "elo=\033[33m0.0\033[0m",
+                crucible.color_status_field("elo=0.0", color_enabled=True),
+            )
+            self.assertEqual(
+                "elo=\033[31m-1.8\033[0m",
+                crucible.color_status_field("elo=-1.8", color_enabled=True),
+            )
+            self.assertEqual(
+                "rows=1/2, elo=\033[31m-1.8\033[0m, eta=\033[33munknown\033[0m",
+                crucible.color_progress_text("rows=1/2, elo=-1.8, eta=unknown", color_enabled=True),
             )
             self.assertEqual(
                 f"run=\033[{blue}mname\033[0m",

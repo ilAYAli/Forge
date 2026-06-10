@@ -68,6 +68,9 @@ _HTML = r"""<!DOCTYPE html>
     .run-desc  { color: var(--dim); }
     .run-fields { color: var(--text); }
     .run-eta   { color: var(--yel); font-weight: 600; }
+    .elo-pos { color: var(--grn); font-weight: 600; }
+    .elo-neu { color: var(--yel); font-weight: 600; }
+    .elo-neg { color: var(--red); font-weight: 600; }
 
     /* progress bar */
     .pbar-wrap { height: 2px; background: var(--bg3); }
@@ -168,6 +171,21 @@ _HTML = r"""<!DOCTYPE html>
     function etaFromFields(fields) {
       const f = (fields||[]).find(f=>f.startsWith('eta='));
       return f ? f.slice(4) : null;
+    }
+
+    function eloClass(value) {
+      const n = parseFloat(String(value).replace(/%$/, ''));
+      if (Number.isNaN(n) || n === 0) return ' elo-neu';
+      return n > 0 ? ' elo-pos' : ' elo-neg';
+    }
+
+    function eloFieldClass(field) {
+      const m = String(field).match(/^elo~?=(.*)$/i);
+      return m ? eloClass(m[1]) : '';
+    }
+
+    function renderField(field) {
+      return `<span class="field${eloFieldClass(field)}">${esc(field)}</span>`;
     }
 
     function fmtAge(s) {
@@ -452,7 +470,11 @@ _HTML = r"""<!DOCTYPE html>
     function taskCell(t, col) {
       const pd = t.progress_data;
       const field = FIELD_TASK_COLS.find(f => f.name === col);
-      if (field) return esc(firstProgressField(pd, field.keys));
+      if (field) {
+        const value = firstProgressField(pd, field.keys);
+        if (field.name === 'elo') return `<span class="${eloClass(value).trim()}">${esc(value)}</span>`;
+        return esc(value);
+      }
       if (col === 'worker') {
         const hbTime = t.state==='stale' && pd?.eta_epoch!=null && pd?.eta_s!=null
           ? pd.eta_epoch - pd.eta_s : null;
@@ -547,8 +569,9 @@ _HTML = r"""<!DOCTYPE html>
 
     function renderChips(str) {
       return '<div class="ws-chips">' + (str||'').split(' ').filter(Boolean).map(tok => {
+        const elo = eloFieldClass(tok);
         const hi = tok.startsWith('speedup=') || tok.startsWith('output=') || tok.startsWith('elo=');
-        return `<span class="chip${hi?' hi':''}">${esc(tok)}</span>`;
+        return `<span class="chip${elo || (hi?' hi':'')}">${esc(tok)}</span>`;
       }).join(' ') + '</div>';
     }
 
@@ -587,7 +610,7 @@ _HTML = r"""<!DOCTYPE html>
         </div>
         <div class="run-summary">
           ${descText ? `<span class="run-desc">${esc(descText)}</span>` : ''}
-          <span class="run-fields">${nonEtaFields.map(esc).join(' &nbsp;')}</span>
+          <span class="run-fields">${nonEtaFields.map(renderField).join(' &nbsp;')}</span>
           ${eta ? `<span class="run-eta" data-etas="${parseEtaStr(eta)??''}">${esc(eta)}</span>` : ''}
         </div>`;
 

@@ -845,14 +845,25 @@ def split_eta_last(fields: list[str]) -> list[str]:
     rest = [field for field in fields if not field.startswith("eta=")]
     return rest + eta
 
+def elo_value_color(value: str) -> str:
+    try:
+        elo = float(value.rstrip("%"))
+    except ValueError:
+        return "yellow"
+    if math.isnan(elo) or elo == 0.0:
+        return "yellow"
+    return "green" if elo > 0.0 else "red"
+
 def status_field_color(field: str, summary: dict[str, Any] | None = None) -> str | None:
-    key = field.split("=", 1)[0]
+    key, sep, value = field.partition("=")
     if key == "tasks":
         if summary and summary["counts"]["fail"]:
             return "red"
         if summary and run_done(summary):
             return "green"
         return "yellow"
+    if key in {"elo", "elo~", "Elo"} and sep:
+        return elo_value_color(value)
     if key in {"fail", "stale"}:
         return "red"
     if key in {"active", "claimed", "pending", "running"}:
@@ -869,6 +880,8 @@ def color_progress_text(text: str, *, color_enabled: bool) -> str:
     for field in fields:
         if field == "finalizing":
             colored.append(colorize(field, "green", enabled=color_enabled))
+        elif field.partition("=")[0] in {"elo", "elo~", "Elo"}:
+            colored.append(color_status_field(field, color_enabled=color_enabled))
         elif field == "eta=unknown":
             colored.append(color_status_field(field, color_enabled=color_enabled))
         elif field.startswith("eta="):
