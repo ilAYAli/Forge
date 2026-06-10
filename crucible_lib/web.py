@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from http.server import BaseHTTPRequestHandler, HTTPServer
+import copy
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
 from .core import *
@@ -660,7 +662,11 @@ _HTML = r"""<!DOCTYPE html>
         const lag = Math.round(Date.now()/1000 - lastFetchTime);
         document.getElementById('ts').textContent = new Date().toLocaleTimeString()
           + (lag > 2 ? ` (${lag}s lag)` : '');
-        notifyStartedJobs(data);
+        if (data.error) {
+          document.getElementById('err').style.display = 'block';
+          document.getElementById('err').textContent = data.error;
+        }
+        if (!data.loading) notifyStartedJobs(data);
 
         const runs = (data.runs||[]).slice().sort((a,b) => {
           const dp = statePri(a)-statePri(b);
@@ -681,6 +687,8 @@ _HTML = r"""<!DOCTYPE html>
         }
         if (runs.length) {
           parts.push(...runs.map(renderRun));
+        } else if (data.loading) {
+          parts.push('<div class="empty">loading Crucible status...</div>');
         } else if (!data.collapsed_failures_count) {
           parts.push('<div class="empty">no active Crucible runs found</div>');
         }
@@ -710,8 +718,14 @@ _HTML = r"""<!DOCTYPE html>
 
 _HTML_BYTES = _HTML.encode()
 
+_STATUS_CACHE_SECONDS = 3.0
+_STATUS_CACHE_LOCK = threading.Lock()
+_STATUS_CACHE: dict[str, Any] | None = None
+_STATUS_CACHE_EPOCH = 0.0
+_STATUS_CACHE_ERROR: str | None = None
+_STATUS_REFRESHING = False
 
-def _api_status() -> bytes:
+def _collect_status_payload() -> dict[str, Any]:
     result = subprocess.run(
         [sys.executable, str(script_path()), "status", "--json"],
         capture_output=True,
@@ -722,8 +736,64 @@ def _api_status() -> bytes:
         raise RuntimeError(result.stderr.strip() or f"crucible status exit {result.returncode}")
     data = json.loads(result.stdout)
     data["coordinator"] = configured_coordinator_runs() or None
-    data["timestamp"] = time.time()
-    return json.dumps(data).encode()
+    return data
+
+def _refresh_status_cache() -> None:
+    global _STATUS_CACHE, _STATUS_CACHE_EPOCH, _STATUS_CACHE_ERROR, _STATUS_REFRESHING
+    try:
+        data = _collect_status_payload()
+        fetched_at = time.time()
+        data["timestamp"] = fetched_at
+        with _STATUS_CACHE_LOCK:
+            _STATUS_CACHE = data
+            _STATUS_CACHE_EPOCH = fetched_at
+            _STATUS_CACHE_ERROR = None
+    except Exception as exc:
+        with _STATUS_CACHE_LOCK:
+            _STATUS_CACHE_ERROR = str(exc)
+    finally:
+        with _STATUS_CACHE_LOCK:
+            _STATUS_REFRESHING = False
+
+def _start_status_refresh() -> None:
+    global _STATUS_REFRESHING
+    with _STATUS_CACHE_LOCK:
+        if _STATUS_REFRESHING:
+            return
+        _STATUS_REFRESHING = True
+    thread = threading.Thread(target=_refresh_status_cache, daemon=True)
+    thread.start()
+
+def _empty_status_payload(*, loading: bool, error: str | None) -> dict[str, Any]:
+    data: dict[str, Any] = {
+        "runs": [],
+        "collapsed_failures": [],
+        "collapsed_failures_count": 0,
+        "coordinator": configured_coordinator_runs() or None,
+        "timestamp": time.time(),
+        "loading": loading,
+        "refreshing": loading,
+    }
+    if error:
+        data["error"] = error
+    return data
+
+def _api_status() -> bytes:
+    now = time.time()
+    with _STATUS_CACHE_LOCK:
+        cached = copy.deepcopy(_STATUS_CACHE)
+        cache_epoch = _STATUS_CACHE_EPOCH
+        error = _STATUS_CACHE_ERROR
+        refreshing = _STATUS_REFRESHING
+    if not refreshing and (cached is None or now - cache_epoch >= _STATUS_CACHE_SECONDS):
+        _start_status_refresh()
+        refreshing = True
+    if cached is None:
+        return json.dumps(_empty_status_payload(loading=True, error=error)).encode()
+    cached["refreshing"] = refreshing
+    if error:
+        cached["error"] = error
+    return json.dumps(cached).encode()
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -798,7 +868,7 @@ def cmd_web(args: argparse.Namespace) -> int:
     port = int(args.port)
     url = f"http://{host}:{port}"
     try:
-        server = HTTPServer((host, port), _Handler)
+        server = ThreadingHTTPServer((host, port), _Handler)
     except OSError as exc:
         if exc.errno == 98 or exc.errno == 48:  # EADDRINUSE
             raise SystemExit(f"port {port} already in use — is crucible web already running?")

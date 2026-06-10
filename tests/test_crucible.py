@@ -263,6 +263,45 @@ except SystemExit as exc:
         self.assertIn("localStorage.getItem('crucible.sound')", web._HTML)
         self.assertIn("notify on", web._HTML)
         self.assertNotIn("ding on", web._HTML)
+        self.assertIn("loading Crucible status...", web._HTML)
+        self.assertIn("ThreadingHTTPServer", web.ThreadingHTTPServer.__name__)
+
+    def test_web_status_api_returns_cached_payload_while_refreshing(self) -> None:
+        import crucible_lib.web as web
+
+        with web._STATUS_CACHE_LOCK:
+            previous = (
+                web._STATUS_CACHE,
+                web._STATUS_CACHE_EPOCH,
+                web._STATUS_CACHE_ERROR,
+                web._STATUS_REFRESHING,
+            )
+            web._STATUS_CACHE = {
+                "runs": [{"run": "cached"}],
+                "collapsed_failures": [],
+                "collapsed_failures_count": 0,
+                "timestamp": 1.0,
+            }
+            web._STATUS_CACHE_EPOCH = 1.0
+            web._STATUS_CACHE_ERROR = None
+            web._STATUS_REFRESHING = False
+        try:
+            with (
+                mock.patch("crucible_lib.web.time.time", return_value=10.0),
+                mock.patch("crucible_lib.web._start_status_refresh") as start_refresh,
+            ):
+                payload = json.loads(web._api_status().decode())
+            start_refresh.assert_called_once_with()
+            self.assertEqual([{"run": "cached"}], payload["runs"])
+            self.assertTrue(payload["refreshing"])
+        finally:
+            with web._STATUS_CACHE_LOCK:
+                (
+                    web._STATUS_CACHE,
+                    web._STATUS_CACHE_EPOCH,
+                    web._STATUS_CACHE_ERROR,
+                    web._STATUS_REFRESHING,
+                ) = previous
 
     def test_subcommand_help_is_available(self) -> None:
         commands = [
