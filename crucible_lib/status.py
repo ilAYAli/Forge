@@ -1040,7 +1040,11 @@ def run_progress_fields(summary: dict[str, Any]) -> list[str]:
     return split_eta_last([
         field
         for field in fields
-        if field.startswith("eta=") or field.split("=", 1)[0] in SPRT_PROGRESS_FIELD_KEYS
+        if (
+            field.startswith("eta=")
+            or field.startswith("games=")
+            or field.split("=", 1)[0] in SPRT_PROGRESS_FIELD_KEYS
+        )
     ])
 
 def section_progress_fields(summary: dict[str, Any]) -> list[str]:

@@ -4320,7 +4320,7 @@ except SystemExit as exc:
             status = self.run_cli("status", str(run))
 
             self.assertEqual(0, status.returncode, status.stderr)
-            self.assertIn("tasks=0/2 elo=+1.0 ci=9.0 los=58.8% draw=43.8%", status.stdout)
+            self.assertIn("tasks=0/2 games=400/2000 elo=+1.0 ci=9.0 los=58.8% draw=43.8%", status.stdout)
             self.assertIn("active: 2 games=400/2000 elo=+1.0 ci=9.0 los=58.8% draw=43.8%", status.stdout)
             self.assertIn("worker-a sprt task=0 [games=100/1000, elo=10.0, ci=20.0, los=70.0, draw=40.0]", status.stdout)
             self.assertIn("worker-b sprt task=1 [games=300/1000, elo=-2.0, ci=10.0, los=55.0, draw=45.0]", status.stdout)
@@ -4366,7 +4366,7 @@ except SystemExit as exc:
             status = self.run_cli("status", str(run))
 
             self.assertEqual(0, status.returncode, status.stderr)
-            self.assertIn("tasks=0/1 elo=-18.3 ci=89.8 los=34.1% draw=36.8%", status.stdout)
+            self.assertIn("tasks=0/1 games=38/50 elo=-18.3 ci=89.8 los=34.1% draw=36.8%", status.stdout)
             self.assertIn("worker-a sprt task=0 [games=38/50, elo=-18.3, ci=89.8, los=34.1, draw=36.8]", status.stdout)
 
     def test_status_eta_counts_down_from_log_timestamp(self) -> None:
@@ -4948,7 +4948,7 @@ except SystemExit as exc:
                 )
                 self.assertEqual(0, rc)
                 text = stdout.getvalue()
-                self.assertIn("  tasks=1/2 eta=1m40s", text)
+                self.assertIn("  tasks=1/2 games=1500/2000 eta=1m40s", text)
                 self.assertIn("  active: 1 games=1500/2000 eta=1m40s", text)
                 self.assertIn("worker-a task=1 [games=500/1000, eta=1m40s]", text)
 
@@ -5021,7 +5021,7 @@ except SystemExit as exc:
                 )
                 self.assertEqual(0, rc)
                 text = stdout.getvalue()
-                self.assertIn("  tasks=1/2 eta=1m39s", text)
+                self.assertIn("  tasks=1/2 games=1000/2000 eta=1m39s", text)
                 self.assertIn("  active: 1 games=1000/2000 eta=1m39s", text)
                 self.assertIn("worker-a task=1 [games=0/1000, eta=1m39s]", text)
 
@@ -5094,7 +5094,7 @@ except SystemExit as exc:
                 )
                 self.assertEqual(0, rc)
                 text = stdout.getvalue()
-                self.assertIn("  tasks=1/2 eta=unknown", text)
+                self.assertIn("  tasks=1/2 games=1000/2000 eta=unknown", text)
                 self.assertIn("  active: 1 games=1000/2000 eta=unknown", text)
                 self.assertIn("worker-a task=1 [games=0/1000, eta=unknown]", text)
 
