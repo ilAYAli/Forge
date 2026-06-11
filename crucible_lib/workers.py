@@ -877,6 +877,45 @@ def cleanup_detached_shell_command(pid_file: str) -> str:
         "fi"
     )
 
+def start_wait_monitor(
+    *,
+    run_dir: Path,
+    manifest_path: Path,
+    args: argparse.Namespace,
+    notify_command: str | None,
+) -> int | None:
+    if not notify_command:
+        return None
+    command = [
+        sys.executable,
+        str(script_path()),
+        "wait",
+        "--manifest", str(manifest_path),
+        "--lease-seconds", str(getattr(args, "lease_seconds", 600)),
+        "--interval-seconds", str(getattr(args, "interval_seconds", 30.0)),
+        "--timeout-seconds", str(getattr(args, "timeout_seconds", 0.0)),
+        "--notify-command", notify_command,
+    ]
+    if not bool(getattr(args, "fail_on_fail", True)):
+        command.append("--no-fail-on-fail")
+    log = (run_dir / "wait.log").open("ab", buffering=0)
+    process = subprocess.Popen(
+        command,
+        stdin=subprocess.DEVNULL,
+        stdout=log,
+        stderr=subprocess.STDOUT,
+        start_new_session=True,
+    )
+    write_json(run_dir / "wait-monitor.json", {
+        "schema": SCHEMA,
+        "pid": process.pid,
+        "command": command,
+        "log": str(run_dir / "wait.log"),
+        "started_at": now(),
+        "started_epoch": epoch(),
+    })
+    return process.pid
+
 def coordinator_host_for_workers(workers: list[dict[str, Any]], coordinator_host: str | None = None) -> str:
     if coordinator_host:
         return coordinator_host
@@ -1324,6 +1363,15 @@ def cmd_deploy(args: argparse.Namespace) -> int:
                 elapsed_seconds=time.monotonic() - started_at,
             ),
         )
+    if failed == 0 and has_tasks and bool(getattr(args, "launch_only", False)):
+        monitor_pid = start_wait_monitor(
+            run_dir=run_dir,
+            manifest_path=manifest_path,
+            args=args,
+            notify_command=notify_command,
+        )
+        if monitor_pid:
+            status(colorize(f"deploy: wait monitor pid={monitor_pid}", "green", enabled=color_enabled))
     commit_payload = getattr(args, "worker_snapshot_commit_payload", None)
     if failed == 0 and commit_payload is not None:
         write_json(workers_path, commit_payload)
@@ -1599,6 +1647,10 @@ def cmd_run_job(args: argparse.Namespace) -> int:
         retry_failed=args.retry_failed,
         task_attempts=getattr(args, "task_attempts", 2),
         notify_command=args.notify_command,
+        lease_seconds=args.lease_seconds,
+        interval_seconds=args.interval_seconds,
+        timeout_seconds=args.timeout_seconds,
+        fail_on_fail=args.fail_on_fail,
         no_color=args.no_color,
         verbose=args.verbose,
     )

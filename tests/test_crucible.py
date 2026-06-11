@@ -6156,6 +6156,84 @@ except SystemExit as exc:
             scripts = [command[-1] for command in commands if command[0] == "sh"]
             self.assertTrue(any("kill -TERM" in script for script in scripts))
 
+    def test_deploy_launch_only_starts_wait_monitor_for_notifications(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            runs = root / "runs"
+            template = root / "template.manifest.json"
+            template.write_text(
+                json.dumps({
+                    "schema": "crucible.task.v1",
+                    "name": "launch-monitor",
+                    "work_dir": str(root),
+                    "requirements": {"python_min": "3.11", "git_min": "2.38"},
+                    "tasks": [{"id": "task_0000", "index": 0, "command": "true", "outputs": []}],
+                }),
+                encoding="utf-8",
+            )
+            workers_path = root / "workers.json"
+            workers_path.write_text(
+                json.dumps({
+                    "schema": "crucible.workers.v1",
+                    "workers": [{"host": "worker-b", "profile": "worker-b", "local": True, "cache_dir": str(root / "cache-b")}],
+                }),
+                encoding="utf-8",
+            )
+
+            def fake_run(self, command, **kwargs):
+                if " work " in command[-1]:
+                    manifest = crucible.load_manifest(runs / "launch-monitor" / "manifest.json")
+                    task = manifest["tasks"][0]
+                    crucible.write_json(crucible.task_running_path(manifest, task), {
+                        "task": task["id"],
+                        "index": task["index"],
+                        "worker": "worker-b",
+                        "state": "running",
+                    })
+                return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+            class FakePopen:
+                def __init__(self, command, **kwargs):
+                    self.pid = 4242
+                    self.command = command
+
+            args = argparse.Namespace(
+                manifest=str(template),
+                workers=str(workers_path),
+                jobs=1,
+                run="launch-monitor",
+                resume=False,
+                replace=False,
+                launch_only=True,
+                remote_timeout_seconds=1800.0,
+                notify_command="notify-me",
+                lease_seconds=600,
+                interval_seconds=7.0,
+                timeout_seconds=0.0,
+                fail_on_fail=True,
+                no_color=True,
+                verbose=False,
+            )
+            with (
+                self.patch_runs_dir(runs),
+                mock.patch("crucible.ProcessTracker.run", fake_run),
+                mock.patch("crucible_lib.workers.run_notify_command", return_value=0),
+                mock.patch("crucible_lib.workers.subprocess.Popen", side_effect=FakePopen) as popen,
+            ):
+                stdout = io.StringIO()
+                with contextlib.redirect_stdout(stdout):
+                    rc = crucible.cmd_deploy(args)
+
+            self.assertEqual(0, rc)
+            self.assertIn("deploy: wait monitor pid=4242", stdout.getvalue())
+            monitor = crucible.read_json(runs / "launch-monitor" / "wait-monitor.json")
+            self.assertEqual(4242, monitor["pid"])
+            self.assertIn("--notify-command", monitor["command"])
+            self.assertIn("notify-me", monitor["command"])
+            self.assertIn("--interval-seconds", monitor["command"])
+            self.assertIn("7.0", monitor["command"])
+            popen.assert_called_once()
+
     def test_deploy_preserves_worker_snapshot_until_success(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
