@@ -65,12 +65,25 @@ and the built-in `templates/` directory.
 crucible template list
 crucible template show sprt
 crucible run sprt --candidate ~/assets/engines/enyo_9696dac --games 1000
+crucible run sprt --candidate ~/assets/engines/enyo_9696dac --games 1000 \
+  --workers pwa-mbp:8,pwa-mbp0:10,pwa-5090:16
 ```
 
 `sprt` derives the Enyo candidate commit from the executable name
 (`enyo_9696dac` -> `9696dac`). Before games start, the materialized manifest
 syncs declared Git requirements, checks out pinned commits, builds and installs
 the candidate/tooling, probes the engines, and syncs the opening book input.
+
+For `crucible run sprt`, inline worker counts are host thread budgets, not raw
+worker slots. Crucible converts each host budget into task slots with:
+
+```text
+slots = floor(thread_budget / (2 * --concurrency * --threads))
+```
+
+With the default `--concurrency 1 --threads 1`, `pwa-mbp:8` launches 4 SPRT
+tasks, not 8, because each task runs candidate and reference engines. Use
+`:0` to disable a host. A non-zero budget smaller than one task is rejected.
 
 Default workers can be configured in `~/.config/crucible/config.yml`:
 
@@ -213,6 +226,10 @@ crucible start manifest.json --workers worker-a:0,worker-b
 Use `:N` to override the slot count for that invocation. Use `:0` to omit a
 worker without rewriting the workers file. Negative and non-integer slot counts
 are invalid.
+
+Exception: `crucible run sprt` treats `:N` and worker-file `slots` as thread
+budgets and derives SPRT task slots from engine cost. Generic `start`, `add`,
+`deploy`, `retry`, and non-SPRT templates still treat `slots` as worker slots.
 
 Workers files as JSON:
 
