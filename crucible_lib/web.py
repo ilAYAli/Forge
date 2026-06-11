@@ -138,6 +138,8 @@ _HTML = r"""<!DOCTYPE html>
     .act:hover { color: var(--text); border-color: var(--dim); }
     .act.stop   { border-color: rgba(217,95,95,.4);  color: var(--red); }
     .act.stop:hover   { background: rgba(217,95,95,.1); }
+    .act.del    { border-color: rgba(217,95,95,.4);  color: var(--red); }
+    .act.del:hover    { background: rgba(217,95,95,.1); }
     .act.resume { border-color: rgba(77,179,106,.4); color: var(--grn); }
     .act.resume:hover { background: rgba(77,179,106,.1); }
   </style>
@@ -154,6 +156,18 @@ _HTML = r"""<!DOCTYPE html>
   <script>
     function esc(s) {
       return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    }
+
+    function attrEsc(s) {
+      return esc(s).replace(/"/g, '&quot;');
+    }
+
+    function jsSingle(s) {
+      return String(s)
+        .replace(/\\/g, '\\\\')
+        .replace(/'/g, "\\'")
+        .replace(/\n/g, '\\n')
+        .replace(/\r/g, '\\r');
     }
 
     function fmtRanges(vals) {
@@ -620,8 +634,12 @@ _HTML = r"""<!DOCTYPE html>
       const descText = display.description || '';
 
       const actions = [];
-      if (state === 'current') actions.push(`<button class="act stop"   onclick="event.stopPropagation();runCmd('${esc(r.run)}','stop',this)">stop</button>`);
-      if (state !== 'done' && state !== 'empty') actions.push(`<button class="act resume" onclick="event.stopPropagation();runCmd('${esc(r.run)}','resume',this)">resume</button>`);
+      const runArg = attrEsc(jsSingle(r.run));
+      const activeCount = Number(active.count || 0);
+      const failCount = Number(fail.count || r.fail || 0);
+      if (state === 'current') actions.push(`<button class="act stop"   onclick="event.stopPropagation();runCmd('${runArg}','stop',this)">stop</button>`);
+      if (state !== 'done' && state !== 'empty') actions.push(`<button class="act resume" onclick="event.stopPropagation();runCmd('${runArg}','resume',this)">resume</button>`);
+      if (failCount > 0 && activeCount === 0) actions.push(`<button class="act del" onclick="event.stopPropagation();runCmd('${runArg}','del',this)">del</button>`);
 
       // header — always visible
       const hdr = `
@@ -924,6 +942,88 @@ def _api_status() -> bytes:
         cached["error"] = error
     return json.dumps(cached).encode()
 
+def _payload_run(payload: dict[str, Any], run: str) -> dict[str, Any] | None:
+    for item in payload.get("runs") or []:
+        if isinstance(item, dict) and str(item.get("run")) == run:
+            return item
+    return None
+
+def _payload_active_count(run: dict[str, Any]) -> int:
+    counts = run.get("counts")
+    if isinstance(counts, dict):
+        return int(counts.get("running") or 0) + int(counts.get("claimed") or 0) + int(counts.get("stale") or 0)
+    sections = run.get("sections")
+    active = sections.get("active") if isinstance(sections, dict) else None
+    if isinstance(active, dict):
+        return int(active.get("count") or 0)
+    return int(run.get("running") or 0) + int(run.get("claimed") or 0) + int(run.get("stale") or 0)
+
+def _payload_fail_count(run: dict[str, Any]) -> int:
+    sections = run.get("sections")
+    fail = sections.get("fail") if isinstance(sections, dict) else None
+    if isinstance(fail, dict):
+        return int(fail.get("count") or 0)
+    counts = run.get("counts")
+    if isinstance(counts, dict):
+        return int(counts.get("fail") or 0)
+    return int(run.get("fail") or 0)
+
+def _validate_web_delete(run: str) -> str | None:
+    payload = _collect_status_payload()
+    item = _payload_run(payload, run)
+    if item is None:
+        raise RuntimeError(f"{run}: run is not visible in status")
+    if _payload_fail_count(item) <= 0:
+        raise RuntimeError(f"{run}: delete is only available for failed runs")
+    if _payload_active_count(item) > 0:
+        raise RuntimeError(f"{run}: run has active tasks; stop it before deleting")
+    coordinator = payload.get("coordinator")
+    return str(coordinator) if coordinator else None
+
+def _run_web_cli(command: list[str], *, coordinator_runs: str | None = None) -> subprocess.CompletedProcess[str]:
+    if coordinator_runs:
+        host, runs_path = parse_coordinator(coordinator_runs)
+        if host:
+            remote = (
+                "command -v crucible >/dev/null 2>&1 || "
+                "{ echo 'crucible not found in PATH on coordinator' >&2; exit 127; }; "
+                f"exec env {shlex.quote(COORDINATOR_RUNS_ENV)}= "
+                f"{shlex.quote(COLOR_ENV)}=never "
+                f"{shlex.quote(RUNS_DIR_ENV)}={shlex.quote(runs_path)} "
+                f"crucible {shell_join(command)}"
+            )
+            return subprocess.run(
+                ["ssh", *_WEB_SSH_OPTS, host, remote],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        env = os.environ.copy()
+        env[COORDINATOR_RUNS_ENV] = ""
+        env[COLOR_ENV] = "never"
+        env[RUNS_DIR_ENV] = runs_path
+        return subprocess.run(
+            [sys.executable, str(script_path()), *command],
+            capture_output=True,
+            text=True,
+            check=False,
+            env=env,
+        )
+    return subprocess.run(
+        [sys.executable, str(script_path()), *command],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+def _run_api_command(run: str, cmd: str) -> subprocess.CompletedProcess[str]:
+    if cmd == "del":
+        coordinator_runs = _validate_web_delete(run)
+        return _run_web_cli(["del", run, "--force"], coordinator_runs=coordinator_runs)
+    if cmd in ("stop", "resume", "retry"):
+        return _run_web_cli([cmd, run])
+    raise ValueError(f"unknown command: {cmd}")
+
 
 class _Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt: str, *args: Any) -> None:
@@ -939,12 +1039,7 @@ class _Handler(BaseHTTPRequestHandler):
                 req = json.loads(self.rfile.read(length))
                 run = str(req["run"])
                 cmd = str(req["cmd"])
-                if cmd not in ("stop", "resume", "retry"):
-                    raise ValueError(f"unknown command: {cmd}")
-                result = subprocess.run(
-                    [sys.executable, str(script_path()), cmd, run],
-                    capture_output=True, text=True, check=False,
-                )
+                result = _run_api_command(run, cmd)
                 body = json.dumps({
                     "ok": result.returncode == 0,
                     "stdout": result.stdout,

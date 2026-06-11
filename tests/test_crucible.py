@@ -333,8 +333,87 @@ except SystemExit as exc:
         self.assertIn("(pd.total - pd.done) / pd.rate", web._HTML)
         self.assertIn("return r.toFixed(4) + '/s'", web._HTML)
         self.assertIn("fmtRate(pd?.rate)", web._HTML)
+        self.assertIn("function attrEsc", web._HTML)
+        self.assertIn("failCount > 0 && activeCount === 0", web._HTML)
+        self.assertIn("runCmd('${runArg}','del',this)", web._HTML)
+        self.assertIn(".act.del", web._HTML)
         self.assertNotIn("games/s", web._HTML)
         self.assertIn("ThreadingHTTPServer", web.ThreadingHTTPServer.__name__)
+
+    def test_web_delete_command_uses_force_for_failed_inactive_run(self) -> None:
+        import crucible_lib.web as web
+
+        payload = {
+            "runs": [
+                {
+                    "run": "failed-run",
+                    "counts": {"done": 0, "fail": 1, "running": 0, "claimed": 0, "stale": 0, "pending": 0},
+                    "sections": {"active": {"count": 0}, "fail": {"count": 1}},
+                },
+            ],
+            "coordinator": None,
+        }
+        completed = subprocess.CompletedProcess(["crucible"], 0, stdout="deleted: failed-run\n", stderr="")
+        with (
+            mock.patch("crucible_lib.web._collect_status_payload", return_value=payload),
+            mock.patch("crucible_lib.web.subprocess.run", return_value=completed) as run_mock,
+        ):
+            result = web._run_api_command("failed-run", "del")
+
+        self.assertIs(completed, result)
+        self.assertEqual(
+            [sys.executable, str(web.script_path()), "del", "failed-run", "--force"],
+            run_mock.call_args.args[0],
+        )
+
+    def test_web_delete_command_targets_visible_coordinator(self) -> None:
+        import crucible_lib.web as web
+
+        payload = {
+            "runs": [
+                {
+                    "run": "failed-run",
+                    "counts": {"done": 0, "fail": 1, "running": 0, "claimed": 0, "stale": 0, "pending": 0},
+                    "sections": {"active": {"count": 0}, "fail": {"count": 1}},
+                },
+            ],
+            "coordinator": "pwa-5090:/runs",
+        }
+        completed = subprocess.CompletedProcess(["ssh"], 0, stdout="deleted: failed-run\n", stderr="")
+        with (
+            mock.patch("crucible_lib.web._collect_status_payload", return_value=payload),
+            mock.patch("crucible_lib.web.subprocess.run", return_value=completed) as run_mock,
+        ):
+            result = web._run_api_command("failed-run", "del")
+
+        self.assertIs(completed, result)
+        command = run_mock.call_args.args[0]
+        self.assertEqual("ssh", command[0])
+        self.assertIn("pwa-5090", command)
+        self.assertIn("CRUCIBLE_RUNS_DIR=/runs", command[-1])
+        self.assertIn("crucible del failed-run --force", command[-1])
+
+    def test_web_delete_command_refuses_active_failed_run(self) -> None:
+        import crucible_lib.web as web
+
+        payload = {
+            "runs": [
+                {
+                    "run": "active-failed",
+                    "counts": {"done": 0, "fail": 1, "running": 1, "claimed": 0, "stale": 0, "pending": 8},
+                    "sections": {"active": {"count": 1}, "fail": {"count": 1}},
+                },
+            ],
+            "coordinator": None,
+        }
+        with (
+            mock.patch("crucible_lib.web._collect_status_payload", return_value=payload),
+            mock.patch("crucible_lib.web.subprocess.run") as run_mock,
+            self.assertRaisesRegex(RuntimeError, "active tasks"),
+        ):
+            web._run_api_command("active-failed", "del")
+
+        run_mock.assert_not_called()
 
     def test_progress_fields_drop_non_finite_values(self) -> None:
         data = crucible.normalize_progress_data({
