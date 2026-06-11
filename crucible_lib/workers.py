@@ -7,6 +7,8 @@ from .status import *
 
 
 DEFAULT_INLINE_WORKER_SLOTS = 8
+SSH_CONFIG_TIMEOUT_SECONDS = 5.0
+_SSH_CONFIG_HOSTNAME_CACHE: dict[str, str | None] = {}
 
 
 def update_worker_label(worker: dict[str, Any]) -> str:
@@ -618,11 +620,64 @@ def local_manifest_for_worker(manifest: dict[str, Any], worker: dict[str, Any]) 
         local_manifest["_active_profile"] = profile
     return local_manifest
 
+def normalize_host_name(value: str) -> str:
+    return value.strip().lower().rstrip(".")
+
 def current_host_names() -> set[str]:
-    return {socket.gethostname(), socket.getfqdn(), "localhost", "127.0.0.1"}
+    names = {socket.gethostname(), socket.getfqdn(), "localhost", "127.0.0.1", "::1"}
+    result = {normalize_host_name(name) for name in names if str(name).strip()}
+    for name in list(result):
+        if name in {"127.0.0.1", "::1"}:
+            continue
+        try:
+            canonical, aliases, _ = socket.gethostbyname_ex(name)
+        except OSError:
+            continue
+        result.add(normalize_host_name(canonical))
+        result.update(normalize_host_name(alias) for alias in aliases)
+    return result
+
+def ssh_config_hostname(host: str) -> str | None:
+    host = host.strip()
+    if not host:
+        return None
+    if host in _SSH_CONFIG_HOSTNAME_CACHE:
+        return _SSH_CONFIG_HOSTNAME_CACHE[host]
+    try:
+        result = subprocess.run(
+            ["ssh", "-G", host],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            check=False,
+            timeout=SSH_CONFIG_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.SubprocessError):
+        _SSH_CONFIG_HOSTNAME_CACHE[host] = None
+        return None
+    if result.returncode != 0:
+        _SSH_CONFIG_HOSTNAME_CACHE[host] = None
+        return None
+    for line in result.stdout.splitlines():
+        key, _, value = line.partition(" ")
+        if key == "hostname" and value.strip():
+            _SSH_CONFIG_HOSTNAME_CACHE[host] = value.strip()
+            return value.strip()
+    _SSH_CONFIG_HOSTNAME_CACHE[host] = None
+    return None
+
+def worker_targets_current_host(worker: dict[str, Any]) -> bool:
+    if is_local_worker(worker):
+        return True
+    current = current_host_names()
+    host = worker_host(worker)
+    if normalize_host_name(host) in current:
+        return True
+    configured = ssh_config_hostname(host)
+    return bool(configured and normalize_host_name(configured) in current)
 
 def worker_is_current_host(worker: dict[str, Any]) -> bool:
-    return str(worker.get("host") or "") in current_host_names()
+    return worker_targets_current_host(worker)
 
 def make_parent_command(worker: dict[str, Any], path: str) -> str:
     code = (
@@ -765,8 +820,16 @@ def deploy_work_command(
 def detached_shell_command(script: str) -> str:
     return "nohup " + shell_join(["sh", "-lc", script]) + " >/dev/null 2>&1 < /dev/null &"
 
+def coordinator_host_for_workers(workers: list[dict[str, Any]], coordinator_host: str | None = None) -> str:
+    if coordinator_host:
+        return coordinator_host
+    for worker in workers:
+        if worker_targets_current_host(worker):
+            return worker_host(worker)
+    return socket.gethostname()
+
 def coordinator_for_worker(worker: dict[str, Any], manifest_path: Path, coordinator_host: str | None = None) -> str:
-    if is_local_worker(worker):
+    if worker_targets_current_host(worker):
         return str(manifest_path)
     host = coordinator_host or socket.gethostname()
     return f"{host}:{manifest_path}"
@@ -889,6 +952,7 @@ def cmd_deploy(args: argparse.Namespace) -> int:
     remote_timeout = max(1.0, float(args.remote_timeout_seconds))
     manifest = load_manifest(manifest_path)
     has_tasks = bool(manifest.get("tasks"))
+    coordinator_host = coordinator_host_for_workers(workers, getattr(args, "coordinator_host", None))
     color_enabled = not bool(args.no_color) and sys.stdout.isatty()
     print_lock = threading.Lock()
     tracker = ProcessTracker()
@@ -915,7 +979,7 @@ def cmd_deploy(args: argparse.Namespace) -> int:
                 verbose_status(f"{label}: synced {synced_inputs} input file(s)")
             verbose_status(f"{label}: checking prerequisites")
             coordinator = (
-                coordinator_for_worker(worker, manifest_path, getattr(args, "coordinator_host", None))
+                coordinator_for_worker(worker, manifest_path, coordinator_host)
                 if has_tasks else None
             )
             script = deploy_prereq_command(worker=worker, manifest=manifest, coordinator=coordinator)
@@ -989,7 +1053,7 @@ def cmd_deploy(args: argparse.Namespace) -> int:
         script = deploy_work_command(
             worker=worker,
             manifest=manifest,
-            coordinator=coordinator_for_worker(worker, manifest_path, getattr(args, "coordinator_host", None)),
+            coordinator=coordinator_for_worker(worker, manifest_path, coordinator_host),
             retry_failed=bool(getattr(args, "retry_failed", False)),
         )
         result = run_worker_shell(worker, script, timeout=remote_timeout, tracker=tracker)
@@ -1007,7 +1071,7 @@ def cmd_deploy(args: argparse.Namespace) -> int:
         script = deploy_work_command(
             worker=worker,
             manifest=manifest,
-            coordinator=coordinator_for_worker(worker, manifest_path, getattr(args, "coordinator_host", None)),
+            coordinator=coordinator_for_worker(worker, manifest_path, coordinator_host),
             retry_failed=bool(getattr(args, "retry_failed", False)),
         )
         result = run_worker_shell(

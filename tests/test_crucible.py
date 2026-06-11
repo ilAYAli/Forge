@@ -5416,6 +5416,27 @@ except SystemExit as exc:
         self.assertEqual("pwa-5090.local:/tmp/run/manifest.json", remote)
         self.assertEqual("/tmp/run/manifest.json", local)
 
+    def test_coordinator_host_defaults_to_current_worker_alias(self) -> None:
+        manifest = Path("/tmp/run/manifest.json")
+        coordinator = {"host": "pwa-mbp", "profile": "pwa-mbp", "local": False}
+        remote = {"host": "pwa-5090", "profile": "pwa-5090", "local": False}
+
+        def fake_ssh_config_hostname(host: str) -> str | None:
+            return "localhost" if host == "pwa-mbp" else host
+
+        with (
+            mock.patch("crucible_lib.workers.socket.gethostname", return_value="raw-host"),
+            mock.patch("crucible_lib.workers.socket.getfqdn", return_value="raw-host"),
+            mock.patch("crucible_lib.workers.ssh_config_hostname", side_effect=fake_ssh_config_hostname),
+        ):
+            host = crucible.coordinator_host_for_workers([coordinator, remote])
+            local_coordinator = crucible.coordinator_for_worker(coordinator, manifest, host)
+            remote_coordinator = crucible.coordinator_for_worker(remote, manifest, host)
+
+        self.assertEqual("pwa-mbp", host)
+        self.assertEqual("/tmp/run/manifest.json", local_coordinator)
+        self.assertEqual("pwa-mbp:/tmp/run/manifest.json", remote_coordinator)
+
     def test_deploy_materializes_contained_run(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
