@@ -77,6 +77,7 @@ Default workers can be configured in `~/.config/crucible/config.yml`:
 ```yaml
 default_workers: "pwa-mbp:8,pwa-mbp0:8,pwa-5090:8"
 coordinator_host: "pwa-mbp"
+notify_command: "/path/to/notify-script"
 template_dirs:
   - "~/.config/crucible/templates"
 ```
@@ -330,9 +331,10 @@ options when long-running tools emit parseable progress.
 
 ## Notifications
 
-`start`, `deploy`, and `wait` support `--notify-command`, or
-`CRUCIBLE_NOTIFY_COMMAND`. The command receives one JSON payload on stdin and in
-`CRUCIBLE_EVENT_JSON`. Crucible does not assume any notification service.
+`run`, `start`, `deploy`, and `wait` support `--notify-command`,
+`CRUCIBLE_NOTIFY_COMMAND`, or `notify_command` in
+`~/.config/crucible/config.yml`. The command receives one JSON payload on stdin
+and in `CRUCIBLE_EVENT_JSON`. Crucible does not assume any notification service.
 
 For long jobs, make each task write declared log outputs, add a task label, add
 progress parsing when possible, and pass a notification command so completion or

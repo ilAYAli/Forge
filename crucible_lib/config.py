@@ -6,6 +6,7 @@ from .core import *
 CONFIG_ENV = "CRUCIBLE_CONFIG"
 WORKERS_ENV = "CRUCIBLE_WORKERS"
 COORDINATOR_HOST_ENV = "CRUCIBLE_COORDINATOR_HOST"
+NOTIFY_ENV = "CRUCIBLE_NOTIFY_COMMAND"
 CONFIG_DIR = Path("~/.config/crucible")
 CONFIG_YML = "config.yml"
 CONFIG_TOML = "config.toml"
@@ -148,6 +149,8 @@ def default_coordinator_host(config: dict[str, Any] | None = None) -> str | None
 
 
 def default_notify_command(config: dict[str, Any] | None = None) -> str | None:
+    if value := os.environ.get(NOTIFY_ENV):
+        return value.strip() or None
     config = config if config is not None else load_config()
     value = config.get("notify_command") or config.get("default_notify_command")
     return str(value).strip() if value else None

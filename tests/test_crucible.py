@@ -386,14 +386,16 @@ except SystemExit as exc:
             config.write_text(
                 f'default_workers: "worker-a:2,worker-b:3"\n'
                 f'coordinator_host: "coordinator-a"\n'
+                f'notify_command: "notify-me"\n'
                 f"template_dirs:\n"
                 f"  - \"{root / 'templates'}\"\n",
                 encoding="utf-8",
             )
-            with mock.patch.dict(os.environ, {"CRUCIBLE_CONFIG": str(config)}, clear=False):
+            with mock.patch.dict(os.environ, {"CRUCIBLE_CONFIG": str(config), "CRUCIBLE_NOTIFY_COMMAND": ""}, clear=False):
                 payload = crucible.load_config()
                 self.assertEqual("worker-a:2,worker-b:3", crucible.default_workers_arg(payload))
                 self.assertEqual("coordinator-a", crucible.default_coordinator_host(payload))
+                self.assertEqual("notify-me", crucible.default_notify_command(payload))
                 self.assertEqual(root / "templates", crucible.config_template_dirs(payload)[0])
 
     def test_template_expands_without_exposing_task_ids(self) -> None:
@@ -504,6 +506,7 @@ except SystemExit as exc:
             config.write_text(
                 f'default_workers: "worker-a:2"\n'
                 f'coordinator_host: "coordinator-a"\n'
+                f'notify_command: "notify-me"\n'
                 f"template_dirs:\n"
                 f"  - \"{root / 'templates'}\"\n",
                 encoding="utf-8",
@@ -515,7 +518,7 @@ except SystemExit as exc:
                 return 0
 
             with (
-                mock.patch.dict(os.environ, {"CRUCIBLE_CONFIG": str(config)}, clear=False),
+                mock.patch.dict(os.environ, {"CRUCIBLE_CONFIG": str(config), "CRUCIBLE_NOTIFY_COMMAND": ""}, clear=False),
                 mock.patch("crucible_lib.workers.cmd_run_job", side_effect=fake_run_job),
             ):
                 rc = crucible.cmd_template_run(argparse.Namespace(
@@ -526,6 +529,7 @@ except SystemExit as exc:
             self.assertEqual(0, rc)
             self.assertEqual("worker-a:2", captured["args"].workers)
             self.assertEqual("coordinator-a", captured["args"].coordinator_host)
+            self.assertEqual("notify-me", captured["args"].notify_command)
 
     def test_subcommand_help_is_available(self) -> None:
         commands = [
@@ -3459,6 +3463,38 @@ except SystemExit as exc:
         self.assertIn("CRUCIBLE_COLOR=never", command[-1])
         self.assertIn("--json", command[-1])
 
+    def test_status_prefers_existing_local_named_run(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runs = Path(tmp) / "runs"
+            self.write_retry_run(runs, "local-run", failed=False)
+            with (
+                self.patch_runs_dir(runs),
+                mock.patch.dict(
+                    os.environ,
+                    {"CRUCIBLE_COORDINATOR_RUNS": "pwa-5090:/home/petter/code/cpp/chess/crucible/runs"},
+                ),
+                mock.patch("crucible.subprocess.run") as run_mock,
+            ):
+                stdout = io.StringIO()
+                with contextlib.redirect_stdout(stdout):
+                    rc = crucible.cmd_status(
+                        argparse.Namespace(
+                            run="local-run",
+                            all=False,
+                            done=False,
+                            failed=False,
+                            json=False,
+                            no_color=True,
+                            lease_seconds=600,
+                            show_done=False,
+                            verbose=False,
+                        )
+                    )
+
+            self.assertEqual(0, rc)
+            self.assertIn("run=local-run", stdout.getvalue())
+            run_mock.assert_not_called()
+
     def test_status_delegation_forces_color_when_local_output_is_colored(self) -> None:
         remote_result = subprocess.CompletedProcess(
             args=["ssh"],
@@ -5799,9 +5835,12 @@ except SystemExit as exc:
                 }),
                 encoding="utf-8",
             )
+            config = root / "config.yml"
+            config.write_text('notify_command: "notify-me"\n', encoding="utf-8")
             payloads: list[dict[str, object]] = []
 
             def capture_notify(command: str | None, payload: dict[str, object]) -> int:
+                self.assertEqual("notify-me", command)
                 payloads.append(payload)
                 return 0
 
@@ -5813,12 +5852,13 @@ except SystemExit as exc:
                 resume=False,
                 replace=False,
                 remote_timeout_seconds=1800.0,
-                notify_command="notify-me",
+                notify_command=None,
                 no_color=True,
                 verbose=False,
             )
             with (
                 self.patch_runs_dir(runs),
+                mock.patch.dict(os.environ, {"CRUCIBLE_CONFIG": str(config), "CRUCIBLE_NOTIFY_COMMAND": ""}, clear=False),
                 mock.patch("crucible.ProcessTracker.run", return_value=subprocess.CompletedProcess(["sh"], 0, stdout="", stderr="")),
                 mock.patch("crucible_lib.workers.run_notify_command", capture_notify),
             ):
@@ -6201,9 +6241,24 @@ except SystemExit as exc:
                 encoding="utf-8",
             )
             commands = []
+            events: list[str] = []
+            event_lock = threading.Lock()
+            second_work_started = threading.Event()
 
             def fake_run(self, command, **kwargs):
                 commands.append(command)
+                script = command[-1]
+                if command[0] == "sh" and " work " in script:
+                    with event_lock:
+                        work_index = sum(1 for event in events if event.startswith("work_start"))
+                        events.append(f"work_start_{work_index}")
+                    if work_index == 0:
+                        if second_work_started.wait(1):
+                            events.append("first_work_saw_second")
+                        else:
+                            events.append("first_work_timed_out")
+                    else:
+                        second_work_started.set()
                 return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
 
             with self.patch_runs_dir(root / "runs"), mock.patch("crucible.ProcessTracker.run", fake_run):
@@ -6213,7 +6268,7 @@ except SystemExit as exc:
                         argparse.Namespace(
                             manifest=str(manifest),
                             workers=str(workers_path),
-                            jobs=2,
+                            jobs=1,
                             run="deploy-slots-test",
                             resume=False,
                             replace=True,
@@ -6225,7 +6280,7 @@ except SystemExit as exc:
 
             self.assertEqual(0, rc)
             output = stdout.getvalue()
-            self.assertIn("deploy: run=deploy-slots-test workers=2 jobs=2", output)
+            self.assertIn("deploy: run=deploy-slots-test workers=2 jobs=1", output)
             self.assertIn("  OK     localhost#1: tasks", output)
             self.assertIn("  OK     localhost#2: tasks", output)
             work_scripts = [command[-1] for command in commands if command[0] == "sh" and " work " in command[-1]]
@@ -6233,6 +6288,8 @@ except SystemExit as exc:
             self.assertEqual(1, len(doctor_scripts))
             self.assertEqual(2, len(work_scripts))
             self.assertTrue(all("--worker localhost" in script for script in work_scripts))
+            self.assertIn("first_work_saw_second", events)
+            self.assertNotIn("first_work_timed_out", events)
 
     def test_deploy_waits_for_all_prereqs_before_work(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

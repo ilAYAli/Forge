@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from .config import default_notify_command
 from .core import *
 from .manifest import *
 from .tasks import *
@@ -1126,7 +1127,7 @@ def cmd_deploy(args: argparse.Namespace) -> int:
             ),
             error=True,
         )
-    executor = concurrent.futures.ThreadPoolExecutor(max_workers=jobs)
+    executor: concurrent.futures.ThreadPoolExecutor | None = concurrent.futures.ThreadPoolExecutor(max_workers=jobs)
     interrupted = False
     futures: list[concurrent.futures.Future[dict[str, Any]]] = []
     try:
@@ -1139,22 +1140,25 @@ def cmd_deploy(args: argparse.Namespace) -> int:
         setup_failed = sum(1 for item in setup_results_list if not item["ok"])
         if setup_failed or not has_tasks:
             results = setup_results_list
-        elif bool(getattr(args, "launch_only", False)):
-            status(colorize("deploy: setup complete; launching workers", "green", enabled=color_enabled))
-            futures = [
-                executor.submit(launch_worker, index, worker)
-                for index, worker in enumerate(workers)
-            ]
-            results = [future.result() for future in concurrent.futures.as_completed(futures)]
-            print_results(results)
         else:
-            status(colorize("deploy: setup complete; starting tasks", "green", enabled=color_enabled))
-            futures = [
-                executor.submit(run_worker, index, worker)
-                for index, worker in enumerate(workers)
-            ]
-            results = [future.result() for future in concurrent.futures.as_completed(futures)]
-            print_results(results)
+            executor.shutdown(wait=True)
+            executor = concurrent.futures.ThreadPoolExecutor(max_workers=max(1, len(workers)))
+            if bool(getattr(args, "launch_only", False)):
+                status(colorize("deploy: setup complete; launching workers", "green", enabled=color_enabled))
+                futures = [
+                    executor.submit(launch_worker, index, worker)
+                    for index, worker in enumerate(workers)
+                ]
+                results = [future.result() for future in concurrent.futures.as_completed(futures)]
+                print_results(results)
+            else:
+                status(colorize("deploy: setup complete; starting tasks", "green", enabled=color_enabled))
+                futures = [
+                    executor.submit(run_worker, index, worker)
+                    for index, worker in enumerate(workers)
+                ]
+                results = [future.result() for future in concurrent.futures.as_completed(futures)]
+                print_results(results)
     except KeyboardInterrupt:
         interrupted = True
         status(colorize("deploy: interrupted; stopping active worker commands", "yellow", enabled=color_enabled), error=True)
@@ -1164,7 +1168,8 @@ def cmd_deploy(args: argparse.Namespace) -> int:
             future.cancel()
         return 130
     finally:
-        executor.shutdown(wait=not interrupted, cancel_futures=interrupted)
+        if executor is not None:
+            executor.shutdown(wait=not interrupted, cancel_futures=interrupted)
 
     failed = sum(1 for item in results if not item["ok"])
     if not has_tasks:
@@ -1175,7 +1180,7 @@ def cmd_deploy(args: argparse.Namespace) -> int:
         status(colorize("deploy: launch complete", "green", enabled=color_enabled) if failed == 0 else colorize("deploy: launch failed", "red", enabled=color_enabled))
     else:
         status(colorize("deploy: tasks complete", "green", enabled=color_enabled) if failed == 0 else colorize("deploy: tasks failed", "red", enabled=color_enabled))
-    notify_command = getattr(args, "notify_command", None) or os.environ.get("CRUCIBLE_NOTIFY_COMMAND")
+    notify_command = getattr(args, "notify_command", None) or default_notify_command()
     if notify_command:
         run_notify_command(
             notify_command,

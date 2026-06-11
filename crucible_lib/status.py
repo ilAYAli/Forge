@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 
+from .config import default_notify_command
 from .core import *
 from .manifest import *
 from .tasks import *
@@ -57,7 +58,7 @@ def status_can_delegate(run: str | None) -> bool:
     if run is None:
         return True
     path = Path(str(run))
-    return not path.is_absolute() and len(path.parts) == 1
+    return not path.is_absolute() and len(path.parts) == 1 and not run_manifest_path(run).is_file()
 
 def status_command_args(args: argparse.Namespace, *, force_json: bool = False) -> list[str]:
     command = ["status"]
@@ -1786,7 +1787,7 @@ def cmd_wait(args: argparse.Namespace) -> int:
     started_at = time.monotonic()
     manifest_path = expand_path(args.manifest)
     deadline = time.monotonic() + args.timeout_seconds if args.timeout_seconds > 0 else None
-    notify_command = getattr(args, "notify_command", None) or os.environ.get("CRUCIBLE_NOTIFY_COMMAND")
+    notify_command = getattr(args, "notify_command", None) or default_notify_command()
     last_line = ""
 
     def notify(event: str, state: str, rc: int, manifest: dict[str, Any]) -> None:
