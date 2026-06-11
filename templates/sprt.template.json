@@ -21,6 +21,18 @@
       "worker_path": true,
       "help": "Reference UCI engine executable"
     },
+    "candidate_uci": {
+      "repeatable": true,
+      "arg": "--candidate-uci",
+      "quote": false,
+      "help": "Extra candidate UCI option NAME=VALUE. Repeatable."
+    },
+    "reference_uci": {
+      "repeatable": true,
+      "arg": "--reference-uci",
+      "quote": false,
+      "help": "Extra reference UCI option NAME=VALUE. Repeatable."
+    },
     "book": {
       "default": "~/assets/books/AntiDraw_V2.1/WOMP_Openings_V1/WOMP_V1_+150_+159/WOMP_V1_6mvs_big_+140_+169.epd",
       "worker_path": true,
@@ -159,7 +171,7 @@
     },
     "label": "sprt:{chunk}",
     "output": "{output_dir}/{task_name}/logs/{task_name}.log",
-    "command": "~/.local/bin/sprt --candidate {candidate} --reference {reference} --book {book} --games {chunk} --concurrency {concurrency} --threads {threads} --tc {tc} --restart {restart} --fastchess ~/.local/bin/fastchess --log-dir {output_dir}/{task_name}/logs --name {task_name} --no-ntfy --no-eta",
+    "command": "~/.local/bin/sprt --candidate {candidate} --reference {reference} {candidate_uci_args} {reference_uci_args} --book {book} --games {chunk} --concurrency {concurrency} --threads {threads} --tc {tc} --restart {restart} --fastchess ~/.local/bin/fastchess --log-dir {output_dir}/{task_name}/logs --name {task_name} --no-ntfy --no-eta",
     "progress": {
       "unit": "games",
       "log_regex": "\\[\\s*(?P<done>\\d+)\\/(?P<total>\\d+)\\].*?Elo\\s+(?P<elo>[-+]?\\d+(?:\\.\\d+)?|[-+]?inf).*?\\+/-\\s+(?P<ci>\\d+(?:\\.\\d+)?).*?LOS\\s+(?P<los>\\d+(?:\\.\\d+)?)%.*?draw\\s+(?P<draw>\\d+(?:\\.\\d+)?)%(?:.*?ETA\\s+(?P<eta>\\S+))?"

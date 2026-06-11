@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shlex
 import tempfile
 
 from .config import *
@@ -48,6 +49,11 @@ def template_files() -> list[Path]:
 
 
 def template_path(name: str) -> Path:
+    explicit_path = Path(name).expanduser()
+    if explicit_path.is_absolute() or os.sep in name:
+        if not explicit_path.is_file():
+            raise SystemExit(f"template not found: {name}")
+        return explicit_path
     if not RUN_NAME_RE.fullmatch(name):
         raise SystemExit(f"{name!r}: invalid template name")
     for path in template_files():
@@ -88,6 +94,34 @@ def template_arg_name(name: str) -> str:
     return "--" + name.replace("_", "-")
 
 
+def repeatable_arg_shell_values(template: dict[str, Any], values: dict[str, Any]) -> dict[str, str]:
+    result: dict[str, str] = {}
+    params = template.get("parameters", {})
+    if not isinstance(params, dict):
+        return result
+    for name, spec in params.items():
+        if not isinstance(spec, dict) or not bool(spec.get("repeatable", False)):
+            continue
+        key = str(name)
+        raw_items = values.get(key) or []
+        if isinstance(raw_items, str):
+            raw_items = [raw_items]
+        flag = str(spec.get("arg") or template_arg_name(key))
+        if bool(spec.get("quote", True)):
+            result[f"{key}_args"] = " ".join(
+                shlex.join([flag, str(item)])
+                for item in raw_items
+                if str(item)
+            )
+        else:
+            result[f"{key}_args"] = " ".join(
+                f"{flag} {item}"
+                for item in raw_items
+                if str(item)
+            )
+    return result
+
+
 def worker_path_parameter(value: str) -> str:
     home = str(Path.home())
     if value == home:
@@ -110,12 +144,19 @@ def parse_template_parameters(template_name: str, template: dict[str, Any], raw_
         if not isinstance(spec, dict):
             raise SystemExit(f"{template_name}: parameters.{name} must be an object")
         value_type = str(spec.get("type") or "str")
+        repeatable = bool(spec.get("repeatable", False))
         kwargs: dict[str, Any] = {
             "dest": name,
             "required": bool(spec.get("required", False)) and "default" not in spec,
             "help": str(spec.get("help") or ""),
         }
-        if "default" in spec:
+        if repeatable:
+            default = spec.get("default", [])
+            if not isinstance(default, list):
+                raise SystemExit(f"{template_name}: repeatable parameter {name} default must be a list")
+            kwargs["action"] = "append"
+            kwargs["default"] = list(default)
+        elif "default" in spec:
             kwargs["default"] = spec["default"]
         if value_type == "int":
             kwargs["type"] = int
@@ -134,6 +175,11 @@ def parse_template_parameters(template_name: str, template: dict[str, Any], raw_
         value = values.get(str(name))
         if isinstance(value, str):
             values[str(name)] = worker_path_parameter(value)
+        elif isinstance(value, list):
+            values[str(name)] = [
+                worker_path_parameter(item) if isinstance(item, str) else item
+                for item in value
+            ]
     return values
 
 
@@ -228,6 +274,7 @@ def run_name_values(template_name: str, params: dict[str, Any]) -> dict[str, Any
 
 def expand_template(template_name: str, template_path_: Path, template: dict[str, Any], params: dict[str, Any]) -> dict[str, Any]:
     values = run_name_values(template_name, params)
+    values.update(repeatable_arg_shell_values(template, values))
     kind = str(template.get("kind") or template_name)
     name_template = str(template.get("run_name") or f"{template_name}-{{timestamp}}")
     run_name = validate_run_name(str(safe_format(name_template, values)))
@@ -456,8 +503,9 @@ def cmd_template_run(args: argparse.Namespace) -> int:
     config = load_config()
     path = template_path(args.template)
     template = load_template(path)
-    params = parse_template_parameters(args.template, template, template_args)
-    manifest = expand_template(args.template, path, template, params)
+    template_name = template_display_name(path, template)
+    params = parse_template_parameters(template_name, template, template_args)
+    manifest = expand_template(template_name, path, template, params)
     if run_options.print_manifest or run_options.dry_run:
         print(json.dumps(manifest, indent=2, sort_keys=True))
         return 0
@@ -468,7 +516,7 @@ def cmd_template_run(args: argparse.Namespace) -> int:
     with tempfile.TemporaryDirectory(prefix="crucible-template-") as tmp:
         manifest_path = Path(tmp) / f"{manifest['name']}.manifest.json"
         write_json(manifest_path, manifest)
-        if args.template == "sprt":
+        if template_name == "sprt":
             workers_path = Path(tmp) / "workers.json"
             write_json(workers_path, sprt_worker_thread_budget_payload(workers_arg, params))
             workers_arg = str(workers_path)

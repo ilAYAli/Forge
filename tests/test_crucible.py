@@ -602,6 +602,42 @@ except SystemExit as exc:
 
         self.assertEqual("~/input.dat", params["item"])
 
+    def test_template_repeatable_parameters_render_shell_args(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            templates = root / "templates"
+            templates.mkdir(parents=True)
+            template_path = templates / "repeat.template.json"
+            template_path.write_text(
+                json.dumps({
+                    "schema": "crucible.template.v1",
+                    "name": "repeat",
+                    "parameters": {
+                        "opt": {
+                            "repeatable": True,
+                            "arg": "--engine-option",
+                        },
+                    },
+                    "task": {
+                        "split": {"count": 1},
+                        "command": "run {opt_args}",
+                    },
+                }),
+                encoding="utf-8",
+            )
+            template = crucible.load_template(template_path)
+            params = crucible.parse_template_parameters(
+                "repeat",
+                template,
+                ["--opt", "nnue_file=/tmp/a.nn", "--opt", "Debug Log File=/tmp/a b.log"],
+            )
+            manifest = crucible.expand_template("repeat", template_path, template, params)
+
+        self.assertEqual(
+            "run --engine-option nnue_file=/tmp/a.nn --engine-option 'Debug Log File=/tmp/a b.log'",
+            manifest["tasks"][0]["command"],
+        )
+
     def test_template_derives_commit_from_hashed_path_stem(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -676,6 +712,39 @@ except SystemExit as exc:
             shown = self.run_cli("template", "show", "demo", env=env)
             self.assertEqual(0, shown.returncode, shown.stderr)
             self.assertEqual("crucible.template.v1", json.loads(shown.stdout)["schema"])
+
+            shown_by_path = self.run_cli("template", "show", str(root / "templates" / "demo.template.json"), env=env)
+            self.assertEqual(0, shown_by_path.returncode, shown_by_path.stderr)
+            self.assertEqual("demo", json.loads(shown_by_path.stdout)["name"])
+
+    def test_run_template_accepts_explicit_template_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            template_path = self.write_test_template(root)
+            config = root / "config.yml"
+            config.write_text(
+                f'default_workers: "worker-a:2"\n'
+                f"template_dirs:\n"
+                f"  - \"{root / 'templates'}\"\n",
+                encoding="utf-8",
+            )
+            captured = {}
+
+            def fake_run_job(args):
+                captured["args"] = args
+                return 0
+
+            with (
+                mock.patch.dict(os.environ, {"CRUCIBLE_CONFIG": str(config), "CRUCIBLE_NOTIFY_COMMAND": ""}, clear=False),
+                mock.patch("crucible_lib.workers.cmd_run_job", side_effect=fake_run_job),
+            ):
+                rc = crucible.cmd_template_run(argparse.Namespace(
+                    template=str(template_path),
+                    template_args=["--item", "/tmp/input.dat", "--total", "10"],
+                ))
+
+            self.assertEqual(0, rc)
+            self.assertEqual("worker-a:2", captured["args"].workers)
 
     def test_run_template_uses_default_workers(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -778,6 +847,28 @@ except SystemExit as exc:
             ],
             payload["workers"],
         )
+
+    def test_sprt_template_passes_candidate_and_reference_uci_options(self) -> None:
+        template_path = ROOT / "templates" / "sprt.template.json"
+        template = crucible.load_template(template_path)
+        params = crucible.parse_template_parameters(
+            "sprt",
+            template,
+            [
+                "--candidate", "~/assets/engines/enyo_9696dac",
+                "--reference", "~/assets/engines/reference",
+                "--games", "50",
+                "--candidate-uci", "nnue_file=~/code/cpp/chess/enyo/net/candidate.nn",
+                "--candidate-uci", "Hash=128",
+                "--reference-uci", "nnue_file=~/code/cpp/chess/enyo/net/reference.nn",
+            ],
+        )
+        manifest = crucible.expand_template("sprt", template_path, template, params)
+        command = manifest["tasks"][0]["command"]
+
+        self.assertIn("--candidate-uci nnue_file=~/code/cpp/chess/enyo/net/candidate.nn", command)
+        self.assertIn("--candidate-uci Hash=128", command)
+        self.assertIn("--reference-uci nnue_file=~/code/cpp/chess/enyo/net/reference.nn", command)
 
     def test_subcommand_help_is_available(self) -> None:
         commands = [

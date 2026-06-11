@@ -67,12 +67,18 @@ crucible template show sprt
 crucible run sprt --candidate ~/assets/engines/enyo_9696dac --games 1000
 crucible run sprt --candidate ~/assets/engines/enyo_9696dac --games 1000 \
   --workers pwa-mbp:8,pwa-mbp0:10,pwa-5090:16
+crucible run sprt --candidate ~/assets/engines/enyo_9696dac --games 1000 \
+  --candidate-uci nnue_file=~/code/cpp/chess/enyo/net/candidate.nn \
+  --reference-uci nnue_file=~/code/cpp/chess/enyo/net/reference.nn
 ```
 
 `sprt` derives the Enyo candidate commit from the executable name
 (`enyo_9696dac` -> `9696dac`). Before games start, the materialized manifest
 syncs declared Git requirements, checks out pinned commits, builds and installs
 the candidate/tooling, probes the engines, and syncs the opening book input.
+Use `--candidate-uci` and `--reference-uci` for net-vs-net runs where both
+sides use the same engine binary but different NNUE files. These flags are
+repeatable and are passed through to the underlying `sprt` command.
 
 For `crucible run sprt`, inline worker counts are host thread budgets, not raw
 worker slots. Crucible converts each host budget into task slots with:
