@@ -448,12 +448,12 @@ _HTML = r"""<!DOCTYPE html>
       return Math.max(0, remaining);
     }
 
-    function fmtRate(r, unit) {
+    function fmtRate(r) {
       if (r == null || r <= 0) return '';
-      const u = unit || '';
-      if (r >= 100)  return Math.round(r) + (u ? ' '+u+'/s' : '/s');
-      if (r >= 1)    return r.toFixed(1)  + (u ? ' '+u+'/s' : '/s');
-      return r.toFixed(2) + (u ? ' '+u+'/s' : '/s');
+      if (r >= 100) return Math.round(r) + '/s';
+      if (r >= 1) return r.toFixed(1) + '/s';
+      if (r >= 0.01) return r.toFixed(2) + '/s';
+      return r.toFixed(4) + '/s';
     }
 
     function firstProgressField(pd, keys) {
@@ -509,7 +509,7 @@ _HTML = r"""<!DOCTYPE html>
       if (col === 'task') return String(t.index);
       if (col === 'progress') return esc(taskProgressText(t));
       if (col === 'output') return esc(pd?.output!=null ? String(pd.output) : '');
-      if (col === 'rate') return esc(fmtRate(pd?.rate, pd?.unit));
+      if (col === 'rate') return esc(fmtRate(pd?.rate));
       if (col === 'eta') {
         const etaSec = remainingEtaS(pd);
         return etaSec!=null ? esc(fmtEta(etaSec)) : '';

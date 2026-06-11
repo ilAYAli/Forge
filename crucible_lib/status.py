@@ -1480,6 +1480,8 @@ def normalize_progress_fields(raw: Any) -> dict[str, str]:
     for key, value in raw.items():
         name = str(key).strip()
         text = str(value).strip() if value is not None else ""
+        if text.lower() in {"nan", "+nan", "-nan", "inf", "+inf", "-inf"}:
+            continue
         if name and text:
             fields[name] = text
     return fields

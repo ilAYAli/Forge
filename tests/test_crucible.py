@@ -305,7 +305,27 @@ except SystemExit as exc:
         self.assertIn("nonEtaFields.map(renderField)", web._HTML)
         self.assertIn("function progressEtaFromRate", web._HTML)
         self.assertIn("(pd.total - pd.done) / pd.rate", web._HTML)
+        self.assertIn("return r.toFixed(4) + '/s'", web._HTML)
+        self.assertIn("fmtRate(pd?.rate)", web._HTML)
+        self.assertNotIn("games/s", web._HTML)
         self.assertIn("ThreadingHTTPServer", web.ThreadingHTTPServer.__name__)
+
+    def test_progress_fields_drop_non_finite_values(self) -> None:
+        data = crucible.normalize_progress_data({
+            "kind": "metadata",
+            "done": 2,
+            "total": 50,
+            "unit": "games",
+            "fields": {
+                "elo": "-0.0",
+                "ci": "nan",
+                "los": "50.0%",
+                "bad": "-inf",
+            },
+        })
+
+        self.assertIsNotNone(data)
+        self.assertEqual({"elo": "-0.0", "los": "50.0%"}, data["fields"])
 
     def test_web_status_api_returns_cached_payload_while_refreshing(self) -> None:
         import crucible_lib.web as web
