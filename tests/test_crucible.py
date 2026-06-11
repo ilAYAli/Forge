@@ -6102,6 +6102,62 @@ except SystemExit as exc:
             self.assertIn("  OK     worker-a#2: setup", stdout.getvalue())
             self.assertIn("  OK     worker-b: setup", stdout.getvalue())
 
+    def test_deploy_retries_transient_setup_ssh_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            runs = root / "runs"
+            template = root / "template.manifest.json"
+            template.write_text(
+                json.dumps({
+                    "schema": "crucible.task.v1",
+                    "name": "transient-setup",
+                    "work_dir": str(root),
+                    "requirements": {"python_min": "3.11", "git_min": "2.38"},
+                    "tasks": [],
+                }),
+                encoding="utf-8",
+            )
+            calls = []
+            failed_once = False
+
+            def fake_run(self, command, **kwargs):
+                nonlocal failed_once
+                calls.append(command)
+                if not failed_once and command[0] == "ssh":
+                    failed_once = True
+                    return subprocess.CompletedProcess(
+                        command,
+                        255,
+                        stdout="",
+                        stderr="Connection timed out during banner exchange",
+                    )
+                return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+            args = argparse.Namespace(
+                manifest=str(template),
+                workers="worker-a:1",
+                jobs=1,
+                run="transient-setup",
+                resume=False,
+                replace=False,
+                remote_timeout_seconds=1800.0,
+                no_color=True,
+                verbose=False,
+            )
+            with (
+                self.patch_runs_dir(runs),
+                mock.patch("crucible.ProcessTracker.run", fake_run),
+                mock.patch("crucible_lib.workers.SSH_TRANSIENT_RETRY_DELAY_SECONDS", 0.0),
+            ):
+                stdout = io.StringIO()
+                with contextlib.redirect_stdout(stdout):
+                    rc = crucible.cmd_deploy(args)
+
+            self.assertEqual(0, rc)
+            self.assertTrue(failed_once)
+            self.assertGreaterEqual(len(calls), 2)
+            self.assertIn("  OK     worker-a: setup", stdout.getvalue())
+
     def test_deploy_can_write_worker_snapshot_and_launch_subset(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -6512,6 +6568,57 @@ except SystemExit as exc:
         self.assertEqual("pwa-wsl", crucible.worker_label("pwa-wsl", "pwa-wsl"))
         self.assertEqual("pwa-5090#2", crucible.worker_label("pwa-5090", "pwa-5090", 2, 4))
 
+    def test_run_worker_shell_retries_transient_ssh_transport_failure(self) -> None:
+        worker = {"host": "pwa-5090", "profile": "pwa-5090", "local": False}
+        calls = []
+
+        def fake_run(self, command, **kwargs):
+            calls.append(command)
+            if len(calls) == 1:
+                return subprocess.CompletedProcess(
+                    command,
+                    255,
+                    stdout="",
+                    stderr="Connection timed out during banner exchange",
+                )
+            return subprocess.CompletedProcess(command, 0, stdout="ok\n", stderr="")
+
+        with (
+            mock.patch("crucible.ProcessTracker.run", fake_run),
+            mock.patch("crucible_lib.workers.SSH_TRANSIENT_RETRY_DELAY_SECONDS", 0.0),
+        ):
+            result = crucible.run_worker_shell(
+                worker,
+                "true",
+                tracker=crucible.ProcessTracker(),
+                retries=1,
+            )
+
+        self.assertEqual(0, result.returncode)
+        self.assertEqual(2, len(calls))
+
+    def test_run_worker_shell_does_not_retry_regular_failures(self) -> None:
+        worker = {"host": "pwa-5090", "profile": "pwa-5090", "local": False}
+        calls = []
+
+        def fake_run(self, command, **kwargs):
+            calls.append(command)
+            return subprocess.CompletedProcess(command, 1, stdout="", stderr="candidate missing")
+
+        with (
+            mock.patch("crucible.ProcessTracker.run", fake_run),
+            mock.patch("crucible_lib.workers.SSH_TRANSIENT_RETRY_DELAY_SECONDS", 0.0),
+        ):
+            result = crucible.run_worker_shell(
+                worker,
+                "false",
+                tracker=crucible.ProcessTracker(),
+                retries=3,
+            )
+
+        self.assertEqual(1, result.returncode)
+        self.assertEqual(1, len(calls))
+
     def test_bootstrap_worker_runner_syncs_package(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -6776,6 +6883,7 @@ except SystemExit as exc:
                 str(worker_root / "source.jsonl"),
                 timeout=None,
                 tracker=None,
+                retries=0,
             )
 
     def test_deploy_passes_matching_profile_and_runs_tasks(self) -> None:

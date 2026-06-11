@@ -12,6 +12,17 @@ SSH_CONFIG_TIMEOUT_SECONDS = 5.0
 DEPLOY_BOOTSTRAP_TIMEOUT_SECONDS = 60.0
 DEPLOY_STARTUP_TIMEOUT_SECONDS = 20.0
 DEPLOY_STARTUP_POLL_SECONDS = 0.5
+SSH_TRANSIENT_RETRY_COUNT = 3
+SSH_TRANSIENT_RETRY_DELAY_SECONDS = 1.0
+SSH_TRANSIENT_RETRY_PATTERNS = (
+    "connection timed out during banner exchange",
+    "banner exchange",
+    "kex_exchange_identification:",
+    "ssh_exchange_identification:",
+    "connection closed by remote host",
+    "connection reset by peer",
+    "operation timed out",
+)
 _SSH_CONFIG_HOSTNAME_CACHE: dict[str, str | None] = {}
 
 
@@ -424,25 +435,24 @@ def managed_remote_script(script: str) -> str:
         f"else sh -lc {quoted}; fi"
     )
 
-def run_worker_shell(
-    worker: dict[str, Any],
-    script: str,
+def transient_ssh_transport_failure(command: list[str], result: subprocess.CompletedProcess[str]) -> bool:
+    if not command or command[0] not in ("ssh", "rsync"):
+        return False
+    if result.returncode == 0:
+        return False
+    output = "\n".join(
+        part for part in (result.stdout or "", result.stderr or "") if part
+    ).lower()
+    return any(pattern in output for pattern in SSH_TRANSIENT_RETRY_PATTERNS)
+
+def run_process_command(
+    command: list[str],
     *,
     timeout: float | None = None,
     tracker: ProcessTracker | None = None,
 ) -> subprocess.CompletedProcess[str]:
-    command = ["sh", "-lc", script] if is_local_worker(worker) else ["ssh", *SSH_OPTS, str(worker["host"]), managed_remote_script(script)]
     if tracker is not None:
         return tracker.run(command, timeout=timeout)
-    if is_local_worker(worker):
-        return subprocess.run(
-            command,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=False,
-            timeout=timeout,
-        )
     return subprocess.run(
         command,
         text=True,
@@ -451,6 +461,36 @@ def run_worker_shell(
         check=False,
         timeout=timeout,
     )
+
+def run_process_command_with_retries(
+    command: list[str],
+    *,
+    timeout: float | None = None,
+    tracker: ProcessTracker | None = None,
+    retries: int = 0,
+) -> subprocess.CompletedProcess[str]:
+    attempts = max(1, retries + 1)
+    result: subprocess.CompletedProcess[str] | None = None
+    for attempt in range(attempts):
+        result = run_process_command(command, timeout=timeout, tracker=tracker)
+        if not transient_ssh_transport_failure(command, result) or attempt + 1 >= attempts:
+            return result
+        delay = SSH_TRANSIENT_RETRY_DELAY_SECONDS * (attempt + 1)
+        if delay > 0:
+            time.sleep(delay)
+    assert result is not None
+    return result
+
+def run_worker_shell(
+    worker: dict[str, Any],
+    script: str,
+    *,
+    timeout: float | None = None,
+    tracker: ProcessTracker | None = None,
+    retries: int = 0,
+) -> subprocess.CompletedProcess[str]:
+    command = ["sh", "-lc", script] if is_local_worker(worker) else ["ssh", *SSH_OPTS, str(worker["host"]), managed_remote_script(script)]
+    return run_process_command_with_retries(command, timeout=timeout, tracker=tracker, retries=retries)
 
 def worker_rsync_target(worker: dict[str, Any], path: str) -> str:
     if is_local_worker(worker):
@@ -464,6 +504,7 @@ def copy_to_worker(
     *,
     timeout: float | None = None,
     tracker: ProcessTracker | None = None,
+    retries: int = 0,
 ) -> None:
     if is_local_worker(worker):
         target = expand_path(dst)
@@ -471,17 +512,7 @@ def copy_to_worker(
         shutil.copy2(src, target)
         return
     command = ["rsync", "-a", "-e", RSYNC_SSH, str(src), worker_rsync_target(worker, dst)]
-    if tracker is not None:
-        result = tracker.run(command, timeout=timeout)
-    else:
-        result = subprocess.run(
-            command,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=False,
-            timeout=timeout,
-        )
+    result = run_process_command_with_retries(command, timeout=timeout, tracker=tracker, retries=retries)
     if result.returncode != 0:
         raise RuntimeError(result.stderr.strip() or f"rsync failed for {src}")
 
@@ -492,6 +523,7 @@ def copy_dir_to_worker(
     *,
     timeout: float | None = None,
     tracker: ProcessTracker | None = None,
+    retries: int = 0,
 ) -> None:
     if is_local_worker(worker):
         target = expand_path(dst)
@@ -502,6 +534,7 @@ def copy_dir_to_worker(
         "mkdir -p " + shlex.quote(dst),
         timeout=timeout,
         tracker=tracker,
+        retries=retries,
     )
     if mkdir.returncode != 0:
         raise RuntimeError(mkdir.stderr.strip() or mkdir.stdout.strip() or f"failed to create {dst}")
@@ -510,17 +543,7 @@ def copy_dir_to_worker(
         str(src) + "/",
         worker_rsync_target(worker, dst.rstrip("/") + "/"),
     ]
-    if tracker is not None:
-        result = tracker.run(command, timeout=timeout)
-    else:
-        result = subprocess.run(
-            command,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=False,
-            timeout=timeout,
-        )
+    result = run_process_command_with_retries(command, timeout=timeout, tracker=tracker, retries=retries)
     if result.returncode != 0:
         raise RuntimeError(result.stderr.strip() or f"rsync failed for {src}")
 
@@ -530,22 +553,44 @@ def bootstrap_worker_runner(
     *,
     timeout: float | None = None,
     tracker: ProcessTracker | None = None,
+    retries: int = 0,
 ) -> None:
     if not is_local_worker(worker):
         cache = worker_cache_dir(worker)
-        result = run_worker_shell(worker, "mkdir -p " + shlex.quote(cache), timeout=timeout, tracker=tracker)
+        result = run_worker_shell(
+            worker,
+            "mkdir -p " + shlex.quote(cache),
+            timeout=timeout,
+            tracker=tracker,
+            retries=retries,
+        )
         if result.returncode != 0:
             raise RuntimeError(result.stderr.strip() or result.stdout.strip() or "failed to create worker cache")
     wrapper = script_path()
-    copy_to_worker(worker, wrapper, worker_cache_file(worker, "crucible.py"), timeout=timeout, tracker=tracker)
+    copy_to_worker(
+        worker,
+        wrapper,
+        worker_cache_file(worker, "crucible.py"),
+        timeout=timeout,
+        tracker=tracker,
+        retries=retries,
+    )
     copy_dir_to_worker(
         worker,
         wrapper.parent / "crucible_lib",
         worker_cache_file(worker, "crucible_lib"),
         timeout=timeout,
         tracker=tracker,
+        retries=retries,
     )
-    copy_to_worker(worker, manifest_path, worker_cache_file(worker, "manifest.json"), timeout=timeout, tracker=tracker)
+    copy_to_worker(
+        worker,
+        manifest_path,
+        worker_cache_file(worker, "manifest.json"),
+        timeout=timeout,
+        tracker=tracker,
+        retries=retries,
+    )
 
 def active_worker_profile(manifest: dict[str, Any], worker: dict[str, Any]) -> str | None:
     profile = str(worker.get("profile") or "").strip()
@@ -706,6 +751,7 @@ def worker_input_matches(
     *,
     timeout: float | None = None,
     tracker: ProcessTracker | None = None,
+    retries: int = 0,
 ) -> bool:
     expected_bytes = item.get("bytes")
     expected_sha = str(item.get("sha256") or "").strip()
@@ -733,6 +779,7 @@ def worker_input_matches(
         shell_join([worker_python(worker), "-c", code]),
         timeout=timeout,
         tracker=tracker,
+        retries=retries,
     )
     return result.returncode == 0
 
@@ -742,6 +789,7 @@ def sync_inputs_to_worker(
     *,
     timeout: float | None = None,
     tracker: ProcessTracker | None = None,
+    retries: int = 0,
 ) -> int:
     local_inputs = input_requirement_items(local_manifest_for_worker(manifest, worker))
     remote_inputs = input_requirement_items(worker_manifest(manifest, worker))
@@ -758,17 +806,23 @@ def sync_inputs_to_worker(
             target = expand_path(dst)
             if src.resolve() == target.resolve() or local_input_matches(target, remote_item):
                 continue
-            copy_to_worker(worker, src, dst, timeout=timeout, tracker=tracker)
+            copy_to_worker(worker, src, dst, timeout=timeout, tracker=tracker, retries=retries)
             synced += 1
             continue
         if worker_is_current_host(worker) and src.resolve() == expand_path(dst).resolve():
             continue
-        if worker_input_matches(worker, dst, remote_item, timeout=timeout, tracker=tracker):
+        if worker_input_matches(worker, dst, remote_item, timeout=timeout, tracker=tracker, retries=retries):
             continue
-        mkdir = run_worker_shell(worker, make_parent_command(worker, dst), timeout=timeout, tracker=tracker)
+        mkdir = run_worker_shell(
+            worker,
+            make_parent_command(worker, dst),
+            timeout=timeout,
+            tracker=tracker,
+            retries=retries,
+        )
         if mkdir.returncode != 0:
             raise RuntimeError(mkdir.stderr.strip() or mkdir.stdout.strip() or f"failed to create parent for {dst}")
-        copy_to_worker(worker, src, dst, timeout=timeout, tracker=tracker)
+        copy_to_worker(worker, src, dst, timeout=timeout, tracker=tracker, retries=retries)
         synced += 1
     return synced
 
@@ -1048,6 +1102,7 @@ def cmd_deploy(args: argparse.Namespace) -> int:
     jobs = max(1, int(args.jobs))
     remote_timeout = max(1.0, float(args.remote_timeout_seconds))
     bootstrap_timeout = min(remote_timeout, DEPLOY_BOOTSTRAP_TIMEOUT_SECONDS)
+    setup_retries = SSH_TRANSIENT_RETRY_COUNT
     manifest = load_manifest(manifest_path)
     has_tasks = bool(manifest.get("tasks"))
     coordinator_host = coordinator_host_for_workers(
@@ -1072,8 +1127,20 @@ def cmd_deploy(args: argparse.Namespace) -> int:
         label = worker_label(host, profile)
         try:
             verbose_status(f"{label}: syncing runner and manifest")
-            bootstrap_worker_runner(worker, manifest_path, timeout=bootstrap_timeout, tracker=tracker)
-            synced_inputs = sync_inputs_to_worker(worker, manifest, timeout=bootstrap_timeout, tracker=tracker)
+            bootstrap_worker_runner(
+                worker,
+                manifest_path,
+                timeout=bootstrap_timeout,
+                tracker=tracker,
+                retries=setup_retries,
+            )
+            synced_inputs = sync_inputs_to_worker(
+                worker,
+                manifest,
+                timeout=bootstrap_timeout,
+                tracker=tracker,
+                retries=setup_retries,
+            )
             if synced_inputs:
                 verbose_status(f"{label}: synced {synced_inputs} input file(s)")
             verbose_status(f"{label}: checking prerequisites")
@@ -1082,7 +1149,13 @@ def cmd_deploy(args: argparse.Namespace) -> int:
                 if has_tasks else None
             )
             script = deploy_prereq_command(worker=worker, manifest=manifest, coordinator=coordinator)
-            return run_worker_shell(worker, script, timeout=remote_timeout, tracker=tracker)
+            return run_worker_shell(
+                worker,
+                script,
+                timeout=remote_timeout,
+                tracker=tracker,
+                retries=setup_retries,
+            )
         except Exception as exc:
             return subprocess.CompletedProcess(["deploy", host], 1, stdout="", stderr=str(exc))
 
@@ -1178,6 +1251,7 @@ def cmd_deploy(args: argparse.Namespace) -> int:
             detached_shell_command(worker, script, pid_file=pid_file, log_file=log_file),
             timeout=remote_timeout,
             tracker=tracker,
+            retries=setup_retries,
         )
         if result.returncode == 0:
             verbose_status(f"{label}: launch OK")
@@ -1196,6 +1270,7 @@ def cmd_deploy(args: argparse.Namespace) -> int:
                     cleanup_detached_shell_command(str(item["pid_file"])),
                     timeout=10.0,
                     tracker=tracker,
+                    retries=setup_retries,
                 )
             except Exception as exc:
                 verbose_status(f"{worker_label(str(item['host']), str(item['profile']), item.get('slot'), item.get('slots'))}: cleanup failed: {exc}", error=True)
