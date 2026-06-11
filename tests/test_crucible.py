@@ -301,6 +301,8 @@ except SystemExit as exc:
         self.assertIn(".elo-pos", web._HTML)
         self.assertIn("function eloFieldClass", web._HTML)
         self.assertIn("nonEtaFields.map(renderField)", web._HTML)
+        self.assertIn("function progressEtaFromRate", web._HTML)
+        self.assertIn("(pd.total - pd.done) / pd.rate", web._HTML)
         self.assertIn("ThreadingHTTPServer", web.ThreadingHTTPServer.__name__)
 
     def test_web_status_api_returns_cached_payload_while_refreshing(self) -> None:
@@ -4493,6 +4495,69 @@ except SystemExit as exc:
         self.assertEqual("1.1x", payload["display"]["active_summary"]["speedup_text"])
         self.assertEqual("90k", payload["display"]["active_summary"]["output_text"])
         self.assertEqual("slow", payload["sections"]["active"]["summary"]["min"]["worker"])
+
+    def test_status_speedup_uses_progress_rates_without_output(self) -> None:
+        summary = {
+            "run": "run-a",
+            "manifest": "runs/run-a/manifest.json",
+            "tasks": 3,
+            "counts": {"done": 0, "fail": 0, "running": 3, "claimed": 0, "stale": 0, "pending": 0},
+            "active_count": 3,
+            "active": [
+                {
+                    "worker": "fast",
+                    "progress_data": {
+                        "kind": "metadata",
+                        "done": 8,
+                        "total": 50,
+                        "unit": "games",
+                        "rate": 2.0,
+                    },
+                },
+                {
+                    "worker": "fast",
+                    "progress_data": {
+                        "kind": "metadata",
+                        "done": 6,
+                        "total": 50,
+                        "unit": "games",
+                        "rate": 1.0,
+                    },
+                },
+                {
+                    "worker": "slow",
+                    "progress_data": {
+                        "kind": "metadata",
+                        "done": 4,
+                        "total": 50,
+                        "unit": "games",
+                        "rate": 1.0,
+                    },
+                },
+            ],
+            "groups": {"done": {}, "fail": {}, "stale": {}},
+            "pending": [],
+            "pending_groups": {},
+            "worker_outputs": {},
+            "worker_rates": {},
+            "progress_totals": {},
+            "progress_done": {},
+            "progress_outputs": {},
+            "rows": [],
+            "diagnostics": [],
+            "metadata": {},
+        }
+        self.assertEqual(
+            "workers=2 games/s=4 min=slow:1 max=fast:3 speedup=1.3x",
+            crucible.active_worker_summary(summary),
+        )
+        self.assertEqual("speedup=1.3x", crucible.run_speedup_field(summary))
+        payload = crucible.run_status_payload(summary)
+        self.assertEqual(1.333, payload["display"]["active_summary"]["speedup"])
+        self.assertEqual("1.3x", payload["display"]["active_summary"]["speedup_text"])
+        self.assertEqual("games/s", payload["display"]["active_summary"]["rate_name"])
+        self.assertEqual("4", payload["display"]["active_summary"]["rate_text"])
+        self.assertIn("speedup=1.3x", payload["display"]["active_summary_text"])
 
     def test_status_single_worker_summary_omits_redundant_fields(self) -> None:
         summary = {

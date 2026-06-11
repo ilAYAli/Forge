@@ -429,8 +429,16 @@ _HTML = r"""<!DOCTYPE html>
       const h=Math.floor(s/3600),m=Math.floor((s%3600)/60); return `${h}h${String(m).padStart(2,'0')}m`;
     }
 
+    function progressEtaFromRate(pd) {
+      if (!pd || typeof pd.done !== 'number' || typeof pd.total !== 'number') return null;
+      if (pd.total <= 0 || pd.done >= pd.total) return null;
+      if (typeof pd.rate !== 'number' || pd.rate <= 0) return null;
+      return Math.max(0, (pd.total - pd.done) / pd.rate);
+    }
+
     function remainingEtaS(pd) {
-      if (!pd || typeof pd.eta_s !== 'number') return null;
+      if (!pd) return null;
+      if (typeof pd.eta_s !== 'number') return progressEtaFromRate(pd);
       const base = lastFetchTime ?? Date.now()/1000;
       let remaining = pd.eta_s;
       if (typeof pd.eta_epoch === 'number') {

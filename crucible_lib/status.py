@@ -712,26 +712,71 @@ def active_worker_metrics(summary: dict[str, Any]) -> dict[str, dict[str, Any]]:
                 "output": int(output_metric.get("output", 0)) if isinstance(output_metric, dict) else 0,
                 "output_seen": bool(output_metric.get("output_seen")) if isinstance(output_metric, dict) else False,
                 "rate": float(rate_metric) if isinstance(rate_metric, (int, float)) else 0.0,
+                "progress_done": 0,
+                "progress_rate": 0.0,
+                "progress_rate_seen": False,
+                "progress_unit": "",
             },
         )
         entry["tasks"] += 1
+        data = row.get("progress_data")
+        if isinstance(data, dict) and data.get("kind") == "metadata":
+            done = data.get("done")
+            if isinstance(done, int):
+                entry["progress_done"] += done
+            unit = str(data.get("unit") or "").strip()
+            if unit:
+                if not entry["progress_unit"]:
+                    entry["progress_unit"] = unit
+                elif entry["progress_unit"] != unit:
+                    entry["progress_unit"] = "items"
+            rate = data.get("rate")
+            if isinstance(rate, (int, float)) and rate > 0:
+                entry["progress_rate"] += float(rate)
+                entry["progress_rate_seen"] = True
     return workers
+
+def progress_rate_field_name(values: list[dict[str, Any]]) -> str:
+    units = {
+        str(metric.get("progress_unit") or "").strip()
+        for metric in values
+        if bool(metric.get("progress_rate_seen")) and str(metric.get("progress_unit") or "").strip()
+    }
+    if len(units) == 1:
+        return f"{next(iter(units))}/s"
+    return "rate"
 
 def active_worker_summary(summary: dict[str, Any]) -> str:
     metrics = active_worker_metrics(summary)
     if not metrics:
         return ""
     values = list(metrics.values())
-    if not any(bool(metric.get("output_seen")) for metric in values):
+    output_values = [metric for metric in values if bool(metric.get("output_seen"))]
+    if output_values:
+        total_output = sum(int(metric["output"]) for metric in values)
+        if len(values) == 1:
+            return f"output={compact_count(total_output)}"
+        parts = [f"workers={len(values)}", f"output={compact_count(total_output)}"]
+        ordered = sorted(values, key=lambda metric: (int(metric["output"]), str(metric["worker"])))
+        max_output = int(ordered[-1]["output"])
+        parts.append(f"min={str(ordered[0]['worker'])}:{compact_count(int(ordered[0]['output']))}")
+        parts.append(f"max={str(ordered[-1]['worker'])}:{compact_count(max_output)}")
+        if speedup := run_speedup_field(summary):
+            parts.append(speedup)
+        return " ".join(parts)
+
+    rate_values = [metric for metric in values if bool(metric.get("progress_rate_seen"))]
+    if not rate_values:
         return ""
-    total_output = sum(int(metric["output"]) for metric in values)
     if len(values) == 1:
-        return f"output={compact_count(total_output)}"
-    parts = [f"workers={len(values)}", f"output={compact_count(total_output)}"]
-    ordered = sorted(values, key=lambda metric: (int(metric["output"]), str(metric["worker"])))
-    max_output = int(ordered[-1]["output"])
-    parts.append(f"min={str(ordered[0]['worker'])}:{compact_count(int(ordered[0]['output']))}")
-    parts.append(f"max={str(ordered[-1]['worker'])}:{compact_count(max_output)}")
+        return ""
+    rate_name = progress_rate_field_name(rate_values)
+    total_rate = sum(float(metric.get("progress_rate", 0.0)) for metric in rate_values)
+    parts = [f"workers={len(values)}", f"{rate_name}={compact_rate(total_rate)}"]
+    ordered = sorted(rate_values, key=lambda metric: (float(metric["progress_rate"]), str(metric["worker"])))
+    max_rate = float(ordered[-1]["progress_rate"])
+    parts.append(f"min={str(ordered[0]['worker'])}:{compact_rate(float(ordered[0]['progress_rate']))}")
+    parts.append(f"max={str(ordered[-1]['worker'])}:{compact_rate(max_rate)}")
     if speedup := run_speedup_field(summary):
         parts.append(speedup)
     return " ".join(parts)
@@ -766,6 +811,30 @@ def active_worker_summary_payload(summary: dict[str, Any]) -> dict[str, Any]:
                 speedup = total_output / max_output
                 payload["speedup"] = round(speedup, 3)
                 payload["speedup_text"] = f"{speedup:.1f}x"
+    elif any(bool(metric.get("progress_rate_seen")) for metric in values):
+        rate_values = [metric for metric in values if bool(metric.get("progress_rate_seen"))]
+        rate_name = progress_rate_field_name(rate_values)
+        total_rate = sum(float(metric.get("progress_rate", 0.0)) for metric in rate_values)
+        payload["rate"] = total_rate
+        payload["rate_name"] = rate_name
+        payload["rate_text"] = compact_rate(total_rate)
+        if len(values) > 1:
+            ordered = sorted(rate_values, key=lambda metric: (float(metric["progress_rate"]), str(metric["worker"])))
+            payload["min_rate"] = {
+                "worker": str(ordered[0]["worker"]),
+                "rate": float(ordered[0]["progress_rate"]),
+                "rate_text": compact_rate(float(ordered[0]["progress_rate"])),
+            }
+            payload["max_rate"] = {
+                "worker": str(ordered[-1]["worker"]),
+                "rate": float(ordered[-1]["progress_rate"]),
+                "rate_text": compact_rate(float(ordered[-1]["progress_rate"])),
+            }
+            max_rate = float(ordered[-1]["progress_rate"])
+            if max_rate > 0:
+                speedup = total_rate / max_rate
+                payload["speedup"] = round(speedup, 3)
+                payload["speedup_text"] = f"{speedup:.1f}x"
     return payload
 
 def run_speedup_field(summary: dict[str, Any]) -> str:
@@ -773,13 +842,23 @@ def run_speedup_field(summary: dict[str, Any]) -> str:
     if len(metrics) <= 1:
         return ""
     values = list(metrics.values())
-    if not any(bool(metric.get("output_seen")) for metric in values):
+    if any(bool(metric.get("output_seen")) for metric in values):
+        outputs = [int(metric.get("output", 0)) for metric in values]
+        max_output = max(outputs)
+        if max_output <= 0:
+            return ""
+        return f"speedup={sum(outputs) / max_output:.1f}x"
+    rates = [
+        float(metric.get("progress_rate", 0.0))
+        for metric in values
+        if bool(metric.get("progress_rate_seen"))
+    ]
+    if not rates:
         return ""
-    outputs = [int(metric.get("output", 0)) for metric in values]
-    max_output = max(outputs)
-    if max_output <= 0:
+    max_rate = max(rates)
+    if max_rate <= 0:
         return ""
-    return f"speedup={sum(outputs) / max_output:.1f}x"
+    return f"speedup={sum(rates) / max_rate:.1f}x"
 
 def run_status_payload(summary: dict[str, Any]) -> dict[str, Any]:
     counts = summary["counts"]
