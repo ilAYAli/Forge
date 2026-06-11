@@ -9,6 +9,7 @@ from .status import *
 
 DEFAULT_INLINE_WORKER_SLOTS = 8
 SSH_CONFIG_TIMEOUT_SECONDS = 5.0
+DEPLOY_BOOTSTRAP_TIMEOUT_SECONDS = 60.0
 DEPLOY_STARTUP_TIMEOUT_SECONDS = 20.0
 DEPLOY_STARTUP_POLL_SECONDS = 0.5
 _SSH_CONFIG_HOSTNAME_CACHE: dict[str, str | None] = {}
@@ -1046,6 +1047,7 @@ def cmd_deploy(args: argparse.Namespace) -> int:
     )
     jobs = max(1, int(args.jobs))
     remote_timeout = max(1.0, float(args.remote_timeout_seconds))
+    bootstrap_timeout = min(remote_timeout, DEPLOY_BOOTSTRAP_TIMEOUT_SECONDS)
     manifest = load_manifest(manifest_path)
     has_tasks = bool(manifest.get("tasks"))
     coordinator_host = coordinator_host_for_workers(
@@ -1055,8 +1057,6 @@ def cmd_deploy(args: argparse.Namespace) -> int:
     color_enabled = not bool(args.no_color) and sys.stdout.isatty()
     print_lock = threading.Lock()
     tracker = ProcessTracker()
-    setup_lock = threading.Condition()
-    setup_results: dict[tuple[Any, ...], subprocess.CompletedProcess[str] | None] = {}
 
     def status(message: str, *, error: bool = False) -> None:
         with print_lock:
@@ -1072,8 +1072,8 @@ def cmd_deploy(args: argparse.Namespace) -> int:
         label = worker_label(host, profile)
         try:
             verbose_status(f"{label}: syncing runner and manifest")
-            bootstrap_worker_runner(worker, manifest_path, timeout=remote_timeout, tracker=tracker)
-            synced_inputs = sync_inputs_to_worker(worker, manifest, timeout=remote_timeout, tracker=tracker)
+            bootstrap_worker_runner(worker, manifest_path, timeout=bootstrap_timeout, tracker=tracker)
+            synced_inputs = sync_inputs_to_worker(worker, manifest, timeout=bootstrap_timeout, tracker=tracker)
             if synced_inputs:
                 verbose_status(f"{label}: synced {synced_inputs} input file(s)")
             verbose_status(f"{label}: checking prerequisites")
@@ -1085,32 +1085,6 @@ def cmd_deploy(args: argparse.Namespace) -> int:
             return run_worker_shell(worker, script, timeout=remote_timeout, tracker=tracker)
         except Exception as exc:
             return subprocess.CompletedProcess(["deploy", host], 1, stdout="", stderr=str(exc))
-
-    def ensure_worker_setup(worker: dict[str, Any]) -> subprocess.CompletedProcess[str]:
-        key = deploy_setup_key(worker)
-        with setup_lock:
-            if key not in setup_results:
-                setup_results[key] = None
-                owner = True
-            else:
-                owner = False
-                while setup_results[key] is None:
-                    setup_lock.wait()
-                return setup_results[key]
-
-        try:
-            result = run_worker_setup(worker)
-        except BaseException as exc:
-            result = subprocess.CompletedProcess(
-                ["deploy", str(worker.get("host", "worker"))],
-                1,
-                stdout="",
-                stderr=f"internal setup error: {type(exc).__name__}: {exc}",
-            )
-        with setup_lock:
-            setup_results[key] = result
-            setup_lock.notify_all()
-        return result
 
     def result_payload(
         index: int,
@@ -1137,16 +1111,37 @@ def cmd_deploy(args: argparse.Namespace) -> int:
             payload.update(extra)
         return payload
 
-    def setup_worker(index: int, worker: dict[str, Any]) -> dict[str, Any]:
-        host = str(worker["host"])
-        profile = str(worker["profile"])
-        label = worker_label(host, profile, worker.get("_slot"), worker.get("_slots"))
-        prereq = ensure_worker_setup(worker)
-        if prereq.returncode != 0:
-            verbose_status(f"{label}: prerequisites FAILED rc={prereq.returncode}", error=True)
-        else:
-            verbose_status(f"{label}: prerequisites OK")
-        return result_payload(index, worker, "setup", prereq)
+    def setup_worker_groups() -> list[list[tuple[int, dict[str, Any]]]]:
+        groups: dict[tuple[Any, ...], list[tuple[int, dict[str, Any]]]] = {}
+        for index, worker in enumerate(workers):
+            groups.setdefault(deploy_setup_key(worker), []).append((index, worker))
+        return list(groups.values())
+
+    def setup_group_label(group: list[tuple[int, dict[str, Any]]]) -> str:
+        worker = group[0][1]
+        label = worker_label(str(worker["host"]), str(worker["profile"]))
+        if len(group) > 1:
+            return f"{label} [{len(group)} slots]"
+        return label
+
+    def setup_worker_group(group: list[tuple[int, dict[str, Any]]]) -> list[dict[str, Any]]:
+        status(
+            f"  {colorize('SETUP ', 'cyan', enabled=color_enabled)} "
+            f"{setup_group_label(group)}: setup"
+        )
+        representative = group[0][1]
+        prereq = run_worker_setup(representative)
+        payloads = []
+        for index, worker in group:
+            host = str(worker["host"])
+            profile = str(worker["profile"])
+            label = worker_label(host, profile, worker.get("_slot"), worker.get("_slots"))
+            if prereq.returncode != 0:
+                verbose_status(f"{label}: prerequisites FAILED rc={prereq.returncode}", error=True)
+            else:
+                verbose_status(f"{label}: prerequisites OK")
+            payloads.append(result_payload(index, worker, "setup", prereq))
+        return payloads
 
     def run_worker(index: int, worker: dict[str, Any]) -> dict[str, Any]:
         host = str(worker["host"])
@@ -1270,14 +1265,17 @@ def cmd_deploy(args: argparse.Namespace) -> int:
     executor: concurrent.futures.ThreadPoolExecutor | None = concurrent.futures.ThreadPoolExecutor(max_workers=jobs)
     interrupted = False
     startup_failed = False
-    futures: list[concurrent.futures.Future[dict[str, Any]]] = []
+    futures: list[concurrent.futures.Future[Any]] = []
     try:
         futures = [
-            executor.submit(setup_worker, index, worker)
-            for index, worker in enumerate(workers)
+            executor.submit(setup_worker_group, group)
+            for group in setup_worker_groups()
         ]
-        setup_results_list = [future.result() for future in concurrent.futures.as_completed(futures)]
-        print_results(setup_results_list)
+        setup_results_list: list[dict[str, Any]] = []
+        for future in concurrent.futures.as_completed(futures):
+            group_results = future.result()
+            setup_results_list.extend(group_results)
+            print_results(group_results)
         setup_failed = sum(1 for item in setup_results_list if not item["ok"])
         if setup_failed or not has_tasks:
             results = setup_results_list

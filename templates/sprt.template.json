@@ -162,7 +162,7 @@
     "command": "~/.local/bin/sprt --candidate {candidate} --reference {reference} --book {book} --games {chunk} --concurrency {concurrency} --threads {threads} --tc {tc} --restart {restart} --fastchess ~/.local/bin/fastchess --log-dir {output_dir}/{task_name}/logs --name {task_name} --no-ntfy --no-eta",
     "progress": {
       "unit": "games",
-      "log_regex": "\\[\\s*(?P<done>\\d+)\\/(?P<total>\\d+)\\].*?Elo\\s+(?P<elo>[-+]?\\d+(?:\\.\\d+)?|[-+]?inf).*?\\+/-\\s+(?P<ci>\\d+(?:\\.\\d+)?).*?LOS\\s+(?P<los>\\d+(?:\\.\\d+)?)%.*?draw\\s+(?P<draw>\\d+(?:\\.\\d+)?)%.*?ETA\\s+(?P<eta>\\S+)"
+      "log_regex": "\\[\\s*(?P<done>\\d+)\\/(?P<total>\\d+)\\].*?Elo\\s+(?P<elo>[-+]?\\d+(?:\\.\\d+)?|[-+]?inf).*?\\+/-\\s+(?P<ci>\\d+(?:\\.\\d+)?).*?LOS\\s+(?P<los>\\d+(?:\\.\\d+)?)%.*?draw\\s+(?P<draw>\\d+(?:\\.\\d+)?)%(?:.*?ETA\\s+(?P<eta>\\S+))?"
     }
   }
 }

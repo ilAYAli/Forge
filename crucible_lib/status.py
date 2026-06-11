@@ -16,6 +16,22 @@ def cmd_status(args: argparse.Namespace) -> int:
     filter_name = selected[0] if selected else None
     coordinator_runs = configured_coordinator_runs()
     if coordinator_runs and status_can_delegate(args.run):
+        if args.run is None and filter_name == "failed":
+            summaries = load_run_summaries(
+                lease_seconds=args.lease_seconds,
+                attention_only=True,
+            )
+            if any(run_failed(summary) for summary in summaries):
+                return print_run_status(
+                    summaries,
+                    color_enabled=color_enabled,
+                    as_json=args.json,
+                    filter_name=filter_name,
+                    include_started_pending=bool(getattr(args, "verbose", False)),
+                    collapse_inactive_failures=False,
+                    show_details=True,
+                    show_done=bool(getattr(args, "show_done", False)),
+                )
         if args.run is None and filter_name is None:
             summaries = load_run_summaries(
                 lease_seconds=args.lease_seconds,
@@ -776,11 +792,7 @@ def run_status_payload(summary: dict[str, Any]) -> dict[str, Any]:
         fields.append(f"stale={counts['stale']}")
     fields.extend(run_progress_fields(summary))
     active_summary = active_worker_summary(summary)
-    active_fields = (
-        split_eta_last(active_summary.split())
-        if active_summary else
-        split_eta_last(section_progress_fields(summary))
-    )
+    active_fields = active_section_fields(summary)
     payload = copy.deepcopy(summary)
     payload.update({
         "run": summary["run"],
@@ -943,10 +955,17 @@ def run_progress_fields(summary: dict[str, Any]) -> list[str]:
     ])
 
 def section_progress_fields(summary: dict[str, Any]) -> list[str]:
-    return [
-        field for field in summary_progress_fields(summary)
-        if not field.startswith("eta=")
-    ]
+    return split_eta_last(summary_progress_fields(summary))
+
+def active_section_fields(summary: dict[str, Any]) -> list[str]:
+    worker_summary = active_worker_summary(summary)
+    if worker_summary:
+        eta_fields = [
+            field for field in summary_progress_fields(summary)
+            if field.startswith("eta=")
+        ]
+        return split_eta_last([*worker_summary.split(), *eta_fields])
+    return section_progress_fields(summary)
 
 def format_status_key(key: str, values: list[int | str]) -> str:
     return key
@@ -1233,7 +1252,7 @@ def parse_float(value: str | None) -> float | None:
         return None
 
 SPRT_PROGRESS_RE = re.compile(
-    r"\[\s*\d+\s*/\s*\d+\]\s+"
+    r"\[\s*(?P<done>\d+)\s*/\s*(?P<total>\d+)\]\s+"
     r"Elo\s+(?P<elo>[+-]?(?:\d+(?:\.\d+)?|inf|nan))\s+\+/-\s+"
     r"(?P<err>[+-]?(?:\d+(?:\.\d+)?|inf|nan))\s+\|\s+"
     r"LLR\s+(?P<llr>[+-]?\d+(?:\.\d+)?)/(?P<llr_bound>[+-]?(?:\d+(?:\.\d+)?|inf|nan))\s+"
@@ -1256,6 +1275,26 @@ def sprt_progress_line_fields(line: str) -> dict[str, str]:
         "los": values["los"].strip(),
         "draw": values["draw"].strip(),
     }
+
+def sprt_progress_line_data(line: str, config: dict[str, Any], *, eta_epoch: float) -> dict[str, Any] | None:
+    match = SPRT_PROGRESS_RE.search(line)
+    if not match:
+        return None
+    done = parse_int(match.group("done"))
+    total = parse_int(match.group("total"))
+    if done is None:
+        return None
+    data: dict[str, Any] = {
+        "done": done,
+        "unit": str(config.get("unit") or "games"),
+        "output_unit": str(config.get("output_unit") or "output"),
+        "kind": "metadata",
+        "eta_epoch": eta_epoch,
+        "fields": sprt_progress_line_fields(line),
+    }
+    if total is not None:
+        data["total"] = total
+    return normalize_progress_data(data)
 
 def progress_field_float(fields: dict[str, str], *names: str) -> float | None:
     for name in names:
@@ -1480,6 +1519,12 @@ def task_log_progress_data(manifest: dict[str, Any], task: dict[str, Any]) -> di
             if fields:
                 data["fields"] = fields
             return normalize_progress_data(data)
+
+    if isinstance(config, dict):
+        for line in reversed(text.splitlines()):
+            data = sprt_progress_line_data(line, config, eta_epoch=eta_epoch)
+            if data is not None:
+                return data
 
     progress_re = re.compile(r"\[\s*\d+/\d+\s+(\d+)\s*/\s*(\d+)\]")
     for line in reversed(text.splitlines()):
@@ -1735,14 +1780,7 @@ def print_status_details(
     if show_done:
         print_status_group("done", summary["groups"]["done"], color_enabled=color_enabled, show_empty=show_empty, indent=indent)
     if summary["active"]:
-        worker_summary = active_worker_summary(summary)
-        worker_summary_fields = worker_summary.split() if worker_summary else []
-        section_fields = (
-            worker_summary_fields
-            if worker_summary_fields else
-            section_progress_fields(summary)
-        )
-        section_fields = split_eta_last(section_fields)
+        section_fields = active_section_fields(summary)
         section_fields = color_status_fields(section_fields, summary=summary, color_enabled=color_enabled)
         suffix = f" {' '.join(section_fields)}" if section_fields else ""
         active_title = color_count_line("active", len(summary["active"]), "yellow", color_enabled=color_enabled)
