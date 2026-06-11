@@ -229,6 +229,7 @@ def check_command_requirement(item: dict[str, Any]) -> None:
         command = [path, "--version"]
     if command is None:
         return
+
     timeout = bounded_timeout(
         item.get("timeout_s"), DEFAULT_REQUIREMENT_TIMEOUT_SECONDS)
     result = command_result(command, timeout=timeout)
@@ -506,6 +507,8 @@ def cmd_add_repo(args: argparse.Namespace) -> int:
         record["remote"] = args.remote
     if args.require_clean:
         record["require_clean"] = True
+    if args.allow_untracked:
+        record["allow_untracked"] = True
     if args.allow_dirty:
         record["allow_dirty"] = True
     for field in ("build", "install", "probe"):
@@ -569,6 +572,12 @@ def git_requirement_allows_dirty(item: dict[str, Any]) -> bool:
         return not bool(item.get("require_clean", False))
     return False
 
+def git_requirement_status(repo: Path, item: dict[str, Any]) -> str:
+    command = ["git", "-C", str(repo), "status", "--porcelain"]
+    if bool(item.get("allow_untracked", False)):
+        command.append("--untracked-files=no")
+    return command_output(command)
+
 def sync_git_requirement(item: dict[str, Any]) -> None:
     repo = expand_path(str(item.get("path") or item.get("repo") or "."))
     label = str(item.get("name") or repo)
@@ -578,7 +587,7 @@ def sync_git_requirement(item: dict[str, Any]) -> None:
         run_checked(["git", "clone", url, str(repo)])
     if not (repo / ".git").exists():
         raise SystemExit(f"{label}: not a git checkout: {repo}")
-    status = git_output(repo, "status", "--porcelain")
+    status = git_requirement_status(repo, item)
     if status and not git_requirement_allows_dirty(item):
         raise SystemExit(f"{label}: git worktree is not clean")
     remote = str(item.get("remote") or "").strip()

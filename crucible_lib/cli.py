@@ -3,10 +3,12 @@ from __future__ import annotations
 from typing import Any
 
 from .core import *
+from .config import *
 from .manifest import *
 from .tasks import *
 from .status import *
 from .workers import *
+from .templates import *
 
 try:
     from .web import cmd_web
@@ -31,6 +33,7 @@ WORKERS_ARG_HELP_RETRY_DEFAULT = (
 
 
 COMMON_COMMANDS = [
+    "run",
     "start",
     "add",
     "del",
@@ -40,6 +43,7 @@ COMMON_COMMANDS = [
     "worker",
     "status",
     "update",
+    "template",
 ]
 if cmd_web is not None:
     COMMON_COMMANDS.insert(6, "web")
@@ -177,6 +181,31 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--version-json", action="store_true", help="Print crucible version as JSON and exit.")
     sub = parser.add_subparsers(dest="subcommand", metavar="command")
 
+    run = sub.add_parser(
+        "run",
+        help="Run a named template.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+        description=(
+            "Run a named Crucible template. Run options such as --workers may be "
+            "mixed with template parameters after the template name."
+        ),
+    )
+    run.add_argument("template", help="Template name, e.g. sprt.")
+    run.add_argument("template_args", nargs=argparse.REMAINDER, help="Run options and template parameters.")
+    run.set_defaults(func=cmd_template_run)
+
+    template = sub.add_parser(
+        "template",
+        help="List or show named templates.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    template_sub = template.add_subparsers(dest="action", required=True, metavar="action")
+    template_list = template_sub.add_parser("list", help="List available templates.")
+    template_list.set_defaults(func=cmd_template)
+    template_show = template_sub.add_parser("show", help="Show a template JSON document.")
+    template_show.add_argument("name", help="Template name.")
+    template_show.set_defaults(func=cmd_template)
+
     plan = sub.add_parser(
         "plan",
         help="Create a numbered task manifest.",
@@ -265,6 +294,7 @@ def build_parser() -> argparse.ArgumentParser:
     add_repo.add_argument("--branch", help="Branch to checkout before optional commit pinning.")
     add_repo.add_argument("--remote", help="Remote to fetch/pull before checkout.")
     add_repo.add_argument("--require-clean", action="store_true", help="Require a clean worktree.")
+    add_repo.add_argument("--allow-untracked", action="store_true", help="Ignore untracked files during sync-repos.")
     add_repo.add_argument("--allow-dirty", action="store_true", help="Allow dirty worktree during sync-repos.")
     add_repo.add_argument("--build", action="append", help="Build command run after checkout. Repeatable.")
     add_repo.add_argument("--install", action="append", help="Install command run after build. Repeatable.")

@@ -168,6 +168,38 @@ class CrucibleTests(unittest.TestCase):
             setattr(args, key, value)
         return args
 
+    def write_test_template(self, root: Path, *, name: str = "demo") -> Path:
+        templates = root / "templates"
+        templates.mkdir(parents=True)
+        path = templates / f"{name}.template.json"
+        path.write_text(
+            json.dumps({
+                "schema": "crucible.template.v1",
+                "name": name,
+                "kind": "demo",
+                "description": "demo template",
+                "run_name": "demo-{item_stem}-{total}",
+                "work_dir": "{work_dir}",
+                "parameters": {
+                    "item": {"required": True, "worker_path": True},
+                    "total": {"type": "int", "required": True},
+                    "chunk": {"type": "int", "default": 3},
+                    "work_dir": {"default": "."},
+                },
+                "task": {
+                    "split": {"total": "total", "chunk": "chunk", "unit": "rows"},
+                    "command": "printf {chunk} > {output_dir}/{task_name}.txt",
+                    "output": "{output_dir}/{task_name}.txt",
+                    "progress": {
+                        "unit": "rows",
+                        "log_regex": "rows=(?P<done>\\d+)/(?P<total>\\d+) eta=(?P<eta>\\S+)",
+                    },
+                },
+            }),
+            encoding="utf-8",
+        )
+        return path
+
     def test_remote_script_sets_common_user_bin_path(self) -> None:
         script = crucible.managed_remote_script("crucible version")
         self.assertIn("PATH=\"$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH\"; export PATH; ", script)
@@ -189,11 +221,12 @@ class CrucibleTests(unittest.TestCase):
         advanced = stdout.index("Advanced:")
         common_positions = {
             command: stdout.index(f"    {command}")
-            for command in ("start", "add", "del", "stop", "resume", "retry", "worker", "status", "update")
+            for command in ("run", "start", "add", "del", "stop", "resume", "retry", "worker", "status", "update", "template")
         }
         for position in common_positions.values():
             self.assertLess(common, position)
             self.assertLess(position, advanced)
+        self.assertLess(common_positions["run"], common_positions["start"])
         self.assertLess(common_positions["start"], common_positions["add"])
         self.assertLess(common_positions["add"], common_positions["del"])
         self.assertLess(common_positions["del"], common_positions["stop"])
@@ -202,6 +235,7 @@ class CrucibleTests(unittest.TestCase):
         self.assertLess(common_positions["retry"], common_positions["worker"])
         self.assertLess(common_positions["worker"], common_positions["status"])
         self.assertLess(common_positions["status"], common_positions["update"])
+        self.assertLess(common_positions["update"], common_positions["template"])
         self.assertNotIn("run-job", stdout)
         self.assertLess(advanced, stdout.index("    plan"))
         self.assertLess(advanced, stdout.index("    run-task"))
@@ -345,9 +379,153 @@ except SystemExit as exc:
                     web._STATUS_REFRESHING,
                 ) = previous
 
+    def test_config_yml_supplies_default_workers_and_template_dirs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = root / "config.yml"
+            config.write_text(
+                f'default_workers: "worker-a:2,worker-b:3"\n'
+                f"template_dirs:\n"
+                f"  - \"{root / 'templates'}\"\n",
+                encoding="utf-8",
+            )
+            with mock.patch.dict(os.environ, {"CRUCIBLE_CONFIG": str(config)}, clear=False):
+                payload = crucible.load_config()
+                self.assertEqual("worker-a:2,worker-b:3", crucible.default_workers_arg(payload))
+                self.assertEqual(root / "templates", crucible.config_template_dirs(payload)[0])
+
+    def test_template_expands_without_exposing_task_ids(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            template_path = self.write_test_template(root)
+            with mock.patch.dict(os.environ, {"CRUCIBLE_CONFIG": str(root / "config.yml")}, clear=False):
+                (root / "config.yml").write_text(
+                    f'default_workers: "worker-a:2"\n'
+                    f"template_dirs:\n"
+                    f"  - \"{root / 'templates'}\"\n",
+                    encoding="utf-8",
+                )
+                template = crucible.load_template(template_path)
+                params = crucible.parse_template_parameters(
+                    "demo",
+                    template,
+                    ["--item", "/tmp/input.dat", "--total", "10", "--chunk", "4"],
+                )
+                manifest = crucible.expand_template("demo", template_path, template, params)
+
+            self.assertEqual("crucible.task.v1", manifest["schema"])
+            self.assertEqual("demo-input.dat-10", manifest["name"])
+            self.assertEqual(3, len(manifest["tasks"]))
+            self.assertEqual(["demo_0000", "demo_0001", "demo_0002"], [task["id"] for task in manifest["tasks"]])
+            self.assertEqual([4, 4, 2], [task["progress"]["total"] for task in manifest["tasks"]])
+            self.assertIn("{output_dir}/demo_0000.txt", manifest["tasks"][0]["outputs"])
+
+    def test_template_worker_path_parameters_preserve_tilde(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            template_path = self.write_test_template(root)
+            template = crucible.load_template(template_path)
+
+            params = crucible.parse_template_parameters(
+                "demo",
+                template,
+                ["--item", str(Path.home() / "input.dat"), "--total", "10"],
+            )
+
+        self.assertEqual("~/input.dat", params["item"])
+
+    def test_template_derives_commit_from_hashed_path_stem(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            templates = root / "templates"
+            templates.mkdir(parents=True)
+            template_path = templates / "engine.template.json"
+            template_path.write_text(
+                json.dumps({
+                    "schema": "crucible.template.v1",
+                    "name": "engine",
+                    "run_name": "engine-{candidate_hash}",
+                    "parameters": {
+                        "candidate": {"required": True, "worker_path": True},
+                    },
+                    "requirements": {
+                        "repos": [{
+                            "name": "engine",
+                            "path": "~/code/engine",
+                            "commit": "{candidate_commit}",
+                        }],
+                    },
+                    "task": {
+                        "split": {"count": 1},
+                        "command": "printf ok",
+                    },
+                }),
+                encoding="utf-8",
+            )
+            template = crucible.load_template(template_path)
+            params = crucible.parse_template_parameters(
+                "engine",
+                template,
+                ["--candidate", str(Path.home() / "assets/engines/enyo_9696dac")],
+            )
+            manifest = crucible.expand_template("engine", template_path, template, params)
+
+        self.assertEqual("~/assets/engines/enyo_9696dac", manifest["template"]["parameters"]["candidate"])
+        self.assertEqual("engine-9696dac", manifest["name"])
+        self.assertEqual("9696dac", manifest["requirements"]["repos"][0]["commit"])
+
+    def test_template_commands_list_and_show(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.write_test_template(root)
+            config = root / "config.yml"
+            config.write_text(
+                f"template_dirs:\n"
+                f"  - \"{root / 'templates'}\"\n",
+                encoding="utf-8",
+            )
+            env = {"CRUCIBLE_CONFIG": str(config)}
+
+            listing = self.run_cli("template", "list", env=env)
+            self.assertEqual(0, listing.returncode, listing.stderr)
+            self.assertIn("demo - demo template", listing.stdout)
+
+            shown = self.run_cli("template", "show", "demo", env=env)
+            self.assertEqual(0, shown.returncode, shown.stderr)
+            self.assertEqual("crucible.template.v1", json.loads(shown.stdout)["schema"])
+
+    def test_run_template_uses_default_workers(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.write_test_template(root)
+            config = root / "config.yml"
+            config.write_text(
+                f'default_workers: "worker-a:2"\n'
+                f"template_dirs:\n"
+                f"  - \"{root / 'templates'}\"\n",
+                encoding="utf-8",
+            )
+            captured = {}
+
+            def fake_run_job(args):
+                captured["args"] = args
+                return 0
+
+            with (
+                mock.patch.dict(os.environ, {"CRUCIBLE_CONFIG": str(config)}, clear=False),
+                mock.patch("crucible_lib.workers.cmd_run_job", side_effect=fake_run_job),
+            ):
+                rc = crucible.cmd_template_run(argparse.Namespace(
+                    template="demo",
+                    template_args=["--item", "/tmp/input.dat", "--total", "10"],
+                ))
+
+            self.assertEqual(0, rc)
+            self.assertEqual("worker-a:2", captured["args"].workers)
+
     def test_subcommand_help_is_available(self) -> None:
         commands = [
-            "plan", "add-input", "add-repo", "add-command", "sync-repos", "start", "run-task", "claim",
+            "run", "template", "plan", "add-input", "add-repo", "add-command", "sync-repos", "start", "run-task", "claim",
             "release", "heartbeat", "work", "doctor", "status",
             "wait", "verify", "merge", "stop", "drain", "add", "del", "self-update",
             "update", "version", "deploy", "resume", "retry", "worker",
@@ -371,7 +549,6 @@ except SystemExit as exc:
         self.assertIn("--index", self.run_cli("run-task", "--help").stdout)
         self.assertIn("--coordinator", self.run_cli("doctor", "--help").stdout)
         self.assertIn("comma-separated workers", self.run_cli("update", "--help").stdout)
-        self.assertNotEqual(0, self.run_cli("run", "--help").returncode)
         self.assertNotEqual(0, self.run_cli("run-job", "--help").returncode)
 
     def test_terminal_color_enabled_detects_watch_parent(self) -> None:
@@ -4569,6 +4746,48 @@ except SystemExit as exc:
             head = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
             self.assertEqual(first, head)
 
+    def test_sync_repos_can_ignore_untracked_files_only(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            subprocess.run(["git", "init", "-b", "main", str(repo)], check=True, stdout=subprocess.DEVNULL)
+            subprocess.run(["git", "config", "user.name", "Petter Wahlman"], cwd=repo, check=True)
+            subprocess.run(["git", "config", "user.email", "petter@wahlman.no"], cwd=repo, check=True)
+            tracked = repo / "file.txt"
+            tracked.write_text("one", encoding="utf-8")
+            subprocess.run(["git", "add", "file.txt"], cwd=repo, check=True)
+            subprocess.run(["git", "commit", "-m", "one"], cwd=repo, check=True, stdout=subprocess.DEVNULL)
+            commit = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
+            (repo / "build.log").write_text("generated\n", encoding="utf-8")
+
+            manifest = {
+                "schema": "crucible.task.v1",
+                "name": "sync-untracked",
+                "work_dir": str(root),
+                "state_dir": str(root / "state"),
+                "log_dir": str(root / "logs"),
+                "requirements": {
+                    "repos": [{
+                        "name": "repo",
+                        "path": str(repo),
+                        "commit": commit,
+                        "allow_untracked": True,
+                    }],
+                },
+                "tasks": [],
+            }
+            manifest_path = root / "manifest.json"
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+            sync = self.run_cli("sync-repos", "--manifest", str(manifest_path))
+            self.assertEqual("", sync.stderr)
+            self.assertEqual(0, sync.returncode)
+
+            tracked.write_text("tracked edit\n", encoding="utf-8")
+            rejected = self.run_cli("sync-repos", "--manifest", str(manifest_path))
+            self.assertNotEqual(0, rejected.returncode)
+            self.assertIn("repo: git worktree is not clean", rejected.stderr)
+
     def test_sync_repos_clones_and_runs_setup_hooks(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -5173,9 +5392,9 @@ except SystemExit as exc:
             retry_failed=True,
         )
 
-        self.assertIn("/opt/homebrew/bin/python3 .cache/crucible/crucible.py doctor", prereq)
+        self.assertIn("/opt/homebrew/bin/python3 /tmp/crucible-cache/crucible.py doctor", prereq)
         self.assertIn("--coordinator pwa-5090:/tmp/manifest.json", prereq)
-        self.assertIn("/opt/homebrew/bin/python3 .cache/crucible/crucible.py work", work)
+        self.assertIn("/opt/homebrew/bin/python3 /tmp/crucible-cache/crucible.py work", work)
         self.assertIn("--idle-seconds 120.0", work)
         self.assertNotIn("--retry-failed", work)
         self.assertIn("--retry-failed", retry_work)
@@ -5633,7 +5852,7 @@ except SystemExit as exc:
             self.assertNotIn("checking prerequisites", deploy_output)
             self.assertIn("deploy: setup complete", deploy_output)
             self.assertTrue(
-                any(command[0] == "ssh" and command[-2] == "pwa-5090" and "mkdir -p .cache/crucible" in command[-1] for command in commands)
+                any(command[0] == "ssh" and command[-2] == "pwa-5090" and "mkdir -p /tmp/crucible-cache" in command[-1] for command in commands)
             )
             self.assertNotIn(["sh", "-lc", "mkdir -p " + str(Path(tmp) / "cache")], commands)
             self.assertTrue((Path(tmp) / "cache/crucible.py").exists())

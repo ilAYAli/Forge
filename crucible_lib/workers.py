@@ -395,7 +395,7 @@ def worker_cache_dir(worker: dict[str, Any]) -> str:
         return str(worker["cache_dir"])
     if is_local_worker(worker):
         return str(Path.home() / ".cache/crucible")
-    return ".cache/crucible"
+    return "/tmp/crucible-cache"
 
 def worker_cache_file(worker: dict[str, Any], name: str) -> str:
     return str(Path(worker_cache_dir(worker)) / name)

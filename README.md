@@ -55,6 +55,31 @@ crucible start manifest.json --workers workers.json --merge merged.txt
 crucible start manifest.json --workers workers.json --replace
 ```
 
+## Templates
+
+`run` expands a named template into a normal Crucible manifest, then starts it.
+Templates are loaded from `.crucible/templates`, `~/.config/crucible/templates`,
+and the built-in `templates/` directory.
+
+```sh
+crucible template list
+crucible template show sprt
+crucible run sprt --candidate ~/assets/engines/enyo_9696dac --games 1000
+```
+
+`sprt` derives the Enyo candidate commit from the executable name
+(`enyo_9696dac` -> `9696dac`). Before games start, the materialized manifest
+syncs declared Git requirements, checks out pinned commits, builds and installs
+the candidate/tooling, probes the engines, and syncs the opening book input.
+
+Default workers can be configured in `~/.config/crucible/config.yml`:
+
+```yaml
+default_workers: "pwa-mbp:8,pwa-mbp0:8,pwa-5090:8"
+template_dirs:
+  - "~/.config/crucible/templates"
+```
+
 ## Status
 
 `status` without a run name shows active runs. Failed inactive runs are

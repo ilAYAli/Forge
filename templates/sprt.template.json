@@ -1,0 +1,168 @@
+{
+  "schema": "crucible.template.v1",
+  "name": "sprt",
+  "kind": "sprt",
+  "description": "Run distributed SPRT game chunks",
+  "run_name": "sprt-{candidate_stem}-{games}-{timestamp}",
+  "work_dir": "~",
+  "parameters": {
+    "candidate": {
+      "required": true,
+      "worker_path": true,
+      "help": "Candidate UCI engine executable named with its git hash, e.g. enyo_9696dac"
+    },
+    "games": {
+      "type": "int",
+      "required": true,
+      "help": "Total games across all tasks"
+    },
+    "reference": {
+      "default": "~/assets/engines/reference",
+      "worker_path": true,
+      "help": "Reference UCI engine executable"
+    },
+    "book": {
+      "default": "~/assets/books/AntiDraw_V2.1/WOMP_Openings_V1/WOMP_V1_+150_+159/WOMP_V1_6mvs_big_+140_+169.epd",
+      "worker_path": true,
+      "help": "Opening book"
+    },
+    "chunk_games": {
+      "type": "int",
+      "default": 50,
+      "help": "Games per Crucible task"
+    },
+    "concurrency": {
+      "type": "int",
+      "default": 1,
+      "help": "SPRT concurrency per task"
+    },
+    "threads": {
+      "type": "int",
+      "default": 1,
+      "help": "Engine threads per game"
+    },
+    "tc": {
+      "default": "10+0.1",
+      "help": "SPRT time control"
+    },
+    "restart": {
+      "default": "on",
+      "help": "SPRT restart mode"
+    }
+  },
+  "requirements": {
+    "python_min": "3.11",
+    "git_min": "2.38",
+    "repos": [
+      {
+        "name": "sprt",
+        "url": "git@github.com:ilAYAli/sprt.git",
+        "path": "~/code/cpp/chess/sprt",
+        "remote": "origin",
+        "commit": "49dbc0f69c15423def645150e5449588beef6f60",
+        "allow_untracked": true,
+        "install": [
+          "mkdir -p ~/.local/bin",
+          "ln -sf \"$PWD/sprt\" ~/.local/bin/sprt"
+        ],
+        "probe": [
+          "~/.local/bin/sprt --help | grep -- '--no-ntfy'"
+        ]
+      },
+      {
+        "name": "fastchess",
+        "url": "https://github.com/Disservin/fastchess.git",
+        "path": "~/source/fastchess",
+        "remote": "origin",
+        "commit": "3de44228aec904e688a4ad71c554eb9d461a5a2a",
+        "allow_untracked": true,
+        "build_timeout_s": 900,
+        "install_timeout_s": 120,
+        "probe_timeout_s": 30,
+        "build": [
+          "make -j build=release"
+        ],
+        "install": [
+          "mkdir -p ~/.local/bin",
+          "ln -sf \"$PWD/fastchess\" ~/.local/bin/fastchess"
+        ],
+        "probe": [
+          "~/.local/bin/fastchess -version | grep fastchess"
+        ]
+      },
+      {
+        "name": "enyo-candidate",
+        "url": "git@github.com:ilAYAli/enyo_private.git",
+        "path": "~/code/cpp/chess/enyo",
+        "remote": "origin",
+        "commit": "{candidate_commit}",
+        "allow_untracked": true,
+        "build_timeout_s": 1200,
+        "install_timeout_s": 120,
+        "probe_timeout_s": 30,
+        "build": [
+          "cmake -S . -B build -DCMAKE_BUILD_TYPE=Release",
+          "cmake --build build -j8"
+        ],
+        "install": [
+          "mkdir -p \"$(dirname {candidate})\"",
+          "cp build/enyo {candidate}",
+          "chmod +x {candidate}"
+        ],
+        "probe": [
+          "test -x build/enyo",
+          "test -x {candidate}",
+          "printf '%s\\n' uci quit | {candidate} | grep -q uciok"
+        ]
+      }
+    ],
+    "commands": [
+      {
+        "name": "sprt",
+        "path": "~/.local/bin/sprt",
+        "command": "~/.local/bin/sprt --help",
+        "contains": "--no-ntfy",
+        "timeout_s": 20
+      },
+      {
+        "name": "fastchess",
+        "path": "~/.local/bin/fastchess",
+        "timeout_s": 20
+      },
+      {
+        "name": "candidate",
+        "path": "{candidate}",
+        "command": "test -x {candidate} && printf '%s\\n' uci quit | {candidate}",
+        "contains": "uciok",
+        "timeout_s": 30
+      },
+      {
+        "name": "reference",
+        "path": "{reference}",
+        "command": "test -x {reference} && printf '%s\\n' uci quit | {reference}",
+        "contains": "uciok",
+        "timeout_s": 30
+      }
+    ],
+    "inputs": [
+      {
+        "name": "book",
+        "path": "{book}"
+      }
+    ]
+  },
+  "task": {
+    "split": {
+      "total": "games",
+      "chunk": "chunk_games",
+      "unit": "games"
+    },
+    "label": "sprt:{chunk}",
+    "output": "{output_dir}/{task_name}/logs/{task_name}.log",
+    "command": "~/.local/bin/sprt --candidate {candidate} --reference {reference} --book {book} --games {chunk} --concurrency {concurrency} --threads {threads} --tc {tc} --restart {restart} --fastchess ~/.local/bin/fastchess --log-dir {output_dir}/{task_name}/logs --name {task_name} --no-ntfy --no-eta",
+    "progress": {
+      "unit": "games",
+      "log_regex": "\\[\\s*(?P<done>\\d+)\\/(?P<total>\\d+)\\].*?Elo\\s+(?P<elo>[-+]?\\d+(?:\\.\\d+)?|[-+]?inf).*?\\+/-\\s+(?P<ci>\\d+(?:\\.\\d+)?).*?LOS\\s+(?P<los>\\d+(?:\\.\\d+)?)%.*?draw\\s+(?P<draw>\\d+(?:\\.\\d+)?)%.*?ETA\\s+(?P<eta>\\S+)"
+    }
+  }
+}

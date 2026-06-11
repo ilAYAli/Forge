@@ -1,0 +1,33 @@
+{
+  "schema": "crucible.template.v1",
+  "name": "training",
+  "kind": "training",
+  "description": "Run a sharded training command",
+  "run_name": "training-{timestamp}",
+  "work_dir": "{work_dir}",
+  "parameters": {
+    "command": {
+      "required": true,
+      "help": "Training command prefix; Crucible appends shard/output arguments"
+    },
+    "shards": {
+      "type": "int",
+      "default": 1,
+      "help": "Number of training shards/tasks"
+    },
+    "work_dir": {
+      "default": ".",
+      "help": "Task working directory"
+    }
+  },
+  "task": {
+    "split": {
+      "count": "shards"
+    },
+    "command": "{command} --shard {task_index} --shards {task_count} --output-dir {output_dir}/{task_name}",
+    "progress": {
+      "log_regex": "epoch=(?P<done>\\d+)\\/(?P<total>\\d+).*?loss=(?P<loss>\\S+).*?eta=(?P<eta>\\S+)",
+      "unit": "epochs"
+    }
+  }
+}
