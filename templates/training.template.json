@@ -2,32 +2,24 @@
   "schema": "crucible.template.v1",
   "name": "training",
   "kind": "training",
-  "description": "Run a sharded training command",
-  "run_name": "training-{timestamp}",
+  "description": "Run an NNUE build.py create job",
+  "run_name": "training-{config_stem}-{timestamp}",
   "work_dir": "{work_dir}",
   "parameters": {
-    "command": {
-      "required": true,
-      "help": "Training command prefix; Crucible appends shard/output arguments"
-    },
-    "shards": {
-      "type": "int",
-      "default": 1,
-      "help": "Number of training shards/tasks"
+    "config": {
+      "default": "build.json",
+      "help": "NNUE build.py create config"
     },
     "work_dir": {
-      "default": ".",
-      "help": "Task working directory"
+      "default": "~/code/cpp/chess/nnue",
+      "help": "NNUE repository directory"
     }
   },
   "task": {
     "split": {
-      "count": "shards"
+      "count": 1
     },
-    "command": "{command} --shard {task_index} --shards {task_count} --output-dir {output_dir}/{task_name}",
-    "progress": {
-      "log_regex": "epoch=(?P<done>\\d+)\\/(?P<total>\\d+).*?loss=(?P<loss>\\S+).*?eta=(?P<eta>\\S+)",
-      "unit": "epochs"
-    }
+    "label": "training",
+    "command": "./build.py create -c {config}"
   }
 }

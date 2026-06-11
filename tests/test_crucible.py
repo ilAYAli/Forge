@@ -517,6 +517,21 @@ except SystemExit as exc:
         self.assertEqual("engine-9696dac", manifest["name"])
         self.assertEqual("9696dac", manifest["requirements"]["repos"][0]["commit"])
 
+    def test_training_template_wraps_nnue_build_create(self) -> None:
+        template_path = ROOT / "templates" / "training.template.json"
+        template = crucible.load_template(template_path)
+        params = crucible.parse_template_parameters("training", template, [])
+        manifest = crucible.expand_template("training", template_path, template, params)
+
+        self.assertEqual("~/code/cpp/chess/nnue", manifest["work_dir"])
+        self.assertEqual(1, len(manifest["tasks"]))
+        task = manifest["tasks"][0]
+        self.assertEqual("training_0000", task["id"])
+        self.assertEqual("training", task["label"])
+        self.assertEqual("./build.py create -c build.json", task["command"])
+        self.assertNotIn("--shard", task["command"])
+        self.assertNotIn("--output-dir", task["command"])
+
     def test_template_commands_list_and_show(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
