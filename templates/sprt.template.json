@@ -112,7 +112,7 @@
         "probe": [
           "test -x build/enyo",
           "test -x {candidate}",
-          "printf '%s\\n' uci quit | {candidate} | grep -q uciok"
+          "tmp=\"$(mktemp)\"; trap 'rm -f \"$tmp\"' EXIT; printf '%s\\n' uci quit | {candidate} >\"$tmp\" 2>&1 || true; grep -q uciok \"$tmp\""
         ]
       }
     ],

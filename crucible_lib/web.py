@@ -112,7 +112,7 @@ _HTML = r"""<!DOCTYPE html>
     .td-worker { color: var(--blu); }
     .td-label  { color: var(--dim); }
     .td-id     { color: var(--dim); }
-    .td-rows   { color: var(--text); }
+    .td-progress { color: var(--text); }
     .td-output { color: var(--text); }
     .td-rate   { color: var(--dim); }
     .td-eta    { color: var(--yel); }
@@ -308,7 +308,7 @@ _HTML = r"""<!DOCTYPE html>
     let taskColWidths = null;
     let taskSort = {col: 'eta', dir: 1};
 
-    const BASE_TASK_COLS = ['worker','label','task','rows','output','rate'];
+    const BASE_TASK_COLS = ['worker','label','task','progress','output','rate'];
     const FIELD_TASK_COLS = [
       {name: 'elo',  keys: ['elo','elo~','Elo']},
       {name: 'ci',   keys: ['ci','err','error','+/-','elo_ci']},
@@ -464,6 +464,21 @@ _HTML = r"""<!DOCTYPE html>
       return '';
     }
 
+    function taskProgressText(t) {
+      const pd = t.progress_data;
+      if (!pd) return t.progress || '';
+      const unit = pd.unit || 'items';
+      if (typeof pd.global_done === 'number' && typeof pd.global_total === 'number') {
+        const local = (typeof pd.done === 'number' && typeof pd.total === 'number')
+          ? ` (${pd.done}/${pd.total})` : '';
+        return `${unit}=${pd.global_done}/${pd.global_total}${local}`;
+      }
+      if (typeof pd.done === 'number' && typeof pd.total === 'number') {
+        return `${unit}=${pd.done}/${pd.total}`;
+      }
+      return t.progress || '';
+    }
+
     function taskColumns(tasks) {
       const cols = BASE_TASK_COLS.slice();
       for (const field of FIELD_TASK_COLS) {
@@ -492,7 +507,7 @@ _HTML = r"""<!DOCTYPE html>
       }
       if (col === 'label') return esc(t.label||'');
       if (col === 'task') return String(t.index);
-      if (col === 'rows') return esc(pd?.done!=null&&pd?.total ? `${pd.done}/${pd.total}` : (t.progress||''));
+      if (col === 'progress') return esc(taskProgressText(t));
       if (col === 'output') return esc(pd?.output!=null ? String(pd.output) : '');
       if (col === 'rate') return esc(fmtRate(pd?.rate, pd?.unit));
       if (col === 'eta') {
@@ -513,7 +528,7 @@ _HTML = r"""<!DOCTYPE html>
       if (col === 'worker') return t.worker || '';
       if (col === 'label') return t.label || '';
       if (col === 'task') return String(t.index);
-      if (col === 'rows') return pd?.done ?? '';
+      if (col === 'progress') return pd?.global_done ?? pd?.done ?? '';
       if (col === 'output') return pd?.output ?? '';
       if (col === 'rate') return pd?.rate ?? '';
       if (col === 'eta') return remainingEtaS(pd) ?? 1e9;
@@ -525,7 +540,7 @@ _HTML = r"""<!DOCTYPE html>
       if (col === 'worker') return 'td-worker';
       if (col === 'label') return 'td-label';
       if (col === 'task') return 'td-id';
-      if (col === 'rows') return 'td-rows';
+      if (col === 'progress') return 'td-progress';
       if (col === 'output') return 'td-output';
       if (col === 'rate') return 'td-rate';
       if (col === 'eta') return 'td-eta';
@@ -627,7 +642,8 @@ _HTML = r"""<!DOCTYPE html>
 
       // active — open by default for current runs
       if (active.count > 0) {
-        const ws = display.active_summary_text ? renderChips(display.active_summary_text) : renderChips((active.fields||[]).join(' '));
+        const activeFieldText = (display.active_fields || active.fields || []).join(' ');
+        const ws = display.active_summary_text ? renderChips(display.active_summary_text) : renderChips(activeFieldText);
         sections.push(makeSection(r.run, 'active',
           `active: <b>${active.count}</b>`, 'yel',
           ws + renderTasks(active.tasks), isCurrent

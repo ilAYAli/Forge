@@ -502,21 +502,14 @@ def run_coordinator_cli(coordinator: str, args: list[str]) -> subprocess.Complet
     host, manifest_path = parse_coordinator(coordinator)
     resolved_args = [item.replace("{manifest}", manifest_path) for item in args]
     if host:
-        return subprocess.run(
+        return run_process_command_with_retries(
             ["ssh", *SSH_OPTS, host, remote_crucible_command(resolved_args)],
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=False,
+            retries=SSH_TRANSIENT_RETRY_COUNT,
         )
     script = str(script_path())
     local_args = [sys.executable, script, *resolved_args]
-    return subprocess.run(
+    return run_process_command(
         local_args,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        check=False,
     )
 
 def load_coordinator_manifest(coordinator: str) -> dict[str, Any]:
@@ -527,12 +520,9 @@ def load_coordinator_manifest(coordinator: str) -> dict[str, Any]:
             "import sys; "
             "sys.stdout.write(Path(sys.argv[1]).read_text(encoding='utf-8'))"
         )
-        result = subprocess.run(
+        result = run_process_command_with_retries(
             ["ssh", *SSH_OPTS, host, shell_join(["python3", "-c", code, manifest_path])],
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=False,
+            retries=SSH_TRANSIENT_RETRY_COUNT,
         )
         if result.returncode != 0:
             detail = result.stderr.strip() or result.stdout.strip() or "coordinator manifest load failed"
@@ -627,11 +617,9 @@ def sync_files_to_coordinator(coordinator: str, transfers: list[tuple[Path, Path
 
     parents = {str(remote.parent) for _, remote in transfers}
     quoted_parents = " ".join(shlex.quote(p) for p in sorted(parents))
-    mkdir_result = subprocess.run(
+    mkdir_result = run_process_command_with_retries(
         ["ssh", *SSH_OPTS, host, f"mkdir -p {quoted_parents}"],
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        retries=SSH_TRANSIENT_RETRY_COUNT,
     )
     if mkdir_result.returncode != 0:
         raise RuntimeError(
@@ -639,11 +627,9 @@ def sync_files_to_coordinator(coordinator: str, transfers: list[tuple[Path, Path
         )
 
     for local, remote in transfers:
-        result = subprocess.run(
+        result = run_process_command_with_retries(
             ["rsync", "-a", "-e", RSYNC_SSH, str(local), f"{host}:{remote}"],
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            retries=SSH_TRANSIENT_RETRY_COUNT,
         )
         if result.returncode != 0:
             raise RuntimeError(result.stderr.strip() or f"rsync failed for {local}")

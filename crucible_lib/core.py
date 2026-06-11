@@ -35,6 +35,17 @@ RUN_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 SSH_CONNECT_TIMEOUT_SECONDS = 15
 SSH_SERVER_ALIVE_INTERVAL_SECONDS = 30
 SSH_SERVER_ALIVE_COUNT_MAX = 3
+SSH_TRANSIENT_RETRY_COUNT = 3
+SSH_TRANSIENT_RETRY_DELAY_SECONDS = 1.0
+SSH_TRANSIENT_RETRY_PATTERNS = (
+    "connection timed out during banner exchange",
+    "banner exchange",
+    "kex_exchange_identification:",
+    "ssh_exchange_identification:",
+    "connection closed by remote host",
+    "connection reset by peer",
+    "operation timed out",
+)
 REMOTE_PROCESS_STOP_GRACE_SECONDS = 2
 DEFAULT_REQUIREMENT_TIMEOUT_SECONDS = 15.0
 HEARTBEAT_MIN_INTERVAL_SECONDS = 5.0
@@ -51,6 +62,55 @@ SSH_OPTS = [
     "-o", f"ServerAliveCountMax={SSH_SERVER_ALIVE_COUNT_MAX}",
 ]
 RSYNC_SSH = "ssh " + " ".join(shlex.quote(item) for item in SSH_OPTS)
+
+
+def transient_ssh_transport_failure(command: list[str], result: subprocess.CompletedProcess[str]) -> bool:
+    if not command or command[0] not in ("ssh", "rsync"):
+        return False
+    if result.returncode == 0:
+        return False
+    output = "\n".join(
+        part for part in (result.stdout or "", result.stderr or "") if part
+    ).lower()
+    return any(pattern in output for pattern in SSH_TRANSIENT_RETRY_PATTERNS)
+
+
+def run_process_command(
+    command: list[str],
+    *,
+    timeout: float | None = None,
+    tracker: "ProcessTracker | None" = None,
+) -> subprocess.CompletedProcess[str]:
+    if tracker is not None:
+        return tracker.run(command, timeout=timeout)
+    return subprocess.run(
+        command,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+        timeout=timeout,
+    )
+
+
+def run_process_command_with_retries(
+    command: list[str],
+    *,
+    timeout: float | None = None,
+    tracker: "ProcessTracker | None" = None,
+    retries: int = 0,
+) -> subprocess.CompletedProcess[str]:
+    attempts = max(1, retries + 1)
+    result: subprocess.CompletedProcess[str] | None = None
+    for attempt in range(attempts):
+        result = run_process_command(command, timeout=timeout, tracker=tracker)
+        if not transient_ssh_transport_failure(command, result) or attempt + 1 >= attempts:
+            return result
+        delay = SSH_TRANSIENT_RETRY_DELAY_SECONDS * (attempt + 1)
+        if delay > 0:
+            time.sleep(delay)
+    assert result is not None
+    return result
 
 
 def script_path() -> Path:

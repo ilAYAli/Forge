@@ -470,6 +470,25 @@ def progress_output_rate(progress_data: dict[str, Any] | None, elapsed_s: float 
         return None
     return output / elapsed_s
 
+def progress_data_with_global_position(
+    progress_data: dict[str, Any] | None,
+    *,
+    unit: str,
+    offset: int,
+    total: int,
+) -> dict[str, Any] | None:
+    if not isinstance(progress_data, dict):
+        return None
+    done = progress_data.get("done")
+    if not isinstance(done, int):
+        return progress_data
+    data = dict(progress_data)
+    data["global_done"] = min(total, max(0, offset + done))
+    data["global_total"] = total
+    if not data.get("unit"):
+        data["unit"] = unit
+    return data
+
 def progress_config_unit_total(task: dict[str, Any]) -> tuple[str, int] | None:
     progress_config = task.get("progress")
     if not isinstance(progress_config, dict):
@@ -736,15 +755,8 @@ def active_worker_metrics(summary: dict[str, Any]) -> dict[str, dict[str, Any]]:
                 entry["progress_rate_seen"] = True
     return workers
 
-def progress_rate_field_name(values: list[dict[str, Any]]) -> str:
-    units = {
-        str(metric.get("progress_unit") or "").strip()
-        for metric in values
-        if bool(metric.get("progress_rate_seen")) and str(metric.get("progress_unit") or "").strip()
-    }
-    if len(units) == 1:
-        return f"{next(iter(units))}/s"
-    return "rate"
+def compact_rate_per_second(value: float) -> str:
+    return f"{compact_rate(value)}/s"
 
 def active_worker_summary(summary: dict[str, Any]) -> str:
     metrics = active_worker_metrics(summary)
@@ -770,13 +782,12 @@ def active_worker_summary(summary: dict[str, Any]) -> str:
         return ""
     if len(values) == 1:
         return ""
-    rate_name = progress_rate_field_name(rate_values)
     total_rate = sum(float(metric.get("progress_rate", 0.0)) for metric in rate_values)
-    parts = [f"workers={len(values)}", f"{rate_name}={compact_rate(total_rate)}"]
+    parts = [f"workers={len(values)}", f"rate={compact_rate_per_second(total_rate)}"]
     ordered = sorted(rate_values, key=lambda metric: (float(metric["progress_rate"]), str(metric["worker"])))
     max_rate = float(ordered[-1]["progress_rate"])
-    parts.append(f"min={str(ordered[0]['worker'])}:{compact_rate(float(ordered[0]['progress_rate']))}")
-    parts.append(f"max={str(ordered[-1]['worker'])}:{compact_rate(max_rate)}")
+    parts.append(f"min={str(ordered[0]['worker'])}:{compact_rate_per_second(float(ordered[0]['progress_rate']))}")
+    parts.append(f"max={str(ordered[-1]['worker'])}:{compact_rate_per_second(max_rate)}")
     if speedup := run_speedup_field(summary):
         parts.append(speedup)
     return " ".join(parts)
@@ -813,22 +824,21 @@ def active_worker_summary_payload(summary: dict[str, Any]) -> dict[str, Any]:
                 payload["speedup_text"] = f"{speedup:.1f}x"
     elif any(bool(metric.get("progress_rate_seen")) for metric in values):
         rate_values = [metric for metric in values if bool(metric.get("progress_rate_seen"))]
-        rate_name = progress_rate_field_name(rate_values)
         total_rate = sum(float(metric.get("progress_rate", 0.0)) for metric in rate_values)
         payload["rate"] = total_rate
-        payload["rate_name"] = rate_name
-        payload["rate_text"] = compact_rate(total_rate)
+        payload["rate_name"] = "rate"
+        payload["rate_text"] = compact_rate_per_second(total_rate)
         if len(values) > 1:
             ordered = sorted(rate_values, key=lambda metric: (float(metric["progress_rate"]), str(metric["worker"])))
             payload["min_rate"] = {
                 "worker": str(ordered[0]["worker"]),
                 "rate": float(ordered[0]["progress_rate"]),
-                "rate_text": compact_rate(float(ordered[0]["progress_rate"])),
+                "rate_text": compact_rate_per_second(float(ordered[0]["progress_rate"])),
             }
             payload["max_rate"] = {
                 "worker": str(ordered[-1]["worker"]),
                 "rate": float(ordered[-1]["progress_rate"]),
-                "rate_text": compact_rate(float(ordered[-1]["progress_rate"])),
+                "rate_text": compact_rate_per_second(float(ordered[-1]["progress_rate"])),
             }
             max_rate = float(ordered[-1]["progress_rate"])
             if max_rate > 0:
@@ -1647,6 +1657,17 @@ def status_summary(manifest: dict[str, Any], *, lease_seconds: int) -> dict[str,
     completed_worker_task_rates: dict[str, list[float]] = {}
     completed_units: dict[str, int] = {}
     completed_elapsed: dict[str, float] = {}
+    progress_task_offsets: dict[str, tuple[str, int]] = {}
+    progress_unit_totals: dict[str, int] = {}
+
+    for task in manifest["tasks"]:
+        config_progress = progress_config_unit_total(task)
+        if config_progress is None:
+            continue
+        unit, total = config_progress
+        offset = progress_unit_totals.get(unit, 0)
+        progress_task_offsets[str(task["id"])] = (unit, offset)
+        progress_unit_totals[unit] = offset + total
 
     for task in manifest["tasks"]:
         config_progress = progress_config_unit_total(task)
@@ -1700,6 +1721,16 @@ def status_summary(manifest: dict[str, Any], *, lease_seconds: int) -> dict[str,
                 fallback_rates.get(unit),
                 running_elapsed_seconds(running_payload),
             )
+        if progress_data is not None and config_progress is not None and state in {"running", "claimed", "stale"}:
+            unit, task_total = config_progress
+            offset_unit, offset = progress_task_offsets.get(str(task["id"]), (unit, 0))
+            if offset_unit == unit:
+                progress_data = progress_data_with_global_position(
+                    progress_data,
+                    unit=unit,
+                    offset=offset,
+                    total=progress_unit_totals.get(unit, task_total),
+                )
         progress = str(progress_data.get("text") or "") if isinstance(progress_data, dict) else ""
         row = {
             "id": task["id"],

@@ -290,7 +290,9 @@ except SystemExit as exc:
 
         self.assertIn("FIELD_TASK_COLS", web._HTML)
         self.assertIn("firstProgressField(t.progress_data", web._HTML)
-        self.assertIn("active.fields||[]", web._HTML)
+        self.assertIn("display.active_fields || active.fields || []", web._HTML)
+        self.assertIn("function taskProgressText", web._HTML)
+        self.assertIn("'progress'", web._HTML)
         self.assertIn("toggleSound()", web._HTML)
         self.assertIn("notifyStartedJobs(data)", web._HTML)
         self.assertIn("playDing()", web._HTML)
@@ -4548,15 +4550,15 @@ except SystemExit as exc:
             "metadata": {},
         }
         self.assertEqual(
-            "workers=2 games/s=4 min=slow:1 max=fast:3 speedup=1.3x",
+            "workers=2 rate=4/s min=slow:1/s max=fast:3/s speedup=1.3x",
             crucible.active_worker_summary(summary),
         )
         self.assertEqual("speedup=1.3x", crucible.run_speedup_field(summary))
         payload = crucible.run_status_payload(summary)
         self.assertEqual(1.333, payload["display"]["active_summary"]["speedup"])
         self.assertEqual("1.3x", payload["display"]["active_summary"]["speedup_text"])
-        self.assertEqual("games/s", payload["display"]["active_summary"]["rate_name"])
-        self.assertEqual("4", payload["display"]["active_summary"]["rate_text"])
+        self.assertEqual("rate", payload["display"]["active_summary"]["rate_name"])
+        self.assertEqual("4/s", payload["display"]["active_summary"]["rate_text"])
         self.assertIn("speedup=1.3x", payload["display"]["active_summary_text"])
 
     def test_status_single_worker_summary_omits_redundant_fields(self) -> None:
@@ -5585,6 +5587,33 @@ except SystemExit as exc:
                 crucible.check_coordinator_cli("pwa-5090:/tmp/manifest.json")
 
         self.assertIn("crucible not found", str(raised.exception))
+
+    def test_run_coordinator_cli_retries_transient_ssh_failure(self) -> None:
+        calls = []
+
+        def fake_run(command, **kwargs):
+            calls.append(command)
+            if len(calls) == 1:
+                return subprocess.CompletedProcess(
+                    command,
+                    255,
+                    stdout="",
+                    stderr="Connection timed out during banner exchange",
+                )
+            return subprocess.CompletedProcess(command, 0, stdout="ok\n", stderr="")
+
+        with (
+            mock.patch("crucible_lib.core.run_process_command", side_effect=fake_run),
+            mock.patch("crucible_lib.core.SSH_TRANSIENT_RETRY_DELAY_SECONDS", 0.0),
+        ):
+            result = crucible.run_coordinator_cli(
+                "pwa-mbp:/tmp/manifest.json",
+                ["heartbeat", "--manifest", "{manifest}", "--task", "task_0", "--worker", "worker-a"],
+            )
+
+        self.assertEqual(0, result.returncode)
+        self.assertEqual(2, len(calls))
+        self.assertEqual("ssh", calls[0][0])
 
 
     def test_load_workers_reads_workers_json(self) -> None:
