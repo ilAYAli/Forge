@@ -23,6 +23,32 @@ import crucible  # noqa: E402
 
 
 class CrucibleTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._isolated_env_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self._isolated_env_dir.cleanup)
+        isolated_config = Path(self._isolated_env_dir.name) / "config.yml"
+        old_coordinator_runs = os.environ.pop("CRUCIBLE_COORDINATOR_RUNS", None)
+
+        def restore_coordinator_runs_env() -> None:
+            if old_coordinator_runs is not None:
+                os.environ["CRUCIBLE_COORDINATOR_RUNS"] = old_coordinator_runs
+            else:
+                os.environ.pop("CRUCIBLE_COORDINATOR_RUNS", None)
+
+        self.addCleanup(restore_coordinator_runs_env)
+        self._env_patcher = mock.patch.dict(
+            os.environ,
+            {
+                "CRUCIBLE_CONFIG": str(isolated_config),
+                "CRUCIBLE_NOTIFY_COMMAND": "",
+                "CRUCIBLE_COORDINATOR_HOST": "",
+                "CRUCIBLE_WORKERS": "",
+            },
+            clear=False,
+        )
+        self._env_patcher.start()
+        self.addCleanup(self._env_patcher.stop)
+
     def run_cli(
         self,
         *args: str,
@@ -6684,6 +6710,53 @@ except SystemExit as exc:
             self.assertEqual("smoke", payload["kind"])
             self.assertEqual("notify check", payload["description"])
             self.assertEqual(0, payload["tasks"])
+
+    def test_deploy_does_not_use_user_notify_config_by_default(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            runs = root / "runs"
+            template = root / "template.manifest.json"
+            template.write_text(
+                json.dumps({
+                    "schema": "crucible.task.v1",
+                    "name": "no-notify-template",
+                    "work_dir": str(root),
+                    "requirements": {"python_min": "3.11", "git_min": "2.38"},
+                    "tasks": [],
+                }),
+                encoding="utf-8",
+            )
+            workers = root / "workers.json"
+            workers.write_text(
+                json.dumps({
+                    "schema": "crucible.workers.v1",
+                    "workers": [{"host": "localhost", "local": True, "cache_dir": str(root / "cache")}],
+                }),
+                encoding="utf-8",
+            )
+            args = argparse.Namespace(
+                manifest=str(template),
+                workers=str(workers),
+                jobs=1,
+                run="no-notify-run",
+                resume=False,
+                replace=False,
+                remote_timeout_seconds=1800.0,
+                notify_command=None,
+                no_color=True,
+                verbose=False,
+            )
+            with (
+                self.patch_runs_dir(runs),
+                mock.patch("crucible.ProcessTracker.run", return_value=subprocess.CompletedProcess(["sh"], 0, stdout="", stderr="")),
+                mock.patch("crucible_lib.workers.run_notify_command", return_value=0) as notify,
+            ):
+                stdout = io.StringIO()
+                with contextlib.redirect_stdout(stdout):
+                    rc = crucible.cmd_deploy(args)
+
+            self.assertEqual(0, rc)
+            notify.assert_not_called()
 
     def test_example_manifests_parse_and_format_tasks(self) -> None:
         for path in sorted((ROOT / "examples").glob("*.manifest.json")):
