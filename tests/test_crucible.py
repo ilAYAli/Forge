@@ -340,8 +340,34 @@ except SystemExit as exc:
         self.assertIn("user-select: text", web._HTML)
         self.assertIn("function toggleRunHeader", web._HTML)
         self.assertIn("String(window.getSelection())", web._HTML)
+        self.assertIn("restartWeb(this)", web._HTML)
+        self.assertIn("cmd: 'restart-web'", web._HTML)
+        self.assertIn("id=\"restart\"", web._HTML)
         self.assertNotIn("games/s", web._HTML)
         self.assertIn("ThreadingHTTPServer", web.ThreadingHTTPServer.__name__)
+
+    def test_web_restart_command_schedules_server_restart(self) -> None:
+        import crucible_lib.web as web
+
+        server = object()
+        with mock.patch("crucible_lib.web._schedule_web_restart") as schedule:
+            result = web._run_api_command("", "restart-web", server=server)
+
+        schedule.assert_called_once_with(server)
+        self.assertEqual(0, result.returncode)
+        self.assertEqual("web restart requested\n", result.stdout)
+
+    def test_web_restart_argv_preserves_host_and_port(self) -> None:
+        import crucible_lib.web as web
+
+        with (
+            mock.patch("crucible_lib.web._WEB_HOST", "0.0.0.0"),
+            mock.patch("crucible_lib.web._WEB_PORT", 9000),
+        ):
+            argv = web._web_restart_argv()
+
+        self.assertEqual(sys.executable, argv[0])
+        self.assertEqual([str(web.script_path()), "web", "--host", "0.0.0.0", "--port", "9000", "--foreground"], argv[1:])
 
     def test_web_delete_command_uses_force_for_failed_inactive_run(self) -> None:
         import crucible_lib.web as web

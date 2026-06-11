@@ -33,11 +33,11 @@ _HTML = r"""<!DOCTYPE html>
     #dot.err { background: var(--red); }
     #coord { color: var(--dim); }
     #ts { color: var(--dim); margin-left: auto; }
-    #sound { background: none; border: 1px solid var(--border); border-radius: 4px;
+    .top-btn { background: none; border: 1px solid var(--border); border-radius: 4px;
              color: var(--dim); font-family: var(--font); font-size: 11px;
              padding: 1px 7px; cursor: pointer; }
     #sound.on { color: var(--yel); border-color: rgba(212,168,34,.45); }
-    #sound:hover { color: var(--text); border-color: var(--dim); }
+    .top-btn:hover { color: var(--text); border-color: var(--dim); }
     #err { display: none; padding: 6px 14px; background: rgba(217,95,95,.1);
            color: var(--red); border-bottom: 1px solid rgba(217,95,95,.2); font-size: 13px; }
     #runs { padding: 10px 12px; display: flex; flex-direction: column; gap: 6px; }
@@ -150,7 +150,8 @@ _HTML = r"""<!DOCTYPE html>
     <div id="dot"></div>
     <span id="coord"></span>
     <span id="ts">Loading…</span>
-    <button id="sound" type="button" onclick="toggleSound()" title="Toggle job start sound" aria-pressed="false">ding off</button>
+    <button id="restart" class="top-btn" type="button" onclick="restartWeb(this)" title="Restart this web server process">restart</button>
+    <button id="sound" class="top-btn" type="button" onclick="toggleSound()" title="Toggle job start sound" aria-pressed="false">ding off</button>
   </header>
   <div id="runs"></div>
   <script>
@@ -718,6 +719,27 @@ _HTML = r"""<!DOCTYPE html>
       refresh();
     }
 
+    async function restartWeb(btn) {
+      const old = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = 'restarting';
+      try {
+        const res = await fetch('/api/cmd', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({cmd: 'restart-web'}),
+        });
+        const data = await res.json();
+        if (!data.ok) throw new Error((data.stderr || data.error || 'restart failed').trim());
+        setTimeout(() => location.reload(), 1200);
+      } catch(e) {
+        btn.disabled = false;
+        btn.textContent = old;
+        document.getElementById('err').style.display = 'block';
+        document.getElementById('err').textContent = e.message;
+      }
+    }
+
     let refreshing = false;
     async function refresh() {
       if (refreshing) return;
@@ -803,6 +825,9 @@ _WEB_SSH_OPTS = [
     "-o", "ServerAliveInterval=10",
     "-o", "ServerAliveCountMax=1",
 ]
+_WEB_HOST = "127.0.0.1"
+_WEB_PORT = 0
+_WEB_RESTART_DELAY_SECONDS = 0.2
 
 def _collect_status_payload() -> dict[str, Any]:
     coordinator_runs = configured_coordinator_runs()
@@ -1022,7 +1047,34 @@ def _run_web_cli(command: list[str], *, coordinator_runs: str | None = None) -> 
         check=False,
     )
 
-def _run_api_command(run: str, cmd: str) -> subprocess.CompletedProcess[str]:
+def _web_restart_argv() -> list[str]:
+    return [
+        sys.executable,
+        str(script_path()),
+        "web",
+        "--host",
+        _WEB_HOST,
+        "--port",
+        str(_WEB_PORT),
+        "--foreground",
+    ]
+
+def _restart_web_after_response(server: ThreadingHTTPServer) -> None:
+    time.sleep(_WEB_RESTART_DELAY_SECONDS)
+    server.shutdown()
+    server.server_close()
+    os.execv(sys.executable, _web_restart_argv())
+
+def _schedule_web_restart(server: ThreadingHTTPServer) -> None:
+    thread = threading.Thread(target=_restart_web_after_response, args=(server,))
+    thread.start()
+
+def _run_api_command(run: str, cmd: str, *, server: ThreadingHTTPServer | None = None) -> subprocess.CompletedProcess[str]:
+    if cmd == "restart-web":
+        if server is None:
+            raise ValueError("restart-web requires a server")
+        _schedule_web_restart(server)
+        return subprocess.CompletedProcess(["restart-web"], 0, stdout="web restart requested\n", stderr="")
     if cmd == "del":
         coordinator_runs = _validate_web_delete(run)
         return _run_web_cli(["del", run, "--force"], coordinator_runs=coordinator_runs)
@@ -1043,9 +1095,9 @@ class _Handler(BaseHTTPRequestHandler):
             try:
                 length = int(self.headers.get("Content-Length", 0))
                 req = json.loads(self.rfile.read(length))
-                run = str(req["run"])
                 cmd = str(req["cmd"])
-                result = _run_api_command(run, cmd)
+                run = str(req.get("run", ""))
+                result = _run_api_command(run, cmd, server=self.server)
                 body = json.dumps({
                     "ok": result.returncode == 0,
                     "stdout": result.stdout,
@@ -1094,8 +1146,11 @@ def _daemonize() -> None:
 
 
 def cmd_web(args: argparse.Namespace) -> int:
+    global _WEB_HOST, _WEB_PORT
     host = str(args.host)
     port = int(args.port)
+    _WEB_HOST = host
+    _WEB_PORT = port
     url = f"http://{host}:{port}"
     try:
         server = ThreadingHTTPServer((host, port), _Handler)
