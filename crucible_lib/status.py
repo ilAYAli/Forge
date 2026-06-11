@@ -1924,8 +1924,9 @@ def run_completion_event_payload(
     payload.update(manifest_metadata(manifest))
     return payload
 
-def verify_manifest(manifest: dict[str, Any]) -> None:
-    check_requirements(manifest)
+def verify_manifest(manifest: dict[str, Any], *, verify_requirements: bool = True) -> None:
+    if verify_requirements:
+        check_requirements(manifest)
     failures = []
     expected_manifest_sha = manifest_checksum(manifest)
     for task in manifest["tasks"]:
@@ -1960,7 +1961,10 @@ def verify_manifest(manifest: dict[str, Any]) -> None:
 
 def cmd_verify(args: argparse.Namespace) -> int:
     _, manifest = load_run_manifest(args.run)
-    verify_manifest(manifest)
+    verify_manifest(
+        manifest,
+        verify_requirements=not bool(getattr(args, "skip_requirements", False)),
+    )
     print("ok")
     return 0
 
@@ -1972,7 +1976,10 @@ def append_file(src: Path, dst: Path, *, newline_between: bool) -> None:
 
 def cmd_merge(args: argparse.Namespace) -> int:
     manifest_path, manifest = load_run_manifest(args.run)
-    verify_manifest(manifest)
+    verify_manifest(
+        manifest,
+        verify_requirements=not bool(getattr(args, "skip_requirements", False)),
+    )
     output = expand_path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
     if output.exists() and not args.force:

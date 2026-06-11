@@ -76,6 +76,7 @@ Default workers can be configured in `~/.config/crucible/config.yml`:
 
 ```yaml
 default_workers: "pwa-mbp:8,pwa-mbp0:8,pwa-5090:8"
+coordinator_host: "pwa-mbp"
 template_dirs:
   - "~/.config/crucible/templates"
 ```

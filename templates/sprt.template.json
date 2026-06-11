@@ -93,7 +93,7 @@
       {
         "name": "enyo-candidate",
         "url": "git@github.com:ilAYAli/enyo_private.git",
-        "path": "~/code/cpp/chess/enyo",
+        "path": "~/code/cpp/chess/.crucible/enyo",
         "remote": "origin",
         "commit": "{candidate_commit}",
         "allow_untracked": true,

@@ -983,7 +983,8 @@ def cmd_work(args: argparse.Namespace) -> int:
 
 def cmd_doctor(args: argparse.Namespace) -> int:
     manifest = apply_profile(load_manifest(expand_path(args.manifest)), args.profile)
-    check_requirements(manifest)
+    if not bool(getattr(args, "skip_requirements", False)):
+        check_requirements(manifest)
 
     for cmd in ["ssh", "rsync"]:
         if shutil.which(cmd) is None:

@@ -785,11 +785,18 @@ def deploy_prereq_command(
     profile_args = worker_profile_args(manifest, worker)
     python = worker_python(worker)
     commands = ["set -e"]
+    if coordinator:
+        commands.append(shell_join([
+            python, runner, "doctor",
+            "--manifest", manifest_path,
+            *profile_args,
+            "--role", "worker",
+            "--skip-requirements",
+            "--coordinator", coordinator,
+        ]))
     if manifest_has_git_requirements(manifest):
         commands.append(shell_join([python, runner, "sync-repos", "--manifest", manifest_path, *profile_args]))
     doctor_command = [python, runner, "doctor", "--manifest", manifest_path, *profile_args, "--role", "worker"]
-    if coordinator:
-        doctor_command.extend(["--coordinator", coordinator])
     commands.append(shell_join(doctor_command))
     return "\n".join(commands)
 
@@ -1475,7 +1482,12 @@ def cmd_run_job(args: argparse.Namespace) -> int:
             return rc
 
     if args.verify or args.merge:
-        rc = run_command_stage(label, "verify", cmd_verify, argparse.Namespace(run=str(manifest_path.parent)))
+        rc = run_command_stage(
+            label,
+            "verify",
+            cmd_verify,
+            argparse.Namespace(run=str(manifest_path.parent), skip_requirements=True),
+        )
         if rc:
             print(f"{label}: inspect with: crucible status {run_name} --verbose", file=sys.stderr)
             return rc
@@ -1486,6 +1498,7 @@ def cmd_run_job(args: argparse.Namespace) -> int:
             output=args.merge,
             force=args.merge_force,
             newline_between=args.newline_between,
+            skip_requirements=True,
         )
         rc = run_command_stage(label, "merge", cmd_merge, merge_args)
         if rc:

@@ -385,6 +385,7 @@ except SystemExit as exc:
             config = root / "config.yml"
             config.write_text(
                 f'default_workers: "worker-a:2,worker-b:3"\n'
+                f'coordinator_host: "coordinator-a"\n'
                 f"template_dirs:\n"
                 f"  - \"{root / 'templates'}\"\n",
                 encoding="utf-8",
@@ -392,6 +393,7 @@ except SystemExit as exc:
             with mock.patch.dict(os.environ, {"CRUCIBLE_CONFIG": str(config)}, clear=False):
                 payload = crucible.load_config()
                 self.assertEqual("worker-a:2,worker-b:3", crucible.default_workers_arg(payload))
+                self.assertEqual("coordinator-a", crucible.default_coordinator_host(payload))
                 self.assertEqual(root / "templates", crucible.config_template_dirs(payload)[0])
 
     def test_template_expands_without_exposing_task_ids(self) -> None:
@@ -501,6 +503,7 @@ except SystemExit as exc:
             config = root / "config.yml"
             config.write_text(
                 f'default_workers: "worker-a:2"\n'
+                f'coordinator_host: "coordinator-a"\n'
                 f"template_dirs:\n"
                 f"  - \"{root / 'templates'}\"\n",
                 encoding="utf-8",
@@ -522,6 +525,7 @@ except SystemExit as exc:
 
             self.assertEqual(0, rc)
             self.assertEqual("worker-a:2", captured["args"].workers)
+            self.assertEqual("coordinator-a", captured["args"].coordinator_host)
 
     def test_subcommand_help_is_available(self) -> None:
         commands = [
@@ -2442,6 +2446,37 @@ except SystemExit as exc:
             verify = self.run_cli("verify", str(root))
             self.assertNotEqual(0, verify.returncode)
             self.assertIn("no outputs declared", verify.stderr)
+
+    def test_post_deploy_verify_skips_worker_local_requirements(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest = {
+                "schema": "crucible.task.v1",
+                "name": "worker-local-requirements",
+                "work_dir": str(root),
+                "state_dir": str(root / "state"),
+                "log_dir": str(root / "logs"),
+                "claim_dir": str(root / "claims"),
+                "requirements": {
+                    "repos": [{
+                        "name": "worker-repo",
+                        "path": str(root / "only-exists-on-worker"),
+                        "commit": "abc1234",
+                    }],
+                },
+                "tasks": [],
+            }
+            (root / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+            with self.assertRaises(SystemExit):
+                crucible.verify_manifest(manifest)
+
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout):
+                rc = crucible.cmd_verify(argparse.Namespace(run=str(root), skip_requirements=True))
+
+            self.assertEqual(0, rc)
+            self.assertEqual("ok\n", stdout.getvalue())
 
     def test_worker_releases_claim_after_sync_failure(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -5373,7 +5408,10 @@ except SystemExit as exc:
             "local": False,
             "python": "/opt/homebrew/bin/python3",
         }
-        manifest = {"tasks": [{"id": "task_0000"}]}
+        manifest = {
+            "requirements": {"repos": [{"name": "repo", "path": "~/repo"}]},
+            "tasks": [{"id": "task_0000"}],
+        }
 
         prereq = crucible.deploy_prereq_command(
             worker=worker,
@@ -5393,7 +5431,10 @@ except SystemExit as exc:
         )
 
         self.assertIn("/opt/homebrew/bin/python3 /tmp/crucible-cache/crucible.py doctor", prereq)
+        self.assertIn("--skip-requirements", prereq)
         self.assertIn("--coordinator pwa-5090:/tmp/manifest.json", prereq)
+        self.assertLess(prereq.index("--skip-requirements"), prereq.index("sync-repos"))
+        self.assertLess(prereq.index("--coordinator pwa-5090:/tmp/manifest.json"), prereq.index("sync-repos"))
         self.assertIn("/opt/homebrew/bin/python3 /tmp/crucible-cache/crucible.py work", work)
         self.assertIn("--idle-seconds 120.0", work)
         self.assertNotIn("--retry-failed", work)

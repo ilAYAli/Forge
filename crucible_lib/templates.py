@@ -335,6 +335,7 @@ def cmd_template_run(args: argparse.Namespace) -> int:
         return 0
 
     workers_arg = resolved_workers_arg(run_options, config)
+    coordinator_host = run_options.coordinator_host or default_coordinator_host(config)
     notify_command = run_options.notify_command or default_notify_command(config)
     with tempfile.TemporaryDirectory(prefix="crucible-template-") as tmp:
         manifest_path = Path(tmp) / f"{manifest['name']}.manifest.json"
@@ -350,7 +351,7 @@ def cmd_template_run(args: argparse.Namespace) -> int:
             replace=run_options.replace,
             retry_failed=run_options.retry_failed,
             task_attempts=run_options.task_attempts,
-            coordinator_host=run_options.coordinator_host,
+            coordinator_host=coordinator_host,
             remote_timeout_seconds=run_options.remote_timeout_seconds,
             wait=run_options.wait,
             lease_seconds=run_options.lease_seconds,

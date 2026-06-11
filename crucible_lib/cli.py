@@ -412,6 +412,7 @@ def build_parser() -> argparse.ArgumentParser:
     doctor.add_argument("--profile", help="Path-map/profile name for this host.")
     doctor.add_argument("--role", choices=["worker", "coordinator"], default="worker", help="Host role to validate.")
     doctor.add_argument("--notify-command", help="Coordinator notification command to check.")
+    doctor.add_argument("--skip-requirements", action="store_true", help="Skip manifest requirement checks.")
     doctor.add_argument(
         "--coordinator",
         help="Coordinator manifest path or host:path to verify worker callback access.",

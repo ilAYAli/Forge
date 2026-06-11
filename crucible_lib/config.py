@@ -5,6 +5,7 @@ from .core import *
 
 CONFIG_ENV = "CRUCIBLE_CONFIG"
 WORKERS_ENV = "CRUCIBLE_WORKERS"
+COORDINATOR_HOST_ENV = "CRUCIBLE_COORDINATOR_HOST"
 CONFIG_DIR = Path("~/.config/crucible")
 CONFIG_YML = "config.yml"
 CONFIG_TOML = "config.toml"
@@ -135,6 +136,14 @@ def default_workers_arg(config: dict[str, Any] | None = None) -> str | None:
         return value
     config = config if config is not None else load_config()
     value = config.get("default_workers")
+    return str(value).strip() if value else None
+
+
+def default_coordinator_host(config: dict[str, Any] | None = None) -> str | None:
+    if value := os.environ.get(COORDINATOR_HOST_ENV):
+        return value.strip() or None
+    config = config if config is not None else load_config()
+    value = config.get("coordinator_host") or config.get("default_coordinator_host")
     return str(value).strip() if value else None
 
 
