@@ -6067,10 +6067,11 @@ except SystemExit as exc:
             {"host": "localhost", "profile": "localhost", "local": True},
             manifest,
             "pwa-5090.local",
+            force_remote=True,
         )
 
         self.assertEqual("pwa-5090.local:/tmp/run/manifest.json", remote)
-        self.assertEqual("/tmp/run/manifest.json", local)
+        self.assertEqual("pwa-5090.local:/tmp/run/manifest.json", local)
 
     def test_coordinator_host_defaults_to_current_worker_alias(self) -> None:
         manifest = Path("/tmp/run/manifest.json")
@@ -6088,9 +6089,16 @@ except SystemExit as exc:
             host = crucible.coordinator_host_for_workers([coordinator, remote])
             local_coordinator = crucible.coordinator_for_worker(coordinator, manifest, host)
             remote_coordinator = crucible.coordinator_for_worker(remote, manifest, host)
+            forced_local_coordinator = crucible.coordinator_for_worker(
+                coordinator,
+                manifest,
+                host,
+                force_remote=True,
+            )
 
         self.assertEqual("pwa-mbp", host)
         self.assertEqual("/tmp/run/manifest.json", local_coordinator)
+        self.assertEqual("pwa-mbp:/tmp/run/manifest.json", forced_local_coordinator)
         self.assertEqual("pwa-mbp:/tmp/run/manifest.json", remote_coordinator)
 
     def test_deploy_uses_configured_coordinator_host(self) -> None:

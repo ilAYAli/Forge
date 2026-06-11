@@ -979,10 +979,19 @@ def coordinator_host_for_workers(workers: list[dict[str, Any]], coordinator_host
             return worker_host(worker)
     return socket.gethostname()
 
-def coordinator_for_worker(worker: dict[str, Any], manifest_path: Path, coordinator_host: str | None = None) -> str:
+def coordinator_for_worker(
+    worker: dict[str, Any],
+    manifest_path: Path,
+    coordinator_host: str | None = None,
+    *,
+    force_remote: bool = False,
+) -> str:
+    host = str(coordinator_host or "").strip()
+    if force_remote and host:
+        return f"{host}:{manifest_path}"
     if worker_targets_current_host(worker):
         return str(manifest_path)
-    host = coordinator_host or socket.gethostname()
+    host = host or socket.gethostname()
     return f"{host}:{manifest_path}"
 
 def worker_label(host: str, profile: str, slot: Any = None, slots: Any = None) -> str:
@@ -1105,10 +1114,9 @@ def cmd_deploy(args: argparse.Namespace) -> int:
     setup_retries = SSH_TRANSIENT_RETRY_COUNT
     manifest = load_manifest(manifest_path)
     has_tasks = bool(manifest.get("tasks"))
-    coordinator_host = coordinator_host_for_workers(
-        workers,
-        getattr(args, "coordinator_host", None) or default_coordinator_host(),
-    )
+    configured_coordinator_host = getattr(args, "coordinator_host", None) or default_coordinator_host()
+    coordinator_host = coordinator_host_for_workers(workers, configured_coordinator_host)
+    force_remote_coordinator = bool(configured_coordinator_host)
     color_enabled = not bool(args.no_color) and sys.stdout.isatty()
     print_lock = threading.Lock()
     tracker = ProcessTracker()
@@ -1145,7 +1153,12 @@ def cmd_deploy(args: argparse.Namespace) -> int:
                 verbose_status(f"{label}: synced {synced_inputs} input file(s)")
             verbose_status(f"{label}: checking prerequisites")
             coordinator = (
-                coordinator_for_worker(worker, manifest_path, coordinator_host)
+                coordinator_for_worker(
+                    worker,
+                    manifest_path,
+                    coordinator_host,
+                    force_remote=force_remote_coordinator,
+                )
                 if has_tasks else None
             )
             script = deploy_prereq_command(worker=worker, manifest=manifest, coordinator=coordinator)
@@ -1224,7 +1237,12 @@ def cmd_deploy(args: argparse.Namespace) -> int:
         script = deploy_work_command(
             worker=worker,
             manifest=manifest,
-            coordinator=coordinator_for_worker(worker, manifest_path, coordinator_host),
+            coordinator=coordinator_for_worker(
+                worker,
+                manifest_path,
+                coordinator_host,
+                force_remote=force_remote_coordinator,
+            ),
             retry_failed=bool(getattr(args, "retry_failed", False)),
         )
         result = run_worker_shell(worker, script, timeout=remote_timeout, tracker=tracker)
@@ -1243,7 +1261,12 @@ def cmd_deploy(args: argparse.Namespace) -> int:
         script = deploy_work_command(
             worker=worker,
             manifest=manifest,
-            coordinator=coordinator_for_worker(worker, manifest_path, coordinator_host),
+            coordinator=coordinator_for_worker(
+                worker,
+                manifest_path,
+                coordinator_host,
+                force_remote=force_remote_coordinator,
+            ),
             retry_failed=bool(getattr(args, "retry_failed", False)),
         )
         result = run_worker_shell(
