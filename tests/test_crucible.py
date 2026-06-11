@@ -139,7 +139,7 @@ class CrucibleTests(unittest.TestCase):
             interval_seconds=30.0,
             timeout_seconds=0.0,
             fail_on_fail=True,
-            verify=True,
+            verify=None,
             merge=None,
             merge_force=False,
             newline_between=False,
@@ -378,6 +378,41 @@ except SystemExit as exc:
                     web._STATUS_CACHE_ERROR,
                     web._STATUS_REFRESHING,
                 ) = previous
+
+    def test_web_status_payload_prefers_local_active_runs(self) -> None:
+        import crucible_lib.web as web
+
+        local_payload = {
+            "runs": [
+                {
+                    "run": "local-active",
+                    "counts": {"done": 0, "fail": 0, "running": 1, "claimed": 0, "stale": 0, "pending": 0},
+                },
+            ],
+            "collapsed_failures": [],
+            "collapsed_failures_count": 0,
+            "coordinator": None,
+        }
+        coordinator_payload = {
+            "runs": [
+                {
+                    "run": "remote-active",
+                    "counts": {"done": 0, "fail": 0, "running": 1, "claimed": 0, "stale": 0, "pending": 0},
+                },
+            ],
+            "collapsed_failures": [],
+            "collapsed_failures_count": 0,
+            "coordinator": "pwa-5090:/runs",
+        }
+        with (
+            mock.patch("crucible_lib.web.configured_coordinator_runs", return_value="pwa-5090:/runs"),
+            mock.patch("crucible_lib.web._collect_local_status_payload", return_value=local_payload),
+            mock.patch("crucible_lib.web._collect_coordinator_status_payload", return_value=coordinator_payload),
+        ):
+            payload = web._collect_status_payload()
+
+        self.assertEqual(["local-active"], [run["run"] for run in payload["runs"]])
+        self.assertIsNone(payload["coordinator"])
 
     def test_config_yml_supplies_default_workers_and_template_dirs(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -716,6 +751,177 @@ except SystemExit as exc:
             self.assertIn("ok", result.stdout)
             self.assertIn("start: ok", result.stdout)
             self.assertEqual("0\n\n1\n\n2\n\n3\n\n", merged.read_text(encoding="utf-8"))
+
+    def test_start_launches_and_returns_by_default(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            runs = root / "runs"
+            manifest = root / "template.json"
+            manifest.write_text(
+                json.dumps({
+                    "schema": "crucible.task.v1",
+                    "name": "launch-default",
+                    "work_dir": str(root),
+                    "tasks": [{"id": "task_0000", "index": 0, "command": "true", "outputs": []}],
+                }),
+                encoding="utf-8",
+            )
+            captured = {}
+
+            def fake_deploy(args):
+                captured["deploy"] = args
+                return 0
+
+            with (
+                self.patch_runs_dir(runs),
+                mock.patch("crucible_lib.workers.cmd_deploy", side_effect=fake_deploy),
+                mock.patch("crucible_lib.workers.cmd_wait") as wait,
+                mock.patch("crucible_lib.workers.cmd_verify") as verify,
+            ):
+                stdout = io.StringIO()
+                with contextlib.redirect_stdout(stdout):
+                    rc = crucible.cmd_run_job(argparse.Namespace(
+                        manifest=str(manifest),
+                        workers="worker-a",
+                        jobs=1,
+                        run=None,
+                        resume=False,
+                        replace=False,
+                        retry_failed=False,
+                        task_attempts=2,
+                        coordinator_host=None,
+                        remote_timeout_seconds=1800.0,
+                        wait=False,
+                        lease_seconds=600,
+                        interval_seconds=30.0,
+                        timeout_seconds=0.0,
+                        fail_on_fail=True,
+                        verify=None,
+                        merge=None,
+                        merge_force=False,
+                        newline_between=False,
+                        notify_command=None,
+                        no_color=True,
+                        verbose=False,
+                        command_label="start",
+                    ))
+
+            self.assertEqual(0, rc)
+            self.assertTrue(captured["deploy"].launch_only)
+            wait.assert_not_called()
+            verify.assert_not_called()
+            self.assertIn("start: ok; status: crucible status launch-default --verbose", stdout.getvalue())
+
+    def test_start_wait_verifies_by_default(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            runs = root / "runs"
+            manifest = root / "template.json"
+            manifest.write_text(
+                json.dumps({
+                    "schema": "crucible.task.v1",
+                    "name": "wait-default",
+                    "work_dir": str(root),
+                    "tasks": [{"id": "task_0000", "index": 0, "command": "true", "outputs": []}],
+                }),
+                encoding="utf-8",
+            )
+            captured = {}
+
+            def fake_deploy(args):
+                captured["deploy"] = args
+                return 0
+
+            with (
+                self.patch_runs_dir(runs),
+                mock.patch("crucible_lib.workers.cmd_deploy", side_effect=fake_deploy),
+                mock.patch("crucible_lib.workers.cmd_wait", return_value=0) as wait,
+                mock.patch("crucible_lib.workers.cmd_verify", return_value=0) as verify,
+            ):
+                stdout = io.StringIO()
+                with contextlib.redirect_stdout(stdout):
+                    rc = crucible.cmd_run_job(argparse.Namespace(
+                        manifest=str(manifest),
+                        workers="worker-a",
+                        jobs=1,
+                        run=None,
+                        resume=False,
+                        replace=False,
+                        retry_failed=False,
+                        task_attempts=2,
+                        coordinator_host=None,
+                        remote_timeout_seconds=1800.0,
+                        wait=True,
+                        lease_seconds=600,
+                        interval_seconds=30.0,
+                        timeout_seconds=0.0,
+                        fail_on_fail=True,
+                        verify=None,
+                        merge=None,
+                        merge_force=False,
+                        newline_between=False,
+                        notify_command=None,
+                        no_color=True,
+                        verbose=False,
+                        command_label="start",
+                    ))
+
+            self.assertEqual(0, rc)
+            self.assertFalse(captured["deploy"].launch_only)
+            wait.assert_called_once()
+            verify.assert_called_once()
+            self.assertIn("start: ok; status: crucible status wait-default --verbose", stdout.getvalue())
+
+    def test_start_wait_no_verify_skips_verify(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            runs = root / "runs"
+            manifest = root / "template.json"
+            manifest.write_text(
+                json.dumps({
+                    "schema": "crucible.task.v1",
+                    "name": "wait-no-verify",
+                    "work_dir": str(root),
+                    "tasks": [{"id": "task_0000", "index": 0, "command": "true", "outputs": []}],
+                }),
+                encoding="utf-8",
+            )
+
+            with (
+                self.patch_runs_dir(runs),
+                mock.patch("crucible_lib.workers.cmd_deploy", return_value=0),
+                mock.patch("crucible_lib.workers.cmd_wait", return_value=0) as wait,
+                mock.patch("crucible_lib.workers.cmd_verify", return_value=0) as verify,
+            ):
+                rc = crucible.cmd_run_job(argparse.Namespace(
+                    manifest=str(manifest),
+                    workers="worker-a",
+                    jobs=1,
+                    run=None,
+                    resume=False,
+                    replace=False,
+                    retry_failed=False,
+                    task_attempts=2,
+                    coordinator_host=None,
+                    remote_timeout_seconds=1800.0,
+                    wait=True,
+                    lease_seconds=600,
+                    interval_seconds=30.0,
+                    timeout_seconds=0.0,
+                    fail_on_fail=True,
+                    verify=False,
+                    merge=None,
+                    merge_force=False,
+                    newline_between=False,
+                    notify_command=None,
+                    no_color=True,
+                    verbose=False,
+                    command_label="start",
+                ))
+
+            self.assertEqual(0, rc)
+            wait.assert_called_once()
+            verify.assert_not_called()
 
     def test_start_does_not_merge_failed_tasks(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1854,6 +2060,42 @@ except SystemExit as exc:
             self.assertEqual(str(manifest_path.parent / "worker-state" / "state"), local["state_dir"])
             self.assertEqual(str(manifest_path.parent / "worker-state" / "logs"), local["log_dir"])
             self.assertEqual(str(manifest_path.parent / "worker-state" / "claims"), local["claim_dir"])
+
+    def test_worker_execution_manifest_keeps_outputs_local(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest_path = root / "cache" / "manifest.json"
+            manifest_path.parent.mkdir()
+            coordinator_run = Path("/Users/pwahlman/Cloud-Drive/code/cpp/chess/crucible/runs/job")
+            coordinator_output = coordinator_run / "outputs" / "task_0000" / "out.txt"
+            manifest = {
+                "schema": "crucible.task.v1",
+                "name": "worker-output-paths",
+                "work_dir": "~",
+                "state_dir": str(coordinator_run / "state"),
+                "log_dir": str(coordinator_run / "logs"),
+                "claim_dir": str(coordinator_run / "claims"),
+                "vars": {
+                    "run_dir": str(coordinator_run),
+                    "output_dir": str(coordinator_run / "outputs"),
+                },
+                "tasks": [{
+                    "id": "task_0000",
+                    "index": 0,
+                    "command": f"tool --out {coordinator_output}",
+                    "outputs": [str(coordinator_output)],
+                }],
+            }
+
+            local = crucible.worker_execution_manifest(manifest, profile=None, manifest_path=manifest_path)
+
+            worker_run = manifest_path.parent / "worker-state"
+            worker_output = worker_run / "outputs" / "task_0000" / "out.txt"
+            self.assertEqual(str(worker_run), local["vars"]["run_dir"])
+            self.assertEqual(str(worker_run / "outputs"), local["vars"]["output_dir"])
+            self.assertEqual(str(worker_output), local["tasks"][0]["outputs"][0])
+            self.assertIn(str(worker_output), local["tasks"][0]["command"])
+            self.assertNotIn(str(coordinator_run), local["tasks"][0]["command"])
 
     def test_worker_waits_when_no_claim_but_coordinator_has_work(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -3493,6 +3735,46 @@ except SystemExit as exc:
 
             self.assertEqual(0, rc)
             self.assertIn("run=local-run", stdout.getvalue())
+            run_mock.assert_not_called()
+
+    def test_status_prefers_local_active_runs_before_coordinator(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runs = Path(tmp) / "runs"
+            active_run = self.write_retry_run(runs, "local-active", failed=None)
+            manifest = crucible.load_manifest(active_run / "manifest.json")
+            crucible.claim_task(
+                manifest,
+                worker="worker-a",
+                profile=None,
+                lease_seconds=600,
+                retry_failed=False,
+            )
+            with (
+                self.patch_runs_dir(runs),
+                mock.patch.dict(
+                    os.environ,
+                    {"CRUCIBLE_COORDINATOR_RUNS": "pwa-5090:/home/petter/code/cpp/chess/crucible/runs"},
+                ),
+                mock.patch("crucible.subprocess.run") as run_mock,
+            ):
+                stdout = io.StringIO()
+                with contextlib.redirect_stdout(stdout):
+                    rc = crucible.cmd_status(
+                        argparse.Namespace(
+                            run=None,
+                            all=False,
+                            done=False,
+                            failed=False,
+                            json=False,
+                            no_color=True,
+                            lease_seconds=600,
+                            show_done=False,
+                            verbose=False,
+                        )
+                    )
+
+            self.assertEqual(0, rc)
+            self.assertIn("run=local-active", stdout.getvalue())
             run_mock.assert_not_called()
 
     def test_status_delegation_forces_color_when_local_output_is_colored(self) -> None:
@@ -5514,6 +5796,66 @@ except SystemExit as exc:
         self.assertEqual("/tmp/run/manifest.json", local_coordinator)
         self.assertEqual("pwa-mbp:/tmp/run/manifest.json", remote_coordinator)
 
+    def test_deploy_uses_configured_coordinator_host(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            runs = root / "runs"
+            config = root / "config.yml"
+            config.write_text('coordinator_host: "pwa-mbp"\n', encoding="utf-8")
+            manifest = root / "manifest.json"
+            manifest.write_text(
+                json.dumps({
+                    "schema": "crucible.task.v1",
+                    "name": "configured-coordinator",
+                    "work_dir": str(root),
+                    "state_dir": str(root / "state"),
+                    "log_dir": str(root / "logs"),
+                    "tasks": [{"id": "task_0000", "index": 0, "command": "true", "outputs": []}],
+                }),
+                encoding="utf-8",
+            )
+            workers_path = root / "workers.json"
+            workers_path.write_text(
+                json.dumps({
+                    "schema": "crucible.workers.v1",
+                    "workers": [{"host": "pwa-5090", "profile": "pwa-5090", "local": False}],
+                }),
+                encoding="utf-8",
+            )
+            commands = []
+
+            def fake_run(self, command, **kwargs):
+                commands.append(command)
+                return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+            with (
+                self.patch_runs_dir(runs),
+                mock.patch.dict(os.environ, {"CRUCIBLE_CONFIG": str(config)}, clear=False),
+                mock.patch("crucible.ProcessTracker.run", fake_run),
+            ):
+                stdout = io.StringIO()
+                with contextlib.redirect_stdout(stdout):
+                    rc = crucible.cmd_deploy(
+                        argparse.Namespace(
+                            manifest=str(manifest),
+                            workers=str(workers_path),
+                            jobs=1,
+                            run="configured-coordinator",
+                            resume=False,
+                            replace=True,
+                            coordinator_host=None,
+                            remote_timeout_seconds=1800.0,
+                            no_color=True,
+                            verbose=False,
+                        )
+                    )
+
+            self.assertEqual(0, rc)
+            work_scripts = [command[-1] for command in commands if command[0] == "ssh" and " work " in command[-1]]
+            self.assertEqual(1, len(work_scripts))
+            self.assertIn("--coordinator pwa-mbp:", work_scripts[0])
+            self.assertNotIn("pwahlman-m-7jfq", work_scripts[0])
+
     def test_deploy_materializes_contained_run(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -5713,6 +6055,15 @@ except SystemExit as exc:
 
             def fake_run(self, command, **kwargs):
                 commands.append(command)
+                if " work " in command[-1]:
+                    manifest = crucible.load_manifest(runs / "launch-only-workers" / "manifest.json")
+                    task = manifest["tasks"][0]
+                    crucible.write_json(crucible.task_running_path(manifest, task), {
+                        "task": task["id"],
+                        "index": task["index"],
+                        "worker": "worker-b",
+                        "state": "running",
+                    })
                 return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
 
             args = argparse.Namespace(
@@ -5736,12 +6087,74 @@ except SystemExit as exc:
             output = stdout.getvalue()
             self.assertIn("deploy: setup complete; launching workers", output)
             self.assertIn("  OK     worker-b: launch", output)
+            self.assertIn("deploy: workers active", output)
             self.assertIn("deploy: launch complete", output)
             scripts = [command[-1] for command in commands if command[0] == "sh"]
             launch_scripts = [script for script in scripts if " work " in script]
             self.assertEqual(1, len(launch_scripts))
-            self.assertIn("nohup", launch_scripts[0])
+            self.assertIn("start_new_session=True", launch_scripts[0])
             self.assertIn("--worker worker-b", launch_scripts[0])
+
+    def test_deploy_launch_only_cleans_up_when_workers_do_not_start(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            runs = root / "runs"
+            template = root / "template.manifest.json"
+            template.write_text(
+                json.dumps({
+                    "schema": "crucible.task.v1",
+                    "name": "failed-launch",
+                    "work_dir": str(root),
+                    "requirements": {"python_min": "3.11", "git_min": "2.38"},
+                    "tasks": [{"id": "task_0000", "index": 0, "command": "true", "outputs": []}],
+                }),
+                encoding="utf-8",
+            )
+            workers_path = root / "workers.json"
+            workers_path.write_text(
+                json.dumps({
+                    "schema": "crucible.workers.v1",
+                    "workers": [{"host": "worker-b", "profile": "worker-b", "local": True, "cache_dir": str(root / "cache-b")}],
+                }),
+                encoding="utf-8",
+            )
+            commands = []
+
+            def fake_run(self, command, **kwargs):
+                commands.append(command)
+                return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+            args = argparse.Namespace(
+                manifest=str(template),
+                workers=str(workers_path),
+                jobs=1,
+                run="failed-launch",
+                resume=False,
+                replace=False,
+                launch_only=True,
+                remote_timeout_seconds=1800.0,
+                no_color=True,
+                verbose=False,
+            )
+            with (
+                self.patch_runs_dir(runs),
+                mock.patch("crucible.ProcessTracker.run", fake_run),
+                mock.patch("crucible_lib.workers.DEPLOY_STARTUP_TIMEOUT_SECONDS", 0.01),
+                mock.patch("crucible_lib.workers.DEPLOY_STARTUP_POLL_SECONDS", 0.01),
+            ):
+                stdout = io.StringIO()
+                stderr = io.StringIO()
+                with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                    rc = crucible.cmd_deploy(args)
+
+            self.assertEqual(1, rc)
+            output = stdout.getvalue() + stderr.getvalue()
+            self.assertIn("deploy: workers did not become active", output)
+            self.assertIn("deploy: launch failed", output)
+            manifest = crucible.load_manifest(runs / "failed-launch" / "manifest.json")
+            self.assertTrue(crucible.stop_request_path(manifest).exists())
+            scripts = [command[-1] for command in commands if command[0] == "sh"]
+            self.assertTrue(any("kill -TERM" in script for script in scripts))
 
     def test_deploy_preserves_worker_snapshot_until_success(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

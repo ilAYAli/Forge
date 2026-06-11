@@ -153,7 +153,7 @@ def parse_run_options(raw_args: list[str]) -> tuple[argparse.Namespace, list[str
     parser.add_argument("--interval-seconds", type=float, default=30.0)
     parser.add_argument("--timeout-seconds", type=float, default=0.0)
     parser.add_argument("--fail-on-fail", action=argparse.BooleanOptionalAction, default=True)
-    parser.add_argument("--verify", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--verify", action=argparse.BooleanOptionalAction, default=None)
     parser.add_argument("--merge")
     parser.add_argument("--merge-force", action="store_true")
     parser.add_argument("--newline-between", action="store_true")

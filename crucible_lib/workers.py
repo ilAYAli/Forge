@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from .config import default_notify_command
+from .config import default_coordinator_host, default_notify_command
 from .core import *
 from .manifest import *
 from .tasks import *
@@ -9,6 +9,8 @@ from .status import *
 
 DEFAULT_INLINE_WORKER_SLOTS = 8
 SSH_CONFIG_TIMEOUT_SECONDS = 5.0
+DEPLOY_STARTUP_TIMEOUT_SECONDS = 20.0
+DEPLOY_STARTUP_POLL_SECONDS = 0.5
 _SSH_CONFIG_HOSTNAME_CACHE: dict[str, str | None] = {}
 
 
@@ -825,8 +827,55 @@ def deploy_work_command(
         command.append("--retry-failed")
     return shell_join(command)
 
-def detached_shell_command(script: str) -> str:
-    return "nohup " + shell_join(["sh", "-lc", script]) + " >/dev/null 2>&1 < /dev/null &"
+def launch_file_stem(run_name: str, index: int, worker: dict[str, Any]) -> str:
+    label = worker_label(
+        str(worker["host"]),
+        str(worker["profile"]),
+        worker.get("_slot"),
+        worker.get("_slots"),
+    )
+    safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", f"{index}-{label}")
+    return f"{run_name}-{safe}"
+
+def worker_launch_files(run_name: str, index: int, worker: dict[str, Any]) -> tuple[str, str]:
+    stem = launch_file_stem(run_name, index, worker)
+    return (
+        worker_cache_file(worker, f"{stem}.pid"),
+        worker_cache_file(worker, f"{stem}.launch.log"),
+    )
+
+def detached_shell_command(worker: dict[str, Any], script: str, *, pid_file: str, log_file: str) -> str:
+    launcher = (
+        "import os, subprocess, sys\n"
+        "script, pid_path, log_path = sys.argv[1:4]\n"
+        "os.makedirs(os.path.dirname(pid_path) or '.', exist_ok=True)\n"
+        "os.makedirs(os.path.dirname(log_path) or '.', exist_ok=True)\n"
+        "log = open(log_path, 'ab', buffering=0)\n"
+        "process = subprocess.Popen(\n"
+        "    ['sh', '-lc', script],\n"
+        "    stdin=subprocess.DEVNULL,\n"
+        "    stdout=log,\n"
+        "    stderr=subprocess.STDOUT,\n"
+        "    start_new_session=True,\n"
+        ")\n"
+        "with open(pid_path, 'w', encoding='utf-8') as handle:\n"
+        "    handle.write(str(process.pid) + '\\n')\n"
+    )
+    return shell_join([worker_python(worker), "-c", launcher, script, pid_file, log_file])
+
+def cleanup_detached_shell_command(pid_file: str) -> str:
+    quoted = shlex.quote(pid_file)
+    return (
+        f"pid_file={quoted}; "
+        "if test -s \"$pid_file\"; then "
+        "pid=$(sed -n '1p' \"$pid_file\" 2>/dev/null); "
+        "case \"$pid\" in ''|*[!0-9]*) exit 0;; esac; "
+        "kill -TERM -\"$pid\" 2>/dev/null || kill -TERM \"$pid\" 2>/dev/null || true; "
+        "sleep 1; "
+        "kill -KILL -\"$pid\" 2>/dev/null || kill -KILL \"$pid\" 2>/dev/null || true; "
+        "rm -f \"$pid_file\"; "
+        "fi"
+    )
 
 def coordinator_host_for_workers(workers: list[dict[str, Any]], coordinator_host: str | None = None) -> str:
     if coordinator_host:
@@ -960,7 +1009,10 @@ def cmd_deploy(args: argparse.Namespace) -> int:
     remote_timeout = max(1.0, float(args.remote_timeout_seconds))
     manifest = load_manifest(manifest_path)
     has_tasks = bool(manifest.get("tasks"))
-    coordinator_host = coordinator_host_for_workers(workers, getattr(args, "coordinator_host", None))
+    coordinator_host = coordinator_host_for_workers(
+        workers,
+        getattr(args, "coordinator_host", None) or default_coordinator_host(),
+    )
     color_enabled = not bool(args.no_color) and sys.stdout.isatty()
     print_lock = threading.Lock()
     tracker = ProcessTracker()
@@ -1026,10 +1078,11 @@ def cmd_deploy(args: argparse.Namespace) -> int:
         worker: dict[str, Any],
         stage: str,
         result: subprocess.CompletedProcess[str],
+        extra: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         host = str(worker["host"])
         profile = str(worker["profile"])
-        return {
+        payload = {
             "index": index,
             "host": host,
             "profile": profile,
@@ -1041,6 +1094,9 @@ def cmd_deploy(args: argparse.Namespace) -> int:
             "stdout": result.stdout,
             "stderr": result.stderr,
         }
+        if extra:
+            payload.update(extra)
+        return payload
 
     def setup_worker(index: int, worker: dict[str, Any]) -> dict[str, Any]:
         host = str(worker["host"])
@@ -1076,6 +1132,7 @@ def cmd_deploy(args: argparse.Namespace) -> int:
         profile = str(worker["profile"])
         label = worker_label(host, profile, worker.get("_slot"), worker.get("_slots"))
         verbose_status(f"{label}: launching worker")
+        pid_file, log_file = worker_launch_files(run_dir.name, index, worker)
         script = deploy_work_command(
             worker=worker,
             manifest=manifest,
@@ -1084,15 +1141,59 @@ def cmd_deploy(args: argparse.Namespace) -> int:
         )
         result = run_worker_shell(
             worker,
-            detached_shell_command(script),
+            detached_shell_command(worker, script, pid_file=pid_file, log_file=log_file),
             timeout=remote_timeout,
             tracker=tracker,
         )
         if result.returncode == 0:
             verbose_status(f"{label}: launch OK")
-            return result_payload(index, worker, "launch", result)
+            return result_payload(index, worker, "launch", result, {"pid_file": pid_file, "log_file": log_file})
         verbose_status(f"{label}: launch FAILED rc={result.returncode}", error=True)
-        return result_payload(index, worker, "launch", result)
+        return result_payload(index, worker, "launch", result, {"pid_file": pid_file, "log_file": log_file})
+
+    def cleanup_launched_workers(items: list[dict[str, Any]]) -> None:
+        for item in items:
+            if item.get("stage") != "launch" or not item.get("pid_file"):
+                continue
+            worker = workers[int(item["index"])]
+            try:
+                run_worker_shell(
+                    worker,
+                    cleanup_detached_shell_command(str(item["pid_file"])),
+                    timeout=10.0,
+                    tracker=tracker,
+                )
+            except Exception as exc:
+                verbose_status(f"{worker_label(str(item['host']), str(item['profile']), item.get('slot'), item.get('slots'))}: cleanup failed: {exc}", error=True)
+
+    def cleanup_failed_launch(items: list[dict[str, Any]], reason: str) -> None:
+        payload = {
+            "schema": SCHEMA,
+            "run": run_dir.name,
+            "requested_at": now(),
+            "requested_epoch": epoch(),
+            "host": socket.gethostname(),
+            "reason": reason,
+        }
+        write_json(stop_request_path(manifest), payload)
+        release_active_claims(manifest, lease_seconds=600)
+        cleanup_launched_workers(items)
+
+    def launch_started_enough(expected_started: int) -> bool:
+        if expected_started <= 0:
+            return True
+        deadline = time.monotonic() + DEPLOY_STARTUP_TIMEOUT_SECONDS
+        while True:
+            summary = status_summary(manifest, lease_seconds=600)
+            counts = summary["counts"]
+            if counts["fail"] > 0:
+                return False
+            started = counts["done"] + counts["running"] + counts["claimed"] + counts["stale"]
+            if started >= expected_started:
+                return True
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(DEPLOY_STARTUP_POLL_SECONDS)
 
     def print_results(items: list[dict[str, Any]]) -> None:
         for item in sorted(items, key=lambda entry: int(entry["index"])):
@@ -1129,6 +1230,7 @@ def cmd_deploy(args: argparse.Namespace) -> int:
         )
     executor: concurrent.futures.ThreadPoolExecutor | None = concurrent.futures.ThreadPoolExecutor(max_workers=jobs)
     interrupted = False
+    startup_failed = False
     futures: list[concurrent.futures.Future[dict[str, Any]]] = []
     try:
         futures = [
@@ -1145,12 +1247,39 @@ def cmd_deploy(args: argparse.Namespace) -> int:
             executor = concurrent.futures.ThreadPoolExecutor(max_workers=max(1, len(workers)))
             if bool(getattr(args, "launch_only", False)):
                 status(colorize("deploy: setup complete; launching workers", "green", enabled=color_enabled))
+                before_launch = status_summary(manifest, lease_seconds=600)
+                before_counts = before_launch["counts"]
+                before_started = (
+                    before_counts["done"]
+                    + before_counts["running"]
+                    + before_counts["claimed"]
+                    + before_counts["stale"]
+                )
+                expected_started = min(
+                    int(before_launch["tasks"]),
+                    before_started + min(before_counts["pending"], len(workers)),
+                )
                 futures = [
                     executor.submit(launch_worker, index, worker)
                     for index, worker in enumerate(workers)
                 ]
                 results = [future.result() for future in concurrent.futures.as_completed(futures)]
                 print_results(results)
+                if all(item["ok"] for item in results):
+                    status(colorize("deploy: verifying workers started", "cyan", enabled=color_enabled))
+                    if launch_started_enough(expected_started):
+                        status(colorize("deploy: workers active", "green", enabled=color_enabled))
+                    else:
+                        startup_failed = True
+                        status(
+                            colorize(
+                                "deploy: workers did not become active; stopping launched workers",
+                                "red",
+                                enabled=color_enabled,
+                            ),
+                            error=True,
+                        )
+                        cleanup_failed_launch(results, "workers did not become active after launch")
             else:
                 status(colorize("deploy: setup complete; starting tasks", "green", enabled=color_enabled))
                 futures = [
@@ -1171,7 +1300,7 @@ def cmd_deploy(args: argparse.Namespace) -> int:
         if executor is not None:
             executor.shutdown(wait=not interrupted, cancel_futures=interrupted)
 
-    failed = sum(1 for item in results if not item["ok"])
+    failed = sum(1 for item in results if not item["ok"]) + (1 if startup_failed else 0)
     if not has_tasks:
         status(colorize("deploy: setup complete", "green", enabled=color_enabled) if failed == 0 else colorize("deploy: setup failed", "red", enabled=color_enabled))
     elif any(item["stage"] == "setup" for item in results):
@@ -1231,7 +1360,9 @@ def run_control_command_args(name: str, args: argparse.Namespace) -> list[str]:
         command.extend(["--workers", str(args.workers)])
     if bool(getattr(args, "wait", False)):
         command.append("--wait")
-    if not bool(getattr(args, "verify", True)):
+    if getattr(args, "verify", None) is True:
+        command.append("--verify")
+    elif getattr(args, "verify", None) is False:
         command.append("--no-verify")
     if getattr(args, "merge", None):
         command.extend(["--merge", str(args.merge)])
@@ -1363,7 +1494,9 @@ def worker_control_command_args(action: str, args: argparse.Namespace) -> list[s
     if action == "add":
         if bool(getattr(args, "wait", False)):
             command.append("--wait")
-        if not bool(getattr(args, "verify", True)):
+        if getattr(args, "verify", None) is True:
+            command.append("--verify")
+        elif getattr(args, "verify", None) is False:
             command.append("--no-verify")
         if getattr(args, "merge", None):
             command.extend(["--merge", str(args.merge)])
@@ -1444,6 +1577,9 @@ def cmd_run_job(args: argparse.Namespace) -> int:
     template_path = expand_path(args.manifest)
     run_dir, manifest_path = planned_run_paths(template_path, getattr(args, "run", None))
     run_name = run_dir.name
+    explicit_verify = getattr(args, "verify", None)
+    should_wait = bool(getattr(args, "wait", False) or getattr(args, "merge", None) or explicit_verify is True)
+    should_verify = bool((should_wait and explicit_verify is not False) or getattr(args, "merge", None))
 
     deploy_args = argparse.Namespace(
         workers=args.workers,
@@ -1452,7 +1588,7 @@ def cmd_run_job(args: argparse.Namespace) -> int:
         preserve_workers_snapshot=bool(getattr(args, "preserve_workers_snapshot", False)),
         worker_snapshot_commit_payload=getattr(args, "worker_snapshot_commit_payload", None),
         launch_workers_payload=getattr(args, "launch_workers_payload", None),
-        launch_only=bool(getattr(args, "launch_only", False)),
+        launch_only=bool(getattr(args, "launch_only", False) or not should_wait),
         manifest=args.manifest,
         jobs=args.jobs,
         run=args.run,
@@ -1471,7 +1607,7 @@ def cmd_run_job(args: argparse.Namespace) -> int:
         print(f"{label}: inspect with: crucible status {run_name} --verbose", file=sys.stderr)
         return rc
 
-    if args.wait:
+    if should_wait:
         wait_args = argparse.Namespace(
             manifest=str(manifest_path),
             profile=None,
@@ -1486,7 +1622,7 @@ def cmd_run_job(args: argparse.Namespace) -> int:
             print(f"{label}: inspect with: crucible status {run_name} --verbose", file=sys.stderr)
             return rc
 
-    if args.verify or args.merge:
+    if should_verify:
         rc = run_command_stage(
             label,
             "verify",

@@ -548,6 +548,23 @@ def worker_execution_manifest(
 ) -> dict[str, Any]:
     local_manifest = apply_profile(copy.deepcopy(manifest), profile)
     local_run_dir = expand_path(manifest_path).parent / "worker-state"
+    local_output_dir = local_run_dir / "outputs"
+    vars_obj = manifest.get("vars", {})
+    if isinstance(vars_obj, dict):
+        path_map = {
+            str(value): str(target)
+            for value, target in (
+                (vars_obj.get("output_dir"), local_output_dir),
+                (vars_obj.get("run_dir"), local_run_dir),
+            )
+            if value
+        }
+        if path_map:
+            local_manifest["tasks"] = translate_obj(local_manifest["tasks"], path_map)
+    local_vars = local_manifest.setdefault("vars", {})
+    if isinstance(local_vars, dict):
+        local_vars["run_dir"] = str(local_run_dir)
+        local_vars["output_dir"] = str(local_output_dir)
     local_manifest["state_dir"] = str(local_run_dir / "state")
     local_manifest["log_dir"] = str(local_run_dir / "logs")
     local_manifest["claim_dir"] = str(local_run_dir / "claims")

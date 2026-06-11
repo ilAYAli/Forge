@@ -13,10 +13,26 @@ def cmd_status(args: argparse.Namespace) -> int:
     selected = [name for name in ("all", "done", "failed") if bool(getattr(args, name))]
     if len(selected) > 1:
         raise SystemExit("choose only one of --all, --done, or --failed")
+    filter_name = selected[0] if selected else None
     coordinator_runs = configured_coordinator_runs()
     if coordinator_runs and status_can_delegate(args.run):
+        if args.run is None and filter_name is None:
+            summaries = load_run_summaries(
+                lease_seconds=args.lease_seconds,
+                attention_only=bool(not getattr(args, "verbose", False)),
+            )
+            if any(run_current(summary) for summary in summaries):
+                return print_run_status(
+                    summaries,
+                    color_enabled=color_enabled,
+                    as_json=args.json,
+                    filter_name=None,
+                    include_started_pending=bool(getattr(args, "verbose", False)),
+                    collapse_inactive_failures=bool(not getattr(args, "verbose", False)),
+                    show_details=True,
+                    show_done=bool(getattr(args, "show_done", False)),
+                )
         return run_status_on_coordinator(args, coordinator_runs)
-    filter_name = selected[0] if selected else None
     if args.run is None:
         summaries = load_run_summaries(
             lease_seconds=args.lease_seconds,

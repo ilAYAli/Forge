@@ -759,8 +759,22 @@ _WEB_SSH_OPTS = [
 def _collect_status_payload() -> dict[str, Any]:
     coordinator_runs = configured_coordinator_runs()
     if coordinator_runs:
+        local_payload = _collect_local_status_payload()
+        if _status_payload_has_current_run(local_payload):
+            return local_payload
         return _collect_coordinator_status_payload(coordinator_runs)
     return _collect_local_status_payload()
+
+def _status_payload_has_current_run(payload: dict[str, Any]) -> bool:
+    for run in payload.get("runs") or []:
+        counts = run.get("counts") if isinstance(run, dict) else None
+        if not isinstance(counts, dict):
+            continue
+        active = int(counts.get("running") or 0) + int(counts.get("claimed") or 0) + int(counts.get("stale") or 0)
+        started = active + int(counts.get("done") or 0) + int(counts.get("fail") or 0)
+        if active > 0 or (started > 0 and int(counts.get("pending") or 0) > 0):
+            return True
+    return False
 
 def _collect_local_status_payload() -> dict[str, Any]:
     env = os.environ.copy()

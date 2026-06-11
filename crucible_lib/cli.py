@@ -131,20 +131,16 @@ def add_worker_add_options(parser: argparse.ArgumentParser, *, worker_positional
     else:
         parser.add_argument("--worker", required=True, help="Inline worker spec, e.g. worker-a or worker-a:5.")
     parser.add_argument("run", nargs="?", help="Run name or run directory. Omit to use the single active run.")
-    parser.add_argument("--jobs", type=int, default=4, help="Maximum workers to prepare/run concurrently.")
+    parser.add_argument("--jobs", type=int, default=4, help="Maximum workers to prepare concurrently.")
     parser.add_argument("--task-attempts", type=int, default=2, help="Total attempts per task before final failure.")
     parser.add_argument("--coordinator-host", help="Coordinator hostname workers should SSH back to.")
     parser.add_argument("--remote-timeout-seconds", type=float, default=1800.0, help="Timeout for remote setup/work commands.")
-    parser.add_argument(
-        "--wait",
-        action="store_true",
-        help="Poll the materialized run after workers exit and fail on incomplete or failed tasks.",
-    )
+    parser.add_argument("--wait", action="store_true", help="Wait for completion after launching workers.")
     parser.add_argument("--lease-seconds", type=int, default=600, help="Claim lease duration before stale.")
     parser.add_argument("--interval-seconds", type=float, default=30.0, help="Polling interval for --wait.")
     parser.add_argument("--timeout-seconds", type=float, default=0.0, help="Overall --wait timeout; 0 means no timeout.")
     parser.add_argument("--fail-on-fail", action=argparse.BooleanOptionalAction, default=True, help="Return failure when --wait sees failed tasks.")
-    parser.add_argument("--verify", action=argparse.BooleanOptionalAction, default=True, help="Verify task completion and outputs before returning success.")
+    parser.add_argument("--verify", action=argparse.BooleanOptionalAction, default=None, help="Wait for completion and verify outputs.")
     parser.add_argument("--merge", metavar="OUTPUT", help="Merge first task outputs into this file after verification.")
     parser.add_argument("--merge-force", action="store_true", help="Overwrite an existing merged output.")
     parser.add_argument("--newline-between", action="store_true", help="Insert a newline between task outputs.")
@@ -614,7 +610,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     deploy.add_argument("workers", help=WORKERS_ARG_HELP)
     deploy.add_argument("manifest", help="Manifest template to materialize into runs/<name>.")
-    deploy.add_argument("--jobs", type=int, default=4, help="Maximum workers to prepare/run concurrently.")
+    deploy.add_argument("--jobs", type=int, default=4, help="Maximum workers to prepare concurrently.")
     deploy.add_argument("--run", help="Run directory name under runs/. Defaults to manifest name.")
     deploy.add_argument("--resume", action="store_true", help="Resume an existing materialized run.")
     deploy.add_argument("--replace", action="store_true", help="Delete and recreate an existing run.")
@@ -644,7 +640,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     run_job.add_argument("manifest", help="Manifest template to materialize into runs/<name>.")
     run_job.add_argument("--workers", required=True, help=WORKERS_ARG_HELP)
-    run_job.add_argument("--jobs", type=int, default=4, help="Maximum workers to prepare/run concurrently.")
+    run_job.add_argument("--jobs", type=int, default=4, help="Maximum workers to prepare concurrently.")
     run_job.add_argument("--run", help="Run directory name under runs/. Defaults to manifest name.")
     run_job.add_argument("--resume", action="store_true", help="Resume an existing materialized run.")
     run_job.add_argument("--replace", action="store_true", help="Delete and recreate an existing run.")
@@ -652,16 +648,12 @@ def build_parser() -> argparse.ArgumentParser:
     run_job.add_argument("--task-attempts", type=int, default=2, help="Total attempts per task before final failure.")
     run_job.add_argument("--coordinator-host", help="Coordinator hostname workers should SSH back to.")
     run_job.add_argument("--remote-timeout-seconds", type=float, default=1800.0, help="Timeout for remote setup/work commands.")
-    run_job.add_argument(
-        "--wait",
-        action="store_true",
-        help="Poll the materialized run after workers exit and fail on incomplete or failed tasks.",
-    )
+    run_job.add_argument("--wait", action="store_true", help="Wait for completion after launching workers.")
     run_job.add_argument("--lease-seconds", type=int, default=600, help="Claim lease duration before stale.")
     run_job.add_argument("--interval-seconds", type=float, default=30.0, help="Polling interval for --wait.")
     run_job.add_argument("--timeout-seconds", type=float, default=0.0, help="Overall --wait timeout; 0 means no timeout.")
     run_job.add_argument("--fail-on-fail", action=argparse.BooleanOptionalAction, default=True, help="Return failure when --wait sees failed tasks.")
-    run_job.add_argument("--verify", action=argparse.BooleanOptionalAction, default=True, help="Verify task completion and outputs before returning success.")
+    run_job.add_argument("--verify", action=argparse.BooleanOptionalAction, default=None, help="Wait for completion and verify outputs.")
     run_job.add_argument("--merge", metavar="OUTPUT", help="Merge first task outputs into this file after verification.")
     run_job.add_argument("--merge-force", action="store_true", help="Overwrite an existing merged output.")
     run_job.add_argument("--newline-between", action="store_true", help="Insert a newline between merged task outputs.")
@@ -680,20 +672,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     resume.add_argument("run", nargs="?", help="Run name or run directory. Omit to resume the single current incomplete run.")
     resume.add_argument("--workers", help=WORKERS_ARG_HELP_RUN_DEFAULT)
-    resume.add_argument("--jobs", type=int, default=4, help="Maximum workers to prepare/run concurrently.")
+    resume.add_argument("--jobs", type=int, default=4, help="Maximum workers to prepare concurrently.")
     resume.add_argument("--task-attempts", type=int, default=2, help="Total attempts per task before final failure.")
     resume.add_argument("--coordinator-host", help="Coordinator hostname workers should SSH back to.")
     resume.add_argument("--remote-timeout-seconds", type=float, default=1800.0, help="Timeout for remote setup/work commands.")
-    resume.add_argument(
-        "--wait",
-        action="store_true",
-        help="Poll the materialized run after workers exit and fail on incomplete or failed tasks.",
-    )
+    resume.add_argument("--wait", action="store_true", help="Wait for completion after launching workers.")
     resume.add_argument("--lease-seconds", type=int, default=600, help="Claim lease duration before stale.")
     resume.add_argument("--interval-seconds", type=float, default=30.0, help="Polling interval for --wait.")
     resume.add_argument("--timeout-seconds", type=float, default=0.0, help="Overall --wait timeout; 0 means no timeout.")
     resume.add_argument("--fail-on-fail", action=argparse.BooleanOptionalAction, default=True, help="Return failure when --wait sees failed tasks.")
-    resume.add_argument("--verify", action=argparse.BooleanOptionalAction, default=True, help="Verify task completion and outputs before returning success.")
+    resume.add_argument("--verify", action=argparse.BooleanOptionalAction, default=None, help="Wait for completion and verify outputs.")
     resume.add_argument("--merge", metavar="OUTPUT", help="Merge first task outputs into this file after verification.")
     resume.add_argument("--merge-force", action="store_true", help="Overwrite an existing merged output.")
     resume.add_argument("--newline-between", action="store_true", help="Insert a newline between task outputs.")
@@ -716,20 +704,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="Run name or run directory. Omit to retry all failed incomplete runs.",
     )
     retry.add_argument("--workers", help=WORKERS_ARG_HELP_RETRY_DEFAULT)
-    retry.add_argument("--jobs", type=int, default=4, help="Maximum workers to prepare/run concurrently.")
+    retry.add_argument("--jobs", type=int, default=4, help="Maximum workers to prepare concurrently.")
     retry.add_argument("--task-attempts", type=int, default=2, help="Total attempts per task before final failure.")
     retry.add_argument("--coordinator-host", help="Coordinator hostname workers should SSH back to.")
     retry.add_argument("--remote-timeout-seconds", type=float, default=1800.0, help="Timeout for remote setup/work commands.")
-    retry.add_argument(
-        "--wait",
-        action="store_true",
-        help="Poll the materialized run after workers exit and fail on incomplete or failed tasks.",
-    )
+    retry.add_argument("--wait", action="store_true", help="Wait for completion after launching workers.")
     retry.add_argument("--lease-seconds", type=int, default=600, help="Claim lease duration before stale.")
     retry.add_argument("--interval-seconds", type=float, default=30.0, help="Polling interval for --wait.")
     retry.add_argument("--timeout-seconds", type=float, default=0.0, help="Overall --wait timeout; 0 means no timeout.")
     retry.add_argument("--fail-on-fail", action=argparse.BooleanOptionalAction, default=True, help="Return failure when --wait sees failed tasks.")
-    retry.add_argument("--verify", action=argparse.BooleanOptionalAction, default=True, help="Verify task completion and outputs before returning success.")
+    retry.add_argument("--verify", action=argparse.BooleanOptionalAction, default=None, help="Wait for completion and verify outputs.")
     retry.add_argument("--merge", metavar="OUTPUT", help="Merge first task outputs into this file after verification.")
     retry.add_argument("--merge-force", action="store_true", help="Overwrite an existing merged output.")
     retry.add_argument("--newline-between", action="store_true", help="Insert a newline between task outputs.")
