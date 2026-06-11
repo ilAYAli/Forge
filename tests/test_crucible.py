@@ -337,6 +337,9 @@ except SystemExit as exc:
         self.assertIn("failCount > 0 && activeCount === 0", web._HTML)
         self.assertIn("runCmd('${runArg}','del',this)", web._HTML)
         self.assertIn(".act.del", web._HTML)
+        self.assertIn("user-select: text", web._HTML)
+        self.assertIn("function toggleRunHeader", web._HTML)
+        self.assertIn("String(window.getSelection())", web._HTML)
         self.assertNotIn("games/s", web._HTML)
         self.assertIn("ThreadingHTTPServer", web.ThreadingHTTPServer.__name__)
 

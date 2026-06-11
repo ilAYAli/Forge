@@ -49,10 +49,10 @@ _HTML = r"""<!DOCTYPE html>
     .run.done    { border-color: var(--border); opacity: .65; }
 
     /* run header — always visible */
-    .run-hdr { cursor: pointer; user-select: none; background: var(--bg2); padding: 8px 12px; }
+    .run-hdr { cursor: pointer; user-select: text; background: var(--bg2); padding: 8px 12px; }
     .run-hdr:hover { background: var(--bg3); }
     .run-hdr-top { display: flex; align-items: center; gap: 8px; }
-    .arrow { color: var(--dim); font-size: 10px; flex-shrink: 0; transition: transform .15s; }
+    .arrow { color: var(--dim); font-size: 10px; flex-shrink: 0; transition: transform .15s; user-select: none; }
     .arrow.open { transform: rotate(90deg); }
     .run-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis;
                 white-space: nowrap; font-weight: 600; }
@@ -424,6 +424,12 @@ _HTML = r"""<!DOCTYPE html>
       saveToHash();
     }
 
+    function toggleRunHeader(event, id) {
+      if (window.getSelection && String(window.getSelection())) return;
+      if (event?.target?.closest?.('button')) return;
+      toggleId(id);
+    }
+
     function makeSection(run, section, titleHtml, titleCls, detailHtml, defaultOpen) {
       const id = sid(run, section);
       const open = resolveOpen(id, defaultOpen);
@@ -685,7 +691,7 @@ _HTML = r"""<!DOCTYPE html>
       }
 
       return `<div class="run ${state}">
-        <div class="run-hdr" onclick="toggleId('${rId}')">${hdr}</div>
+        <div class="run-hdr" onclick="toggleRunHeader(event,'${rId}')">${hdr}</div>
         <div class="pbar-wrap"><div class="pbar-fill" style="width:${pct}%"></div></div>
         <div class="run-body${bodyOpen?' open':''}" id="${rId}">${sections.join('')}</div>
       </div>`;
