@@ -9,7 +9,8 @@
     "candidate": {
       "required": true,
       "worker_path": true,
-      "help": "Candidate UCI engine executable path available on all workers"
+      "directory_executable": "build/enyo",
+      "help": "Candidate UCI engine executable path or Enyo checkout directory available on all workers"
     },
     "games": {
       "type": "int",

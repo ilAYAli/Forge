@@ -795,6 +795,25 @@ except SystemExit as exc:
 
         self.assertEqual("~/project/input.dat", params["item"])
 
+    def test_template_worker_path_parameter_accepts_directory_executable(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            project = Path.home() / "project"
+            template_path = self.write_test_template(root)
+            template = crucible.load_template(template_path)
+            template["parameters"]["item"]["directory_executable"] = "build/enyo"
+            with (
+                mock.patch.dict(os.environ, {"PWD": str(project)}, clear=False),
+                mock.patch("pathlib.Path.is_dir", lambda path: str(path) == str(project)),
+            ):
+                params = crucible.parse_template_parameters(
+                    "demo",
+                    template,
+                    ["--item", ".", "--total", "10"],
+                )
+
+        self.assertEqual("~/project/build/enyo", params["item"])
+
     def test_template_repeatable_parameters_render_shell_args(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -975,11 +994,15 @@ except SystemExit as exc:
     def test_sprt_template_uses_candidate_executable_path(self) -> None:
         template_path = ROOT / "templates" / "sprt.template.json"
         template = crucible.load_template(template_path)
-        with mock.patch.dict(os.environ, {"PWD": str(Path.home() / "code/cpp/chess/enyo")}, clear=False):
+        project = Path.home() / "code/cpp/chess/enyo"
+        with (
+            mock.patch.dict(os.environ, {"PWD": str(project)}, clear=False),
+            mock.patch("pathlib.Path.is_dir", lambda path: str(path) == str(project)),
+        ):
             params = crucible.parse_template_parameters(
                 "sprt",
                 template,
-                ["--candidate", "./build/enyo", "--reference", "~/assets/engines/reference", "--games", "50"],
+                ["--candidate", ".", "--reference", "~/assets/engines/reference", "--games", "50"],
             )
         manifest = crucible.expand_template("sprt", template_path, template, params)
 

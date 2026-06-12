@@ -149,10 +149,14 @@ def repeatable_arg_shell_values(template: dict[str, Any], values: dict[str, Any]
     return result
 
 
-def worker_path_parameter(value: str) -> str:
+def worker_path_parameter(value: str, *, directory_executable: str = "") -> str:
     if value and not value.startswith("~") and not Path(value).is_absolute():
         cwd = Path(os.environ.get("PWD") or str(Path.cwd()))
         value = os.path.normpath(str(cwd / value))
+    if directory_executable:
+        local = Path(os.path.expandvars(value)).expanduser()
+        if local.is_dir():
+            value = str(local / directory_executable)
     home = str(Path.home())
     if value == home:
         return "~"
@@ -203,11 +207,16 @@ def parse_template_parameters(template_name: str, template: dict[str, Any], raw_
         if not isinstance(spec, dict) or not bool(spec.get("worker_path", False)):
             continue
         value = values.get(str(name))
+        directory_executable = str(spec.get("directory_executable") or "")
         if isinstance(value, str):
-            values[str(name)] = worker_path_parameter(value)
+            values[str(name)] = worker_path_parameter(
+                value,
+                directory_executable=directory_executable,
+            )
         elif isinstance(value, list):
             values[str(name)] = [
-                worker_path_parameter(item) if isinstance(item, str) else item
+                worker_path_parameter(item, directory_executable=directory_executable)
+                if isinstance(item, str) else item
                 for item in value
             ]
     return values
