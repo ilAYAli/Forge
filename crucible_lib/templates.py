@@ -33,6 +33,28 @@ def safe_format(value: Any, values: dict[str, Any]) -> Any:
     return value
 
 
+def unresolved_format_placeholder(value: Any) -> bool:
+    if not isinstance(value, str):
+        return False
+    return bool(re.search(r"\{[A-Za-z_][A-Za-z0-9_]*(?::[^{}]*)?\}", value))
+
+
+def template_requirements(template: dict[str, Any], values: dict[str, Any]) -> dict[str, Any]:
+    requirements = safe_format(template.get("requirements") or {}, values)
+    if not isinstance(requirements, dict):
+        raise SystemExit("requirements must be an object")
+    repos = requirements.get("repos")
+    if isinstance(repos, list):
+        requirements["repos"] = [
+            repo for repo in repos
+            if not (
+                isinstance(repo, dict)
+                and unresolved_format_placeholder(repo.get("commit"))
+            )
+        ]
+    return requirements
+
+
 def template_references(value: Any, name: str) -> bool:
     needle = "{" + name
     if isinstance(value, str):
@@ -149,7 +171,9 @@ def repeatable_arg_shell_values(template: dict[str, Any], values: dict[str, Any]
     return result
 
 
-def worker_path_parameter(value: str) -> str:
+def worker_path_parameter(value: str, *, label: str = "worker path") -> str:
+    if value and not value.startswith("~") and not Path(value).is_absolute():
+        raise SystemExit(f"{label}: worker path must be absolute or use ~: {value}")
     home = str(Path.home())
     if value == home:
         return "~"
@@ -201,10 +225,10 @@ def parse_template_parameters(template_name: str, template: dict[str, Any], raw_
             continue
         value = values.get(str(name))
         if isinstance(value, str):
-            values[str(name)] = worker_path_parameter(value)
+            values[str(name)] = worker_path_parameter(value, label=str(name))
         elif isinstance(value, list):
             values[str(name)] = [
-                worker_path_parameter(item) if isinstance(item, str) else item
+                worker_path_parameter(item, label=str(name)) if isinstance(item, str) else item
                 for item in value
             ]
     return values
@@ -409,7 +433,7 @@ def expand_template(template_name: str, template_path_: Path, template: dict[str
         "created_at": now(),
         "work_dir": work_dir,
         "vars": {},
-        "requirements": safe_format(template.get("requirements") or {}, values),
+        "requirements": template_requirements(template, values),
         "tasks": tasks,
         "template": {
             "name": template_name,

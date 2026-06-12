@@ -781,6 +781,21 @@ except SystemExit as exc:
 
         self.assertEqual("~/input.dat", params["item"])
 
+    def test_template_worker_path_parameters_reject_relative_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            template_path = self.write_test_template(root)
+            template = crucible.load_template(template_path)
+
+            with self.assertRaises(SystemExit) as raised:
+                crucible.parse_template_parameters(
+                    "demo",
+                    template,
+                    ["--item", "./input.dat", "--total", "10"],
+                )
+
+        self.assertIn("item: worker path must be absolute or use ~", str(raised.exception))
+
     def test_template_repeatable_parameters_render_shell_args(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -856,6 +871,42 @@ except SystemExit as exc:
         self.assertEqual("~/assets/engines/enyo_9696dac", manifest["template"]["parameters"]["candidate"])
         self.assertEqual("engine-9696dac", manifest["name"])
         self.assertEqual("9696dac", manifest["requirements"]["repos"][0]["commit"])
+
+    def test_template_drops_repo_with_unresolved_commit_placeholder(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            templates = root / "templates"
+            templates.mkdir(parents=True)
+            template_path = templates / "engine.template.json"
+            template_path.write_text(
+                json.dumps({
+                    "schema": "crucible.template.v1",
+                    "name": "engine",
+                    "parameters": {
+                        "candidate": {"required": True, "worker_path": True},
+                    },
+                    "requirements": {
+                        "repos": [
+                            {"name": "tool", "path": "~/tool", "commit": "abc1234"},
+                            {"name": "engine", "path": "~/engine", "commit": "{candidate_commit}"},
+                        ],
+                    },
+                    "task": {
+                        "split": {"count": 1},
+                        "command": "run {candidate}",
+                    },
+                }),
+                encoding="utf-8",
+            )
+            template = crucible.load_template(template_path)
+            params = crucible.parse_template_parameters(
+                "engine",
+                template,
+                ["--candidate", str(Path.home() / "assets/engines/enyo")],
+            )
+            manifest = crucible.expand_template("engine", template_path, template, params)
+
+        self.assertEqual(["tool"], [repo["name"] for repo in manifest["requirements"]["repos"]])
 
     def test_training_template_wraps_nnue_build_create(self) -> None:
         template_path = ROOT / "templates" / "training.template.json"
