@@ -69,6 +69,40 @@ class CrucibleTests(unittest.TestCase):
             env=process_env,
         )
 
+    def test_worker_runtime_paths_avoid_new_zip_strict_keyword(self) -> None:
+        for rel_path in ("crucible_lib/tasks.py", "crucible_lib/workers.py"):
+            text = (ROOT / rel_path).read_text(encoding="utf-8")
+            self.assertNotIn("strict=", text, rel_path)
+
+    def test_event_ntfy_dry_run_handles_failed_sprt_event(self) -> None:
+        payload = {
+            "event": "deploy_fail",
+            "kind": "sprt",
+            "state": "failed",
+            "run": "syntax-check",
+            "run_dir": "/tmp/does-not-exist",
+            "tasks": 1,
+            "counts": {"done": 0, "running": 0, "claimed": 0, "pending": 1, "fail": 1, "stale": 0},
+            "worker_results": [{"host": "pwa-mbp", "stage": "setup", "rc": 1, "ok": False}],
+            "elapsed_seconds": 1.25,
+        }
+        result = subprocess.run(
+            ["bash", str(ROOT / "scripts/crucible_event_ntfy.sh")],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+            env={
+                **os.environ,
+                "CRUCIBLE_NTFY_DRY_RUN": "1",
+                "CRUCIBLE_EVENT_JSON": json.dumps(payload),
+            },
+        )
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertIn("Crucible sprt failed", result.stdout)
+        self.assertIn("pwa-mbp:setup:rc=1", result.stdout)
+
     @contextlib.contextmanager
     def patch_runs_dir(self, path: Path):
         with (

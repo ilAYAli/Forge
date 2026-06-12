@@ -31,7 +31,7 @@ score_re = re.compile(
 )
 
 
-def sprt_aggregate(run_dir: str) -> dict[str, float | int] | None:
+def sprt_aggregate(run_dir):
     if not run_dir:
         return None
     wins = losses = draws = games = 0
@@ -149,7 +149,7 @@ score_re = re.compile(
 )
 
 
-def sprt_summary(path: str) -> str:
+def sprt_summary(path):
     if event.get("kind") != "sprt" or not path:
         return ""
     wins = losses = draws = games = 0

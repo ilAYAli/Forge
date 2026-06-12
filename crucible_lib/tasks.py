@@ -574,7 +574,7 @@ def coordinator_result_payload(
     local_outputs = task_outputs(local_task)
     output_records = []
     worker_outputs = []
-    for local_path, coordinator_path in zip(local_outputs, coordinator_outputs, strict=False):
+    for local_path, coordinator_path in zip(local_outputs, coordinator_outputs):
         if local_path.exists():
             local_record = file_record(local_path)
             output_records.append({
@@ -654,7 +654,7 @@ def sync_task_result(
     heartbeat_on_coordinator(coordinator, str(coordinator_task["id"]), worker, claim_id)
 
     transfers = []
-    for local_path, coordinator_path in zip(task_outputs(local_task), task_outputs(coordinator_task), strict=False):
+    for local_path, coordinator_path in zip(task_outputs(local_task), task_outputs(coordinator_task)):
         if local_path.exists():
             transfers.append((local_path, coordinator_path))
 

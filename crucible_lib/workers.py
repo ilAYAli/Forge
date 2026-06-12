@@ -797,7 +797,7 @@ def sync_inputs_to_worker(
         raise RuntimeError("profile input mapping changed input count")
 
     synced = 0
-    for local_item, remote_item in zip(local_inputs, remote_inputs, strict=True):
+    for local_item, remote_item in zip(local_inputs, remote_inputs):
         src = expand_path(str(local_item.get("path") or ""))
         dst = str(remote_item.get("path") or "")
         if not src.exists():
