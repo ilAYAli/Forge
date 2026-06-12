@@ -1090,6 +1090,10 @@ def materialize_run(
     return run_dir, manifest_path, workers_snapshot
 
 def cmd_deploy(args: argparse.Namespace) -> int:
+    delegated = deploy_on_coordinator(args, configured_coordinator_runs() or "")
+    if delegated is not None:
+        return delegated
+
     started_at = time.monotonic()
     template_path = expand_path(args.manifest)
     run_dir, manifest_path, workers_path = materialize_run(
@@ -1564,6 +1568,116 @@ def run_control_on_coordinator(name: str, args: argparse.Namespace, coordinator_
         print(result.stderr, end="", file=sys.stderr)
     return result.returncode
 
+def coordinator_temp_file(host: str) -> str:
+    result = subprocess.run(
+        ["ssh", *SSH_OPTS, host, "mktemp /tmp/crucible.XXXXXX"],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise SystemExit(result.stderr.strip() or "failed to create coordinator temp file")
+    path = result.stdout.strip().splitlines()[-1:]
+    if not path:
+        raise SystemExit("coordinator did not return a temp file path")
+    return path[0]
+
+def copy_file_to_coordinator(host: str, path: Path) -> str:
+    remote_path = coordinator_temp_file(host)
+    result = run_process_command_with_retries(
+        ["rsync", "-a", "-e", RSYNC_SSH, str(path), f"{host}:{remote_path}"],
+        retries=SSH_TRANSIENT_RETRY_COUNT,
+    )
+    if result.returncode != 0:
+        raise SystemExit(result.stderr.strip() or f"failed to copy {path} to {host}")
+    return remote_path
+
+def coordinator_workers_arg(host: str, workers_arg: str) -> str:
+    path = expand_path(workers_arg)
+    if path.exists():
+        return copy_file_to_coordinator(host, path)
+    if worker_arg_looks_like_path(workers_arg):
+        raise SystemExit(f"workers file not found: {workers_arg}")
+    return workers_arg
+
+def append_deploy_options(command: list[str], args: argparse.Namespace, *, coordinator_host: str) -> None:
+    if getattr(args, "run", None):
+        command.extend(["--run", str(args.run)])
+    for flag in ("resume", "replace", "retry_failed", "no_color", "verbose"):
+        if bool(getattr(args, flag, False)):
+            command.append("--" + flag.replace("_", "-"))
+    if int(getattr(args, "jobs", 4)) != 4:
+        command.extend(["--jobs", str(args.jobs)])
+    if int(getattr(args, "task_attempts", 2)) != 2:
+        command.extend(["--task-attempts", str(args.task_attempts)])
+    command.extend(["--coordinator-host", str(getattr(args, "coordinator_host", None) or coordinator_host)])
+    command.extend(["--remote-timeout-seconds", str(args.remote_timeout_seconds)])
+    if getattr(args, "notify_command", None):
+        command.extend(["--notify-command", str(args.notify_command)])
+
+def append_start_options(command: list[str], args: argparse.Namespace, *, coordinator_host: str) -> None:
+    append_deploy_options(command, args, coordinator_host=coordinator_host)
+    for flag in ("wait", "merge_force", "newline_between"):
+        if bool(getattr(args, flag, False)):
+            command.append("--" + flag.replace("_", "-"))
+    if getattr(args, "verify", None) is True:
+        command.append("--verify")
+    elif getattr(args, "verify", None) is False:
+        command.append("--no-verify")
+    if getattr(args, "merge", None):
+        command.extend(["--merge", str(args.merge)])
+    command.extend(["--lease-seconds", str(args.lease_seconds)])
+    command.extend(["--interval-seconds", str(args.interval_seconds)])
+    command.extend(["--timeout-seconds", str(args.timeout_seconds)])
+    if getattr(args, "fail_on_fail", True) is False:
+        command.append("--no-fail-on-fail")
+
+def run_launch_on_coordinator(command: list[str], coordinator_runs: str) -> int:
+    host, runs_path = parse_coordinator(coordinator_runs)
+    if not host:
+        return 0
+    remote = (
+        "command -v crucible >/dev/null 2>&1 || "
+        "{ echo 'crucible not found in PATH on coordinator' >&2; exit 127; }; "
+        f"exec env {shlex.quote(COORDINATOR_RUNS_ENV)}= "
+        f"{shlex.quote(RUNS_DIR_ENV)}={shlex.quote(runs_path)} "
+        f"crucible {shell_join(command)}"
+    )
+    result = subprocess.run(
+        ["ssh", *SSH_OPTS, host, remote],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    print(f"coordinator: {coordinator_runs}")
+    if result.stdout:
+        print(result.stdout, end="")
+    if result.stderr:
+        print(result.stderr, end="", file=sys.stderr)
+    return result.returncode
+
+def deploy_on_coordinator(args: argparse.Namespace, coordinator_runs: str) -> int | None:
+    host, _ = parse_coordinator(coordinator_runs)
+    if not host:
+        return None
+    remote_manifest = copy_file_to_coordinator(host, expand_path(args.manifest))
+    remote_workers = coordinator_workers_arg(host, str(args.workers))
+    command = ["deploy", remote_workers, remote_manifest]
+    append_deploy_options(command, args, coordinator_host=host)
+    return run_launch_on_coordinator(command, coordinator_runs)
+
+def start_on_coordinator(args: argparse.Namespace, coordinator_runs: str) -> int | None:
+    host, _ = parse_coordinator(coordinator_runs)
+    if not host:
+        return None
+    remote_manifest = copy_file_to_coordinator(host, expand_path(args.manifest))
+    remote_workers = coordinator_workers_arg(host, str(args.workers))
+    command = ["start", remote_manifest, "--workers", remote_workers]
+    append_start_options(command, args, coordinator_host=host)
+    return run_launch_on_coordinator(command, coordinator_runs)
+
 def run_coordinator_command(coordinator_runs: str, command: list[str]) -> subprocess.CompletedProcess[str]:
     host, runs_path = parse_coordinator(coordinator_runs)
     if host:
@@ -1717,6 +1831,10 @@ def run_worker_control_on_coordinator(action: str, args: argparse.Namespace, coo
     return result.returncode
 
 def cmd_run_job(args: argparse.Namespace) -> int:
+    delegated = start_on_coordinator(args, configured_coordinator_runs() or "")
+    if delegated is not None:
+        return delegated
+
     label = str(getattr(args, "command_label", "start"))
     template_path = expand_path(args.manifest)
     run_dir, manifest_path = planned_run_paths(template_path, getattr(args, "run", None))

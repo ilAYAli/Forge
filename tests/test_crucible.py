@@ -6591,6 +6591,86 @@ except SystemExit as exc:
             self.assertIn("--coordinator pwa-mbp:", work_scripts[0])
             self.assertNotIn("pwahlman-m-7jfq", work_scripts[0])
 
+    def test_start_delegates_materialization_to_configured_coordinator_runs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest = root / "manifest.json"
+            manifest.write_text(
+                json.dumps({
+                    "schema": "crucible.task.v1",
+                    "name": "delegated-start",
+                    "work_dir": str(root),
+                    "tasks": [{"id": "task_0000", "index": 0, "command": "true", "outputs": []}],
+                }),
+                encoding="utf-8",
+            )
+            workers_path = root / "workers.json"
+            workers_path.write_text(
+                json.dumps({
+                    "schema": "crucible.workers.v1",
+                    "workers": [{"host": "pwa-5090", "profile": "pwa-5090", "local": False}],
+                }),
+                encoding="utf-8",
+            )
+            ssh_results = [
+                subprocess.CompletedProcess(["ssh"], 0, stdout="/tmp/crucible.manifest\n", stderr=""),
+                subprocess.CompletedProcess(["ssh"], 0, stdout="/tmp/crucible.workers\n", stderr=""),
+                subprocess.CompletedProcess(["ssh"], 0, stdout="remote start\n", stderr=""),
+            ]
+
+            with (
+                mock.patch.dict(
+                    os.environ,
+                    {"CRUCIBLE_COORDINATOR_RUNS": "pwa-5090:/home/petter/code/cpp/chess/crucible/runs"},
+                ),
+                mock.patch("crucible.subprocess.run", side_effect=ssh_results) as run_mock,
+                mock.patch(
+                    "crucible_lib.workers.run_process_command_with_retries",
+                    return_value=subprocess.CompletedProcess(["rsync"], 0, stdout="", stderr=""),
+                ) as rsync_mock,
+            ):
+                stdout = io.StringIO()
+                with contextlib.redirect_stdout(stdout):
+                    rc = crucible.cmd_run_job(
+                        argparse.Namespace(
+                            manifest=str(manifest),
+                            workers=str(workers_path),
+                            jobs=4,
+                            run=None,
+                            resume=False,
+                            replace=False,
+                            retry_failed=False,
+                            task_attempts=2,
+                            coordinator_host=None,
+                            remote_timeout_seconds=1800.0,
+                            wait=False,
+                            lease_seconds=600,
+                            interval_seconds=30.0,
+                            timeout_seconds=0.0,
+                            fail_on_fail=True,
+                            verify=None,
+                            merge=None,
+                            merge_force=False,
+                            newline_between=False,
+                            notify_command=None,
+                            no_color=True,
+                            verbose=False,
+                            command_label="start",
+                        )
+                    )
+
+            self.assertEqual(0, rc)
+            self.assertIn("coordinator: pwa-5090:/home/petter/code/cpp/chess/crucible/runs", stdout.getvalue())
+            self.assertEqual(2, rsync_mock.call_count)
+            command = run_mock.call_args_list[-1].args[0]
+            self.assertEqual("ssh", command[0])
+            self.assertIn("pwa-5090", command)
+            self.assertIn("CRUCIBLE_COORDINATOR_RUNS=", command[-1])
+            self.assertIn("CRUCIBLE_RUNS_DIR=/home/petter/code/cpp/chess/crucible/runs", command[-1])
+            self.assertIn("crucible start /tmp/crucible.manifest --workers /tmp/crucible.workers", command[-1])
+            self.assertIn("--coordinator-host pwa-5090", command[-1])
+            self.assertNotIn(str(root), command[-1])
+
     def test_deploy_materializes_contained_run(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
