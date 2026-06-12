@@ -4393,7 +4393,7 @@ except SystemExit as exc:
                 )
                 self.assertEqual(0, rc)
                 self.assertIn("active: 1 rows=50k/125k output=48k", named_stdout.getvalue())
-                self.assertIn("active: 1 rows=50k/125k output=48k eta=3h06m", named_stdout.getvalue())
+                self.assertNotIn("active: 1 rows=50k/125k output=48k eta=3h06m", named_stdout.getvalue())
                 self.assertNotIn("workers=1", named_stdout.getvalue())
                 self.assertNotIn("speedup=1.0x", named_stdout.getvalue())
                 self.assertIn("worker shard=0 [rows=50k/125k, output=48k, elo~=-12.3, eta=3h06m]", named_stdout.getvalue())
@@ -4444,7 +4444,8 @@ except SystemExit as exc:
 
             self.assertEqual(0, status.returncode, status.stderr)
             self.assertIn("tasks=0/2 games=400/2000 elo=+1.0 ci=9.0 los=58.8% draw=43.8%", status.stdout)
-            self.assertIn("active: 2 games=400/2000 elo=+1.0 ci=9.0 los=58.8% draw=43.8%", status.stdout)
+            self.assertIn("active: 2", status.stdout)
+            self.assertNotIn("active: 2 games=400/2000", status.stdout)
             self.assertIn("worker-a sprt shard=0 [games=100/1000, elo=10.0, ci=20.0, los=70.0, draw=40.0]", status.stdout)
             self.assertIn("worker-b sprt shard=1 [games=300/1000, elo=-2.0, ci=10.0, los=55.0, draw=45.0]", status.stdout)
 
@@ -5072,7 +5073,8 @@ except SystemExit as exc:
                 self.assertEqual(0, rc)
                 text = stdout.getvalue()
                 self.assertIn("  tasks=1/2 games=1500/2000 eta=1m40s", text)
-                self.assertIn("  active: 1 games=1500/2000 eta=1m40s", text)
+                self.assertIn("  active: 1", text)
+                self.assertNotIn("  active: 1 games=1500/2000", text)
                 self.assertIn("worker-a shard=1 [games=500/1000, eta=1m40s]", text)
 
     def test_status_uses_completed_rate_when_running_task_has_no_progress_yet(self) -> None:
@@ -5145,7 +5147,8 @@ except SystemExit as exc:
                 self.assertEqual(0, rc)
                 text = stdout.getvalue()
                 self.assertIn("  tasks=1/2 games=1000/2000 eta=1m39s", text)
-                self.assertIn("  active: 1 games=1000/2000 eta=1m39s", text)
+                self.assertIn("  active: 1", text)
+                self.assertNotIn("  active: 1 games=1000/2000", text)
                 self.assertIn("worker-a shard=1 [games=0/1000, eta=1m39s]", text)
 
     def test_status_labels_overdue_fallback_eta_as_unknown(self) -> None:
@@ -5218,7 +5221,8 @@ except SystemExit as exc:
                 self.assertEqual(0, rc)
                 text = stdout.getvalue()
                 self.assertIn("  tasks=1/2 games=1000/2000 eta=unknown", text)
-                self.assertIn("  active: 1 games=1000/2000 eta=unknown", text)
+                self.assertIn("  active: 1", text)
+                self.assertNotIn("  active: 1 games=1000/2000", text)
                 self.assertIn("worker-a shard=1 [games=0/1000, eta=unknown]", text)
 
     def test_status_ignores_undeclared_domain_progress(self) -> None:

@@ -1051,16 +1051,17 @@ def section_progress_fields(summary: dict[str, Any]) -> list[str]:
     return split_eta_last(summary_progress_fields(summary))
 
 def active_section_fields(summary: dict[str, Any]) -> list[str]:
+    run_fields = set(run_progress_fields(summary))
     worker_summary = active_worker_summary(summary)
     if worker_summary:
         worker_fields = worker_summary.split()
         worker_keys = {field.split("=", 1)[0] for field in worker_fields}
         progress_fields = [
             field for field in summary_progress_fields(summary)
-            if field.split("=", 1)[0] not in worker_keys
+            if field not in run_fields and field.split("=", 1)[0] not in worker_keys
         ]
         return split_eta_last([*progress_fields, *worker_fields])
-    return section_progress_fields(summary)
+    return [field for field in section_progress_fields(summary) if field not in run_fields]
 
 def format_status_key(key: str, values: list[int | str]) -> str:
     return key
