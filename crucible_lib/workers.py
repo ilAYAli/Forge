@@ -1315,8 +1315,11 @@ def cmd_deploy(args: argparse.Namespace) -> int:
         release_active_claims(manifest, lease_seconds=600)
         cleanup_launched_workers(items)
 
-    def launch_started_enough(expected_started: int) -> bool:
-        if expected_started <= 0:
+    def started_task_count(counts: dict[str, int]) -> int:
+        return counts["done"] + counts["running"] + counts["claimed"] + counts["stale"]
+
+    def launch_started_enough(before_started: int, expected_new_started: int) -> bool:
+        if expected_new_started <= 0:
             return True
         deadline = time.monotonic() + DEPLOY_STARTUP_TIMEOUT_SECONDS
         while True:
@@ -1324,8 +1327,8 @@ def cmd_deploy(args: argparse.Namespace) -> int:
             counts = summary["counts"]
             if counts["fail"] > 0:
                 return False
-            started = counts["done"] + counts["running"] + counts["claimed"] + counts["stale"]
-            if started >= expected_started:
+            started = started_task_count(counts)
+            if started >= before_started + expected_new_started:
                 return True
             if time.monotonic() >= deadline:
                 return False
@@ -1388,16 +1391,8 @@ def cmd_deploy(args: argparse.Namespace) -> int:
                 status(colorize("deploy: setup complete; launching workers", "green", enabled=color_enabled))
                 before_launch = status_summary(manifest, lease_seconds=600)
                 before_counts = before_launch["counts"]
-                before_started = (
-                    before_counts["done"]
-                    + before_counts["running"]
-                    + before_counts["claimed"]
-                    + before_counts["stale"]
-                )
-                expected_started = min(
-                    int(before_launch["tasks"]),
-                    before_started + min(before_counts["pending"], len(workers)),
-                )
+                before_started = started_task_count(before_counts)
+                expected_new_started = min(before_counts["pending"], len(workers))
                 futures = [
                     executor.submit(launch_worker, index, worker)
                     for index, worker in enumerate(workers)
@@ -1406,7 +1401,7 @@ def cmd_deploy(args: argparse.Namespace) -> int:
                 print_results(results)
                 if all(item["ok"] for item in results):
                     status(colorize("deploy: verifying workers started", "cyan", enabled=color_enabled))
-                    if launch_started_enough(expected_started):
+                    if launch_started_enough(before_started, expected_new_started):
                         status(colorize("deploy: workers active", "green", enabled=color_enabled))
                     else:
                         startup_failed = True

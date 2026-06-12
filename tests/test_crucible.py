@@ -7026,6 +7026,99 @@ except SystemExit as exc:
             self.assertIn("start_new_session=True", launch_scripts[0])
             self.assertIn("--worker worker-b", launch_scripts[0])
 
+    def test_deploy_launch_only_accepts_post_launch_progress(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            runs = root / "runs"
+            tasks = [
+                {"id": f"task_{index:04d}", "index": index, "command": "true", "outputs": []}
+                for index in range(10)
+            ]
+            template = root / "template.manifest.json"
+            template.write_text(
+                json.dumps({
+                    "schema": "crucible.task.v1",
+                    "name": "launch-progress",
+                    "work_dir": str(root),
+                    "requirements": {"python_min": "3.11", "git_min": "2.38"},
+                    "tasks": tasks,
+                }),
+                encoding="utf-8",
+            )
+            workers_path = root / "workers.json"
+            workers_path.write_text(
+                json.dumps({
+                    "schema": "crucible.workers.v1",
+                    "workers": [
+                        {"host": f"worker-{index}", "profile": f"worker-{index}", "local": True, "cache_dir": str(root / f"cache-{index}")}
+                        for index in range(4)
+                    ],
+                }),
+                encoding="utf-8",
+            )
+            commands = []
+            seeded_done = False
+            launched_done = 0
+            launch_lock = threading.Lock()
+
+            def write_done(manifest, index: int) -> None:
+                task = manifest["tasks"][index]
+                crucible.write_json(crucible.task_done_path(manifest, task), {
+                    "task": task["id"],
+                    "index": task["index"],
+                    "worker": "worker-b",
+                    "state": "done",
+                })
+
+            def fake_run(self, command, **kwargs):
+                nonlocal seeded_done, launched_done
+                commands.append(command)
+                manifest_path = runs / "launch-progress" / "manifest.json"
+                if manifest_path.exists():
+                    manifest = crucible.load_manifest(manifest_path)
+                    if not seeded_done and " work " not in command[-1]:
+                        for index in range(8):
+                            write_done(manifest, index)
+                        seeded_done = True
+                    if " work " in command[-1]:
+                        with launch_lock:
+                            if launched_done < 2:
+                                write_done(manifest, 8 + launched_done)
+                                launched_done += 1
+                return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+            args = argparse.Namespace(
+                manifest=str(template),
+                workers=str(workers_path),
+                jobs=1,
+                run="launch-progress",
+                resume=False,
+                replace=False,
+                launch_only=True,
+                remote_timeout_seconds=1800.0,
+                no_color=True,
+                verbose=False,
+            )
+            with (
+                self.patch_runs_dir(runs),
+                mock.patch("crucible.ProcessTracker.run", fake_run),
+                mock.patch("crucible_lib.workers.DEPLOY_STARTUP_TIMEOUT_SECONDS", 0.01),
+                mock.patch("crucible_lib.workers.DEPLOY_STARTUP_POLL_SECONDS", 0.01),
+            ):
+                stdout = io.StringIO()
+                with contextlib.redirect_stdout(stdout):
+                    rc = crucible.cmd_deploy(args)
+
+            self.assertEqual(0, rc)
+            output = stdout.getvalue()
+            self.assertIn("deploy: workers active", output)
+            self.assertIn("deploy: launch complete", output)
+            manifest = crucible.load_manifest(runs / "launch-progress" / "manifest.json")
+            self.assertFalse(crucible.stop_request_path(manifest).exists())
+            self.assertEqual(2, launched_done)
+            scripts = [command[-1] for command in commands if command[0] == "sh"]
+            self.assertEqual(4, len([script for script in scripts if " work " in script]))
+
     def test_deploy_launch_only_cleans_up_when_workers_do_not_start(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
