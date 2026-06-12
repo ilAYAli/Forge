@@ -146,7 +146,11 @@ def runs_dir() -> Path:
 
 def configured_coordinator_runs() -> str | None:
     if COORDINATOR_RUNS_ENV in os.environ:
-        return os.environ[COORDINATOR_RUNS_ENV].strip() or None
+        value = os.environ[COORDINATOR_RUNS_ENV].strip()
+        if value:
+            return value
+        if RUNS_DIR_ENV in os.environ:
+            return None
     try:
         path = runs_dir() / COORDINATOR_RUNS_FILE
     except SystemExit:

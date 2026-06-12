@@ -681,6 +681,25 @@ except SystemExit as exc:
                 self.assertEqual("notify-me", crucible.default_notify_command(payload))
                 self.assertEqual(root / "templates", crucible.config_template_dirs(payload)[0])
 
+    def test_empty_coordinator_env_does_not_hide_file_default(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            runs = root / "runs"
+            runs.mkdir()
+            (runs / "coordinator").write_text("pwa-5090:/runs\n", encoding="utf-8")
+            with (
+                mock.patch("crucible_lib.core.script_repo", return_value=root),
+                mock.patch.dict(os.environ, {"CRUCIBLE_COORDINATOR_RUNS": ""}, clear=True),
+            ):
+                self.assertEqual("pwa-5090:/runs", crucible.configured_coordinator_runs())
+
+            with mock.patch.dict(
+                os.environ,
+                {"CRUCIBLE_COORDINATOR_RUNS": "", "CRUCIBLE_RUNS_DIR": str(runs)},
+                clear=False,
+            ):
+                self.assertIsNone(crucible.configured_coordinator_runs())
+
     def test_template_expands_without_exposing_task_ids(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
