@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import io
+import inspect
 import json
 import os
 import argparse
@@ -345,7 +346,11 @@ except SystemExit as exc:
         self.assertIn("String(window.getSelection())", web._HTML)
         self.assertIn("restartWeb(this)", web._HTML)
         self.assertIn("cmd: 'restart-web'", web._HTML)
+        self.assertIn("await waitForRestart()", web._HTML)
+        self.assertIn("/api/status?restart=", web._HTML)
+        self.assertIn("restart requested but server did not come back", web._HTML)
         self.assertIn("id=\"restart\"", web._HTML)
+        self.assertIn('path = self.path.split("?", 1)[0]', inspect.getsource(web._Handler.do_GET))
         self.assertNotIn("games/s", web._HTML)
         self.assertIn("ThreadingHTTPServer", web.ThreadingHTTPServer.__name__)
 
@@ -359,6 +364,54 @@ except SystemExit as exc:
         schedule.assert_called_once_with(server)
         self.assertEqual(0, result.returncode)
         self.assertEqual("web restart requested\n", result.stdout)
+
+    def test_web_restart_starts_replacement_before_shutdown(self) -> None:
+        import crucible_lib.web as web
+
+        events = []
+
+        class FakeThread:
+            def __init__(self, *, target: object, args: object, daemon: bool) -> None:
+                events.append("thread")
+                self.daemon = daemon
+
+            def start(self) -> None:
+                events.append("shutdown")
+
+        with (
+            mock.patch("crucible_lib.web._start_web_restarter", side_effect=lambda: events.append("restarter")),
+            mock.patch("crucible_lib.web.threading.Thread", side_effect=FakeThread),
+        ):
+            web._schedule_web_restart(object())
+
+        self.assertEqual(["restarter", "thread", "shutdown"], events)
+
+    def test_web_restart_spawn_failure_does_not_shutdown(self) -> None:
+        import crucible_lib.web as web
+
+        with (
+            mock.patch("crucible_lib.web._start_web_restarter", side_effect=OSError("spawn failed")),
+            mock.patch("crucible_lib.web.threading.Thread") as thread,
+        ):
+            with self.assertRaisesRegex(OSError, "spawn failed"):
+                web._run_api_command("", "restart-web", server=object())
+
+        thread.assert_not_called()
+
+    def test_web_restarter_command_preserves_restart_payload(self) -> None:
+        import crucible_lib.web as web
+
+        with (
+            mock.patch("crucible_lib.web.os.getpid", return_value=1234),
+            mock.patch("crucible_lib.web._WEB_HOST", "0.0.0.0"),
+            mock.patch("crucible_lib.web._WEB_PORT", 9000),
+        ):
+            command = web._web_restarter_command()
+
+        self.assertEqual([sys.executable, "-c", web._WEB_RESTARTER_CODE], command[:3])
+        payload = json.loads(command[3])
+        self.assertEqual(1234, payload["parent"])
+        self.assertEqual([sys.executable, str(web.script_path()), "web", "--host", "0.0.0.0", "--port", "9000", "--foreground"], payload["argv"])
 
     def test_web_restart_argv_preserves_host_and_port(self) -> None:
         import crucible_lib.web as web

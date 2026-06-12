@@ -732,13 +732,28 @@ _HTML = r"""<!DOCTYPE html>
         });
         const data = await res.json();
         if (!data.ok) throw new Error((data.stderr || data.error || 'restart failed').trim());
-        setTimeout(() => location.reload(), 1200);
+        await waitForRestart();
       } catch(e) {
         btn.disabled = false;
         btn.textContent = old;
         document.getElementById('err').style.display = 'block';
         document.getElementById('err').textContent = e.message;
       }
+    }
+
+    async function waitForRestart() {
+      const deadline = Date.now() + 20000;
+      while (Date.now() < deadline) {
+        await new Promise(resolve => setTimeout(resolve, 500));
+        try {
+          const res = await fetch('/api/status?restart=' + Date.now(), {cache: 'no-store'});
+          if (res.ok) {
+            location.reload();
+            return;
+          }
+        } catch(e) {}
+      }
+      throw new Error('restart requested but server did not come back');
     }
 
     let refreshing = false;
@@ -829,6 +844,36 @@ _WEB_SSH_OPTS = [
 _WEB_HOST = "127.0.0.1"
 _WEB_PORT = 0
 _WEB_RESTART_DELAY_SECONDS = 0.2
+_WEB_RESTARTER_WAIT_SECONDS = 15.0
+_WEB_RESTARTER_CODE = r"""
+import json
+import os
+import subprocess
+import sys
+import time
+
+payload = json.loads(sys.argv[1])
+parent = int(payload["parent"])
+deadline = time.time() + float(payload["wait_seconds"])
+while time.time() < deadline:
+    try:
+        os.kill(parent, 0)
+    except OSError:
+        break
+    time.sleep(0.1)
+else:
+    sys.exit(124)
+
+subprocess.Popen(
+    payload["argv"],
+    cwd=payload.get("cwd") or None,
+    stdin=subprocess.DEVNULL,
+    stdout=subprocess.DEVNULL,
+    stderr=subprocess.DEVNULL,
+    start_new_session=True,
+    close_fds=True,
+)
+"""
 
 def _collect_status_payload() -> dict[str, Any]:
     coordinator_runs = configured_coordinator_runs()
@@ -1060,14 +1105,33 @@ def _web_restart_argv() -> list[str]:
         "--foreground",
     ]
 
-def _restart_web_after_response(server: ThreadingHTTPServer) -> None:
+def _web_restarter_command() -> list[str]:
+    payload = {
+        "parent": os.getpid(),
+        "argv": _web_restart_argv(),
+        "cwd": str(Path.cwd()),
+        "wait_seconds": _WEB_RESTARTER_WAIT_SECONDS,
+    }
+    return [sys.executable, "-c", _WEB_RESTARTER_CODE, json.dumps(payload)]
+
+def _start_web_restarter() -> subprocess.Popen[Any]:
+    return subprocess.Popen(
+        _web_restarter_command(),
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+        close_fds=True,
+    )
+
+def _shutdown_web_after_response(server: ThreadingHTTPServer) -> None:
     time.sleep(_WEB_RESTART_DELAY_SECONDS)
     server.shutdown()
     server.server_close()
-    os.execv(sys.executable, _web_restart_argv())
 
 def _schedule_web_restart(server: ThreadingHTTPServer) -> None:
-    thread = threading.Thread(target=_restart_web_after_response, args=(server,))
+    _start_web_restarter()
+    thread = threading.Thread(target=_shutdown_web_after_response, args=(server,), daemon=True)
     thread.start()
 
 def _run_api_command(run: str, cmd: str, *, server: ThreadingHTTPServer | None = None) -> subprocess.CompletedProcess[str]:
@@ -1113,9 +1177,10 @@ class _Handler(BaseHTTPRequestHandler):
             self.end_headers()
 
     def do_GET(self) -> None:
-        if self.path in ("/", "/index.html"):
+        path = self.path.split("?", 1)[0]
+        if path in ("/", "/index.html"):
             self._respond(200, "text/html; charset=utf-8", _HTML_BYTES)
-        elif self.path == "/api/status":
+        elif path == "/api/status":
             try:
                 body = _api_status()
                 self._respond(200, "application/json", body)
