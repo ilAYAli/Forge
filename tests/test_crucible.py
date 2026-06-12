@@ -939,6 +939,51 @@ except SystemExit as exc:
             self.assertEqual("coordinator-a", captured["args"].coordinator_host)
             self.assertIsNone(captured["args"].notify_command)
 
+    def test_run_template_rejects_unpushed_candidate_checkout(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "enyo"
+            repo.mkdir()
+            subprocess.run(["git", "-C", str(repo), "init"], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            (repo / "engine.cpp").write_text("int main() { return 0; }\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(repo), "add", "engine.cpp"], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(repo),
+                    "-c",
+                    "user.name=Petter Wahlman",
+                    "-c",
+                    "user.email=petter@wahlman.no",
+                    "commit",
+                    "-m",
+                    "init",
+                ],
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            config = root / "config.yml"
+            config.write_text('default_workers: "worker-a:2"\n', encoding="utf-8")
+
+            with (
+                mock.patch.dict(os.environ, {"CRUCIBLE_CONFIG": str(config), "CRUCIBLE_NOTIFY_COMMAND": ""}, clear=False),
+                mock.patch("crucible_lib.workers.cmd_run_job") as run_job,
+                self.assertRaises(SystemExit) as raised,
+            ):
+                crucible.cmd_template_run(argparse.Namespace(
+                    template=str(ROOT / "templates" / "sprt.template.json"),
+                    template_args=[
+                        "--candidate", str(repo),
+                        "--reference", "~/assets/engines/reference",
+                        "--games", "50",
+                    ],
+                ))
+
+            self.assertIn("push it or pass a built engine path", str(raised.exception))
+            run_job.assert_not_called()
+
     def test_sprt_template_accepts_candidate_checkout_directory(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

@@ -565,6 +565,23 @@ def sprt_worker_thread_budget_payload(workers_arg: str, params: dict[str, Any]) 
     }
 
 
+def require_checkout_commits_on_remote(params: dict[str, Any]) -> None:
+    for key, source in params.items():
+        if not str(key).endswith("_source") or not isinstance(source, str):
+            continue
+        base = str(key)[:-7]
+        commit = str(params.get(f"{base}_commit") or "").strip()
+        if not commit:
+            continue
+        repo = expand_path(source)
+        refs = git_output_or_empty(repo, "branch", "-r", "--contains", commit)
+        if not refs.strip():
+            raise SystemExit(
+                f"{base}: checkout commit {commit} is not on any remote-tracking branch; "
+                "push it or pass a built engine path"
+            )
+
+
 def cmd_template_run(args: argparse.Namespace) -> int:
     run_options, template_args = parse_run_options(list(args.template_args))
     config = load_config()
@@ -572,10 +589,12 @@ def cmd_template_run(args: argparse.Namespace) -> int:
     template = load_template(path)
     template_name = template_display_name(path, template)
     params = parse_template_parameters(template_name, template, template_args)
+    params = git_checkout_template_parameters(template, params)
     manifest = expand_template(template_name, path, template, params)
     if run_options.print_manifest or run_options.dry_run:
         print(json.dumps(manifest, indent=2, sort_keys=True))
         return 0
+    require_checkout_commits_on_remote(params)
 
     workers_arg = resolved_workers_arg(run_options, config)
     coordinator_host = run_options.coordinator_host or default_coordinator_host(config)
