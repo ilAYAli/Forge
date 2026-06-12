@@ -9,9 +9,7 @@
     "candidate": {
       "required": true,
       "worker_path": true,
-      "git_checkout": true,
-      "checkout_output": "~/assets/engines/{repo}_{commit}",
-      "help": "Candidate UCI engine executable named with its git hash, e.g. enyo_9696dac, or a local Enyo checkout to build"
+      "help": "Candidate UCI engine executable path available on all workers"
     },
     "games": {
       "type": "int",
@@ -103,31 +101,6 @@
         ],
         "probe": [
           "~/.local/bin/fastchess -version | grep fastchess"
-        ]
-      },
-      {
-        "name": "enyo-candidate",
-        "url": "git@github.com:ilAYAli/enyo_private.git",
-        "path": "~/code/cpp/chess/.crucible/enyo",
-        "remote": "origin",
-        "commit": "{candidate_commit}",
-        "allow_untracked": true,
-        "build_timeout_s": 1200,
-        "install_timeout_s": 120,
-        "probe_timeout_s": 30,
-        "build": [
-          "cmake -S . -B build -DCMAKE_BUILD_TYPE=Release",
-          "cmake --build build -j8"
-        ],
-        "install": [
-          "mkdir -p \"$(dirname {candidate})\"",
-          "cp build/enyo {candidate}",
-          "chmod +x {candidate}"
-        ],
-        "probe": [
-          "test -x build/enyo",
-          "test -x {candidate}",
-          "tmp=\"$(mktemp)\"; trap 'rm -f \"$tmp\"' EXIT; printf '%s\\n' uci quit | {candidate} >\"$tmp\" 2>&1 || true; grep -q uciok \"$tmp\""
         ]
       }
     ],

@@ -781,20 +781,19 @@ except SystemExit as exc:
 
         self.assertEqual("~/input.dat", params["item"])
 
-    def test_template_worker_path_parameters_reject_relative_paths(self) -> None:
+    def test_template_worker_path_parameters_expand_relative_paths(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             template_path = self.write_test_template(root)
             template = crucible.load_template(template_path)
-
-            with self.assertRaises(SystemExit) as raised:
-                crucible.parse_template_parameters(
+            with mock.patch.dict(os.environ, {"PWD": str(Path.home() / "project")}, clear=False):
+                params = crucible.parse_template_parameters(
                     "demo",
                     template,
                     ["--item", "./input.dat", "--total", "10"],
                 )
 
-        self.assertIn("item: worker path must be absolute or use ~", str(raised.exception))
+        self.assertEqual("~/project/input.dat", params["item"])
 
     def test_template_repeatable_parameters_render_shell_args(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -871,42 +870,6 @@ except SystemExit as exc:
         self.assertEqual("~/assets/engines/enyo_9696dac", manifest["template"]["parameters"]["candidate"])
         self.assertEqual("engine-9696dac", manifest["name"])
         self.assertEqual("9696dac", manifest["requirements"]["repos"][0]["commit"])
-
-    def test_template_drops_repo_with_unresolved_commit_placeholder(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            templates = root / "templates"
-            templates.mkdir(parents=True)
-            template_path = templates / "engine.template.json"
-            template_path.write_text(
-                json.dumps({
-                    "schema": "crucible.template.v1",
-                    "name": "engine",
-                    "parameters": {
-                        "candidate": {"required": True, "worker_path": True},
-                    },
-                    "requirements": {
-                        "repos": [
-                            {"name": "tool", "path": "~/tool", "commit": "abc1234"},
-                            {"name": "engine", "path": "~/engine", "commit": "{candidate_commit}"},
-                        ],
-                    },
-                    "task": {
-                        "split": {"count": 1},
-                        "command": "run {candidate}",
-                    },
-                }),
-                encoding="utf-8",
-            )
-            template = crucible.load_template(template_path)
-            params = crucible.parse_template_parameters(
-                "engine",
-                template,
-                ["--candidate", str(Path.home() / "assets/engines/enyo")],
-            )
-            manifest = crucible.expand_template("engine", template_path, template, params)
-
-        self.assertEqual(["tool"], [repo["name"] for repo in manifest["requirements"]["repos"]])
 
     def test_training_template_wraps_nnue_build_create(self) -> None:
         template_path = ROOT / "templates" / "training.template.json"
@@ -1009,89 +972,20 @@ except SystemExit as exc:
             self.assertEqual("coordinator-a", captured["args"].coordinator_host)
             self.assertIsNone(captured["args"].notify_command)
 
-    def test_run_template_rejects_unpushed_candidate_checkout(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            repo = root / "enyo"
-            repo.mkdir()
-            subprocess.run(["git", "-C", str(repo), "init"], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            (repo / "engine.cpp").write_text("int main() { return 0; }\n", encoding="utf-8")
-            subprocess.run(["git", "-C", str(repo), "add", "engine.cpp"], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            subprocess.run(
-                [
-                    "git",
-                    "-C",
-                    str(repo),
-                    "-c",
-                    "user.name=Petter Wahlman",
-                    "-c",
-                    "user.email=petter@wahlman.no",
-                    "commit",
-                    "-m",
-                    "init",
-                ],
-                check=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-            )
-            config = root / "config.yml"
-            config.write_text('default_workers: "worker-a:2"\n', encoding="utf-8")
-
-            with (
-                mock.patch.dict(os.environ, {"CRUCIBLE_CONFIG": str(config), "CRUCIBLE_NOTIFY_COMMAND": ""}, clear=False),
-                mock.patch("crucible_lib.workers.cmd_run_job") as run_job,
-                self.assertRaises(SystemExit) as raised,
-            ):
-                crucible.cmd_template_run(argparse.Namespace(
-                    template=str(ROOT / "templates" / "sprt.template.json"),
-                    template_args=[
-                        "--candidate", str(repo),
-                        "--reference", "~/assets/engines/reference",
-                        "--games", "50",
-                    ],
-                ))
-
-            self.assertIn("push it or pass a built engine path", str(raised.exception))
-            run_job.assert_not_called()
-
-    def test_sprt_template_accepts_candidate_checkout_directory(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            repo = root / "enyo"
-            repo.mkdir()
-            subprocess.run(["git", "-C", str(repo), "init"], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            (repo / "engine.cpp").write_text("int main() { return 0; }\n", encoding="utf-8")
-            subprocess.run(["git", "-C", str(repo), "add", "engine.cpp"], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            subprocess.run(
-                [
-                    "git",
-                    "-C",
-                    str(repo),
-                    "-c",
-                    "user.name=Petter Wahlman",
-                    "-c",
-                    "user.email=petter@wahlman.no",
-                    "commit",
-                    "-m",
-                    "init",
-                ],
-                check=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-            )
-            commit = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
-            template_path = ROOT / "templates" / "sprt.template.json"
-            template = crucible.load_template(template_path)
+    def test_sprt_template_uses_candidate_executable_path(self) -> None:
+        template_path = ROOT / "templates" / "sprt.template.json"
+        template = crucible.load_template(template_path)
+        with mock.patch.dict(os.environ, {"PWD": str(Path.home() / "code/cpp/chess/enyo")}, clear=False):
             params = crucible.parse_template_parameters(
                 "sprt",
                 template,
-                ["--candidate", str(repo), "--reference", "~/assets/engines/reference", "--games", "50"],
+                ["--candidate", "./build/enyo", "--reference", "~/assets/engines/reference", "--games", "50"],
             )
-            manifest = crucible.expand_template("sprt", template_path, template, params)
+        manifest = crucible.expand_template("sprt", template_path, template, params)
 
-        self.assertEqual(commit, manifest["requirements"]["repos"][2]["commit"])
-        self.assertEqual(f"~/assets/engines/enyo_{commit[:7]}", manifest["template"]["parameters"]["candidate"])
-        self.assertIn(f"--candidate ~/assets/engines/enyo_{commit[:7]}", manifest["tasks"][0]["command"])
+        self.assertEqual("~/code/cpp/chess/enyo/build/enyo", manifest["template"]["parameters"]["candidate"])
+        self.assertEqual(["sprt", "fastchess"], [repo["name"] for repo in manifest["requirements"]["repos"]])
+        self.assertIn("--candidate ~/code/cpp/chess/enyo/build/enyo", manifest["tasks"][0]["command"])
 
     def test_template_commit_placeholder_accepts_checkout_directory(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

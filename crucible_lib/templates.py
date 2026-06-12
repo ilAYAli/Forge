@@ -33,28 +33,6 @@ def safe_format(value: Any, values: dict[str, Any]) -> Any:
     return value
 
 
-def unresolved_format_placeholder(value: Any) -> bool:
-    if not isinstance(value, str):
-        return False
-    return bool(re.search(r"\{[A-Za-z_][A-Za-z0-9_]*(?::[^{}]*)?\}", value))
-
-
-def template_requirements(template: dict[str, Any], values: dict[str, Any]) -> dict[str, Any]:
-    requirements = safe_format(template.get("requirements") or {}, values)
-    if not isinstance(requirements, dict):
-        raise SystemExit("requirements must be an object")
-    repos = requirements.get("repos")
-    if isinstance(repos, list):
-        requirements["repos"] = [
-            repo for repo in repos
-            if not (
-                isinstance(repo, dict)
-                and unresolved_format_placeholder(repo.get("commit"))
-            )
-        ]
-    return requirements
-
-
 def template_references(value: Any, name: str) -> bool:
     needle = "{" + name
     if isinstance(value, str):
@@ -171,9 +149,10 @@ def repeatable_arg_shell_values(template: dict[str, Any], values: dict[str, Any]
     return result
 
 
-def worker_path_parameter(value: str, *, label: str = "worker path") -> str:
+def worker_path_parameter(value: str) -> str:
     if value and not value.startswith("~") and not Path(value).is_absolute():
-        raise SystemExit(f"{label}: worker path must be absolute or use ~: {value}")
+        cwd = Path(os.environ.get("PWD") or str(Path.cwd()))
+        value = os.path.normpath(str(cwd / value))
     home = str(Path.home())
     if value == home:
         return "~"
@@ -225,10 +204,10 @@ def parse_template_parameters(template_name: str, template: dict[str, Any], raw_
             continue
         value = values.get(str(name))
         if isinstance(value, str):
-            values[str(name)] = worker_path_parameter(value, label=str(name))
+            values[str(name)] = worker_path_parameter(value)
         elif isinstance(value, list):
             values[str(name)] = [
-                worker_path_parameter(item, label=str(name)) if isinstance(item, str) else item
+                worker_path_parameter(item) if isinstance(item, str) else item
                 for item in value
             ]
     return values
@@ -433,7 +412,7 @@ def expand_template(template_name: str, template_path_: Path, template: dict[str
         "created_at": now(),
         "work_dir": work_dir,
         "vars": {},
-        "requirements": template_requirements(template, values),
+        "requirements": safe_format(template.get("requirements") or {}, values),
         "tasks": tasks,
         "template": {
             "name": template_name,
@@ -589,23 +568,6 @@ def sprt_worker_thread_budget_payload(workers_arg: str, params: dict[str, Any]) 
     }
 
 
-def require_checkout_commits_on_remote(params: dict[str, Any]) -> None:
-    for key, source in params.items():
-        if not str(key).endswith("_source") or not isinstance(source, str):
-            continue
-        base = str(key)[:-7]
-        commit = str(params.get(f"{base}_commit") or "").strip()
-        if not commit:
-            continue
-        repo = expand_path(source)
-        refs = git_output_or_empty(repo, "branch", "-r", "--contains", commit)
-        if not refs.strip():
-            raise SystemExit(
-                f"{base}: checkout commit {commit} is not on any remote-tracking branch; "
-                "push it or pass a built engine path"
-            )
-
-
 def cmd_template_run(args: argparse.Namespace) -> int:
     run_options, template_args = parse_run_options(list(args.template_args))
     config = load_config()
@@ -613,12 +575,10 @@ def cmd_template_run(args: argparse.Namespace) -> int:
     template = load_template(path)
     template_name = template_display_name(path, template)
     params = parse_template_parameters(template_name, template, template_args)
-    params = git_checkout_template_parameters(template, params)
     manifest = expand_template(template_name, path, template, params)
     if run_options.print_manifest or run_options.dry_run:
         print(json.dumps(manifest, indent=2, sort_keys=True))
         return 0
-    require_checkout_commits_on_remote(params)
 
     workers_arg = resolved_workers_arg(run_options, config)
     coordinator_host = run_options.coordinator_host or default_coordinator_host(config)
