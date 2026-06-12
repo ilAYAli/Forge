@@ -2,7 +2,7 @@
   "schema": "crucible.task.v1",
   "name": "nnue-sprt",
   "kind": "sprt",
-  "description": "Distributed SPRT in fixed-size game chunks",
+  "description": "Distributed SPRT in fixed-size game shards",
   "work_dir": "~/code/cpp/chess/nnue",
   "requirements": {
     "python_min": "3.11",

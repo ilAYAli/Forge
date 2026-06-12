@@ -94,6 +94,19 @@ def template_arg_name(name: str) -> str:
     return "--" + name.replace("_", "-")
 
 
+def template_arg_names(name: str, spec: dict[str, Any], *, template_name: str) -> list[str]:
+    names = [template_arg_name(name)]
+    aliases = spec.get("aliases", [])
+    if isinstance(aliases, str):
+        aliases = [aliases]
+    if not isinstance(aliases, list):
+        raise SystemExit(f"{template_name}: parameter {name} aliases must be a list")
+    for alias in aliases:
+        alias_name = str(alias)
+        names.append(alias_name if alias_name.startswith("--") else template_arg_name(alias_name))
+    return names
+
+
 def repeatable_arg_shell_values(template: dict[str, Any], values: dict[str, Any]) -> dict[str, str]:
     result: dict[str, str] = {}
     params = template.get("parameters", {})
@@ -167,7 +180,7 @@ def parse_template_parameters(template_name: str, template: dict[str, Any], raw_
             kwargs.setdefault("default", False)
         elif value_type != "str":
             raise SystemExit(f"{template_name}: unsupported parameter type {value_type!r}")
-        parser.add_argument(template_arg_name(str(name)), **kwargs)
+        parser.add_argument(*template_arg_names(str(name), spec, template_name=template_name), **kwargs)
     values = {key: value for key, value in vars(parser.parse_args(raw_args)).items() if value is not None}
     for name, spec in params.items():
         if not isinstance(spec, dict) or not bool(spec.get("worker_path", False)):
@@ -231,14 +244,15 @@ def resolve_split_count(split: dict[str, Any], values: dict[str, Any]) -> tuple[
     if "count" in split:
         count = as_int(template_value(split["count"], values), label="task.split.count")
         return count, [None] * count, None
-    if "total" not in split or "chunk" not in split:
-        raise SystemExit("task.split requires count or total/chunk")
+    shard_key = "shard" if "shard" in split else "chunk" if "chunk" in split else ""
+    if "total" not in split or not shard_key:
+        raise SystemExit("task.split requires count or total/shard")
     total = as_int(template_value(split["total"], values), label="task.split.total")
-    chunk = as_int(template_value(split["chunk"], values), label="task.split.chunk")
-    count = (total + chunk - 1) // chunk
-    chunks = [min(chunk, total - index * chunk) for index in range(count)]
+    shard = as_int(template_value(split[shard_key], values), label=f"task.split.{shard_key}")
+    count = (total + shard - 1) // shard
+    shards = [min(shard, total - index * shard) for index in range(count)]
     unit = str(split.get("unit") or "")
-    return count, chunks, unit or None
+    return count, shards, unit or None
 
 
 def command_string(command: Any, values: dict[str, Any]) -> str:
@@ -286,7 +300,7 @@ def expand_template(template_name: str, template_path_: Path, template: dict[str
     split = task_template.get("split", {"count": 1})
     if not isinstance(split, dict):
         raise SystemExit(f"{template_name}: task.split must be an object")
-    task_count, chunks, split_unit = resolve_split_count(split, values)
+    task_count, shards, split_unit = resolve_split_count(split, values)
     width = max(4, len(str(task_count - 1)))
     task_prefix = str(task_template.get("prefix") or kind or template_name)
     task_prefix = re.sub(r"[^A-Za-z0-9._-]+", "_", task_prefix).strip("._-") or "task"
@@ -303,12 +317,14 @@ def expand_template(template_name: str, template_path_: Path, template: dict[str
     for index in range(task_count):
         task_name = f"{task_prefix}_{index:0{width}d}"
         task_values = dict(values)
+        shard = shards[index] if shards[index] is not None else ""
         task_values.update({
             "task_index": index,
             "task_number": index + 1,
             "task_count": task_count,
             "task_name": task_name,
-            "chunk": chunks[index] if chunks[index] is not None else "",
+            "shard": shard,
+            "chunk": shard,
             "output_dir": "{output_dir}",
             "run_dir": "{run_dir}",
         })
@@ -330,8 +346,8 @@ def expand_template(template_name: str, template_path_: Path, template: dict[str
                 raise SystemExit("task.progress must be an object")
             if split_unit and "unit" not in progress:
                 progress["unit"] = split_unit
-            if chunks[index] is not None and "total" not in progress:
-                progress["total"] = chunks[index]
+            if shards[index] is not None and "total" not in progress:
+                progress["total"] = shards[index]
             task["progress"] = progress
         tasks.append(task)
 

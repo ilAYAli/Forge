@@ -209,12 +209,12 @@ class CrucibleTests(unittest.TestCase):
                 "parameters": {
                     "item": {"required": True, "worker_path": True},
                     "total": {"type": "int", "required": True},
-                    "chunk": {"type": "int", "default": 3},
+                    "shard": {"type": "int", "default": 3, "aliases": ["chunk"]},
                     "work_dir": {"default": "."},
                 },
                 "task": {
-                    "split": {"total": "total", "chunk": "chunk", "unit": "rows"},
-                    "command": "printf {chunk} > {output_dir}/{task_name}.txt",
+                    "split": {"total": "total", "shard": "shard", "unit": "rows"},
+                    "command": "printf {shard} > {output_dir}/{task_name}.txt",
                     "output": "{output_dir}/{task_name}.txt",
                     "progress": {
                         "unit": "rows",
@@ -606,7 +606,7 @@ except SystemExit as exc:
                 params = crucible.parse_template_parameters(
                     "demo",
                     template,
-                    ["--item", "/tmp/input.dat", "--total", "10", "--chunk", "4"],
+                    ["--item", "/tmp/input.dat", "--total", "10", "--shard", "4"],
                 )
                 manifest = crucible.expand_template("demo", template_path, template, params)
 
@@ -615,7 +615,48 @@ except SystemExit as exc:
             self.assertEqual(3, len(manifest["tasks"]))
             self.assertEqual(["demo_0000", "demo_0001", "demo_0002"], [task["id"] for task in manifest["tasks"]])
             self.assertEqual([4, 4, 2], [task["progress"]["total"] for task in manifest["tasks"]])
+            self.assertEqual("printf 4 > {output_dir}/demo_0000.txt", manifest["tasks"][0]["command"])
             self.assertIn("{output_dir}/demo_0000.txt", manifest["tasks"][0]["outputs"])
+
+    def test_template_accepts_legacy_chunk_split(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            template_path = self.write_test_template(root)
+            with mock.patch.dict(os.environ, {"CRUCIBLE_CONFIG": str(root / "config.yml")}, clear=False):
+                (root / "config.yml").write_text(
+                    f'default_workers: "worker-a:2"\n'
+                    f"template_dirs:\n"
+                    f"  - \"{root / 'templates'}\"\n",
+                    encoding="utf-8",
+                )
+                template = crucible.load_template(template_path)
+                template["parameters"]["chunk"] = {"type": "int", "default": 3}
+                template["parameters"].pop("shard")
+                template["task"]["split"] = {"total": "total", "chunk": "chunk", "unit": "rows"}
+                template["task"]["command"] = "printf {chunk} > {output_dir}/{task_name}.txt"
+                params = crucible.parse_template_parameters(
+                    "demo",
+                    template,
+                    ["--item", "/tmp/input.dat", "--total", "10", "--chunk", "4"],
+                )
+                manifest = crucible.expand_template("demo", template_path, template, params)
+
+            self.assertEqual([4, 4, 2], [task["progress"]["total"] for task in manifest["tasks"]])
+            self.assertEqual("printf 4 > {output_dir}/demo_0000.txt", manifest["tasks"][0]["command"])
+
+    def test_template_accepts_legacy_chunk_parameter_alias(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            template_path = self.write_test_template(root)
+            template = crucible.load_template(template_path)
+            params = crucible.parse_template_parameters(
+                "demo",
+                template,
+                ["--item", "/tmp/input.dat", "--total", "10", "--chunk", "4"],
+            )
+            manifest = crucible.expand_template("demo", template_path, template, params)
+
+            self.assertEqual([4, 4, 2], [task["progress"]["total"] for task in manifest["tasks"]])
 
     def test_template_worker_path_parameters_preserve_tilde(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

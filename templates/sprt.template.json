@@ -2,7 +2,7 @@
   "schema": "crucible.template.v1",
   "name": "sprt",
   "kind": "sprt",
-  "description": "Run distributed SPRT game chunks",
+  "description": "Run distributed SPRT game shards",
   "run_name": "sprt-{candidate_stem}-{games}-{timestamp}",
   "work_dir": "~",
   "parameters": {
@@ -38,10 +38,11 @@
       "worker_path": true,
       "help": "Opening book"
     },
-    "chunk_games": {
+    "shard_games": {
       "type": "int",
       "default": 50,
-      "help": "Games per Crucible task"
+      "aliases": ["chunk_games"],
+      "help": "Games per Crucible shard"
     },
     "concurrency": {
       "type": "int",
@@ -166,12 +167,12 @@
   "task": {
     "split": {
       "total": "games",
-      "chunk": "chunk_games",
+      "shard": "shard_games",
       "unit": "games"
     },
-    "label": "sprt:{chunk}",
+    "label": "sprt:{shard}",
     "output": "{output_dir}/{task_name}/logs/{task_name}.log",
-    "command": "~/.local/bin/sprt --candidate {candidate} --reference {reference} {candidate_uci_args} {reference_uci_args} --book {book} --games {chunk} --concurrency {concurrency} --threads {threads} --tc {tc} --restart {restart} --fastchess ~/.local/bin/fastchess --log-dir {output_dir}/{task_name}/logs --name {task_name} --no-ntfy --no-eta",
+    "command": "~/.local/bin/sprt --candidate {candidate} --reference {reference} {candidate_uci_args} {reference_uci_args} --book {book} --games {shard} --concurrency {concurrency} --threads {threads} --tc {tc} --restart {restart} --fastchess ~/.local/bin/fastchess --log-dir {output_dir}/{task_name}/logs --name {task_name} --no-ntfy --no-eta",
     "progress": {
       "unit": "games",
       "log_regex": "\\[\\s*(?P<done>\\d+)\\/(?P<total>\\d+)\\].*?Elo\\s+(?P<elo>[-+]?\\d+(?:\\.\\d+)?|[-+]?inf).*?\\+/-\\s+(?P<ci>\\d+(?:\\.\\d+)?).*?LOS\\s+(?P<los>\\d+(?:\\.\\d+)?)%.*?draw\\s+(?P<draw>\\d+(?:\\.\\d+)?)%(?:.*?ETA\\s+(?P<eta>\\S+))?"
