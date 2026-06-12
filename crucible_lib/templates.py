@@ -33,6 +33,20 @@ def safe_format(value: Any, values: dict[str, Any]) -> Any:
     return value
 
 
+def template_references(value: Any, name: str) -> bool:
+    needle = "{" + name
+    if isinstance(value, str):
+        return needle in value
+    if isinstance(value, list):
+        return any(template_references(item, name) for item in value)
+    if isinstance(value, dict):
+        return any(
+            template_references(key, name) or template_references(item, name)
+            for key, item in value.items()
+        )
+    return False
+
+
 def template_files() -> list[Path]:
     files: list[Path] = []
     seen: set[str] = set()
@@ -281,12 +295,49 @@ def run_name_values(template_name: str, params: dict[str, Any]) -> dict[str, Any
                 commit_match = re.search(r"[_-]([0-9A-Fa-f]{7,40})$", stem)
             if commit_match is not None:
                 commit = commit_match.group(1 if commit_match.lastindex else 0).lower()
-                values[f"{key}_commit"] = commit
-                values[f"{key}_hash"] = commit
+                values.setdefault(f"{key}_commit", commit)
+                values.setdefault(f"{key}_hash", commit)
     return values
 
 
+def git_checkout_template_parameters(template: dict[str, Any], params: dict[str, Any]) -> dict[str, Any]:
+    result = dict(params)
+    specs = template.get("parameters", {})
+    if not isinstance(specs, dict):
+        return result
+    for name, spec in specs.items():
+        key = str(name)
+        if not isinstance(spec, dict):
+            continue
+        needs_checkout = bool(spec.get("git_checkout", False)) or template_references(template, f"{key}_commit")
+        if not needs_checkout:
+            continue
+        value = result.get(key)
+        if not isinstance(value, str):
+            continue
+        checkout = expand_path(value)
+        if not checkout.is_dir() or not (checkout / ".git").exists():
+            continue
+        commit = git_output_or_empty(checkout, "rev-parse", "HEAD")
+        if not commit:
+            continue
+        short = commit[:7]
+        output_template = str(spec.get("checkout_output") or "~/assets/engines/{repo}_{commit}")
+        output_values = {
+            "repo": re.sub(r"[^A-Za-z0-9._-]+", "-", checkout.name).strip("-") or key,
+            "commit": short,
+            "full_commit": commit,
+            "source": value,
+        }
+        result[f"{key}_source"] = value
+        result[f"{key}_commit"] = commit
+        result[f"{key}_hash"] = commit
+        result[key] = safe_format(output_template, output_values)
+    return result
+
+
 def expand_template(template_name: str, template_path_: Path, template: dict[str, Any], params: dict[str, Any]) -> dict[str, Any]:
+    params = git_checkout_template_parameters(template, params)
     values = run_name_values(template_name, params)
     values.update(repeatable_arg_shell_values(template, values))
     kind = str(template.get("kind") or template_name)
@@ -528,7 +579,7 @@ def cmd_template_run(args: argparse.Namespace) -> int:
 
     workers_arg = resolved_workers_arg(run_options, config)
     coordinator_host = run_options.coordinator_host or default_coordinator_host(config)
-    notify_command = run_options.notify_command or default_notify_command(config)
+    notify_command = run_options.notify_command
     with tempfile.TemporaryDirectory(prefix="crucible-template-") as tmp:
         manifest_path = Path(tmp) / f"{manifest['name']}.manifest.json"
         write_json(manifest_path, manifest)

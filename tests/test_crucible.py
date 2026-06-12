@@ -937,7 +937,103 @@ except SystemExit as exc:
             self.assertEqual(0, rc)
             self.assertEqual("worker-a:2", captured["args"].workers)
             self.assertEqual("coordinator-a", captured["args"].coordinator_host)
-            self.assertEqual("notify-me", captured["args"].notify_command)
+            self.assertIsNone(captured["args"].notify_command)
+
+    def test_sprt_template_accepts_candidate_checkout_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "enyo"
+            repo.mkdir()
+            subprocess.run(["git", "-C", str(repo), "init"], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            (repo / "engine.cpp").write_text("int main() { return 0; }\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(repo), "add", "engine.cpp"], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(repo),
+                    "-c",
+                    "user.name=Petter Wahlman",
+                    "-c",
+                    "user.email=petter@wahlman.no",
+                    "commit",
+                    "-m",
+                    "init",
+                ],
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            commit = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
+            template_path = ROOT / "templates" / "sprt.template.json"
+            template = crucible.load_template(template_path)
+            params = crucible.parse_template_parameters(
+                "sprt",
+                template,
+                ["--candidate", str(repo), "--reference", "~/assets/engines/reference", "--games", "50"],
+            )
+            manifest = crucible.expand_template("sprt", template_path, template, params)
+
+        self.assertEqual(commit, manifest["requirements"]["repos"][2]["commit"])
+        self.assertEqual(f"~/assets/engines/enyo_{commit[:7]}", manifest["template"]["parameters"]["candidate"])
+        self.assertIn(f"--candidate ~/assets/engines/enyo_{commit[:7]}", manifest["tasks"][0]["command"])
+
+    def test_template_commit_placeholder_accepts_checkout_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "engine"
+            repo.mkdir()
+            subprocess.run(["git", "-C", str(repo), "init"], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            (repo / "engine.cpp").write_text("int main() { return 0; }\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(repo), "add", "engine.cpp"], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(repo),
+                    "-c",
+                    "user.name=Petter Wahlman",
+                    "-c",
+                    "user.email=petter@wahlman.no",
+                    "commit",
+                    "-m",
+                    "init",
+                ],
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            commit = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
+            template_path = root / "legacy.template.json"
+            template_path.write_text(
+                json.dumps({
+                    "schema": "crucible.template.v1",
+                    "name": "legacy",
+                    "run_name": "legacy-{candidate_stem}",
+                    "parameters": {
+                        "candidate": {"required": True, "worker_path": True},
+                    },
+                    "requirements": {
+                        "repos": [{
+                            "name": "engine",
+                            "path": "~/code/engine",
+                            "commit": "{candidate_commit}",
+                        }],
+                    },
+                    "task": {
+                        "split": {"count": 1},
+                        "command": "run {candidate}",
+                    },
+                }),
+                encoding="utf-8",
+            )
+            template = crucible.load_template(template_path)
+            params = crucible.parse_template_parameters("legacy", template, ["--candidate", str(repo)])
+            manifest = crucible.expand_template("legacy", template_path, template, params)
+
+        self.assertEqual(commit, manifest["requirements"]["repos"][0]["commit"])
+        self.assertEqual(f"~/assets/engines/engine_{commit[:7]}", manifest["template"]["parameters"]["candidate"])
+        self.assertEqual(f"run ~/assets/engines/engine_{commit[:7]}", manifest["tasks"][0]["command"])
 
     def test_sprt_template_converts_worker_threads_to_slots(self) -> None:
         with mock.patch("crucible_lib.workers.default_workers_path", side_effect=SystemExit("no workers")):

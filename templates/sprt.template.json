@@ -9,7 +9,9 @@
     "candidate": {
       "required": true,
       "worker_path": true,
-      "help": "Candidate UCI engine executable named with its git hash, e.g. enyo_9696dac"
+      "git_checkout": true,
+      "checkout_output": "~/assets/engines/{repo}_{commit}",
+      "help": "Candidate UCI engine executable named with its git hash, e.g. enyo_9696dac, or a local Enyo checkout to build"
     },
     "games": {
       "type": "int",
