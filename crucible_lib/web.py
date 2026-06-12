@@ -315,6 +315,7 @@ _HTML = r"""<!DOCTYPE html>
         const st = JSON.parse(atob(location.hash.slice(1)));
         if (st.o) Object.assign(openState, st.o);
         if (st.s) Object.assign(taskSort, st.s);
+        if (taskSort.col === 'task') taskSort.col = 'shard';
         if (st.c) taskColWidths = st.c;
       } catch(e) {}
     }
@@ -323,7 +324,7 @@ _HTML = r"""<!DOCTYPE html>
     let taskColWidths = null;
     let taskSort = {col: 'eta', dir: 1};
 
-    const BASE_TASK_COLS = ['worker','label','task','progress','output','rate'];
+    const BASE_TASK_COLS = ['worker','label','shard','progress','output','rate'];
     const FIELD_TASK_COLS = [
       {name: 'elo',  keys: ['elo','elo~','Elo']},
       {name: 'ci',   keys: ['ci','err','error','+/-','elo_ci']},
@@ -527,7 +528,7 @@ _HTML = r"""<!DOCTYPE html>
         return `${esc(t.worker||'?')}${stTag}`;
       }
       if (col === 'label') return esc(t.label||'');
-      if (col === 'task') return String(t.index);
+      if (col === 'shard' || col === 'task') return String(t.index);
       if (col === 'progress') return esc(taskProgressText(t));
       if (col === 'output') return esc(pd?.output!=null ? String(pd.output) : '');
       if (col === 'rate') return esc(fmtRate(pd?.rate));
@@ -548,7 +549,7 @@ _HTML = r"""<!DOCTYPE html>
       }
       if (col === 'worker') return t.worker || '';
       if (col === 'label') return t.label || '';
-      if (col === 'task') return String(t.index);
+      if (col === 'shard' || col === 'task') return String(t.index);
       if (col === 'progress') return pd?.global_done ?? pd?.done ?? '';
       if (col === 'output') return pd?.output ?? '';
       if (col === 'rate') return pd?.rate ?? '';
@@ -560,7 +561,7 @@ _HTML = r"""<!DOCTYPE html>
       if (FIELD_TASK_COLS.some(f => f.name === col)) return 'td-output';
       if (col === 'worker') return 'td-worker';
       if (col === 'label') return 'td-label';
-      if (col === 'task') return 'td-id';
+      if (col === 'shard' || col === 'task') return 'td-id';
       if (col === 'progress') return 'td-progress';
       if (col === 'output') return 'td-output';
       if (col === 'rate') return 'td-rate';

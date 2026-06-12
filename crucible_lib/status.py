@@ -1917,7 +1917,7 @@ def print_status_details(
                 if state_name != "running"
                 else ""
             )
-            print(f"{indent}  {worker}{state}{label} task={row['index']}{progress}")
+            print(f"{indent}  {worker}{state}{label} shard={row['index']}{progress}")
     elif show_empty:
         print(f"{indent}{color_count_line('active', 0, 'yellow', color_enabled=color_enabled)}")
     print_pending_status(summary, color_enabled=color_enabled, show_empty=show_empty, indent=indent)

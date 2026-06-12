@@ -319,6 +319,9 @@ except SystemExit as exc:
         self.assertIn("display.active_fields || active.fields || []", web._HTML)
         self.assertIn("function taskProgressText", web._HTML)
         self.assertIn("'progress'", web._HTML)
+        self.assertIn("['worker','label','shard','progress','output','rate']", web._HTML)
+        self.assertNotIn("['worker','label','task','progress','output','rate']", web._HTML)
+        self.assertIn("taskSort.col === 'task'", web._HTML)
         self.assertIn("toggleSound()", web._HTML)
         self.assertIn("notifyStartedJobs(data)", web._HTML)
         self.assertIn("playDing()", web._HTML)
@@ -2755,7 +2758,7 @@ except SystemExit as exc:
             status = self.run_cli("status", str(root))
             self.assertEqual(0, status.returncode)
             self.assertIn("active: 1", status.stdout)
-            self.assertIn("worker-a [claimed] task=0", status.stdout)
+            self.assertIn("worker-a [claimed] shard=0", status.stdout)
 
             heartbeat = self.run_cli(
                 "heartbeat",
@@ -2769,8 +2772,8 @@ except SystemExit as exc:
 
             status_with_progress = self.run_cli("status", str(root))
             self.assertEqual(0, status_with_progress.returncode)
-            self.assertIn("worker-a [claimed] task=0", status_with_progress.stdout)
-            self.assertNotIn("worker-a [claimed] task=0 [subtask=42/1000", status_with_progress.stdout)
+            self.assertIn("worker-a [claimed] shard=0", status_with_progress.stdout)
+            self.assertNotIn("worker-a [claimed] shard=0 [subtask=42/1000", status_with_progress.stdout)
 
             unknown_total = self.run_cli(
                 "heartbeat",
@@ -2783,7 +2786,7 @@ except SystemExit as exc:
             self.assertEqual(0, unknown_total.returncode)
             status_unknown_total = self.run_cli("status", str(root))
             self.assertEqual(0, status_unknown_total.returncode)
-            self.assertIn("worker-a [claimed] task=0", status_unknown_total.stdout)
+            self.assertIn("worker-a [claimed] shard=0", status_unknown_total.stdout)
 
             wrong_claim = self.run_cli(
                 "heartbeat",
@@ -2813,7 +2816,7 @@ except SystemExit as exc:
             )
             self.assertNotEqual(0, wrong_release.returncode)
             status = self.run_cli("status", str(root))
-            self.assertIn("worker-a [claimed] task=0", status.stdout)
+            self.assertIn("worker-a [claimed] shard=0", status.stdout)
 
             release = self.run_cli(
                 "release",
@@ -2865,7 +2868,7 @@ except SystemExit as exc:
 
             self.assertEqual(0, status.returncode)
             self.assertIn("active: 1", status.stdout)
-            self.assertIn("new task=0", status.stdout)
+            self.assertIn("new shard=0", status.stdout)
             self.assertIn("fail: 0", status.stdout)
 
     def test_malformed_claim_is_claimed_until_stale(self) -> None:
@@ -3332,7 +3335,7 @@ except SystemExit as exc:
             self.assertIn("  tasks=1/4 fail=1", compact.stdout)
             self.assertIn("  active: 1 subtask=42/1000", compact.stdout)
             self.assertNotIn("host-done [1]: 0", compact.stdout)
-            self.assertIn("    worker-claimed task=1 [subtask=42/1000]", compact.stdout)
+            self.assertIn("    worker-claimed shard=1 [subtask=42/1000]", compact.stdout)
             self.assertIn("    host-fail [1]: 2", compact.stdout)
             self.assertIn("  pending: 1\n    score:uci [1]: 3", compact.stdout)
 
@@ -3340,7 +3343,7 @@ except SystemExit as exc:
             self.assertEqual(1, result.returncode)
             self.assertNotIn("host-done [1]: 0", result.stdout)
             self.assertNotIn("task_0\tdone\thost-done", result.stdout)
-            self.assertIn("    worker-claimed task=1 [subtask=42/1000]", result.stdout)
+            self.assertIn("    worker-claimed shard=1 [subtask=42/1000]", result.stdout)
             self.assertIn("    host-fail [1]: 2", result.stdout)
             self.assertIn("    score:uci [1]: 3", result.stdout)
 
@@ -3427,9 +3430,9 @@ except SystemExit as exc:
 
             status = self.run_cli("status", str(root))
             self.assertEqual(0, status.returncode)
-            high = status.stdout.index("worker-high task=1")
-            low = status.stdout.index("worker-low task=0")
-            none = status.stdout.index("worker-none task=2")
+            high = status.stdout.index("worker-high shard=1")
+            low = status.stdout.index("worker-low shard=0")
+            none = status.stdout.index("worker-none shard=2")
             self.assertLess(high, low)
             self.assertLess(low, none)
 
@@ -3488,9 +3491,9 @@ except SystemExit as exc:
 
             status = self.run_cli("status", str(root))
             self.assertEqual(0, status.returncode)
-            self.assertIn("worker-a score:uci task=0", status.stdout)
-            self.assertIn("worker-b [claimed] score:uci task=1", status.stdout)
-            self.assertIn("worker-c [stale] score:uci task=2", status.stdout)
+            self.assertIn("worker-a score:uci shard=0", status.stdout)
+            self.assertIn("worker-b [claimed] score:uci shard=1", status.stdout)
+            self.assertIn("worker-c [stale] score:uci shard=2", status.stdout)
 
     def test_pending_status_groups_by_label(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -3598,7 +3601,7 @@ except SystemExit as exc:
                 self.assertNotIn("bonus", status_text)
                 self.assertNotIn("setup", status_text)
                 self.assertNotIn("nnue-selfplay", status_text)
-                self.assertIn("worker-main task=0", status_text)
+                self.assertIn("worker-main shard=0", status_text)
 
                 stdout = io.StringIO()
                 with contextlib.redirect_stdout(stdout):
@@ -3618,7 +3621,7 @@ except SystemExit as exc:
                 self.assertIn("main", active_text)
                 self.assertNotIn("bonus", active_text)
                 self.assertIn("  active: 1", active_text)
-                self.assertIn("worker-main task=0", active_text)
+                self.assertIn("worker-main shard=0", active_text)
 
                 stdout = io.StringIO()
                 with contextlib.redirect_stdout(stdout):
@@ -3665,7 +3668,7 @@ except SystemExit as exc:
                 all_text = stdout.getvalue()
                 self.assertIn("main", all_text)
                 self.assertIn("bonus", all_text)
-                self.assertIn("worker-main task=0", all_text)
+                self.assertIn("worker-main shard=0", all_text)
 
                 stdout = io.StringIO()
                 with contextlib.redirect_stdout(stdout):
@@ -3732,7 +3735,7 @@ except SystemExit as exc:
             active_status = self.run_cli("status", cwd=root, env=env)
             self.assertEqual(0, active_status.returncode)
             self.assertIn("active", active_status.stdout)
-            self.assertIn("    worker-a task=0", active_status.stdout)
+            self.assertIn("    worker-a shard=0", active_status.stdout)
             self.assertNotIn("queued", active_status.stdout)
             self.assertNotIn("waiting", active_status.stdout)
 
@@ -4068,7 +4071,7 @@ except SystemExit as exc:
         self.assertIn("coordinator: pwa-5090:/home/petter/code/cpp/chess/crucible/runs\n", output)
         self.assertIn("run=remote-run", output)
         self.assertIn("desc=Remote run", output)
-        self.assertIn("remote-worker score:uci task=0", output)
+        self.assertIn("remote-worker score:uci shard=0", output)
         self.assertNotIn('"remote-run"', output)
         self.assertNotIn('"score:uci"', output)
         command = run_mock.call_args.args[0]
@@ -4257,7 +4260,7 @@ except SystemExit as exc:
             output = stdout.getvalue()
             self.assertIn("coordinator: pwa-5090:/home/petter/code/cpp/chess/crucible/runs\n", output)
             self.assertIn("run=remote-run", output)
-            self.assertIn("remote-worker score:uci task=0", output)
+            self.assertIn("remote-worker score:uci shard=0", output)
             self.assertNotIn('"remote-run"', output)
             command = run_mock.call_args.args[0]
             self.assertEqual("ssh", command[0])
@@ -4318,7 +4321,7 @@ except SystemExit as exc:
                         )
                 )
                 self.assertEqual(0, rc)
-                self.assertIn("    worker task=0 [rows=50k/125k, output=48k, elo~=-12.3, eta=3h06m]", stdout.getvalue())
+                self.assertIn("    worker shard=0 [rows=50k/125k, output=48k, elo~=-12.3, eta=3h06m]", stdout.getvalue())
 
                 named_stdout = io.StringIO()
                 with contextlib.redirect_stdout(named_stdout):
@@ -4340,7 +4343,7 @@ except SystemExit as exc:
                 self.assertIn("active: 1 rows=50k/125k output=48k eta=3h06m", named_stdout.getvalue())
                 self.assertNotIn("workers=1", named_stdout.getvalue())
                 self.assertNotIn("speedup=1.0x", named_stdout.getvalue())
-                self.assertIn("worker task=0 [rows=50k/125k, output=48k, elo~=-12.3, eta=3h06m]", named_stdout.getvalue())
+                self.assertIn("worker shard=0 [rows=50k/125k, output=48k, elo~=-12.3, eta=3h06m]", named_stdout.getvalue())
 
     def test_status_sprt_header_shows_aggregated_elo(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -4389,8 +4392,8 @@ except SystemExit as exc:
             self.assertEqual(0, status.returncode, status.stderr)
             self.assertIn("tasks=0/2 games=400/2000 elo=+1.0 ci=9.0 los=58.8% draw=43.8%", status.stdout)
             self.assertIn("active: 2 games=400/2000 elo=+1.0 ci=9.0 los=58.8% draw=43.8%", status.stdout)
-            self.assertIn("worker-a sprt task=0 [games=100/1000, elo=10.0, ci=20.0, los=70.0, draw=40.0]", status.stdout)
-            self.assertIn("worker-b sprt task=1 [games=300/1000, elo=-2.0, ci=10.0, los=55.0, draw=45.0]", status.stdout)
+            self.assertIn("worker-a sprt shard=0 [games=100/1000, elo=10.0, ci=20.0, los=70.0, draw=40.0]", status.stdout)
+            self.assertIn("worker-b sprt shard=1 [games=300/1000, elo=-2.0, ci=10.0, los=55.0, draw=45.0]", status.stdout)
 
     def test_status_sprt_progress_does_not_require_eta(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -4434,7 +4437,7 @@ except SystemExit as exc:
 
             self.assertEqual(0, status.returncode, status.stderr)
             self.assertIn("tasks=0/1 games=38/50 elo=-18.3 ci=89.8 los=34.1% draw=36.8%", status.stdout)
-            self.assertIn("worker-a sprt task=0 [games=38/50, elo=-18.3, ci=89.8, los=34.1, draw=36.8]", status.stdout)
+            self.assertIn("worker-a sprt shard=0 [games=38/50, elo=-18.3, ci=89.8, los=34.1, draw=36.8]", status.stdout)
 
     def test_status_eta_counts_down_from_log_timestamp(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -4556,7 +4559,7 @@ except SystemExit as exc:
                     )
                 self.assertEqual(0, rc)
                 text = stdout.getvalue()
-                self.assertIn("worker task=0 [games=50/50, finalizing]", text)
+                self.assertIn("worker shard=0 [games=50/50, finalizing]", text)
                 self.assertNotIn("eta=0s", text)
 
     def test_status_shows_active_worker_throughput(self) -> None:
@@ -4671,7 +4674,7 @@ except SystemExit as exc:
                 self.assertNotIn("active workers:", text)
                 self.assertNotIn("tasks=2 output=48k", text)
                 self.assertNotIn("tasks=1 output=20k", text)
-                worker_section = text.split("active: 3", 1)[1].split("  worker-a task=0", 1)[0]
+                worker_section = text.split("active: 3", 1)[1].split("  worker-a shard=0", 1)[0]
                 self.assertNotIn("output=68k output=68k", worker_section)
                 self.assertNotIn("rate", worker_section)
                 self.assertNotIn("avg", worker_section)
@@ -5017,7 +5020,7 @@ except SystemExit as exc:
                 text = stdout.getvalue()
                 self.assertIn("  tasks=1/2 games=1500/2000 eta=1m40s", text)
                 self.assertIn("  active: 1 games=1500/2000 eta=1m40s", text)
-                self.assertIn("worker-a task=1 [games=500/1000, eta=1m40s]", text)
+                self.assertIn("worker-a shard=1 [games=500/1000, eta=1m40s]", text)
 
     def test_status_uses_completed_rate_when_running_task_has_no_progress_yet(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -5090,7 +5093,7 @@ except SystemExit as exc:
                 text = stdout.getvalue()
                 self.assertIn("  tasks=1/2 games=1000/2000 eta=1m39s", text)
                 self.assertIn("  active: 1 games=1000/2000 eta=1m39s", text)
-                self.assertIn("worker-a task=1 [games=0/1000, eta=1m39s]", text)
+                self.assertIn("worker-a shard=1 [games=0/1000, eta=1m39s]", text)
 
     def test_status_labels_overdue_fallback_eta_as_unknown(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -5163,7 +5166,7 @@ except SystemExit as exc:
                 text = stdout.getvalue()
                 self.assertIn("  tasks=1/2 games=1000/2000 eta=unknown", text)
                 self.assertIn("  active: 1 games=1000/2000 eta=unknown", text)
-                self.assertIn("worker-a task=1 [games=0/1000, eta=unknown]", text)
+                self.assertIn("worker-a shard=1 [games=0/1000, eta=unknown]", text)
 
     def test_status_ignores_undeclared_domain_progress(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -5381,8 +5384,8 @@ except SystemExit as exc:
             status = self.run_cli("status", str(root))
             self.assertEqual(0, status.returncode)
             self.assertIn("active: 2", status.stdout)
-            self.assertIn("worker-a task=1", status.stdout)
-            self.assertIn("worker-b [claimed] task=2", status.stdout)
+            self.assertIn("worker-a shard=1", status.stdout)
+            self.assertIn("worker-b [claimed] shard=2", status.stdout)
             self.assertIn("pending: 1", status.stdout)
 
     def test_delete_done_runs(self) -> None:
