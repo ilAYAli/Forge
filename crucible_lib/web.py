@@ -919,6 +919,36 @@ def _read_web_state() -> dict[str, Any]:
         return {}
     return payload if isinstance(payload, dict) else {}
 
+def _read_coordinator_web_state(coordinator_runs: str) -> dict[str, Any]:
+    try:
+        host, runs_path = parse_coordinator(coordinator_runs)
+    except ValueError:
+        return {}
+    state_path = f"{runs_path.rstrip('/')}/{_WEB_STATE_NAME}"
+    if host:
+        quoted_path = shlex.quote(state_path)
+        remote = f"if [ -f {quoted_path} ]; then cat {quoted_path}; else printf '{{}}'; fi"
+        result = subprocess.run(
+            ["ssh", *_WEB_SSH_OPTS, host, remote],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=_WEB_STATUS_TIMEOUT_SECONDS,
+        )
+        if result.returncode != 0:
+            return {}
+        raw = result.stdout
+    else:
+        try:
+            raw = Path(state_path).read_text(encoding="utf-8")
+        except OSError:
+            return {}
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
 def _write_web_state(state: dict[str, Any]) -> None:
     path = _web_state_path()
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -1039,6 +1069,8 @@ def _merge_lingering_runs(payload: dict[str, Any]) -> dict[str, Any]:
     runs = payload.get("runs")
     if not isinstance(runs, list):
         return payload
+    remote_lingering_runs = payload.pop("remote_lingering_runs", {})
+    remote_hidden_runs = payload.pop("remote_hidden_runs", [])
     coordinator_runs = payload.get("coordinator")
     coordinator = str(coordinator_runs) if coordinator_runs else None
     with _WEB_STATE_LOCK:
@@ -1046,6 +1078,8 @@ def _merge_lingering_runs(payload: dict[str, Any]) -> dict[str, Any]:
         seen = _state_dict(state, "seen_runs")
         linger = _state_dict(state, "lingering_runs")
         hidden = set(_state_list(state, "hidden_runs"))
+        if isinstance(remote_hidden_runs, list):
+            hidden.update(str(item) for item in remote_hidden_runs)
         visible_names = {
             str(item.get("run"))
             for item in runs
@@ -1084,6 +1118,25 @@ def _merge_lingering_runs(payload: dict[str, Any]) -> dict[str, Any]:
             else:
                 seen.pop(name, None)
                 linger.pop(name, None)
+
+        if isinstance(remote_lingering_runs, dict):
+            for name, item in remote_lingering_runs.items():
+                name = str(name)
+                if name in hidden or name in visible_names or not isinstance(item, dict):
+                    continue
+                if not _run_payload_done(item):
+                    continue
+                if not _payload_belongs_to_web_runs(item, coordinator):
+                    continue
+                final_payload = _collect_named_run_payload(name, coordinator)
+                if (
+                    final_payload is None
+                    or not _run_payload_done(final_payload)
+                    or not _payload_belongs_to_web_runs(final_payload, coordinator)
+                ):
+                    final_payload = item
+                linger[name] = _normalize_web_run_payload(final_payload)
+                seen[name] = {"coordinator": coordinator, "last_seen": time.time()}
 
         for name, item in list(linger.items()):
             if name in hidden:
@@ -1165,6 +1218,13 @@ def _collect_coordinator_status_payload(coordinator_runs: str) -> dict[str, Any]
         raise RuntimeError(result.stderr.strip() or f"crucible status exit {result.returncode}")
     data = json.loads(result.stdout)
     data["coordinator"] = coordinator_runs
+    web_state = _read_coordinator_web_state(coordinator_runs)
+    remote_lingering_runs = web_state.get("lingering_runs")
+    if isinstance(remote_lingering_runs, dict):
+        data["remote_lingering_runs"] = remote_lingering_runs
+    remote_hidden_runs = web_state.get("hidden_runs")
+    if isinstance(remote_hidden_runs, list):
+        data["remote_hidden_runs"] = remote_hidden_runs
     return data
 
 def _refresh_status_cache() -> None:
