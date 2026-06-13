@@ -462,10 +462,11 @@ def progress_eta_seconds(done: Any, total: Any, rate: Any) -> float | None:
         return None
     return max(0.0, (total - done) / float(rate))
 
-def eta_field(seconds: float, *, unknown_when_elapsed: bool = False) -> str:
+def eta_field(seconds: float, *, unknown_when_elapsed: bool = False, estimated: bool = False) -> str:
+    key = "eta~" if estimated else "eta"
     if seconds <= 0 and unknown_when_elapsed:
-        return "eta=unknown"
-    return f"eta={compact_duration(max(0.0, seconds))}"
+        return f"{key}=unknown"
+    return f"{key}={compact_duration(max(0.0, seconds))}"
 
 def progress_eta_text(done: Any, total: Any, rate: Any) -> str:
     eta_s = progress_eta_seconds(done, total, rate)
@@ -493,7 +494,7 @@ def progress_data_eta_text(data: dict[str, Any], done: Any, total: Any) -> str:
     if eta is None:
         return ""
     seconds, unknown_when_elapsed = eta
-    return eta_field(seconds, unknown_when_elapsed=unknown_when_elapsed)
+    return eta_field(seconds, unknown_when_elapsed=unknown_when_elapsed, estimated=bool(data.get("eta_estimate")))
 
 def parse_timestamp_epoch(value: Any) -> float | None:
     if isinstance(value, (int, float)):
@@ -594,6 +595,7 @@ def fallback_progress_data(
         "total": total,
         "unit": unit,
         "rate": rate,
+        "eta_estimate": True,
     }
     full_eta = progress_eta_seconds(0, total, rate)
     if full_eta is not None and isinstance(elapsed_s, (int, float)) and elapsed_s > 0:
@@ -2024,6 +2026,10 @@ def normalize_progress_data(raw: Any) -> dict[str, Any] | None:
         data["eta_overdue"] = True
     else:
         data.pop("eta_overdue", None)
+    if data.get("eta_estimate"):
+        data["eta_estimate"] = True
+    else:
+        data.pop("eta_estimate", None)
     eta_s = data.get("eta_s")
     if isinstance(eta_s, (int, float)):
         data["eta_s"] = max(0.0, float(eta_s))

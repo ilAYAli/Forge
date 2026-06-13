@@ -564,7 +564,8 @@ _HTML = r"""<!DOCTYPE html>
       if (col === 'rate') return esc(fmtRate(pd?.rate));
       if (col === 'eta') {
         const etaSec = remainingEtaS(pd);
-        return etaSec!=null ? esc(fmtEta(etaSec)) : '';
+        const prefix = pd?.eta_estimate ? '~' : '';
+        return etaSec!=null ? esc(prefix + fmtEta(etaSec)) : '';
       }
       return '';
     }
@@ -607,7 +608,8 @@ _HTML = r"""<!DOCTYPE html>
       const now = Date.now() / 1000;
       document.querySelectorAll('[data-etas]').forEach(el => {
         const remaining = parseFloat(el.dataset.etas) - elapsed;
-        el.textContent = remaining > 0 ? fmtEta(remaining) : '—';
+        const prefix = el.dataset.etaEstimate === '1' ? '~' : '';
+        el.textContent = remaining > 0 ? prefix + fmtEta(remaining) : '—';
       });
       document.querySelectorAll('[data-hbt]').forEach(el => {
         const age = now - parseFloat(el.dataset.hbt);
@@ -628,7 +630,9 @@ _HTML = r"""<!DOCTYPE html>
       const tbody = '<tbody>' + tasks.map(t => {
         const pd = t.progress_data;
         const etaSec  = remainingEtaS(pd);
-        const etaAttr = etaSec!=null ? ` data-etas="${etaSec}"` : '';
+        const etaAttr = etaSec!=null
+          ? ` data-etas="${etaSec}"${pd?.eta_estimate?' data-eta-estimate="1"':''}`
+          : '';
         return `<tr class="task-row">` + cols.map(c =>
           `<td class="task-td ${taskCellClass(c)}" data-sort="${esc(taskSortValue(t, c))}"${c==='eta'?etaAttr:''}>${taskCell(t, c)}</td>`
         ).join('') + `</tr>`;
