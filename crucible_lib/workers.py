@@ -1561,25 +1561,62 @@ def cmd_deploy(args: argparse.Namespace) -> int:
                 return False
             time.sleep(DEPLOY_STARTUP_POLL_SECONDS)
 
-    def print_results(items: list[dict[str, Any]], *, show_success: bool = True) -> None:
+    def result_output(item: dict[str, Any]) -> str:
+        return "\n".join(
+            part.strip()
+            for part in (str(item.get("stdout") or ""), str(item.get("stderr") or ""))
+            if part.strip()
+        )
+
+    def result_label(items: list[dict[str, Any]]) -> str:
+        first = min(items, key=lambda entry: int(entry["index"]))
+        if len(items) == 1:
+            return worker_label(
+                str(first["host"]),
+                str(first["profile"]),
+                first.get("slot"),
+                first.get("slots"),
+            )
+        label = worker_label(str(first["host"]), str(first["profile"]))
+        return f"{label} [{len(items)} slots]"
+
+    def result_groups(items: list[dict[str, Any]], *, show_success: bool) -> list[list[dict[str, Any]]]:
+        if args.verbose:
+            return [[item] for item in sorted(items, key=lambda entry: int(entry["index"]))]
+        groups: dict[tuple[Any, ...], list[dict[str, Any]]] = {}
+        order: list[tuple[Any, ...]] = []
         for item in sorted(items, key=lambda entry: int(entry["index"])):
             ok = bool(item["ok"])
             if ok and not show_success:
                 continue
+            key = (
+                ok,
+                item.get("host"),
+                item.get("profile"),
+                item.get("stage"),
+                item.get("rc"),
+                result_output(item),
+            )
+            if key not in groups:
+                groups[key] = []
+                order.append(key)
+            groups[key].append(item)
+        return [groups[key] for key in order]
+
+    def print_results(items: list[dict[str, Any]], *, show_success: bool = False) -> None:
+        for group in result_groups(items, show_success=show_success):
+            item = min(group, key=lambda entry: int(entry["index"]))
+            ok = bool(item["ok"])
             marker_text = "OK" if ok else "FAILED"
             marker_color = "green" if ok else "red"
             marker = colorize(f"{marker_text:<6}", marker_color, enabled=color_enabled)
             suffix = "" if ok else f" rc={item['rc']}"
             status(
                 f"  {marker} "
-                f"{worker_label(str(item['host']), str(item['profile']), item.get('slot'), item.get('slots'))}: "
+                f"{result_label(group)}: "
                 f"{item['stage']}{suffix}"
             )
-            output = "\n".join(
-                part.strip()
-                for part in (str(item.get("stdout") or ""), str(item.get("stderr") or ""))
-                if part.strip()
-            )
+            output = result_output(item)
             if output and (args.verbose or not ok):
                 for line in output.splitlines():
                     status(f"         {line}")
@@ -1609,7 +1646,7 @@ def cmd_deploy(args: argparse.Namespace) -> int:
         for future in concurrent.futures.as_completed(futures):
             group_results = future.result()
             setup_results_list.extend(group_results)
-            print_results(group_results)
+            print_results(group_results, show_success=bool(args.verbose))
         setup_failed = sum(1 for item in setup_results_list if not item["ok"])
         setup_failed_results = [item for item in setup_results_list if not item["ok"]]
         ready_worker_items = [
@@ -1676,7 +1713,7 @@ def cmd_deploy(args: argparse.Namespace) -> int:
                 ]
                 task_results = [future.result() for future in concurrent.futures.as_completed(futures)]
                 results = setup_failed_results + task_results
-                print_results(task_results)
+                print_results(task_results, show_success=bool(args.verbose))
     except KeyboardInterrupt:
         interrupted = True
         status(colorize("deploy: interrupted; stopping active worker commands", "yellow", enabled=color_enabled), error=True)

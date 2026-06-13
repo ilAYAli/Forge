@@ -8188,9 +8188,9 @@ except SystemExit as exc:
             self.assertTrue(all(timeout == 60.0 for timeout in bootstrap_timeouts))
             self.assertIn("  SETUP  worker-a [2 slots]: setup", stdout.getvalue())
             self.assertIn("  SETUP  worker-b: setup", stdout.getvalue())
-            self.assertIn("  OK     worker-a#1: setup", stdout.getvalue())
-            self.assertIn("  OK     worker-a#2: setup", stdout.getvalue())
-            self.assertIn("  OK     worker-b: setup", stdout.getvalue())
+            self.assertNotIn("  OK     worker-a#1: setup", stdout.getvalue())
+            self.assertNotIn("  OK     worker-a#2: setup", stdout.getvalue())
+            self.assertNotIn("  OK     worker-b: setup", stdout.getvalue())
 
     def test_deploy_retries_transient_setup_ssh_failure(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -8246,7 +8246,7 @@ except SystemExit as exc:
             self.assertEqual(0, rc)
             self.assertTrue(failed_once)
             self.assertGreaterEqual(len(calls), 2)
-            self.assertIn("  OK     worker-a: setup", stdout.getvalue())
+            self.assertNotIn("  OK     worker-a: setup", stdout.getvalue())
 
     def test_deploy_can_write_worker_snapshot_and_launch_subset(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -8500,6 +8500,7 @@ except SystemExit as exc:
                             "local": True,
                             "cache_dir": str(root / "cache-b"),
                             "path_map": {str(root): str(root)},
+                            "slots": 3,
                         },
                     ],
                 }),
@@ -8542,8 +8543,10 @@ except SystemExit as exc:
 
             self.assertEqual(0, rc)
             output = stdout.getvalue()
-            self.assertIn("FAILED worker-b: setup rc=1", output)
-            self.assertIn("deploy: setup partial; 1/2 slots ready", output)
+            self.assertIn("FAILED worker-b [3 slots]: setup rc=1", output)
+            self.assertEqual(1, output.count("missing worker-b engine"))
+            self.assertNotIn("FAILED worker-b#1: setup", output)
+            self.assertIn("deploy: setup partial; 1/4 slots ready", output)
             self.assertIn("deploy: setup partial; launching ready workers", output)
             self.assertNotIn("  OK     worker-a: launch", output)
             self.assertIn("deploy: launch complete", output)
@@ -9069,8 +9072,8 @@ except SystemExit as exc:
             self.assertEqual(0, rc)
             deploy_output = stdout.getvalue()
             self.assertIn("deploy: run=enyo-candidate-deploy-test workers=2 jobs=1", deploy_output)
-            self.assertIn("  OK     pwa-5090: setup", deploy_output)
-            self.assertIn("  OK     localhost: setup", deploy_output)
+            self.assertNotIn("  OK     pwa-5090: setup", deploy_output)
+            self.assertNotIn("  OK     localhost: setup", deploy_output)
             self.assertNotIn("syncing runner", deploy_output)
             self.assertNotIn("checking prerequisites", deploy_output)
             self.assertIn("deploy: setup complete", deploy_output)
@@ -9403,8 +9406,8 @@ except SystemExit as exc:
             self.assertEqual(0, rc)
             output = stdout.getvalue()
             self.assertIn("deploy: run=deploy-slots-test workers=2 jobs=1", output)
-            self.assertIn("  OK     localhost#1: tasks", output)
-            self.assertIn("  OK     localhost#2: tasks", output)
+            self.assertNotIn("  OK     localhost#1: tasks", output)
+            self.assertNotIn("  OK     localhost#2: tasks", output)
             work_scripts = [command[-1] for command in commands if command[0] == "sh" and " work " in command[-1]]
             doctor_scripts = [command[-1] for command in commands if command[0] == "sh" and " doctor " in command[-1]]
             self.assertEqual(1, len(doctor_scripts))
