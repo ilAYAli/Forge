@@ -1545,20 +1545,22 @@ def cmd_deploy(args: argparse.Namespace) -> int:
     def started_task_count(counts: dict[str, int]) -> int:
         return counts["done"] + counts["running"] + counts["claimed"] + counts["stale"]
 
-    def launch_started_enough(before_started: int, expected_new_started: int) -> bool:
+    def wait_for_launch_started(before_started: int, expected_new_started: int) -> int:
         if expected_new_started <= 0:
-            return True
+            return 0
         deadline = time.monotonic() + DEPLOY_STARTUP_TIMEOUT_SECONDS
+        observed_new_started = 0
         while True:
             summary = status_summary(manifest, lease_seconds=600)
             counts = summary["counts"]
             if counts["fail"] > 0:
-                return False
+                return observed_new_started
             started = started_task_count(counts)
+            observed_new_started = max(observed_new_started, max(0, started - before_started))
             if started >= before_started + expected_new_started:
-                return True
+                return observed_new_started
             if time.monotonic() >= deadline:
-                return False
+                return observed_new_started
             time.sleep(DEPLOY_STARTUP_POLL_SECONDS)
 
     def result_output(item: dict[str, Any]) -> str:
@@ -1687,8 +1689,18 @@ def cmd_deploy(args: argparse.Namespace) -> int:
                 print_results(launch_results, show_success=bool(args.verbose))
                 if all(item["ok"] for item in launch_results):
                     status(colorize("deploy: verifying workers started", "cyan", enabled=color_enabled))
-                    if launch_started_enough(before_started, expected_new_started):
+                    started_workers = wait_for_launch_started(before_started, expected_new_started)
+                    if started_workers >= expected_new_started:
                         status(colorize("deploy: workers active", "green", enabled=color_enabled))
+                    elif started_workers > 0:
+                        status(
+                            colorize(
+                                f"deploy: workers partially active; {started_workers}/{expected_new_started} slots started",
+                                "yellow",
+                                enabled=color_enabled,
+                            ),
+                            error=True,
+                        )
                     else:
                         startup_failed = True
                         status(
