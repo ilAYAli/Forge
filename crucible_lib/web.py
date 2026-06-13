@@ -132,8 +132,8 @@ _HTML = r"""<!DOCTYPE html>
                    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .graph-row { display: grid; grid-template-columns: 42px 1fr 48px; gap: 6px;
                  align-items: center; color: var(--dim); font-size: 11px; }
-    .graph-row svg { width: 100%; height: 22px; display: block; }
-    .graph-line { fill: none; stroke-width: 1.1; }
+    .graph-row svg { width: 100%; height: 66px; display: block; }
+    .graph-line { fill: none; stroke-width: 1.25; }
 
     /* pending / fail groups */
     .group-row { font-size: 13px; color: var(--dim); padding: 2px 0; }
@@ -635,7 +635,8 @@ _HTML = r"""<!DOCTYPE html>
     function graphPoints(series) {
       return (series?.points || [])
         .map(p => ({x: Number(p.x), y: Number(p.y)}))
-        .filter(p => Number.isFinite(p.x) && Number.isFinite(p.y));
+        .filter(p => Number.isFinite(p.x) && Number.isFinite(p.y))
+        .sort((a, b) => a.x - b.x);
     }
 
     function fmtGraphNumber(v) {
@@ -656,14 +657,14 @@ _HTML = r"""<!DOCTYPE html>
       }
       if (min < 0 && max > 0) {
         const bound = Math.max(Math.abs(min), Math.abs(max));
-        return [-bound, bound];
+        return [-bound * 1.08, bound * 1.08];
       }
       const span = max - min;
-      const pad = span * 0.35;
+      const pad = span * 0.12;
       return [min - pad, max + pad];
     }
 
-    function sparkPath(points, w = 180, h = 22) {
+    function sparkPath(points, w = 180, h = 66) {
       if (!points || points.length < 2) return '';
       const pad = 2;
       const xs = points.map(p => p.x);
@@ -695,7 +696,7 @@ _HTML = r"""<!DOCTYPE html>
         const last = s.points[s.points.length - 1]?.y;
         return `<div class="graph-row">`
           + `<span>${esc(s.name)}</span>`
-          + `<svg viewBox="0 0 180 22" preserveAspectRatio="none" aria-hidden="true">`
+          + `<svg viewBox="0 0 180 66" preserveAspectRatio="none" aria-hidden="true">`
           + `<path class="graph-line" d="${esc(path)}" style="stroke:${esc(s.color)}"></path>`
           + `</svg>`
           + `<span>${esc(fmtGraphNumber(last))}</span>`

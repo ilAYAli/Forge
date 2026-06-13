@@ -394,6 +394,8 @@ except SystemExit as exc:
         self.assertIn("return r.toFixed(4) + '/s'", web._HTML)
         self.assertIn("fmtRate(pd?.rate)", web._HTML)
         self.assertIn("function graphDomain", web._HTML)
+        self.assertIn(".sort((a, b) => a.x - b.x)", web._HTML)
+        self.assertIn("viewBox=\"0 0 180 66\"", web._HTML)
         self.assertNotIn("function renderTaskGraphs", web._HTML)
         self.assertIn("function graphCard", web._HTML)
         self.assertIn("graph?.series", web._HTML)
