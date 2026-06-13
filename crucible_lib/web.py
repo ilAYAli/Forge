@@ -1130,7 +1130,7 @@ def _merge_lingering_runs(payload: dict[str, Any]) -> dict[str, Any]:
                     or not _run_payload_done(final_payload)
                     or not _payload_belongs_to_web_runs(final_payload, coordinator)
                 ):
-                    final_payload = item
+                    continue
                 linger[name] = _normalize_web_run_payload(final_payload)
                 seen[name] = {"coordinator": coordinator, "last_seen": time.time()}
 
@@ -1293,9 +1293,11 @@ def _api_status() -> bytes:
     return json.dumps(cached).encode()
 
 def _invalidate_status_cache() -> None:
-    global _STATUS_CACHE_EPOCH
+    global _STATUS_CACHE, _STATUS_CACHE_EPOCH, _STATUS_CACHE_ERROR
     with _STATUS_CACHE_LOCK:
+        _STATUS_CACHE = None
         _STATUS_CACHE_EPOCH = 0.0
+        _STATUS_CACHE_ERROR = None
 
 def _forget_web_run(run: str) -> None:
     with _WEB_STATE_LOCK:

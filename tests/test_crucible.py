@@ -656,6 +656,40 @@ except SystemExit as exc:
                     web._STATUS_REFRESHING,
                 ) = previous
 
+    def test_web_invalidate_status_cache_drops_cached_payload(self) -> None:
+        import crucible_lib.web as web
+
+        with web._STATUS_CACHE_LOCK:
+            previous = (
+                web._STATUS_CACHE,
+                web._STATUS_CACHE_EPOCH,
+                web._STATUS_CACHE_ERROR,
+                web._STATUS_REFRESHING,
+            )
+            web._STATUS_CACHE = {
+                "runs": [{"run": "stale"}],
+                "collapsed_failures": [],
+                "collapsed_failures_count": 0,
+                "timestamp": 1.0,
+            }
+            web._STATUS_CACHE_EPOCH = 1.0
+            web._STATUS_CACHE_ERROR = "old"
+            web._STATUS_REFRESHING = False
+        try:
+            web._invalidate_status_cache()
+            with web._STATUS_CACHE_LOCK:
+                self.assertIsNone(web._STATUS_CACHE)
+                self.assertEqual(0.0, web._STATUS_CACHE_EPOCH)
+                self.assertIsNone(web._STATUS_CACHE_ERROR)
+        finally:
+            with web._STATUS_CACHE_LOCK:
+                (
+                    web._STATUS_CACHE,
+                    web._STATUS_CACHE_EPOCH,
+                    web._STATUS_CACHE_ERROR,
+                    web._STATUS_REFRESHING,
+                ) = previous
+
     def test_web_status_payload_prefers_local_active_runs(self) -> None:
         import crucible_lib.web as web
 
@@ -938,6 +972,40 @@ except SystemExit as exc:
 
             self.assertEqual([], merged["runs"])
             self.assertEqual({}, state["lingering_runs"])
+
+    def test_web_does_not_reimport_deleted_coordinator_lingering_run(self) -> None:
+        import crucible_lib.web as web
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            local_runs = root / "local-runs"
+            coordinator = root / "coordinator-runs"
+            run_dir = coordinator / "deleted-done"
+            stale_payload = {
+                "run": "deleted-done",
+                "run_dir": str(run_dir),
+                "manifest": str(run_dir / "manifest.json"),
+                "state": "ok",
+                "tasks": 1,
+                "counts": {"done": 1, "fail": 0, "running": 0, "claimed": 0, "stale": 0, "pending": 0},
+            }
+            empty_payload = {
+                "runs": [],
+                "collapsed_failures": [],
+                "collapsed_failures_count": 0,
+                "coordinator": str(coordinator),
+                "remote_lingering_runs": {"deleted-done": stale_payload},
+            }
+
+            with self.patch_runs_dir(local_runs), mock.patch("crucible_lib.web.runs_dir", return_value=local_runs):
+                with mock.patch("crucible_lib.web._collect_named_run_payload", return_value=None) as named:
+                    merged = web._merge_lingering_runs(copy.deepcopy(empty_payload))
+                    state = web._read_web_state()
+
+            named.assert_called_once_with("deleted-done", str(coordinator))
+            self.assertEqual([], merged["runs"])
+            self.assertEqual({}, state["lingering_runs"])
+            self.assertEqual({}, state["seen_runs"])
 
     def test_web_prunes_lingering_runs_outside_runs_root(self) -> None:
         import crucible_lib.web as web
