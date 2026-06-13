@@ -384,12 +384,12 @@ def run_attention(summary: dict[str, Any]) -> bool:
 def run_attention_sort_key(summary: dict[str, Any]) -> tuple[int, int, str]:
     active = run_active_count(summary)
     fail = int(summary["counts"]["fail"])
-    if active > 0 or run_launching(summary):
-        return (0, -active, str(summary["run"]))
-    if fail > 0:
-        return (1, -fail, str(summary["run"]))
     if run_queue_requested(summary):
-        return (2, 0, str(summary["run"]))
+        return (0, 0, str(summary["run"]))
+    if active > 0 or run_launching(summary):
+        return (1, -active, str(summary["run"]))
+    if fail > 0:
+        return (2, -fail, str(summary["run"]))
     return (3, 0, str(summary["run"]))
 
 def run_state(summary: dict[str, Any]) -> str:

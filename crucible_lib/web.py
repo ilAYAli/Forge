@@ -251,7 +251,7 @@ _HTML = r"""<!DOCTYPE html>
     }
 
     function statePri(r) {
-      return {current:0,failed:1,queued:2,stopped:3,done:4,empty:5}[r.state]??6;
+      return {queued:0,current:1,failed:2,stopped:3,done:4,empty:5}[r.state]??6;
     }
 
     let soundEnabled = localStorage.getItem('crucible.sound') === '1';

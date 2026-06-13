@@ -510,6 +510,7 @@ except SystemExit as exc:
         self.assertIn("cmd-line", web._HTML)
         self.assertIn("'commands'", web._HTML)
         self.assertIn("function attrEsc", web._HTML)
+        self.assertIn("{queued:0,current:1,failed:2,stopped:3,done:4,empty:5}", web._HTML)
         self.assertIn("failCount > 0 && activeCount === 0", web._HTML)
         self.assertIn("runCmd('${runArg}','del',this)", web._HTML)
         self.assertIn(".act.del", web._HTML)
@@ -5207,6 +5208,7 @@ except SystemExit as exc:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             run = root / "runs" / "marked-queued"
+            active_run = root / "runs" / "active-run"
             manifest = {
                 "schema": "crucible.task.v1",
                 "name": "marked-queued",
@@ -5221,6 +5223,16 @@ except SystemExit as exc:
                 "run": "marked-queued",
                 "requested_epoch": 100.0,
             })
+            active_manifest = {
+                "schema": "crucible.task.v1",
+                "name": "active-run",
+                "work_dir": str(active_run),
+                "state_dir": str(active_run / "state"),
+                "claim_dir": str(active_run / "claims"),
+                "tasks": [{"id": "task_0", "index": 0, "command": "true", "outputs": []}],
+            }
+            crucible.write_json(active_run / "manifest.json", active_manifest)
+            crucible.write_json(active_run / "state" / "task_0.running.json", {"task": "task_0", "worker": "worker-a"})
             env = {"CRUCIBLE_COORDINATOR_RUNS": "", "CRUCIBLE_RUNS_DIR": str(root / "runs")}
 
             status = self.run_cli("status", cwd=root, env=env)
@@ -5228,8 +5240,10 @@ except SystemExit as exc:
 
         self.assertEqual(0, status.returncode)
         self.assertIn("run=marked-queued", status.stdout)
+        self.assertLess(status.stdout.index("run=marked-queued"), status.stdout.index("run=active-run"))
         payload = json.loads(payload_result.stdout)
         self.assertEqual("queued", payload["runs"][0]["state"])
+        self.assertEqual("marked-queued", payload["runs"][0]["run"])
 
     def test_status_reports_stopped_incomplete_run(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
