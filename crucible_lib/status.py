@@ -2360,6 +2360,9 @@ def run_completion_event_payload(
         payload["display"] = display
     if isinstance(fields, list):
         payload["status_line"] = " ".join(str(field) for field in fields)
+    progress_graph = summary.get("progress_graph")
+    if isinstance(progress_graph, dict):
+        payload["progress_graph"] = progress_graph
     progress = summary_progress(summary)
     if progress:
         payload["progress"] = progress

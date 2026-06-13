@@ -3657,6 +3657,59 @@ except SystemExit as exc:
             self.assertEqual("tasks=0/0", summary["status_line"])
             self.assertEqual(["tasks=0/0"], summary["display"]["fields"])
 
+    def test_wait_completion_payload_keeps_progress_graph(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run = root / "sprt-done"
+            manifest_path = run / "manifest.json"
+            state = run / "state"
+            logs = run / "logs"
+            state.mkdir(parents=True)
+            logs.mkdir()
+            tasks = []
+            for index in range(2):
+                task_id = f"task_{index}"
+                tasks.append({
+                    "id": task_id,
+                    "index": index,
+                    "command": "true",
+                    "outputs": [],
+                    "progress": {
+                        "unit": "games",
+                        "total": 2,
+                        "log_regex": r"\[\s*(?P<done>\d+)\/(?P<total>\d+)\]",
+                    },
+                })
+                crucible.write_json(state / f"{task_id}.done.json", {"task": task_id, "host": "worker"})
+                (logs / f"{task_id}.log").write_text(
+                    f"[2/2] Elo  {10 - index * 20}.0 +/-  80.0 | LLR {0.1 - index * 0.2:.1f}/2.94 (  3%) | LOS 50.0% | draw   0.0%\n",
+                    encoding="utf-8",
+                )
+            manifest = {
+                "schema": "crucible.task.v1",
+                "name": "sprt-done",
+                "kind": "sprt",
+                "work_dir": str(run),
+                "state_dir": str(state),
+                "log_dir": str(logs),
+                "tasks": tasks,
+            }
+
+            payload = crucible.run_completion_event_payload(
+                manifest_path=manifest_path,
+                manifest=manifest,
+                event="run_done",
+                state="ok",
+                rc=0,
+                elapsed_seconds=1.0,
+                lease_seconds=600,
+            )
+
+            graph = payload["progress_graph"]
+            series = {item["name"]: item["points"] for item in graph["series"]}
+            self.assertEqual([{"x": 2.0, "y": 0.1}, {"x": 4.0, "y": -0.1}], series["llr"])
+            self.assertEqual([{"x": 2.0, "y": 10.0}, {"x": 4.0, "y": -10.0}], series["elo"])
+
     def test_wait_sends_fail_notification_payload(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
