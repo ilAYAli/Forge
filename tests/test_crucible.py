@@ -8120,7 +8120,7 @@ except SystemExit as exc:
             self.assertEqual(0, rc)
             output = stdout.getvalue()
             self.assertIn("deploy: setup complete; launching workers", output)
-            self.assertIn("  OK     worker-b: launch", output)
+            self.assertNotIn("  OK     worker-b: launch", output)
             self.assertIn("deploy: workers active", output)
             self.assertIn("deploy: launch complete", output)
             scripts = [command[-1] for command in commands if command[0] == "sh"]
@@ -8300,7 +8300,7 @@ except SystemExit as exc:
             self.assertIn("FAILED worker-b: setup rc=1", output)
             self.assertIn("deploy: setup partial; 1/2 slots ready", output)
             self.assertIn("deploy: setup partial; launching ready workers", output)
-            self.assertIn("  OK     worker-a: launch", output)
+            self.assertNotIn("  OK     worker-a: launch", output)
             self.assertIn("deploy: launch complete", output)
             scripts = [command[-1] for command in commands if command[0] == "sh"]
             self.assertEqual(1, len([script for script in scripts if " work " in script and "--worker worker-a" in script]))

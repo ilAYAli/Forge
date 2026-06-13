@@ -1542,9 +1542,11 @@ def cmd_deploy(args: argparse.Namespace) -> int:
                 return False
             time.sleep(DEPLOY_STARTUP_POLL_SECONDS)
 
-    def print_results(items: list[dict[str, Any]]) -> None:
+    def print_results(items: list[dict[str, Any]], *, show_success: bool = True) -> None:
         for item in sorted(items, key=lambda entry: int(entry["index"])):
             ok = bool(item["ok"])
+            if ok and not show_success:
+                continue
             marker_text = "OK" if ok else "FAILED"
             marker_color = "green" if ok else "red"
             marker = colorize(f"{marker_text:<6}", marker_color, enabled=color_enabled)
@@ -1626,7 +1628,7 @@ def cmd_deploy(args: argparse.Namespace) -> int:
                 ]
                 launch_results = [future.result() for future in concurrent.futures.as_completed(futures)]
                 results = setup_failed_results + launch_results
-                print_results(launch_results)
+                print_results(launch_results, show_success=bool(args.verbose))
                 if all(item["ok"] for item in launch_results):
                     status(colorize("deploy: verifying workers started", "cyan", enabled=color_enabled))
                     if launch_started_enough(before_started, expected_new_started):
