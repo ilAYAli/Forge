@@ -506,7 +506,7 @@ except SystemExit as exc:
         with (
             mock.patch("crucible_lib.web._collect_status_payload", return_value=payload),
             mock.patch("crucible_lib.web.subprocess.run", return_value=completed) as run_mock,
-            mock.patch("crucible_lib.web._forget_web_run"),
+            mock.patch("crucible_lib.web._delete_web_run"),
         ):
             result = web._run_api_command("failed-run", "del")
 
@@ -533,7 +533,7 @@ except SystemExit as exc:
         with (
             mock.patch("crucible_lib.web._collect_status_payload", return_value=payload),
             mock.patch("crucible_lib.web.subprocess.run", return_value=completed) as run_mock,
-            mock.patch("crucible_lib.web._forget_web_run"),
+            mock.patch("crucible_lib.web._delete_web_run"),
         ):
             result = web._run_api_command("failed-run", "del")
 
@@ -1106,6 +1106,41 @@ except SystemExit as exc:
 
             self.assertEqual([], payload["runs"])
 
+    def test_web_delete_prevents_coordinator_lingering_reimport(self) -> None:
+        import crucible_lib.web as web
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            local_runs = root / "local-runs"
+            coordinator = root / "coordinator-runs"
+            run_dir = coordinator / "remote-done"
+            done_payload = {
+                "run": "remote-done",
+                "run_dir": str(run_dir),
+                "manifest": str(run_dir / "manifest.json"),
+                "state": "ok",
+                "tasks": 1,
+                "counts": {"done": 1, "fail": 0, "running": 0, "claimed": 0, "stale": 0, "pending": 0},
+            }
+            empty_payload = {
+                "runs": [],
+                "collapsed_failures": [],
+                "collapsed_failures_count": 0,
+                "coordinator": str(coordinator),
+                "remote_lingering_runs": {"remote-done": done_payload},
+            }
+
+            with self.patch_runs_dir(local_runs), mock.patch("crucible_lib.web.runs_dir", return_value=local_runs):
+                web._delete_web_run("remote-done")
+                with mock.patch("crucible_lib.web._collect_named_run_payload") as named:
+                    payload = web._merge_lingering_runs(copy.deepcopy(empty_payload))
+                    state = web._read_web_state()
+
+            named.assert_not_called()
+            self.assertEqual([], payload["runs"])
+            self.assertEqual(["remote-done"], state["hidden_runs"])
+            self.assertEqual({}, state["lingering_runs"])
+
     def test_web_delete_allows_completed_runs(self) -> None:
         import crucible_lib.web as web
 
@@ -1126,13 +1161,13 @@ except SystemExit as exc:
         with (
             mock.patch("crucible_lib.web._collect_status_payload", return_value=done_payload),
             mock.patch("crucible_lib.web._run_web_cli", return_value=completed) as run_cli,
-            mock.patch("crucible_lib.web._forget_web_run") as forget,
+            mock.patch("crucible_lib.web._delete_web_run") as delete,
         ):
             result = web._run_api_command("short-sprt", "del")
 
         self.assertEqual(0, result.returncode)
         run_cli.assert_called_once_with(["del", "short-sprt", "--force"], coordinator_runs=None)
-        forget.assert_called_once_with("short-sprt")
+        delete.assert_called_once_with("short-sprt")
 
     def test_web_local_status_does_not_use_all(self) -> None:
         import crucible_lib.web as web

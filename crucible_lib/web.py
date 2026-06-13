@@ -1399,6 +1399,17 @@ def _forget_web_run(run: str) -> None:
         _write_web_state(state)
     _invalidate_status_cache()
 
+def _delete_web_run(run: str) -> None:
+    with _WEB_STATE_LOCK:
+        state = _read_web_state()
+        _state_dict(state, "seen_runs").pop(run, None)
+        _state_dict(state, "lingering_runs").pop(run, None)
+        hidden = set(_state_list(state, "hidden_runs"))
+        hidden.add(run)
+        state["hidden_runs"] = sorted(hidden)
+        _write_web_state(state)
+    _invalidate_status_cache()
+
 def _hide_web_run(run: str) -> None:
     with _WEB_STATE_LOCK:
         state = _read_web_state()
@@ -1534,7 +1545,7 @@ def _run_api_command(run: str, cmd: str, *, server: ThreadingHTTPServer | None =
         coordinator_runs = _validate_web_delete(run)
         result = _run_web_cli(["del", run, "--force"], coordinator_runs=coordinator_runs)
         if result.returncode == 0:
-            _forget_web_run(run)
+            _delete_web_run(run)
         return result
     if cmd == "hide":
         _hide_web_run(run)
