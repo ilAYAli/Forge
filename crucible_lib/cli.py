@@ -239,14 +239,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--task-label",
         help="Short per-task label shown in detailed status. Supports templates.",
     )
-    plan.add_argument(
-        "--tasks", "--shards",
-        dest="shards",
-        metavar="N",
-        type=int,
-        required=True,
-        help="Number of numbered tasks to create.",
-    )
+    plan.add_argument("--shards", metavar="N", type=int, required=True, help="Number of numbered shards to create.")
     plan.add_argument("--work-dir", required=True, help="Working directory for task commands.")
     plan.add_argument("--out", "--manifest", dest="out", required=True, help="Manifest path to write.")
     plan.add_argument(

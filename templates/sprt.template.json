@@ -39,11 +39,10 @@
       "worker_path": true,
       "help": "Opening book"
     },
-    "shard_games": {
+    "shards": {
       "type": "int",
-      "default": 50,
-      "aliases": ["chunk_games"],
-      "help": "Games per Crucible shard"
+      "aliases": ["shard_count"],
+      "help": "Number of Crucible shards"
     },
     "concurrency": {
       "type": "int",
@@ -143,7 +142,7 @@
   "task": {
     "split": {
       "total": "games",
-      "shard": "shard_games",
+      "count": "shards",
       "unit": "games"
     },
     "label": "sprt:{shard}",

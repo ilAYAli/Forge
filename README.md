@@ -68,6 +68,8 @@ crucible sprt --candidate ~/assets/engines/enyo_9696dac --games 1000
 crucible sprt --candidate ~/assets/engines/enyo_9696dac --games 1000 \
   --workers pwa-mbp:8,pwa-mbp0:10,pwa-5090:16
 crucible sprt --candidate ~/assets/engines/enyo_9696dac --games 1000 \
+  --workers pwa-mbp:8,pwa-mbp0:10,pwa-5090:16 --shards 64
+crucible sprt --candidate ~/assets/engines/enyo_9696dac --games 1000 \
   --candidate-uci nnue_file=~/code/cpp/chess/enyo/net/candidate.nn \
   --reference-uci nnue_file=~/code/cpp/chess/enyo/net/reference.nn
 crucible sprt --workers pwa-mbp:8 -- --candidate ~/assets/engines/enyo_9696dac --games 1000
@@ -98,6 +100,8 @@ slots = floor(thread_budget / (2 * --concurrency * --threads))
 With the default `--concurrency 1 --threads 1`, `pwa-mbp:8` launches 4 SPRT
 tasks, not 8, because each task runs candidate and reference engines. Use
 `:0` to disable a host. A non-zero budget smaller than one task is rejected.
+If `--shards` is omitted, Crucible chooses 4 shards per converted worker slot,
+capped by the number of games. Pass `--shards N` to override it.
 
 Default workers can be configured in `~/.config/crucible/config.yml`:
 

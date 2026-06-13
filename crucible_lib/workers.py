@@ -1360,8 +1360,8 @@ def cmd_deploy(args: argparse.Namespace) -> int:
     if has_tasks and len(workers) > 1 and task_count < len(workers) * 4:
         status(
             colorize(
-                f"deploy: warning: {task_count} task(s) for {len(workers)} worker slot(s); "
-                "long tasks balance better with at least 4x more tasks than slots",
+                f"deploy: warning: {task_count} shard(s) for {len(workers)} worker slot(s); "
+                "long shards balance better with at least 4x more shards than slots",
                 "yellow",
                 enabled=color_enabled,
             ),

@@ -786,6 +786,24 @@ except SystemExit as exc:
 
             self.assertEqual([4, 4, 2], [task["progress"]["total"] for task in manifest["tasks"]])
 
+    def test_template_splits_total_by_count(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            template_path = self.write_test_template(root)
+            template = crucible.load_template(template_path)
+            template["parameters"]["shards"] = {"type": "int", "default": 3}
+            template["task"]["split"] = {"total": "total", "count": "shards", "unit": "rows"}
+            template["task"]["command"] = "printf {shard} > {output_dir}/{task_name}.txt"
+            params = crucible.parse_template_parameters(
+                "demo",
+                template,
+                ["--item", "/tmp/input.dat", "--total", "10", "--shards", "3"],
+            )
+            manifest = crucible.expand_template("demo", template_path, template, params)
+
+            self.assertEqual([4, 3, 3], [task["progress"]["total"] for task in manifest["tasks"]])
+            self.assertEqual("printf 4 > {output_dir}/demo_0000.txt", manifest["tasks"][0]["command"])
+
     def test_template_worker_path_parameters_preserve_tilde(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -1007,6 +1025,47 @@ except SystemExit as exc:
             "--games", "256",
         ], template_args)
 
+    def test_sprt_command_auto_sizes_shards_from_workers(self) -> None:
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            rc = crucible.cmd_template_run(argparse.Namespace(
+                template="sprt",
+                template_args=[
+                    "--dry-run",
+                    "--workers", "pwa-mbp:4,pwa-mbp0:5,pwa-5090:6",
+                    "--candidate", "~/assets/engines/enyo_9696dac",
+                    "--games", "256",
+                ],
+            ))
+        manifest = json.loads(stdout.getvalue())
+
+        self.assertEqual(0, rc)
+        self.assertEqual(28, manifest["template"]["parameters"]["shards"])
+        self.assertEqual(28, len(manifest["tasks"]))
+        totals = [task["progress"]["total"] for task in manifest["tasks"]]
+        self.assertEqual(256, sum(totals))
+        self.assertEqual(16, totals.count(10))
+        self.assertEqual(12, totals.count(8))
+
+    def test_sprt_command_preserves_explicit_shards(self) -> None:
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            rc = crucible.cmd_template_run(argparse.Namespace(
+                template="sprt",
+                template_args=[
+                    "--dry-run",
+                    "--workers", "pwa-mbp:4,pwa-mbp0:5,pwa-5090:6",
+                    "--candidate", "~/assets/engines/enyo_9696dac",
+                    "--games", "256",
+                    "--shards", "8",
+                ],
+            ))
+        manifest = json.loads(stdout.getvalue())
+
+        self.assertEqual(0, rc)
+        self.assertEqual(8, manifest["template"]["parameters"]["shards"])
+        self.assertEqual(8, len(manifest["tasks"]))
+
     def test_run_template_uses_default_workers(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -1051,7 +1110,7 @@ except SystemExit as exc:
             params = crucible.parse_template_parameters(
                 "sprt",
                 template,
-                ["--candidate", ".", "--reference", "~/assets/engines/reference", "--games", "50"],
+                ["--candidate", ".", "--reference", "~/assets/engines/reference", "--games", "50", "--shards", "1"],
             )
         manifest = crucible.expand_template("sprt", template_path, template, params)
 
@@ -1068,6 +1127,7 @@ except SystemExit as exc:
             [
                 "--candidate", "~/assets/engines/enyo_9696dac",
                 "--games", "125",
+                "--shards", "3",
                 "--opening-order", "random",
                 "--custom-flag",
             ],
@@ -1077,9 +1137,25 @@ except SystemExit as exc:
         self.assertEqual(["--opening-order", "random", "--custom-flag"], manifest["template"]["parameters"]["sprt_extra_args"])
         self.assertIn("--reference ~/assets/engines/reference", manifest["tasks"][0]["command"])
         self.assertIn("--opening-order random --custom-flag", manifest["tasks"][0]["command"])
-        self.assertIn("--games 50", manifest["tasks"][0]["command"])
-        self.assertIn("--games 25", manifest["tasks"][2]["command"])
+        self.assertIn("--games 42", manifest["tasks"][0]["command"])
+        self.assertIn("--games 41", manifest["tasks"][2]["command"])
         self.assertNotIn("--games 125", manifest["tasks"][0]["command"])
+
+    def test_sprt_template_splits_games_evenly_by_shards(self) -> None:
+        template_path = ROOT / "templates" / "sprt.template.json"
+        template = crucible.load_template(template_path)
+        params = crucible.parse_sprt_template_parameters(
+            "sprt",
+            template,
+            ["--candidate", "~/assets/engines/enyo_9696dac", "--games", "256", "--shards", "28"],
+        )
+        manifest = crucible.expand_template("sprt", template_path, template, params)
+
+        self.assertEqual(28, len(manifest["tasks"]))
+        totals = [task["progress"]["total"] for task in manifest["tasks"]]
+        self.assertEqual(16, totals.count(10))
+        self.assertEqual(12, totals.count(8))
+        self.assertEqual(256, sum(totals))
 
     def test_template_commit_placeholder_accepts_checkout_directory(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1217,6 +1293,7 @@ except SystemExit as exc:
                 "--candidate", "~/assets/engines/enyo_9696dac",
                 "--reference", "~/assets/engines/reference",
                 "--games", "50",
+                "--shards", "1",
                 "--candidate-uci", "nnue_file=~/code/cpp/chess/enyo/net/candidate.nn",
                 "--candidate-uci", "Hash=128",
                 "--reference-uci", "nnue_file=~/code/cpp/chess/enyo/net/reference.nn",
@@ -2304,7 +2381,7 @@ except SystemExit as exc:
             payload = json.loads(manifest.read_text(encoding="utf-8"))
             self.assertNotIn("git", payload["requirements"])
 
-    def test_plan_accepts_user_facing_aliases(self) -> None:
+    def test_plan_accepts_user_facing_shards_option(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             manifest = root / "manifest.json"
@@ -2312,7 +2389,7 @@ except SystemExit as exc:
             result = self.run_cli(
                 "plan",
                 "--name", "simple-plan",
-                "--tasks", "1",
+                "--shards", "1",
                 "--work-dir", str(root),
                 "--manifest", str(manifest),
                 "--command", "printf ok > {output_dir}/out.txt",
@@ -5625,7 +5702,7 @@ except SystemExit as exc:
             plan = self.run_cli(
                 "plan",
                 "--name", "release-worker",
-                "--tasks", "3",
+                "--shards", "3",
                 "--work-dir", str(root),
                 "--out", str(manifest),
                 "--command-template", "printf x > {output}",

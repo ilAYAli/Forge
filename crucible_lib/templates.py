@@ -149,7 +149,7 @@ def repeatable_arg_shell_values(template: dict[str, Any], values: dict[str, Any]
     return result
 
 
-SPRT_TEMPLATE_CONTROL_ARGS = {"games", "shard_games", "chunk_games"}
+SPRT_TEMPLATE_CONTROL_ARGS = {"games", "shards"}
 
 
 def sprt_shell_word(value: str) -> str:
@@ -289,6 +289,20 @@ def parse_sprt_template_parameters(template_name: str, template: dict[str, Any],
     return values
 
 
+def template_parameter_supplied(template: dict[str, Any], raw_args: list[str], parameter_names: set[str]) -> bool:
+    params = template.get("parameters", {})
+    names = {template_arg_name(name) for name in parameter_names}
+    if isinstance(params, dict):
+        for key in parameter_names:
+            spec = params.get(key)
+            if isinstance(spec, dict):
+                names.update(template_arg_names(key, spec, template_name="sprt"))
+    for arg in raw_args:
+        if arg.split("=", 1)[0] in names:
+            return True
+    return False
+
+
 def parse_run_options(raw_args: list[str]) -> tuple[argparse.Namespace, list[str]]:
     parser = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
     parser.add_argument("--workers")
@@ -339,9 +353,33 @@ def template_value(value: Any, values: dict[str, Any]) -> Any:
     return safe_format(value, values)
 
 
+def split_total_by_count(total: int, count: int, *, unit: str | None) -> list[int]:
+    if count <= 0:
+        raise SystemExit("task.split.count must be positive")
+    count = min(count, total)
+    if unit == "games" and total % 2 == 0 and count * 2 <= total:
+        base = (total // count) // 2 * 2
+        shards = [base for _ in range(count)]
+        remaining = total - base * count
+        index = 0
+        while remaining > 0:
+            shards[index] += 2
+            remaining -= 2
+            index = (index + 1) % count
+        return shards
+    base = total // count
+    extra = total % count
+    return [base + (1 if index < extra else 0) for index in range(count)]
+
+
 def resolve_split_count(split: dict[str, Any], values: dict[str, Any]) -> tuple[int, list[int | None], str | None]:
+    unit = str(split.get("unit") or "")
     if "count" in split:
         count = as_int(template_value(split["count"], values), label="task.split.count")
+        if "total" in split:
+            total = as_int(template_value(split["total"], values), label="task.split.total")
+            shards = split_total_by_count(total, count, unit=unit or None)
+            return len(shards), shards, unit or None
         return count, [None] * count, None
     shard_key = "shard" if "shard" in split else "chunk" if "chunk" in split else ""
     if "total" not in split or not shard_key:
@@ -350,7 +388,6 @@ def resolve_split_count(split: dict[str, Any], values: dict[str, Any]) -> tuple[
     shard = as_int(template_value(split[shard_key], values), label=f"task.split.{shard_key}")
     count = (total + shard - 1) // shard
     shards = [min(shard, total - index * shard) for index in range(count)]
-    unit = str(split.get("unit") or "")
     return count, shards, unit or None
 
 
@@ -652,14 +689,51 @@ def sprt_worker_thread_budget_payload(workers_arg: str, params: dict[str, Any]) 
     }
 
 
+def sprt_worker_slot_count(payload: dict[str, Any]) -> int:
+    total = 0
+    workers = payload.get("workers")
+    if not isinstance(workers, list):
+        return 0
+    for worker in workers:
+        if isinstance(worker, dict):
+            try:
+                total += max(0, int(worker.get("slots", 1)))
+            except (TypeError, ValueError):
+                continue
+        else:
+            total += 1
+    return total
+
+
+def auto_sprt_shards(params: dict[str, Any], worker_payload: dict[str, Any]) -> int:
+    games = as_int(params.get("games"), label="sprt.games")
+    slots = sprt_worker_slot_count(worker_payload)
+    if slots <= 0:
+        return 1
+    return max(1, min(games, slots * 4))
+
+
 def cmd_template_run(args: argparse.Namespace) -> int:
     run_options, template_args = parse_run_options(list(args.template_args))
     config = load_config()
     path = template_path(args.template)
     template = load_template(path)
     template_name = template_display_name(path, template)
+    workers_arg: str | None = None
+    sprt_workers_payload: dict[str, Any] | None = None
     if template_name == "sprt":
         params = parse_sprt_template_parameters(template_name, template, template_args)
+        shards_supplied = template_parameter_supplied(template, template_args, {"shards"})
+        needs_workers = (
+            not (run_options.print_manifest or run_options.dry_run)
+            or not shards_supplied
+        )
+        if needs_workers:
+            workers_arg = resolved_workers_arg(run_options, config)
+            sprt_workers_payload = sprt_worker_thread_budget_payload(workers_arg, params)
+        if not shards_supplied:
+            params = dict(params)
+            params["shards"] = auto_sprt_shards(params, sprt_workers_payload or {})
     else:
         params = parse_template_parameters(template_name, template, template_args)
     manifest = expand_template(template_name, path, template, params)
@@ -667,7 +741,7 @@ def cmd_template_run(args: argparse.Namespace) -> int:
         print(json.dumps(manifest, indent=2, sort_keys=True))
         return 0
 
-    workers_arg = resolved_workers_arg(run_options, config)
+    workers_arg = workers_arg or resolved_workers_arg(run_options, config)
     coordinator_host = run_options.coordinator_host or default_coordinator_host(config)
     notify_command = run_options.notify_command
     with tempfile.TemporaryDirectory(prefix="crucible-template-") as tmp:
@@ -675,7 +749,7 @@ def cmd_template_run(args: argparse.Namespace) -> int:
         write_json(manifest_path, manifest)
         if template_name == "sprt":
             workers_path = Path(tmp) / "workers.json"
-            write_json(workers_path, sprt_worker_thread_budget_payload(workers_arg, params))
+            write_json(workers_path, sprt_workers_payload or sprt_worker_thread_budget_payload(workers_arg, params))
             workers_arg = str(workers_path)
         from .workers import cmd_run_job
 
