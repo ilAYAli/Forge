@@ -136,6 +136,10 @@ _HTML = r"""<!DOCTYPE html>
     .graph-line { fill: none; stroke-width: 1.25; vector-effect: non-scaling-stroke; }
     .graph-zero { stroke: var(--dim); stroke-width: .75; stroke-dasharray: 2 4;
                   opacity: .38; vector-effect: non-scaling-stroke; }
+    .graph-dot { stroke: var(--bg); stroke-width: 1.5; vector-effect: non-scaling-stroke; }
+    .graph-dot.pos, .graph-value.pos { fill: var(--grn); color: var(--grn); }
+    .graph-dot.neg, .graph-value.neg { fill: var(--red); color: var(--red); }
+    .graph-dot.zero, .graph-value.zero { fill: var(--yel); color: var(--yel); }
 
     /* pending / fail groups */
     .group-row { font-size: 13px; color: var(--dim); padding: 2px 0; }
@@ -674,6 +678,12 @@ _HTML = r"""<!DOCTYPE html>
       return ['elo', 'llr'].includes(String(name || '').toLowerCase());
     }
 
+    function graphSignClass(value) {
+      const n = Number(value);
+      if (!Number.isFinite(n) || n === 0) return 'zero';
+      return n > 0 ? 'pos' : 'neg';
+    }
+
     function graphY(values, y, includeZero = false, h = 66) {
       const pad = 2;
       const [minY, maxY] = graphDomain(values, includeZero);
@@ -686,6 +696,23 @@ _HTML = r"""<!DOCTYPE html>
       if (!includeZero || !points || points.length < 2) return '';
       const y = graphY(points.map(p => p.y), 0, true, h);
       return `<line class="graph-zero" x1="0" y1="${y.toFixed(1)}" x2="${w}" y2="${y.toFixed(1)}"></line>`;
+    }
+
+    function endpointDot(points, includeZero = false, w = 180, h = 66) {
+      if (!includeZero || !points || points.length < 2) return '';
+      const pad = 2;
+      const xs = points.map(p => p.x);
+      const ys = points.map(p => p.y);
+      const minX = Math.min(...xs), maxX = Math.max(...xs);
+      const [minY, maxY] = graphDomain(ys, true);
+      const last = points[points.length - 1];
+      const x = maxX === minX
+        ? w / 2
+        : pad + ((last.x - minX) / (maxX - minX)) * (w - pad * 2);
+      const y = maxY === minY
+        ? h / 2
+        : h - pad - ((last.y - minY) / (maxY - minY)) * (h - pad * 2);
+      return `<circle class="graph-dot ${graphSignClass(last.y)}" cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="3"></circle>`;
     }
 
     function sparkPath(points, includeZero = false, w = 180, h = 66) {
@@ -719,14 +746,17 @@ _HTML = r"""<!DOCTYPE html>
         const includeZero = signedGraphSeries(s.name);
         const path = sparkPath(s.points, includeZero);
         const zero = zeroLine(s.points, includeZero);
+        const dot = endpointDot(s.points, includeZero);
         const last = s.points[s.points.length - 1]?.y;
+        const valueClass = includeZero ? ` ${graphSignClass(last)}` : '';
         return `<div class="graph-row">`
           + `<span>${esc(s.name)}</span>`
           + `<svg viewBox="0 0 180 66" preserveAspectRatio="none" aria-hidden="true">`
           + zero
           + `<path class="graph-line" d="${esc(path)}" style="stroke:${esc(s.color)}"></path>`
+          + dot
           + `</svg>`
-          + `<span>${esc(fmtGraphNumber(last))}</span>`
+          + `<span class="graph-value${valueClass}">${esc(fmtGraphNumber(last))}</span>`
           + `</div>`;
       }).join('');
       return `<div class="task-graph"><div class="graph-title">${esc(title)}</div>${rows}</div>`;
