@@ -1455,6 +1455,100 @@ def format_llr_field(llr: float, bound: float | None, mixed_bound: bool) -> str:
     pct = llr / bound * 100.0
     return f"llr={llr:.2f}/{bound:.2f} ({pct:.0f}%)"
 
+def progress_series_specs(config: dict[str, Any]) -> list[dict[str, str]]:
+    raw = config.get("series")
+    if not isinstance(raw, list):
+        return []
+    specs: list[dict[str, str]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or item.get("field") or "").strip()
+        field = str(item.get("field") or name).strip()
+        if not name or not field:
+            continue
+        specs.append({
+            "name": name,
+            "field": field,
+            "x": str(item.get("x") or "done").strip() or "done",
+        })
+    return specs
+
+def progress_numeric_value(name: str, data: dict[str, Any], fields: dict[str, str]) -> float | None:
+    if name in {"done", "total", "output", "rate"}:
+        value = data.get(name)
+        if isinstance(value, (int, float)) and math.isfinite(float(value)):
+            return float(value)
+        return None
+    if name.lower() == "llr":
+        value, _bound = progress_field_llr(fields)
+        return value if math.isfinite(value) else None
+    value = progress_field_float(fields, name)
+    if value is not None:
+        return value
+    return parse_float(fields.get(name))
+
+def task_log_progress_graph(manifest: dict[str, Any], task: dict[str, Any]) -> dict[str, Any] | None:
+    config = task.get("progress")
+    if not isinstance(config, dict):
+        return None
+    specs = progress_series_specs(config)
+    if not specs:
+        return None
+    pattern = config.get("log_regex")
+    if not pattern:
+        return None
+    try:
+        progress_re = re.compile(str(pattern))
+    except re.error:
+        return None
+    try:
+        text = log_tail(task_log_path(manifest, task), max_bytes=65536)
+    except OSError:
+        return None
+
+    points_by_name: dict[str, list[dict[str, float]]] = {spec["name"]: [] for spec in specs}
+    for line in text.splitlines():
+        match = progress_re.search(line)
+        if not match:
+            continue
+        groups = match.groupdict()
+        done = parse_int(groups.get("done"))
+        if done is None:
+            continue
+        total = parse_int(groups.get("total"))
+        output = parse_int(groups.get("output"))
+        rate = parse_float(groups.get("rate"))
+        data: dict[str, Any] = {"done": done}
+        if total is not None:
+            data["total"] = total
+        if output is not None:
+            data["output"] = output
+        if rate is not None:
+            data["rate"] = rate
+        fields = progress_match_fields(match, config)
+        for key, value in sprt_progress_line_fields(line).items():
+            fields.setdefault(key, value)
+        fields = normalize_progress_fields(fields)
+        for spec in specs:
+            x = progress_numeric_value(spec["x"], data, fields)
+            y = progress_numeric_value(spec["field"], data, fields)
+            if x is None or y is None:
+                continue
+            points_by_name[spec["name"]].append({"x": x, "y": y})
+
+    series = [
+        {"name": name, "points": points}
+        for name, points in points_by_name.items()
+        if len(points) >= 2
+    ]
+    if not series:
+        return None
+    return {
+        "x_unit": str(config.get("unit") or ""),
+        "series": series,
+    }
+
 def elo_score_rate(elo: float) -> float:
     return 1.0 / (1.0 + math.pow(10.0, -elo / 400.0))
 
@@ -1836,6 +1930,9 @@ def status_summary(manifest: dict[str, Any], *, lease_seconds: int) -> dict[str,
                     )
                     worker_metric["output"] += output
                     worker_metric["output_seen"] = True
+        progress_graph = task_log_progress_graph(manifest, task) if state == "running" else None
+        if progress_graph:
+            row["progress_graph"] = progress_graph
         if state == "running":
             key = worker or "unknown"
             elapsed = running_elapsed_seconds(running_payload)

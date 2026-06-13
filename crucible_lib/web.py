@@ -124,6 +124,15 @@ _HTML = r"""<!DOCTYPE html>
     .task-th { cursor: pointer; }
     .task-th.sorted-asc .sort-ind::after  { content: ' ▲'; font-size: 9px; color: var(--yel); }
     .task-th.sorted-desc .sort-ind::after { content: ' ▼'; font-size: 9px; color: var(--yel); }
+    .task-graphs { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+                   gap: 8px; margin-top: 8px; }
+    .task-graph { border-top: 1px solid var(--border); padding-top: 5px; }
+    .graph-title { color: var(--dim); font-size: 11px; margin-bottom: 3px;
+                   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .graph-row { display: grid; grid-template-columns: 42px 1fr 48px; gap: 6px;
+                 align-items: center; color: var(--dim); font-size: 11px; }
+    .graph-row svg { width: 100%; height: 28px; display: block; }
+    .graph-line { fill: none; stroke-width: 1.6; }
 
     /* pending / fail groups */
     .group-row { font-size: 13px; color: var(--dim); padding: 2px 0; }
@@ -619,6 +628,70 @@ _HTML = r"""<!DOCTYPE html>
       return `<table class="task-table">${cg}${thead}${tbody}</table>`;
     }
 
+    const GRAPH_COLORS = ['var(--blu)', 'var(--yel)', 'var(--grn)', 'var(--red)'];
+
+    function graphPoints(series) {
+      return (series?.points || [])
+        .map(p => ({x: Number(p.x), y: Number(p.y)}))
+        .filter(p => Number.isFinite(p.x) && Number.isFinite(p.y));
+    }
+
+    function fmtGraphNumber(v) {
+      const n = Number(v);
+      if (!Number.isFinite(n)) return '';
+      const a = Math.abs(n);
+      if (a >= 100) return n.toFixed(0);
+      if (a >= 10) return n.toFixed(1);
+      if (a >= 0.01) return n.toFixed(2);
+      return n.toExponential(1);
+    }
+
+    function sparkPath(points, w = 180, h = 28) {
+      if (!points || points.length < 2) return '';
+      const pad = 2;
+      const xs = points.map(p => p.x);
+      const ys = points.map(p => p.y);
+      const minX = Math.min(...xs), maxX = Math.max(...xs);
+      const minY = Math.min(...ys), maxY = Math.max(...ys);
+      const sx = maxX === minX
+        ? () => w / 2
+        : x => pad + ((x - minX) / (maxX - minX)) * (w - pad * 2);
+      const sy = maxY === minY
+        ? () => h / 2
+        : y => h - pad - ((y - minY) / (maxY - minY)) * (h - pad * 2);
+      return points.map((p, i) =>
+        `${i ? 'L' : 'M'}${sx(p.x).toFixed(1)},${sy(p.y).toFixed(1)}`
+      ).join(' ');
+    }
+
+    function renderTaskGraphs(tasks) {
+      const graphs = [];
+      for (const t of (tasks || [])) {
+        const series = (t.progress_graph?.series || [])
+          .map((s, i) => ({
+            name: s.name || '',
+            color: GRAPH_COLORS[i % GRAPH_COLORS.length],
+            points: graphPoints(s),
+          }))
+          .filter(s => s.points.length >= 2);
+        if (!series.length) continue;
+        const title = `${t.worker || '?'} ${t.label || ''} shard=${t.index}`;
+        const rows = series.map(s => {
+          const path = sparkPath(s.points);
+          const last = s.points[s.points.length - 1]?.y;
+          return `<div class="graph-row">`
+            + `<span>${esc(s.name)}</span>`
+            + `<svg viewBox="0 0 180 28" preserveAspectRatio="none" aria-hidden="true">`
+            + `<path class="graph-line" d="${esc(path)}" style="stroke:${esc(s.color)}"></path>`
+            + `</svg>`
+            + `<span>${esc(fmtGraphNumber(last))}</span>`
+            + `</div>`;
+        }).join('');
+        graphs.push(`<div class="task-graph"><div class="graph-title">${esc(title)}</div>${rows}</div>`);
+      }
+      return graphs.length ? `<div class="task-graphs">${graphs.join('')}</div>` : '';
+    }
+
     function renderGroups(groups) {
       return Object.entries(groups||{}).sort().map(([lbl, vals]) =>
         `<div class="group-row">${esc(lbl||'unlabeled')} [${vals.length}]: ${fmtRanges(vals)}</div>`
@@ -687,7 +760,7 @@ _HTML = r"""<!DOCTYPE html>
         const ws = display.active_summary_text ? renderChips(display.active_summary_text) : renderChips(activeFieldText);
         sections.push(makeSection(r.run, 'active',
           `active: <b>${active.count}</b>`, 'yel',
-          ws + renderTasks(active.tasks), isCurrent
+          ws + renderTasks(active.tasks) + renderTaskGraphs(active.tasks), isCurrent
         ));
       }
 

@@ -393,6 +393,8 @@ except SystemExit as exc:
         self.assertIn("(pd.total - pd.done) / pd.rate", web._HTML)
         self.assertIn("return r.toFixed(4) + '/s'", web._HTML)
         self.assertIn("fmtRate(pd?.rate)", web._HTML)
+        self.assertIn("function renderTaskGraphs", web._HTML)
+        self.assertIn("t.progress_graph?.series", web._HTML)
         self.assertIn("function attrEsc", web._HTML)
         self.assertIn("failCount > 0 && activeCount === 0", web._HTML)
         self.assertIn("runCmd('${runArg}','del',this)", web._HTML)
@@ -1406,6 +1408,8 @@ except SystemExit as exc:
         self.assertEqual("./build.py create -c build.json", task["command"])
         self.assertNotIn("--shard", task["command"])
         self.assertNotIn("--output-dir", task["command"])
+        self.assertEqual("steps", task["progress"]["unit"])
+        self.assertEqual(["loss", "lr"], [spec["name"] for spec in task["progress"]["series"]])
 
     def test_template_commands_list_and_show(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1621,6 +1625,8 @@ except SystemExit as exc:
         self.assertEqual(16, totals.count(10))
         self.assertEqual(12, totals.count(8))
         self.assertEqual(256, sum(totals))
+        self.assertEqual(["llr", "elo"], [spec["name"] for spec in manifest["tasks"][0]["progress"]["series"]])
+        self.assertIn("?P<llr>", manifest["tasks"][0]["progress"]["log_regex"])
 
     def test_template_commit_placeholder_accepts_checkout_directory(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -5389,6 +5395,51 @@ except SystemExit as exc:
                 self.assertNotIn("workers=1", named_stdout.getvalue())
                 self.assertNotIn("speedup=1.0x", named_stdout.getvalue())
                 self.assertIn("worker shard=0 [rows=50k/125k, output=48k, elo~=-12.3, eta=3h06m]", named_stdout.getvalue())
+
+    def test_status_extracts_declared_progress_series(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run = root / "score"
+            state = run / "state"
+            logs = run / "logs"
+            state.mkdir(parents=True)
+            logs.mkdir(parents=True)
+            manifest = {
+                "schema": "crucible.task.v1",
+                "name": "score",
+                "work_dir": str(run),
+                "state_dir": str(state),
+                "log_dir": str(logs),
+                "tasks": [{
+                    "id": "task_0",
+                    "index": 0,
+                    "command": "true",
+                    "outputs": [],
+                    "progress": {
+                        "unit": "rows",
+                        "total": 100,
+                        "log_regex": r"step=(?P<done>\d+)/(?P<total>\d+)\s+loss=(?P<loss>[0-9.]+)\s+lr=(?P<lr>[0-9.e-]+)",
+                        "series": [
+                            {"name": "loss", "field": "loss", "x": "done"},
+                            {"name": "lr", "field": "lr", "x": "done"},
+                        ],
+                    },
+                }],
+            }
+            (state / "task_0.running.json").write_text(json.dumps({"task": "task_0", "host": "worker"}), encoding="utf-8")
+            (logs / "task_0.log").write_text(
+                "step=10/100 loss=1.50 lr=1e-3\n"
+                "step=20/100 loss=1.25 lr=5e-4\n",
+                encoding="utf-8",
+            )
+
+            summary = crucible.status_summary(manifest, lease_seconds=600)
+
+            graph = summary["active"][0]["progress_graph"]
+            self.assertEqual("rows", graph["x_unit"])
+            series = {item["name"]: item["points"] for item in graph["series"]}
+            self.assertEqual([{"x": 10.0, "y": 1.5}, {"x": 20.0, "y": 1.25}], series["loss"])
+            self.assertEqual([{"x": 10.0, "y": 0.001}, {"x": 20.0, "y": 0.0005}], series["lr"])
 
     def test_status_sprt_header_shows_aggregated_elo(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

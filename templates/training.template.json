@@ -20,6 +20,22 @@
       "count": 1
     },
     "label": "training",
-    "command": "./build.py create -c {config}"
+    "command": "./build.py create -c {config}",
+    "progress": {
+      "unit": "steps",
+      "log_regex": "(?:step|batch|epoch)=(?P<done>\\d+)(?:/(?P<total>\\d+))?.*?(?:loss|train_loss)=(?P<loss>[-+]?(?:(?:\\d+(?:\\.\\d+)?)|(?:\\.\\d+))(?:[eE][-+]?\\d+)?|inf|nan)(?:.*?lr=(?P<lr>[-+]?(?:(?:\\d+(?:\\.\\d+)?)|(?:\\.\\d+))(?:[eE][-+]?\\d+)?|inf|nan))?",
+      "series": [
+        {
+          "name": "loss",
+          "field": "loss",
+          "x": "done"
+        },
+        {
+          "name": "lr",
+          "field": "lr",
+          "x": "done"
+        }
+      ]
+    }
   }
 }

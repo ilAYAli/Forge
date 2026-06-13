@@ -150,7 +150,19 @@
     "command": "~/.local/bin/sprt {sprt_args} --games {shard} --fastchess ~/.local/bin/fastchess --log-dir {output_dir}/{task_name}/logs --name {task_name} --no-ntfy --no-eta",
     "progress": {
       "unit": "games",
-      "log_regex": "\\[\\s*(?P<done>\\d+)\\/(?P<total>\\d+)\\].*?Elo\\s+(?P<elo>[-+]?\\d+(?:\\.\\d+)?|[-+]?inf).*?\\+/-\\s+(?P<ci>\\d+(?:\\.\\d+)?).*?LOS\\s+(?P<los>\\d+(?:\\.\\d+)?)%.*?draw\\s+(?P<draw>\\d+(?:\\.\\d+)?)%(?:.*?ETA\\s+(?P<eta>\\S+))?"
+      "log_regex": "\\[\\s*(?P<done>\\d+)\\/(?P<total>\\d+)\\].*?Elo\\s+(?P<elo>[-+]?(?:\\d+(?:\\.\\d+)?|inf|nan))\\s+\\+/-\\s+(?P<ci>[-+]?(?:\\d+(?:\\.\\d+)?|inf|nan))\\s+\\|\\s+LLR\\s+(?P<llr>[+-]?\\d+(?:\\.\\d+)?/[+-]?(?:\\d+(?:\\.\\d+)?|inf|nan)\\s+\\(\\s*[+-]?\\d+(?:\\.\\d+)?%\\))\\s+\\|\\s+LOS\\s+(?P<los>[-+]?(?:\\d+(?:\\.\\d+)?|inf|nan))%\\s+\\|\\s+draw\\s+(?P<draw>[-+]?(?:\\d+(?:\\.\\d+)?|inf|nan))%(?:.*?ETA\\s+(?P<eta>\\S+))?",
+      "series": [
+        {
+          "name": "llr",
+          "field": "llr",
+          "x": "done"
+        },
+        {
+          "name": "elo",
+          "field": "elo",
+          "x": "done"
+        }
+      ]
     }
   }
 }
