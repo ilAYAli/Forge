@@ -381,6 +381,8 @@ except SystemExit as exc:
         self.assertIn("localStorage.getItem('crucible.sound')", web._HTML)
         self.assertIn("notify on", web._HTML)
         self.assertNotIn("ding on", web._HTML)
+        self.assertIn("active > 0) keys.add(String(run.run || ''))", web._HTML)
+        self.assertNotIn("task.id ?? task.index", web._HTML)
         self.assertIn("loading Crucible status...", web._HTML)
         self.assertIn(".elo-pos", web._HTML)
         self.assertIn("function eloFieldClass", web._HTML)
@@ -757,6 +759,113 @@ except SystemExit as exc:
             named.assert_called_once_with("fast-sprt", None)
             self.assertEqual(["fast-sprt"], [run["run"] for run in payload["runs"]])
             self.assertEqual("done", payload["runs"][0]["state"])
+
+    def test_web_remembered_completion_normalizes_ok_state(self) -> None:
+        import crucible_lib.web as web
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            runs = root / "runs"
+            run_dir = runs / "ok-finished"
+            payload = {
+                "run": "ok-finished",
+                "run_dir": str(run_dir),
+                "manifest": str(run_dir / "manifest.json"),
+                "state": "ok",
+                "tasks": 1,
+                "counts": {"done": 1, "fail": 0, "running": 0, "claimed": 0, "stale": 0, "pending": 0},
+            }
+            empty_payload = {
+                "runs": [],
+                "collapsed_failures": [],
+                "collapsed_failures_count": 0,
+                "coordinator": None,
+            }
+
+            with self.patch_runs_dir(runs), mock.patch("crucible_lib.web.runs_dir", return_value=runs):
+                web.remember_web_run_payload(payload)
+                merged = web._merge_lingering_runs(copy.deepcopy(empty_payload))
+
+            self.assertEqual(["ok-finished"], [run["run"] for run in merged["runs"]])
+            self.assertEqual("done", merged["runs"][0]["state"])
+
+    def test_web_ignores_completion_outside_runs_root(self) -> None:
+        import crucible_lib.web as web
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            runs = root / "runs"
+            outside = root / "outside" / "tmp-finished"
+            payload = {
+                "run": "tmp-finished",
+                "run_dir": str(outside),
+                "manifest": str(outside / "manifest.json"),
+                "state": "ok",
+                "tasks": 1,
+                "counts": {"done": 1, "fail": 0, "running": 0, "claimed": 0, "stale": 0, "pending": 0},
+            }
+
+            with self.patch_runs_dir(runs), mock.patch("crucible_lib.web.runs_dir", return_value=runs):
+                web.remember_web_run_payload(payload)
+                state = web._read_web_state()
+
+            self.assertEqual({}, state)
+
+    def test_web_ignores_completion_outside_coordinator_runs_root(self) -> None:
+        import crucible_lib.web as web
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            runs = root / "runs"
+            outside = root / "outside" / "tmp-finished"
+            payload = {
+                "run": "tmp-finished",
+                "run_dir": str(outside),
+                "manifest": str(outside / "manifest.json"),
+                "state": "ok",
+                "tasks": 1,
+                "counts": {"done": 1, "fail": 0, "running": 0, "claimed": 0, "stale": 0, "pending": 0},
+            }
+
+            with self.patch_runs_dir(runs), mock.patch("crucible_lib.web.runs_dir", return_value=runs):
+                web.remember_web_run_payload(payload, coordinator_runs="pwa-5090:/home/petter/code/cpp/chess/crucible/runs")
+                state = web._read_web_state()
+
+            self.assertEqual({}, state)
+
+    def test_web_prunes_lingering_runs_outside_runs_root(self) -> None:
+        import crucible_lib.web as web
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            runs = root / "runs"
+            outside = root / "outside" / "tmp-finished"
+            stale = {
+                "run": "tmp-finished",
+                "run_dir": str(outside),
+                "manifest": str(outside / "manifest.json"),
+                "state": "ok",
+                "tasks": 1,
+                "counts": {"done": 1, "fail": 0, "running": 0, "claimed": 0, "stale": 0, "pending": 0},
+            }
+            empty_payload = {
+                "runs": [],
+                "collapsed_failures": [],
+                "collapsed_failures_count": 0,
+                "coordinator": None,
+            }
+
+            with self.patch_runs_dir(runs), mock.patch("crucible_lib.web.runs_dir", return_value=runs):
+                crucible.write_json(runs / ".web-state.json", {
+                    "seen_runs": {"tmp-finished": {"coordinator": None, "last_seen": 1.0}},
+                    "lingering_runs": {"tmp-finished": stale},
+                })
+                merged = web._merge_lingering_runs(copy.deepcopy(empty_payload))
+                state = web._read_web_state()
+
+            self.assertEqual([], merged["runs"])
+            self.assertEqual({}, state["seen_runs"])
+            self.assertEqual({}, state["lingering_runs"])
 
     def test_web_drops_remembered_run_that_never_started(self) -> None:
         import crucible_lib.web as web
@@ -3840,6 +3949,58 @@ except SystemExit as exc:
             self.assertEqual(0, status.returncode)
             self.assertIn("  tasks=0/1", status.stdout)
             self.assertIn("  pending: 1", status.stdout)
+
+    def test_worker_loop_continues_after_sync_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest_path = root / "manifest.json"
+            manifest = {
+                "schema": "crucible.task.v1",
+                "name": "sync-retry",
+                "work_dir": str(root),
+                "tasks": [
+                    {"id": "task_0", "index": 0, "command": "true", "outputs": []},
+                    {"id": "task_1", "index": 1, "command": "true", "outputs": []},
+                ],
+            }
+            crucible.write_json(manifest_path, manifest)
+            claims = [
+                {"task": "task_0", "claim": {"claim_id": "claim-0", "attempt": 1}},
+                {"task": "task_1", "claim": {"claim_id": "claim-1", "attempt": 1}},
+                None,
+            ]
+            args = argparse.Namespace(
+                manifest=str(manifest_path),
+                coordinator=str(manifest_path),
+                profile=None,
+                worker="worker-a",
+                max_tasks=0,
+                idle_seconds=0.0,
+                lease_seconds=600,
+                task_attempts=1,
+                retry_failed=False,
+                force=False,
+                fail_fast=False,
+            )
+            with (
+                mock.patch("crucible_lib.tasks.load_coordinator_manifest", return_value=manifest),
+                mock.patch("crucible_lib.tasks.check_coordinator_cli"),
+                mock.patch("crucible_lib.tasks.check_requirements"),
+                mock.patch("crucible_lib.tasks.claim_from_coordinator", side_effect=claims),
+                mock.patch("crucible_lib.tasks.heartbeat_on_coordinator"),
+                mock.patch("crucible_lib.tasks.release_on_coordinator"),
+                mock.patch("crucible_lib.tasks.run_task", return_value=0) as run_task,
+                mock.patch("crucible_lib.tasks.sync_task_result", side_effect=[RuntimeError("temporary sync"), None]) as sync_result,
+                mock.patch("crucible_lib.tasks.WORK_IDLE_POLL_SECONDS", 0.0),
+            ):
+                stderr = io.StringIO()
+                with contextlib.redirect_stderr(stderr):
+                    rc = crucible.cmd_work(args)
+
+            self.assertEqual(1, rc)
+            self.assertIn("task_0: sync failed: temporary sync", stderr.getvalue())
+            self.assertEqual(2, run_task.call_count)
+            self.assertEqual(2, sync_result.call_count)
 
     def test_worker_doctor_checks_coordinator_callback(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -975,7 +975,10 @@ def cmd_work(args: argparse.Namespace) -> int:
             except Exception as exc:
                 print(f"{task_id}: release failed: {exc}", file=sys.stderr)
         if sync_failed:
-            return error_rc
+            if args.max_tasks > 0:
+                return error_rc
+            time.sleep(WORK_IDLE_POLL_SECONDS)
+            continue
         completed += 1
         if rc != 0:
             retryable = (

@@ -281,10 +281,8 @@ _HTML = r"""<!DOCTYPE html>
     function runningJobKeys(data) {
       const keys = new Set();
       for (const run of (data.runs||[])) {
-        for (const task of (run.sections?.active?.tasks||[])) {
-          if ((task.state||'running') !== 'running') continue;
-          keys.add([run.run, task.id ?? task.index, task.worker || ''].join('\x1f'));
-        }
+        const active = Number(run.sections?.active?.count || 0);
+        if (active > 0) keys.add(String(run.run || ''));
       }
       return keys;
     }
@@ -941,6 +939,28 @@ def _state_list(state: dict[str, Any], name: str) -> list[str]:
         state[name] = value
     return [str(item) for item in value]
 
+def _path_is_under(path: str, root: str) -> bool:
+    try:
+        candidate = Path(path).expanduser().resolve(strict=False)
+        base = Path(root).expanduser().resolve(strict=False)
+    except (OSError, RuntimeError):
+        return False
+    return candidate == base or base in candidate.parents
+
+def _payload_belongs_to_web_runs(payload: dict[str, Any], coordinator_runs: str | None) -> bool:
+    roots = [str(runs_dir())]
+    if coordinator_runs:
+        try:
+            _host, coordinator_root = parse_coordinator(coordinator_runs)
+            roots.append(coordinator_root)
+        except ValueError:
+            pass
+    paths = [str(payload.get(key) or "") for key in ("run_dir", "manifest")]
+    paths = [path for path in paths if path]
+    if not paths:
+        return True
+    return any(_path_is_under(path, root) for path in paths for root in roots)
+
 def remember_web_run(run: str, *, coordinator_runs: str | None = None) -> None:
     with _WEB_STATE_LOCK:
         state = _read_web_state()
@@ -958,6 +978,9 @@ def remember_web_run_payload(payload: dict[str, Any], *, coordinator_runs: str |
     run = str(payload.get("run") or "")
     if not run:
         return
+    if not _payload_belongs_to_web_runs(payload, coordinator_runs):
+        return
+    payload = _normalize_web_run_payload(payload)
     with _WEB_STATE_LOCK:
         state = _read_web_state()
         hidden = set(_state_list(state, "hidden_runs"))
@@ -992,6 +1015,13 @@ def _run_payload_done(run: dict[str, Any]) -> bool:
         )
     except (TypeError, ValueError):
         return False
+
+def _normalize_web_run_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    if not _run_payload_done(payload):
+        return payload
+    normalized = copy.deepcopy(payload)
+    normalized["state"] = "done"
+    return normalized
 
 def _collect_named_run_payload(run: str, coordinator_runs: str | None) -> dict[str, Any] | None:
     result = _run_web_cli(["status", run, "--json"], coordinator_runs=coordinator_runs)
@@ -1028,7 +1058,7 @@ def _merge_lingering_runs(payload: dict[str, Any]) -> dict[str, Any]:
             name = str(item["run"])
             if _run_payload_done(item):
                 if name not in hidden:
-                    linger[name] = item
+                    linger[name] = _normalize_web_run_payload(item)
             else:
                 hidden.discard(name)
                 seen[name] = {"coordinator": coordinator, "last_seen": time.time()}
@@ -1048,7 +1078,7 @@ def _merge_lingering_runs(payload: dict[str, Any]) -> dict[str, Any]:
                 linger.pop(name, None)
                 continue
             if _run_payload_done(final_payload):
-                linger[name] = final_payload
+                linger[name] = _normalize_web_run_payload(final_payload)
             elif _run_payload_state(final_payload) not in ("", "empty"):
                 runs.append(final_payload)
             else:
@@ -1059,8 +1089,12 @@ def _merge_lingering_runs(payload: dict[str, Any]) -> dict[str, Any]:
             if name in hidden:
                 linger.pop(name, None)
                 continue
+            if isinstance(item, dict) and not _payload_belongs_to_web_runs(item, coordinator):
+                linger.pop(name, None)
+                seen.pop(name, None)
+                continue
             if name not in visible_names and isinstance(item, dict):
-                runs.append(item)
+                runs.append(_normalize_web_run_payload(item))
 
         state["hidden_runs"] = sorted(hidden)
         _write_web_state(state)
