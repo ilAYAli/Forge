@@ -993,6 +993,20 @@ except SystemExit as exc:
             "--games", "256",
         ], args.template_args)
 
+    def test_sprt_command_alias_accepts_dashdash_passthrough(self) -> None:
+        run_options, template_args = crucible.parse_run_options([
+            "--workers", "pwa-mbp:4",
+            "--",
+            "--candidate", "~/assets/engines/candidate",
+            "--games", "256",
+        ])
+
+        self.assertEqual("pwa-mbp:4", run_options.workers)
+        self.assertEqual([
+            "--candidate", "~/assets/engines/candidate",
+            "--games", "256",
+        ], template_args)
+
     def test_run_template_uses_default_workers(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -1044,6 +1058,28 @@ except SystemExit as exc:
         self.assertEqual("~/code/cpp/chess/enyo/build/enyo", manifest["template"]["parameters"]["candidate"])
         self.assertEqual(["sprt", "fastchess"], [repo["name"] for repo in manifest["requirements"]["repos"]])
         self.assertIn("--candidate ~/code/cpp/chess/enyo/build/enyo", manifest["tasks"][0]["command"])
+
+    def test_sprt_template_passes_unknown_sprt_args_through(self) -> None:
+        template_path = ROOT / "templates" / "sprt.template.json"
+        template = crucible.load_template(template_path)
+        params = crucible.parse_sprt_template_parameters(
+            "sprt",
+            template,
+            [
+                "--candidate", "~/assets/engines/enyo_9696dac",
+                "--games", "125",
+                "--opening-order", "random",
+                "--custom-flag",
+            ],
+        )
+        manifest = crucible.expand_template("sprt", template_path, template, params)
+
+        self.assertEqual(["--opening-order", "random", "--custom-flag"], manifest["template"]["parameters"]["sprt_extra_args"])
+        self.assertIn("--reference ~/assets/engines/reference", manifest["tasks"][0]["command"])
+        self.assertIn("--opening-order random --custom-flag", manifest["tasks"][0]["command"])
+        self.assertIn("--games 50", manifest["tasks"][0]["command"])
+        self.assertIn("--games 25", manifest["tasks"][2]["command"])
+        self.assertNotIn("--games 125", manifest["tasks"][0]["command"])
 
     def test_template_commit_placeholder_accepts_checkout_directory(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

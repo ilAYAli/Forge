@@ -149,6 +149,44 @@ def repeatable_arg_shell_values(template: dict[str, Any], values: dict[str, Any]
     return result
 
 
+SPRT_TEMPLATE_CONTROL_ARGS = {"games", "shard_games", "chunk_games"}
+
+
+def sprt_shell_word(value: str) -> str:
+    if "~" in value:
+        return value
+    return shlex.quote(value)
+
+
+def sprt_shell_args(template: dict[str, Any], values: dict[str, Any]) -> str:
+    params = template.get("parameters", {})
+    if not isinstance(params, dict):
+        return ""
+    parts: list[str] = []
+    for name, spec in params.items():
+        key = str(name)
+        if key in SPRT_TEMPLATE_CONTROL_ARGS:
+            continue
+        if not isinstance(spec, dict) or key not in values:
+            continue
+        flag = str(spec.get("arg") or template_arg_name(key))
+        value = values[key]
+        if bool(spec.get("repeatable", False)):
+            items = value if isinstance(value, list) else [value]
+            for item in items:
+                if str(item):
+                    parts.extend([flag, str(item)])
+        elif str(spec.get("type") or "str") == "bool":
+            if bool(value):
+                parts.append(flag)
+        else:
+            parts.extend([flag, str(value)])
+    extra_args = values.get("sprt_extra_args") or []
+    if isinstance(extra_args, list):
+        parts.extend(str(item) for item in extra_args)
+    return " ".join(sprt_shell_word(part) for part in parts)
+
+
 def worker_path_parameter(value: str, *, directory_executable: str = "") -> str:
     if value and not value.startswith("~") and not Path(value).is_absolute():
         cwd = Path(os.environ.get("PWD") or str(Path.cwd()))
@@ -166,10 +204,17 @@ def worker_path_parameter(value: str, *, directory_executable: str = "") -> str:
     return value
 
 
-def parse_template_parameters(template_name: str, template: dict[str, Any], raw_args: list[str]) -> dict[str, Any]:
+def parse_template_parameters_with_unknown(
+    template_name: str,
+    template: dict[str, Any],
+    raw_args: list[str],
+    *,
+    allow_unknown: bool = False,
+) -> tuple[dict[str, Any], list[str]]:
     parser = argparse.ArgumentParser(
         prog=f"crucible run {template_name}",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+        allow_abbrev=False,
     )
     params = template.get("parameters", {})
     if not isinstance(params, dict):
@@ -202,7 +247,12 @@ def parse_template_parameters(template_name: str, template: dict[str, Any], raw_
         elif value_type != "str":
             raise SystemExit(f"{template_name}: unsupported parameter type {value_type!r}")
         parser.add_argument(*template_arg_names(str(name), spec, template_name=template_name), **kwargs)
-    values = {key: value for key, value in vars(parser.parse_args(raw_args)).items() if value is not None}
+    if allow_unknown:
+        namespace, unknown = parser.parse_known_args(raw_args)
+    else:
+        namespace = parser.parse_args(raw_args)
+        unknown = []
+    values = {key: value for key, value in vars(namespace).items() if value is not None}
     for name, spec in params.items():
         if not isinstance(spec, dict) or not bool(spec.get("worker_path", False)):
             continue
@@ -219,11 +269,28 @@ def parse_template_parameters(template_name: str, template: dict[str, Any], raw_
                 if isinstance(item, str) else item
                 for item in value
             ]
+    return values, unknown
+
+
+def parse_template_parameters(template_name: str, template: dict[str, Any], raw_args: list[str]) -> dict[str, Any]:
+    values, _unknown = parse_template_parameters_with_unknown(template_name, template, raw_args)
+    return values
+
+
+def parse_sprt_template_parameters(template_name: str, template: dict[str, Any], raw_args: list[str]) -> dict[str, Any]:
+    values, unknown = parse_template_parameters_with_unknown(
+        template_name,
+        template,
+        raw_args,
+        allow_unknown=True,
+    )
+    if unknown:
+        values["sprt_extra_args"] = unknown
     return values
 
 
 def parse_run_options(raw_args: list[str]) -> tuple[argparse.Namespace, list[str]]:
-    parser = argparse.ArgumentParser(add_help=False)
+    parser = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
     parser.add_argument("--workers")
     parser.add_argument("--jobs", type=int, default=4)
     parser.add_argument("--run")
@@ -247,7 +314,13 @@ def parse_run_options(raw_args: list[str]) -> tuple[argparse.Namespace, list[str
     parser.add_argument("--verbose", action="store_true")
     parser.add_argument("--print-manifest", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
-    return parser.parse_known_args(raw_args)
+    passthrough_args: list[str] = []
+    if "--" in raw_args:
+        separator = raw_args.index("--")
+        passthrough_args = raw_args[separator + 1:]
+        raw_args = raw_args[:separator]
+    run_options, template_args = parser.parse_known_args(raw_args)
+    return run_options, [*template_args, *passthrough_args]
 
 
 def as_int(value: Any, *, label: str) -> int:
@@ -352,6 +425,8 @@ def expand_template(template_name: str, template_path_: Path, template: dict[str
     params = git_checkout_template_parameters(template, params)
     values = run_name_values(template_name, params)
     values.update(repeatable_arg_shell_values(template, values))
+    if template_name == "sprt":
+        values["sprt_args"] = sprt_shell_args(template, values)
     kind = str(template.get("kind") or template_name)
     name_template = str(template.get("run_name") or f"{template_name}-{{timestamp}}")
     run_name = validate_run_name(str(safe_format(name_template, values)))
@@ -583,7 +658,10 @@ def cmd_template_run(args: argparse.Namespace) -> int:
     path = template_path(args.template)
     template = load_template(path)
     template_name = template_display_name(path, template)
-    params = parse_template_parameters(template_name, template, template_args)
+    if template_name == "sprt":
+        params = parse_sprt_template_parameters(template_name, template, template_args)
+    else:
+        params = parse_template_parameters(template_name, template, template_args)
     manifest = expand_template(template_name, path, template, params)
     if run_options.print_manifest or run_options.dry_run:
         print(json.dumps(manifest, indent=2, sort_keys=True))

@@ -208,10 +208,11 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
         description=(
             "Run the built-in SPRT template. This is equivalent to "
-            "`crucible run sprt ...`."
+            "`crucible run sprt ...`. Crucible consumes only orchestration "
+            "flags; other flags are passed to the SPRT template."
         ),
     )
-    sprt.add_argument("template_args", nargs=argparse.REMAINDER, help="Run options and SPRT parameters.")
+    sprt.add_argument("template_args", nargs=argparse.REMAINDER, help="Run options and SPRT arguments.")
     sprt.set_defaults(func=cmd_template_run, template="sprt")
 
     template = sub.add_parser(
