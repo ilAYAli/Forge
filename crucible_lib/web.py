@@ -134,6 +134,8 @@ _HTML = r"""<!DOCTYPE html>
                  align-items: center; color: var(--dim); font-size: 11px; }
     .graph-row svg { width: 100%; height: 66px; display: block; }
     .graph-line { fill: none; stroke-width: 1.25; vector-effect: non-scaling-stroke; }
+    .graph-zero { stroke: var(--dim); stroke-width: .75; stroke-dasharray: 2 4;
+                  opacity: .38; vector-effect: non-scaling-stroke; }
 
     /* pending / fail groups */
     .group-row { font-size: 13px; color: var(--dim); padding: 2px 0; }
@@ -649,8 +651,12 @@ _HTML = r"""<!DOCTYPE html>
       return n.toExponential(1);
     }
 
-    function graphDomain(values) {
+    function graphDomain(values, includeZero = false) {
       let min = Math.min(...values), max = Math.max(...values);
+      if (includeZero) {
+        min = Math.min(min, 0);
+        max = Math.max(max, 0);
+      }
       if (min === max) {
         const pad = Math.max(1, Math.abs(min) * 0.25);
         return [min - pad, max + pad];
@@ -664,13 +670,31 @@ _HTML = r"""<!DOCTYPE html>
       return [min - pad, max + pad];
     }
 
-    function sparkPath(points, w = 180, h = 66) {
+    function signedGraphSeries(name) {
+      return ['elo', 'llr'].includes(String(name || '').toLowerCase());
+    }
+
+    function graphY(values, y, includeZero = false, h = 66) {
+      const pad = 2;
+      const [minY, maxY] = graphDomain(values, includeZero);
+      return maxY === minY
+        ? h / 2
+        : h - pad - ((y - minY) / (maxY - minY)) * (h - pad * 2);
+    }
+
+    function zeroLine(points, includeZero = false, w = 180, h = 66) {
+      if (!includeZero || !points || points.length < 2) return '';
+      const y = graphY(points.map(p => p.y), 0, true, h);
+      return `<line class="graph-zero" x1="0" y1="${y.toFixed(1)}" x2="${w}" y2="${y.toFixed(1)}"></line>`;
+    }
+
+    function sparkPath(points, includeZero = false, w = 180, h = 66) {
       if (!points || points.length < 2) return '';
       const pad = 2;
       const xs = points.map(p => p.x);
       const ys = points.map(p => p.y);
       const minX = Math.min(...xs), maxX = Math.max(...xs);
-      const [minY, maxY] = graphDomain(ys);
+      const [minY, maxY] = graphDomain(ys, includeZero);
       const sx = maxX === minX
         ? () => w / 2
         : x => pad + ((x - minX) / (maxX - minX)) * (w - pad * 2);
@@ -692,11 +716,14 @@ _HTML = r"""<!DOCTYPE html>
         .filter(s => s.points.length >= 2);
       if (!series.length) return '';
       const rows = series.map(s => {
-        const path = sparkPath(s.points);
+        const includeZero = signedGraphSeries(s.name);
+        const path = sparkPath(s.points, includeZero);
+        const zero = zeroLine(s.points, includeZero);
         const last = s.points[s.points.length - 1]?.y;
         return `<div class="graph-row">`
           + `<span>${esc(s.name)}</span>`
           + `<svg viewBox="0 0 180 66" preserveAspectRatio="none" aria-hidden="true">`
+          + zero
           + `<path class="graph-line" d="${esc(path)}" style="stroke:${esc(s.color)}"></path>`
           + `</svg>`
           + `<span>${esc(fmtGraphNumber(last))}</span>`
