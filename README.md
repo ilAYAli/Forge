@@ -371,6 +371,9 @@ For long jobs, make each task write declared log outputs, add a task label, add
 progress parsing when possible, and pass a notification command so completion or
 failure is reported without polling.
 
+When `wait` sees a terminal state, Crucible writes `<run>/summary.json` with the
+same completion payload sent to notifications, including the final status line.
+
 ## Updates
 
 `update` uses `runs/workers.json` by default, falling back to `./workers.json`.

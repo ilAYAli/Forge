@@ -2943,6 +2943,10 @@ except SystemExit as exc:
             self.assertEqual("smoke", payload["kind"])
             self.assertEqual("wait done check", payload["description"])
             self.assertEqual({"done": 0, "fail": 0, "running": 0, "claimed": 0, "stale": 0, "pending": 0}, payload["counts"])
+            summary = json.loads((manifest.parent / "summary.json").read_text(encoding="utf-8"))
+            self.assertEqual("run_done", summary["event"])
+            self.assertEqual("tasks=0/0", summary["status_line"])
+            self.assertEqual(["tasks=0/0"], summary["display"]["fields"])
 
     def test_wait_sends_fail_notification_payload(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -2997,6 +3001,10 @@ except SystemExit as exc:
             self.assertEqual("failed", payload["state"])
             self.assertEqual(1, payload["rc"])
             self.assertEqual(1, payload["counts"]["fail"])
+            summary = json.loads((manifest.parent / "summary.json").read_text(encoding="utf-8"))
+            self.assertEqual("run_fail", summary["event"])
+            self.assertEqual("failed", summary["state"])
+            self.assertIn("fail=1", summary["status_line"])
 
     def test_claim_is_atomic_status_visible_and_released(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

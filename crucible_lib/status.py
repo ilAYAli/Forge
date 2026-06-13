@@ -1958,6 +1958,13 @@ def print_compact_status(
         indent="  ",
     )
 
+RUN_SUMMARY_NAME = "summary.json"
+
+
+def run_summary_path(manifest_path: Path) -> Path:
+    return manifest_path.parent / RUN_SUMMARY_NAME
+
+
 def cmd_wait(args: argparse.Namespace) -> int:
     started_at = time.monotonic()
     manifest_path = expand_path(args.manifest)
@@ -1965,20 +1972,20 @@ def cmd_wait(args: argparse.Namespace) -> int:
     notify_command = getattr(args, "notify_command", None) or default_notify_command()
     last_line = ""
 
-    def notify(event: str, state: str, rc: int, manifest: dict[str, Any]) -> None:
+    def finish(event: str, state: str, rc: int, manifest: dict[str, Any]) -> int:
+        payload = run_completion_event_payload(
+            manifest_path=manifest_path,
+            manifest=manifest,
+            event=event,
+            state=state,
+            rc=rc,
+            elapsed_seconds=time.monotonic() - started_at,
+            lease_seconds=args.lease_seconds,
+        )
+        write_json(run_summary_path(manifest_path), payload)
         if notify_command:
-            run_notify_command(
-                notify_command,
-                run_completion_event_payload(
-                    manifest_path=manifest_path,
-                    manifest=manifest,
-                    event=event,
-                    state=state,
-                    rc=rc,
-                    elapsed_seconds=time.monotonic() - started_at,
-                    lease_seconds=args.lease_seconds,
-                ),
-            )
+            run_notify_command(notify_command, payload)
+        return rc
 
     while True:
         manifest = apply_profile(load_manifest(manifest_path), args.profile)
@@ -1994,15 +2001,12 @@ def cmd_wait(args: argparse.Namespace) -> int:
             last_line = line
 
         if counts["fail"] and args.fail_on_fail:
-            notify("run_fail", "failed", 1, manifest)
-            return 1
+            return finish("run_fail", "failed", 1, manifest)
         if counts["done"] == total:
-            notify("run_done", "ok", 0, manifest)
-            return 0
+            return finish("run_done", "ok", 0, manifest)
         if deadline is not None and time.monotonic() >= deadline:
             print("timeout waiting for tasks", file=sys.stderr)
-            notify("run_timeout", "timeout", 124, manifest)
-            return 124
+            return finish("run_timeout", "timeout", 124, manifest)
         time.sleep(max(0.1, args.interval_seconds))
 
 def run_notify_command(command_text: str | None, payload: dict[str, Any]) -> int:
@@ -2082,6 +2086,12 @@ def run_completion_event_payload(
     lease_seconds: int,
 ) -> dict[str, Any]:
     summary = status_summary(manifest, lease_seconds=lease_seconds)
+    metadata = manifest_metadata(manifest)
+    summary["manifest"] = str(manifest_path)
+    summary["run"] = manifest_path.parent.name
+    summary["metadata"] = metadata
+    display = run_status_payload(summary).get("display")
+    fields = display.get("fields") if isinstance(display, dict) else None
     payload: dict[str, Any] = {
         "event": event,
         "run": manifest_path.parent.name,
@@ -2094,10 +2104,14 @@ def run_completion_event_payload(
         "counts": summary["counts"],
         "active_count": summary["active_count"],
     }
+    if isinstance(display, dict):
+        payload["display"] = display
+    if isinstance(fields, list):
+        payload["status_line"] = " ".join(str(field) for field in fields)
     progress = summary_progress(summary)
     if progress:
         payload["progress"] = progress
-    payload.update(manifest_metadata(manifest))
+    payload.update(metadata)
     return payload
 
 def verify_manifest(manifest: dict[str, Any], *, verify_requirements: bool = True) -> None:
