@@ -239,12 +239,13 @@ _HTML = r"""<!DOCTYPE html>
     }
 
     function statePri(r) {
-      return {current:0,failed:1,queued:2,done:3,empty:4}[r.state]??5;
+      return {current:0,failed:1,queued:2,stopped:3,done:4,empty:5}[r.state]??6;
     }
 
     let soundEnabled = localStorage.getItem('crucible.sound') === '1';
     let audioCtx = null;
     let activeJobKeys = null;
+    const hiddenRunNames = new Set();
 
     function updateSoundButton() {
       const btn = document.getElementById('sound');
@@ -807,6 +808,7 @@ _HTML = r"""<!DOCTYPE html>
     }
 
     async function runCmd(run, cmd, btn) {
+      const oldText = btn.textContent;
       btn.disabled = true;
       btn.textContent = '…';
       try {
@@ -819,10 +821,22 @@ _HTML = r"""<!DOCTYPE html>
         if (!data.ok) {
           document.getElementById('err').style.display = 'block';
           document.getElementById('err').textContent = (data.stderr || data.error || 'command failed').trim();
+          btn.disabled = false;
+          btn.textContent = oldText;
+          return;
+        }
+        if (cmd === 'del' || cmd === 'hide') {
+          hiddenRunNames.add(String(run));
+          const body = document.getElementById(rbid(run));
+          const card = body?.closest?.('.run');
+          if (card) card.remove();
         }
       } catch(e) {
         document.getElementById('err').style.display = 'block';
         document.getElementById('err').textContent = e.message;
+        btn.disabled = false;
+        btn.textContent = oldText;
+        return;
       }
       refresh();
     }
@@ -885,15 +899,18 @@ _HTML = r"""<!DOCTYPE html>
         }
         if (!data.loading) notifyStartedJobs(data);
 
-        const runs = (data.runs||[]).slice().sort((a,b) => {
-          const dp = statePri(a)-statePri(b);
-          if (dp) return dp;
-          if (a.state==='current') {
-            const ea=runEtaS(a)??1e9, eb=runEtaS(b)??1e9;
-            if (ea!==eb) return ea-eb;
-          }
-          return a.run<b.run?-1:a.run>b.run?1:0;
-        });
+        const runs = (data.runs||[])
+          .filter(r => !hiddenRunNames.has(String(r.run || '')))
+          .slice()
+          .sort((a,b) => {
+            const dp = statePri(a)-statePri(b);
+            if (dp) return dp;
+            if (a.state==='current') {
+              const ea=runEtaS(a)??1e9, eb=runEtaS(b)??1e9;
+              if (ea!==eb) return ea-eb;
+            }
+            return a.run<b.run?-1:a.run>b.run?1:0;
+          });
 
         saveState();
         const el = document.getElementById('runs');
