@@ -49,13 +49,13 @@ _HTML = r"""<!DOCTYPE html>
     .run.done    { border-color: var(--border); opacity: .65; }
 
     /* run header — always visible */
-    .run-hdr { cursor: pointer; user-select: text; background: var(--bg2); padding: 8px 12px; }
+    .run-hdr { user-select: text; background: var(--bg2); padding: 8px 12px; }
     .run-hdr:hover { background: var(--bg3); }
     .run-hdr-top { display: flex; align-items: center; gap: 8px; }
-    .arrow { color: var(--dim); font-size: 10px; flex-shrink: 0; transition: transform .15s; user-select: none; }
+    .arrow { color: var(--dim); cursor: pointer; font-size: 10px; flex-shrink: 0; transition: transform .15s; user-select: none; }
     .arrow.open { transform: rotate(90deg); }
     .run-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis;
-                white-space: nowrap; font-weight: 600; }
+                white-space: nowrap; font-weight: 600; cursor: text; }
     .badge { font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 10px; flex-shrink: 0; }
     .badge.current { background: rgba(212,168,34,.15); color: var(--yel); }
     .badge.failed  { background: rgba(217,95,95,.15);  color: var(--red); }
@@ -65,7 +65,7 @@ _HTML = r"""<!DOCTYPE html>
     .badge.empty   { background: rgba(118,118,128,.12); color: var(--dim); }
     /* summary line below the run name — always visible */
     .run-summary { display: flex; align-items: center; gap: 12px; margin-top: 4px;
-                   padding-left: 18px; font-size: 13px; flex-wrap: wrap; }
+                   padding-left: 18px; font-size: 13px; flex-wrap: wrap; cursor: text; }
     .run-desc  { color: var(--dim); }
     .run-fields { color: var(--text); }
     .run-eta   { color: var(--yel); font-weight: 600; }
@@ -457,12 +457,6 @@ _HTML = r"""<!DOCTYPE html>
       saveUiState();
     }
 
-    function toggleRunHeader(event, id) {
-      if (window.getSelection && String(window.getSelection())) return;
-      if (event?.target?.closest?.('button')) return;
-      toggleId(id);
-    }
-
     function makeSection(run, section, titleHtml, titleCls, detailHtml, defaultOpen) {
       const id = sid(run, section);
       const open = resolveOpen(id, defaultOpen);
@@ -790,7 +784,7 @@ _HTML = r"""<!DOCTYPE html>
       // header — always visible
       const hdr = `
         <div class="run-hdr-top">
-          <span class="arrow${bodyOpen?' open':''}">&#9654;</span>
+          <span class="arrow${bodyOpen?' open':''}" onclick="event.stopPropagation();toggleId('${rId}')">&#9654;</span>
           <span class="run-name">${esc(r.run)}</span>
           <div class="run-actions">${actions.join('')}</div>
           <span class="badge ${state}">${state==='current'?'active':state}</span>
@@ -839,7 +833,7 @@ _HTML = r"""<!DOCTYPE html>
       }
 
       return `<div class="run ${state}">
-        <div class="run-hdr" onclick="toggleRunHeader(event,'${rId}')">${hdr}</div>
+        <div class="run-hdr">${hdr}</div>
         <div class="pbar-wrap"><div class="pbar-fill" style="width:${pct}%"></div></div>
         <div class="run-body${bodyOpen?' open':''}" id="${rId}">${sections.join('')}</div>
       </div>`;
