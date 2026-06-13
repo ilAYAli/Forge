@@ -6546,6 +6546,52 @@ except SystemExit as exc:
                 )
                 self.assertIsNone(result)
 
+    def test_stop_named_run_delegates_to_coordinator(self) -> None:
+        remote_result = subprocess.CompletedProcess(
+            args=["ssh"],
+            returncode=0,
+            stdout="remote stop\n",
+            stderr="",
+        )
+        with mock.patch.dict(
+            os.environ,
+            {"CRUCIBLE_COORDINATOR_RUNS": "pwa-5090:/home/petter/code/cpp/chess/crucible/runs"},
+        ), mock.patch("crucible.subprocess.run", return_value=remote_result) as run_mock:
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout):
+                rc = crucible.cmd_stop(argparse.Namespace(run="active", all=False, lease_seconds=600))
+
+        self.assertEqual(0, rc)
+        self.assertEqual(
+            "coordinator: pwa-5090:/home/petter/code/cpp/chess/crucible/runs\nremote stop\n",
+            stdout.getvalue(),
+        )
+        command = run_mock.call_args.args[0]
+        self.assertEqual("ssh", command[0])
+        self.assertIn("pwa-5090", command)
+        self.assertIn("CRUCIBLE_RUNS_DIR=/home/petter/code/cpp/chess/crucible/runs", command[-1])
+        self.assertIn("CRUCIBLE_COORDINATOR_RUNS=", command[-1])
+        self.assertIn("crucible stop active", command[-1])
+
+    def test_stop_clears_queued_launch_markers(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runs = Path(tmp) / "runs"
+            run = self.write_retry_run(runs, "queued", failed=None)
+            manifest = crucible.load_manifest(run / "manifest.json")
+            crucible.write_json(crucible.queue_request_path(manifest), {"run": "queued"})
+            crucible.write_json(crucible.launch_request_path(manifest), {"run": "queued"})
+
+            with self.patch_runs_dir(runs):
+                stdout = io.StringIO()
+                with contextlib.redirect_stdout(stdout):
+                    rc = crucible.cmd_stop(argparse.Namespace(run="queued", all=False, lease_seconds=600))
+
+            self.assertEqual(0, rc)
+            self.assertTrue(crucible.stop_request_path(manifest).exists())
+            self.assertFalse(crucible.queue_request_path(manifest).exists())
+            self.assertFalse(crucible.launch_request_path(manifest).exists())
+            self.assertIn("stop requested: queued released=0 cleared=queue,launch", stdout.getvalue())
+
     def test_drain_prevents_worker_claims_until_cleared(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -6695,6 +6741,33 @@ except SystemExit as exc:
 
             self.assertEqual(0, rc)
             self.assertFalse(run_dir.exists())
+
+    def test_delete_named_run_delegates_to_coordinator(self) -> None:
+        remote_result = subprocess.CompletedProcess(
+            args=["ssh"],
+            returncode=0,
+            stdout="remote delete\n",
+            stderr="",
+        )
+        with mock.patch.dict(
+            os.environ,
+            {"CRUCIBLE_COORDINATOR_RUNS": "pwa-5090:/home/petter/code/cpp/chess/crucible/runs"},
+        ), mock.patch("crucible.subprocess.run", return_value=remote_result) as run_mock:
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout):
+                rc = crucible.cmd_del(argparse.Namespace(run="queued", done=False, force=True, lease_seconds=600))
+
+        self.assertEqual(0, rc)
+        self.assertEqual(
+            "coordinator: pwa-5090:/home/petter/code/cpp/chess/crucible/runs\nremote delete\n",
+            stdout.getvalue(),
+        )
+        command = run_mock.call_args.args[0]
+        self.assertEqual("ssh", command[0])
+        self.assertIn("pwa-5090", command)
+        self.assertIn("CRUCIBLE_RUNS_DIR=/home/petter/code/cpp/chess/crucible/runs", command[-1])
+        self.assertIn("CRUCIBLE_COORDINATOR_RUNS=", command[-1])
+        self.assertIn("crucible del queued --force", command[-1])
 
     def test_multi_repo_and_command_requirements(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -172,6 +172,64 @@ def run_status_on_coordinator(args: argparse.Namespace, coordinator_runs: str) -
         print(result.stderr, end="", file=sys.stderr)
     return rc
 
+def state_control_command_args(name: str, args: argparse.Namespace) -> list[str]:
+    command = [name]
+    if getattr(args, "run", None) is not None:
+        command.append(str(args.run))
+    if name == "stop":
+        if bool(getattr(args, "all", False)):
+            command.append("--all")
+    elif name == "drain":
+        if bool(getattr(args, "all", False)):
+            command.append("--all")
+        command.extend(["--worker", str(args.worker)])
+        if bool(getattr(args, "clear", False)):
+            command.append("--clear")
+    elif name == "del":
+        if bool(getattr(args, "done", False)):
+            command.append("--done")
+        if bool(getattr(args, "force", False)):
+            command.append("--force")
+    command.extend(["--lease-seconds", str(args.lease_seconds)])
+    return command
+
+def run_state_control_on_coordinator(name: str, args: argparse.Namespace, coordinator_runs: str) -> int:
+    host, runs_path = parse_coordinator(coordinator_runs)
+    command = state_control_command_args(name, args)
+    if host:
+        remote = (
+            "command -v crucible >/dev/null 2>&1 || "
+            "{ echo 'crucible not found in PATH on coordinator' >&2; exit 127; }; "
+            f"exec env {shlex.quote(COORDINATOR_RUNS_ENV)}= "
+            f"{shlex.quote(RUNS_DIR_ENV)}={shlex.quote(runs_path)} "
+            f"crucible {shell_join(command)}"
+        )
+        result = subprocess.run(
+            ["ssh", *SSH_OPTS, host, remote],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+    else:
+        env = os.environ.copy()
+        env[COORDINATOR_RUNS_ENV] = ""
+        env[RUNS_DIR_ENV] = runs_path
+        result = subprocess.run(
+            [sys.executable, str(script_path()), *command],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+            env=env,
+        )
+    print(f"coordinator: {coordinator_runs}")
+    if result.stdout:
+        print(result.stdout, end="")
+    if result.stderr:
+        print(result.stderr, end="", file=sys.stderr)
+    return result.returncode
+
 def normalize_status_summary_payload(summary: Any) -> Any:
     if not isinstance(summary, dict):
         return summary
@@ -1211,6 +1269,9 @@ def run_summary_for(run: str | Path, *, lease_seconds: int) -> dict[str, Any]:
     return summary
 
 def cmd_stop(args: argparse.Namespace) -> int:
+    coordinator_runs = configured_coordinator_runs()
+    if coordinator_runs and status_can_delegate(args.run):
+        return run_state_control_on_coordinator("stop", args, coordinator_runs)
     if not args.all and not args.run:
         raise SystemExit("stop requires a run name or --all")
     targets = (
@@ -1229,14 +1290,29 @@ def cmd_stop(args: argparse.Namespace) -> int:
             "host": socket.gethostname(),
         }
         write_json(stop_request_path(manifest), payload)
+        cleared: list[str] = []
+        queue_path = queue_request_path(manifest)
+        if queue_path.exists():
+            queue_path.unlink()
+            cleared.append("queue")
+        launch_path = launch_request_path(manifest)
+        if launch_path.exists():
+            launch_path.unlink()
+            cleared.append("launch")
         released = release_active_claims(manifest, lease_seconds=args.lease_seconds)
         stopped += 1
-        print(f"stop requested: {path.parent.name} released={len(released)}")
+        message = f"stop requested: {path.parent.name} released={len(released)}"
+        if cleared:
+            message += f" cleared={','.join(cleared)}"
+        print(message)
     if stopped == 0:
         print("no current runs to stop")
     return 0
 
 def cmd_drain(args: argparse.Namespace) -> int:
+    coordinator_runs = configured_coordinator_runs()
+    if coordinator_runs and status_can_delegate(args.run):
+        return run_state_control_on_coordinator("drain", args, coordinator_runs)
     if not args.all and not args.run:
         raise SystemExit("drain requires a run name or --all")
     worker = str(args.worker or "").strip()
@@ -1285,6 +1361,9 @@ def confirm_delete(paths: list[Path], *, force: bool) -> None:
         raise SystemExit("delete cancelled")
 
 def cmd_del(args: argparse.Namespace) -> int:
+    coordinator_runs = configured_coordinator_runs()
+    if coordinator_runs and status_can_delegate(args.run):
+        return run_state_control_on_coordinator("del", args, coordinator_runs)
     if args.done and args.run:
         raise SystemExit("del accepts either a run name or --done")
     if not args.done and not args.run:
