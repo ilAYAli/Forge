@@ -337,6 +337,7 @@ _HTML = r"""<!DOCTYPE html>
     const FIELD_TASK_COLS = [
       {name: 'elo',  keys: ['elo','elo~','Elo']},
       {name: 'ci',   keys: ['ci','err','error','+/-','elo_ci']},
+      {name: 'llr',  keys: ['llr','LLR']},
       {name: 'los',  keys: ['los','LOS']},
       {name: 'draw', keys: ['draw','DrawRatio','draw_ratio']},
     ];

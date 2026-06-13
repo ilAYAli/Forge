@@ -1374,16 +1374,20 @@ SPRT_PROGRESS_RE = re.compile(
     re.IGNORECASE,
 )
 
-SPRT_PROGRESS_FIELD_KEYS = {"elo", "ci", "los", "draw"}
+SPRT_PROGRESS_FIELD_KEYS = {"elo", "ci", "llr", "los", "draw"}
 
 def sprt_progress_line_fields(line: str) -> dict[str, str]:
     match = SPRT_PROGRESS_RE.search(line)
     if not match:
         return {}
     values = match.groupdict()
+    llr = values["llr"].strip()
+    llr_bound = values["llr_bound"].strip()
+    llr_pct = values["llr_pct"].strip()
     return {
         "elo": values["elo"].strip(),
         "ci": values["err"].strip(),
+        "llr": f"{llr}/{llr_bound} ({llr_pct}%)",
         "los": values["los"].strip(),
         "draw": values["draw"].strip(),
     }
@@ -1414,6 +1418,29 @@ def progress_field_float(fields: dict[str, str], *names: str) -> float | None:
         if value is not None and math.isfinite(value):
             return value
     return None
+
+def progress_field_llr(fields: dict[str, str]) -> tuple[float, float | None]:
+    value = str(fields.get("llr") or fields.get("LLR") or "").strip()
+    match = re.match(
+        r"(?P<llr>[+-]?\d+(?:\.\d+)?)(?:/(?P<bound>[+-]?(?:\d+(?:\.\d+)?|inf|nan)))?",
+        value,
+        re.IGNORECASE,
+    )
+    if not match:
+        return (math.nan, None)
+    llr = parse_float(match.group("llr"))
+    bound = parse_float(match.group("bound"))
+    if llr is None or not math.isfinite(llr):
+        return (math.nan, None)
+    if bound is None or not math.isfinite(bound):
+        return (llr, None)
+    return (llr, abs(bound))
+
+def format_llr_field(llr: float, bound: float | None, mixed_bound: bool) -> str:
+    if bound is None or mixed_bound or bound <= 0:
+        return f"llr={llr:.2f}"
+    pct = llr / bound * 100.0
+    return f"llr={llr:.2f}/{bound:.2f} ({pct:.0f}%)"
 
 def elo_score_rate(elo: float) -> float:
     return 1.0 / (1.0 + math.pow(10.0, -elo / 400.0))
@@ -1453,6 +1480,10 @@ def sprt_aggregate_fields(summary: dict[str, Any]) -> list[str]:
     los_weight_total = 0
     draw_weight_total = 0
     ci_weight_total = 0
+    llr_total = 0.0
+    llr_count = 0
+    llr_bound: float | None = None
+    llr_mixed_bound = False
 
     for row in sprt_summary_rows(summary):
         data = row.get("progress_data")
@@ -1474,6 +1505,15 @@ def sprt_aggregate_fields(summary: dict[str, Any]) -> list[str]:
         if ci is not None and ci >= 0:
             weighted_ci_squares += (ci * done) ** 2
             ci_weight_total += done
+        llr, bound = progress_field_llr(normalized_fields)
+        if math.isfinite(llr):
+            llr_total += llr
+            llr_count += 1
+            if bound is not None:
+                if llr_bound is None:
+                    llr_bound = bound
+                elif not math.isclose(llr_bound, bound, rel_tol=1e-9, abs_tol=1e-9):
+                    llr_mixed_bound = True
         los = progress_field_float(normalized_fields, "los", "LOS")
         if los is not None:
             weighted_los += los * done
@@ -1488,6 +1528,8 @@ def sprt_aggregate_fields(summary: dict[str, Any]) -> list[str]:
     fields = [f"elo={score_rate_elo(weighted_score / weight_total):+.1f}"]
     if ci_weight_total > 0:
         fields.append(f"ci={math.sqrt(weighted_ci_squares) / ci_weight_total:.1f}")
+    if llr_count > 0:
+        fields.append(format_llr_field(llr_total, llr_bound, llr_mixed_bound))
     if los_weight_total > 0:
         fields.append(f"los={weighted_los / los_weight_total:.1f}%")
     if draw_weight_total > 0:

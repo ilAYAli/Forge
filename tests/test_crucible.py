@@ -369,6 +369,7 @@ except SystemExit as exc:
 
         self.assertIn("FIELD_TASK_COLS", web._HTML)
         self.assertIn("firstProgressField(t.progress_data", web._HTML)
+        self.assertIn("{name: 'llr'", web._HTML)
         self.assertIn("display.active_fields || active.fields || []", web._HTML)
         self.assertIn("function taskProgressText", web._HTML)
         self.assertNotIn("pd.global_done", web._HTML)
@@ -5366,11 +5367,11 @@ except SystemExit as exc:
             status = self.run_cli("status", str(run))
 
             self.assertEqual(0, status.returncode, status.stderr)
-            self.assertIn("tasks=0/2 games=400/2000 elo=+1.0 ci=9.0 los=58.8% draw=43.8%", status.stdout)
+            self.assertIn("tasks=0/2 games=400/2000 elo=+1.0 ci=9.0 llr=-0.12/2.94 (-4%) los=58.8% draw=43.8%", status.stdout)
             self.assertIn("active: 2", status.stdout)
             self.assertNotIn("active: 2 games=400/2000", status.stdout)
-            self.assertIn("worker-a sprt shard=0 [games=100/1000, elo=10.0, ci=20.0, los=70.0, draw=40.0]", status.stdout)
-            self.assertIn("worker-b sprt shard=1 [games=300/1000, elo=-2.0, ci=10.0, los=55.0, draw=45.0]", status.stdout)
+            self.assertIn("worker-a sprt shard=0 [games=100/1000, elo=10.0, ci=20.0, llr=0.12/2.94 (4%), los=70.0, draw=40.0]", status.stdout)
+            self.assertIn("worker-b sprt shard=1 [games=300/1000, elo=-2.0, ci=10.0, llr=-0.24/2.94 (-8%), los=55.0, draw=45.0]", status.stdout)
 
     def test_status_sprt_progress_does_not_require_eta(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -5413,8 +5414,8 @@ except SystemExit as exc:
             status = self.run_cli("status", str(run))
 
             self.assertEqual(0, status.returncode, status.stderr)
-            self.assertIn("tasks=0/1 games=38/50 elo=-18.3 ci=89.8 los=34.1% draw=36.8%", status.stdout)
-            self.assertIn("worker-a sprt shard=0 [games=38/50, elo=-18.3, ci=89.8, los=34.1, draw=36.8]", status.stdout)
+            self.assertIn("tasks=0/1 games=38/50 elo=-18.3 ci=89.8 llr=-0.09/2.94 (-3%) los=34.1% draw=36.8%", status.stdout)
+            self.assertIn("worker-a sprt shard=0 [games=38/50, elo=-18.3, ci=89.8, llr=-0.09/2.94 (-3%), los=34.1, draw=36.8]", status.stdout)
 
     def test_status_eta_counts_down_from_log_timestamp(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
