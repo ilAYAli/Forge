@@ -394,7 +394,10 @@ except SystemExit as exc:
         self.assertIn("return r.toFixed(4) + '/s'", web._HTML)
         self.assertIn("fmtRate(pd?.rate)", web._HTML)
         self.assertIn("function renderTaskGraphs", web._HTML)
-        self.assertIn("t.progress_graph?.series", web._HTML)
+        self.assertIn("function graphCard", web._HTML)
+        self.assertIn("graph?.series", web._HTML)
+        self.assertIn("function renderRunGraph", web._HTML)
+        self.assertIn("r.progress_graph", web._HTML)
         self.assertIn("function attrEsc", web._HTML)
         self.assertIn("failCount > 0 && activeCount === 0", web._HTML)
         self.assertIn("runCmd('${runArg}','del',this)", web._HTML)
@@ -5440,6 +5443,61 @@ except SystemExit as exc:
             series = {item["name"]: item["points"] for item in graph["series"]}
             self.assertEqual([{"x": 10.0, "y": 1.5}, {"x": 20.0, "y": 1.25}], series["loss"])
             self.assertEqual([{"x": 10.0, "y": 0.001}, {"x": 20.0, "y": 0.0005}], series["lr"])
+
+    def test_status_builds_sprt_run_graph_without_declared_series(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run = root / "sprt-run"
+            state = run / "state"
+            logs = run / "logs"
+            state.mkdir(parents=True)
+            logs.mkdir(parents=True)
+            tasks = []
+            for index in range(2):
+                tasks.append({
+                    "id": f"task_{index}",
+                    "index": index,
+                    "command": "true",
+                    "outputs": [],
+                    "progress": {
+                        "unit": "games",
+                        "total": 2,
+                        "log_regex": (
+                            r"\[\s*(?P<done>\d+)\/(?P<total>\d+)\].*?"
+                            r"Elo\s+(?P<elo>[-+]?\d+(?:\.\d+)?|[-+]?inf).*?"
+                            r"\+/-\s+(?P<ci>\d+(?:\.\d+)?).*?"
+                            r"LOS\s+(?P<los>\d+(?:\.\d+)?)%.*?"
+                            r"draw\s+(?P<draw>\d+(?:\.\d+)?)%"
+                        ),
+                    },
+                })
+            manifest = {
+                "schema": "crucible.task.v1",
+                "name": "sprt-run",
+                "kind": "sprt",
+                "work_dir": str(run),
+                "state_dir": str(state),
+                "log_dir": str(logs),
+                "tasks": tasks,
+            }
+            for index, (elo, llr) in enumerate((("10.0", "0.01"), ("-20.0", "-0.02"))):
+                task_id = f"task_{index}"
+                (state / f"{task_id}.done.json").write_text(
+                    json.dumps({"task": task_id, "host": "worker"}),
+                    encoding="utf-8",
+                )
+                (logs / f"{task_id}.log").write_text(
+                    f"[2/2] Elo  {elo} +/-  80.0 | LLR {llr}/2.94 (  1%) | LOS 50.0% | draw   0.0%\n",
+                    encoding="utf-8",
+                )
+
+            summary = crucible.status_summary(manifest, lease_seconds=600)
+
+            graph = summary["progress_graph"]
+            self.assertIsNotNone(graph)
+            series = {item["name"]: item["points"] for item in graph["series"]}
+            self.assertEqual([{"x": 2.0, "y": 0.01}, {"x": 4.0, "y": -0.02}], series["llr"])
+            self.assertEqual([{"x": 2.0, "y": 10.0}, {"x": 4.0, "y": -20.0}], series["elo"])
 
     def test_status_sprt_header_shows_aggregated_elo(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -664,32 +664,41 @@ _HTML = r"""<!DOCTYPE html>
       ).join(' ');
     }
 
+    function graphCard(graph, title) {
+      const series = (graph?.series || [])
+        .map((s, i) => ({
+          name: s.name || '',
+          color: GRAPH_COLORS[i % GRAPH_COLORS.length],
+          points: graphPoints(s),
+        }))
+        .filter(s => s.points.length >= 2);
+      if (!series.length) return '';
+      const rows = series.map(s => {
+        const path = sparkPath(s.points);
+        const last = s.points[s.points.length - 1]?.y;
+        return `<div class="graph-row">`
+          + `<span>${esc(s.name)}</span>`
+          + `<svg viewBox="0 0 180 28" preserveAspectRatio="none" aria-hidden="true">`
+          + `<path class="graph-line" d="${esc(path)}" style="stroke:${esc(s.color)}"></path>`
+          + `</svg>`
+          + `<span>${esc(fmtGraphNumber(last))}</span>`
+          + `</div>`;
+      }).join('');
+      return `<div class="task-graph"><div class="graph-title">${esc(title)}</div>${rows}</div>`;
+    }
+
     function renderTaskGraphs(tasks) {
       const graphs = [];
       for (const t of (tasks || [])) {
-        const series = (t.progress_graph?.series || [])
-          .map((s, i) => ({
-            name: s.name || '',
-            color: GRAPH_COLORS[i % GRAPH_COLORS.length],
-            points: graphPoints(s),
-          }))
-          .filter(s => s.points.length >= 2);
-        if (!series.length) continue;
-        const title = `${t.worker || '?'} ${t.label || ''} shard=${t.index}`;
-        const rows = series.map(s => {
-          const path = sparkPath(s.points);
-          const last = s.points[s.points.length - 1]?.y;
-          return `<div class="graph-row">`
-            + `<span>${esc(s.name)}</span>`
-            + `<svg viewBox="0 0 180 28" preserveAspectRatio="none" aria-hidden="true">`
-            + `<path class="graph-line" d="${esc(path)}" style="stroke:${esc(s.color)}"></path>`
-            + `</svg>`
-            + `<span>${esc(fmtGraphNumber(last))}</span>`
-            + `</div>`;
-        }).join('');
-        graphs.push(`<div class="task-graph"><div class="graph-title">${esc(title)}</div>${rows}</div>`);
+        const graph = graphCard(t.progress_graph, `${t.worker || '?'} ${t.label || ''} shard=${t.index}`);
+        if (graph) graphs.push(graph);
       }
       return graphs.length ? `<div class="task-graphs">${graphs.join('')}</div>` : '';
+    }
+
+    function renderRunGraph(r) {
+      const graph = graphCard(r.progress_graph, 'run trend');
+      return graph ? `<div class="task-graphs">${graph}</div>` : '';
     }
 
     function renderGroups(groups) {
@@ -753,6 +762,14 @@ _HTML = r"""<!DOCTYPE html>
 
       // body sections (no description here — it's in the header now)
       const sections = [];
+
+      const runGraph = renderRunGraph(r);
+      if (runGraph) {
+        sections.push(makeSection(r.run, 'graphs',
+          'graphs', 'dim',
+          runGraph, isCurrent
+        ));
+      }
 
       // active — open by default for current runs
       if (active.count > 0) {

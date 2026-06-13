@@ -1455,9 +1455,14 @@ def format_llr_field(llr: float, bound: float | None, mixed_bound: bool) -> str:
     pct = llr / bound * 100.0
     return f"llr={llr:.2f}/{bound:.2f} ({pct:.0f}%)"
 
-def progress_series_specs(config: dict[str, Any]) -> list[dict[str, str]]:
+def progress_series_specs(config: dict[str, Any], *, kind: str | None = None) -> list[dict[str, str]]:
     raw = config.get("series")
     if not isinstance(raw, list):
+        if str(kind or "").lower() == "sprt":
+            return [
+                {"name": "llr", "field": "llr", "x": "done"},
+                {"name": "elo", "field": "elo", "x": "done"},
+            ]
         return []
     specs: list[dict[str, str]] = []
     for item in raw:
@@ -1475,7 +1480,7 @@ def progress_series_specs(config: dict[str, Any]) -> list[dict[str, str]]:
     return specs
 
 def progress_numeric_value(name: str, data: dict[str, Any], fields: dict[str, str]) -> float | None:
-    if name in {"done", "total", "output", "rate"}:
+    if name in {"done", "total", "output", "rate", "global_done", "global_total"}:
         value = data.get(name)
         if isinstance(value, (int, float)) and math.isfinite(float(value)):
             return float(value)
@@ -1486,13 +1491,17 @@ def progress_numeric_value(name: str, data: dict[str, Any], fields: dict[str, st
     value = progress_field_float(fields, name)
     if value is not None:
         return value
-    return parse_float(fields.get(name))
+    parsed = parse_float(fields.get(name))
+    if parsed is None or not math.isfinite(parsed):
+        return None
+    return parsed
 
 def task_log_progress_graph(manifest: dict[str, Any], task: dict[str, Any]) -> dict[str, Any] | None:
     config = task.get("progress")
     if not isinstance(config, dict):
         return None
-    specs = progress_series_specs(config)
+    metadata = manifest_metadata(manifest)
+    specs = progress_series_specs(config, kind=str(metadata.get("kind") or ""))
     if not specs:
         return None
     pattern = config.get("log_regex")
@@ -1546,6 +1555,64 @@ def task_log_progress_graph(manifest: dict[str, Any], task: dict[str, Any]) -> d
         return None
     return {
         "x_unit": str(config.get("unit") or ""),
+        "series": series,
+    }
+
+def task_progress_graph_point_specs(manifest: dict[str, Any], task: dict[str, Any]) -> list[dict[str, str]]:
+    config = task.get("progress")
+    if not isinstance(config, dict):
+        return []
+    metadata = manifest_metadata(manifest)
+    return progress_series_specs(config, kind=str(metadata.get("kind") or ""))
+
+def run_progress_graph_from_rows(
+    manifest: dict[str, Any],
+    rows: list[dict[str, Any]],
+    progress_task_offsets: dict[str, tuple[str, int]],
+    progress_unit_totals: dict[str, int],
+) -> dict[str, Any] | None:
+    tasks_by_id = {str(task["id"]): task for task in manifest["tasks"]}
+    points_by_name: dict[str, list[dict[str, float]]] = {}
+    x_unit = ""
+    for row in rows:
+        task = tasks_by_id.get(str(row.get("id") or ""))
+        if task is None:
+            continue
+        specs = task_progress_graph_point_specs(manifest, task)
+        if not specs:
+            continue
+        data = row.get("progress_data")
+        if not isinstance(data, dict) or data.get("kind") != "metadata":
+            continue
+        fields = data.get("fields")
+        if not isinstance(fields, dict):
+            continue
+        graph_data = dict(data)
+        config_progress = progress_config_unit_total(task)
+        if config_progress is not None and isinstance(data.get("done"), int):
+            unit, task_total = config_progress
+            x_unit = x_unit or unit
+            offset_unit, offset = progress_task_offsets.get(str(task["id"]), (unit, 0))
+            if offset_unit == unit:
+                graph_data.setdefault("global_done", offset + int(data["done"]))
+                graph_data.setdefault("global_total", progress_unit_totals.get(unit, task_total))
+        for spec in specs:
+            x_name = "global_done" if spec["x"] == "done" and "global_done" in graph_data else spec["x"]
+            x = progress_numeric_value(x_name, graph_data, fields)
+            y = progress_numeric_value(spec["field"], graph_data, fields)
+            if x is None or y is None:
+                continue
+            points_by_name.setdefault(spec["name"], []).append({"x": x, "y": y})
+
+    series = []
+    for name, points in points_by_name.items():
+        points.sort(key=lambda point: point["x"])
+        if len(points) >= 2:
+            series.append({"name": name, "points": points})
+    if not series:
+        return None
+    return {
+        "x_unit": x_unit,
         "series": series,
     }
 
@@ -1953,6 +2020,13 @@ def status_summary(manifest: dict[str, Any], *, lease_seconds: int) -> dict[str,
             pending.append(index)
             pending_groups.setdefault(row["label"], []).append(index)
 
+    progress_graph = run_progress_graph_from_rows(
+        manifest,
+        rows,
+        progress_task_offsets,
+        progress_unit_totals,
+    )
+
     return {
         "tasks": len(manifest["tasks"]),
         "counts": counts,
@@ -1969,6 +2043,7 @@ def status_summary(manifest: dict[str, Any], *, lease_seconds: int) -> dict[str,
         "worker_rates": worker_rates,
         "queue": queue_payload,
         "launch": launch_payload,
+        "progress_graph": progress_graph,
         "diagnostics": state_diagnostics(),
     }
 
