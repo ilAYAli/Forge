@@ -71,9 +71,9 @@ crucible template list
 crucible template show sprt
 crucible sprt --candidate ~/assets/engines/enyo_9696dac --games 1000
 crucible sprt --candidate ~/assets/engines/enyo_9696dac --games 1000 \
-  --workers pwa-mbp:4,pwa-mbp0:5,pwa-5090:8
+  --workers pwa-5090:8,pwa-mbp0:5,pwa-mbp:3,pwa-wsl:3,pwa-rce:3
 crucible sprt --candidate ~/assets/engines/enyo_9696dac --games 1000 \
-  --workers pwa-mbp:4,pwa-mbp0:5,pwa-5090:8 --shards 64
+  --workers pwa-5090:8,pwa-mbp0:5,pwa-mbp:3,pwa-wsl:3,pwa-rce:3 --shards 176
 crucible sprt --candidate ~/assets/engines/enyo_9696dac --games 1000 \
   --candidate-uci nnue_file=~/code/cpp/chess/enyo/net/candidate.nn \
   --reference-uci nnue_file=~/code/cpp/chess/enyo/net/reference.nn
@@ -99,13 +99,13 @@ For `crucible sprt`, inline worker counts are worker slots. `pwa-mbp:4`
 launches 4 SPRT shards on `pwa-mbp`. Use `:0` to disable a host.
 `--concurrency` and `--threads` are passed to `sprt` and affect the engine work
 inside each shard; they do not change the number of Crucible worker slots.
-If `--shards` is omitted, Crucible chooses 4 shards per worker slot,
+If `--shards` is omitted, Crucible chooses 8 shards per worker slot,
 capped by the number of games. Pass `--shards N` to override it.
 
 Default workers can be configured in `~/.config/crucible/config.yml`:
 
 ```yaml
-default_workers: "pwa-mbp:4,pwa-mbp0:5,pwa-5090:8,pwa-rce:4,pwa-wsl:4"
+default_workers: "pwa-5090:8,pwa-mbp0:5,pwa-mbp:3,pwa-wsl:3,pwa-rce:3"
 coordinator_host: "pwa-5090"
 notify_command: "/path/to/notify-script"
 template_dirs:

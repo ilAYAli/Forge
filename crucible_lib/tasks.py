@@ -325,8 +325,13 @@ def claim_task(
     digest = manifest_checksum(manifest)
     max_attempts = max(0, int(max_attempts))
 
-    def claim_order(item: dict[str, Any]) -> tuple[bool, int]:
-        return (task_fail_path(manifest, item).exists(), int(item.get("index", 0)))
+    def claim_order(item: dict[str, Any]) -> tuple[bool, bool, int]:
+        preferred = str(item.get("claim_worker") or "").strip()
+        return (
+            bool(preferred and preferred != worker),
+            task_fail_path(manifest, item).exists(),
+            int(item.get("index", 0)),
+        )
 
     for task in sorted(manifest["tasks"], key=claim_order):
         if task_complete(manifest, task):

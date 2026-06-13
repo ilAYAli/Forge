@@ -132,8 +132,8 @@ _HTML = r"""<!DOCTYPE html>
                    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .graph-row { display: grid; grid-template-columns: 42px 1fr 48px; gap: 6px;
                  align-items: center; color: var(--dim); font-size: 11px; }
-    .graph-row svg { width: 100%; height: 28px; display: block; }
-    .graph-line { fill: none; stroke-width: 1.6; }
+    .graph-row svg { width: 100%; height: 22px; display: block; }
+    .graph-line { fill: none; stroke-width: 1.1; }
 
     /* pending / fail groups */
     .group-row { font-size: 13px; color: var(--dim); padding: 2px 0; }
@@ -648,13 +648,28 @@ _HTML = r"""<!DOCTYPE html>
       return n.toExponential(1);
     }
 
-    function sparkPath(points, w = 180, h = 28) {
+    function graphDomain(values) {
+      let min = Math.min(...values), max = Math.max(...values);
+      if (min === max) {
+        const pad = Math.max(1, Math.abs(min) * 0.25);
+        return [min - pad, max + pad];
+      }
+      if (min < 0 && max > 0) {
+        const bound = Math.max(Math.abs(min), Math.abs(max));
+        return [-bound, bound];
+      }
+      const span = max - min;
+      const pad = span * 0.35;
+      return [min - pad, max + pad];
+    }
+
+    function sparkPath(points, w = 180, h = 22) {
       if (!points || points.length < 2) return '';
       const pad = 2;
       const xs = points.map(p => p.x);
       const ys = points.map(p => p.y);
       const minX = Math.min(...xs), maxX = Math.max(...xs);
-      const minY = Math.min(...ys), maxY = Math.max(...ys);
+      const [minY, maxY] = graphDomain(ys);
       const sx = maxX === minX
         ? () => w / 2
         : x => pad + ((x - minX) / (maxX - minX)) * (w - pad * 2);
@@ -680,22 +695,13 @@ _HTML = r"""<!DOCTYPE html>
         const last = s.points[s.points.length - 1]?.y;
         return `<div class="graph-row">`
           + `<span>${esc(s.name)}</span>`
-          + `<svg viewBox="0 0 180 28" preserveAspectRatio="none" aria-hidden="true">`
+          + `<svg viewBox="0 0 180 22" preserveAspectRatio="none" aria-hidden="true">`
           + `<path class="graph-line" d="${esc(path)}" style="stroke:${esc(s.color)}"></path>`
           + `</svg>`
           + `<span>${esc(fmtGraphNumber(last))}</span>`
           + `</div>`;
       }).join('');
       return `<div class="task-graph"><div class="graph-title">${esc(title)}</div>${rows}</div>`;
-    }
-
-    function renderTaskGraphs(tasks) {
-      const graphs = [];
-      for (const t of (tasks || [])) {
-        const graph = graphCard(t.progress_graph, `${t.worker || '?'} ${t.label || ''} shard=${t.index}`);
-        if (graph) graphs.push(graph);
-      }
-      return graphs.length ? `<div class="task-graphs">${graphs.join('')}</div>` : '';
     }
 
     function renderRunGraph(r) {
@@ -780,7 +786,7 @@ _HTML = r"""<!DOCTYPE html>
         const ws = display.active_summary_text ? renderChips(display.active_summary_text) : renderChips(activeFieldText);
         sections.push(makeSection(r.run, 'active',
           `active: <b>${active.count}</b>`, 'yel',
-          ws + renderTasks(active.tasks) + renderTaskGraphs(active.tasks), isCurrent
+          ws + renderTasks(active.tasks), isCurrent
         ));
       }
 

@@ -393,10 +393,12 @@ except SystemExit as exc:
         self.assertIn("(pd.total - pd.done) / pd.rate", web._HTML)
         self.assertIn("return r.toFixed(4) + '/s'", web._HTML)
         self.assertIn("fmtRate(pd?.rate)", web._HTML)
-        self.assertIn("function renderTaskGraphs", web._HTML)
+        self.assertIn("function graphDomain", web._HTML)
+        self.assertNotIn("function renderTaskGraphs", web._HTML)
         self.assertIn("function graphCard", web._HTML)
         self.assertIn("graph?.series", web._HTML)
         self.assertIn("function renderRunGraph", web._HTML)
+        self.assertNotIn("renderTaskGraphs(active.tasks)", web._HTML)
         self.assertIn("r.progress_graph", web._HTML)
         self.assertIn("function attrEsc", web._HTML)
         self.assertIn("failCount > 0 && activeCount === 0", web._HTML)
@@ -1594,12 +1596,12 @@ except SystemExit as exc:
         manifest = json.loads(stdout.getvalue())
 
         self.assertEqual(0, rc)
-        self.assertEqual(60, manifest["template"]["parameters"]["shards"])
-        self.assertEqual(60, len(manifest["tasks"]))
+        self.assertEqual(120, manifest["template"]["parameters"]["shards"])
+        self.assertEqual(120, len(manifest["tasks"]))
         totals = [task["progress"]["total"] for task in manifest["tasks"]]
         self.assertEqual(256, sum(totals))
-        self.assertEqual(8, totals.count(6))
-        self.assertEqual(52, totals.count(4))
+        self.assertEqual(8, totals.count(4))
+        self.assertEqual(112, totals.count(2))
 
     def test_sprt_command_preserves_explicit_shards(self) -> None:
         stdout = io.StringIO()
@@ -6620,6 +6622,70 @@ except SystemExit as exc:
                     retry_failed=False,
                 )
                 self.assertIsNone(result)
+
+    def test_claim_prefers_shards_assigned_to_worker(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run_dir = root / "runs" / "active"
+            run_dir.mkdir(parents=True)
+            manifest = {
+                "schema": "crucible.task.v1",
+                "name": "active",
+                "work_dir": str(root),
+                "state_dir": str(run_dir / "state"),
+                "log_dir": str(run_dir / "logs"),
+                "claim_dir": str(run_dir / "claims"),
+                "tasks": [
+                    {"id": "task_0", "index": 0, "claim_worker": "worker-a", "command": "true", "outputs": []},
+                    {"id": "task_1", "index": 1, "claim_worker": "worker-b", "command": "true", "outputs": []},
+                    {"id": "task_2", "index": 2, "claim_worker": "worker-a", "command": "true", "outputs": []},
+                ],
+            }
+            crucible.state_dir(manifest).mkdir(parents=True)
+            crucible.log_dir(manifest).mkdir(parents=True)
+
+            claimed = crucible.claim_task(
+                manifest,
+                worker="worker-b",
+                profile=None,
+                lease_seconds=600,
+                retry_failed=False,
+            )
+
+            self.assertEqual("task_1", claimed["task"])
+
+    def test_materialized_run_assigns_claim_workers_by_expanded_slot_order(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            runs = root / "runs"
+            template = root / "template.manifest.json"
+            template.write_text(
+                json.dumps({
+                    "schema": "crucible.task.v1",
+                    "name": "slot-order",
+                    "work_dir": str(root),
+                    "tasks": [
+                        {"id": f"task_{index}", "index": index, "command": "true", "outputs": []}
+                        for index in range(7)
+                    ],
+                }),
+                encoding="utf-8",
+            )
+
+            with self.patch_runs_dir(runs):
+                _run_dir, manifest_path, _workers_path = crucible.materialize_run(
+                    template_path=template,
+                    workers_arg="worker-a:2,worker-b:1",
+                    run_name_arg=None,
+                    resume=False,
+                    replace=False,
+                )
+
+            materialized = crucible.read_json(manifest_path)
+            self.assertEqual(
+                ["worker-a", "worker-a", "worker-b", "worker-a", "worker-a", "worker-b", "worker-a"],
+                [task.get("claim_worker") for task in materialized["tasks"]],
+            )
 
     def test_stop_named_run_delegates_to_coordinator(self) -> None:
         remote_result = subprocess.CompletedProcess(

@@ -47,6 +47,20 @@ def update_worker_key(worker: dict[str, Any]) -> tuple[Any, ...]:
 def worker_host(worker: dict[str, Any]) -> str:
     return str(worker.get("host") or "").strip()
 
+def assign_task_claim_workers(manifest: dict[str, Any], workers: list[dict[str, Any]]) -> int:
+    claim_workers = [worker_host(worker) for worker in workers if worker_host(worker)]
+    if not claim_workers:
+        return 0
+    changed = 0
+    for index, task in enumerate(manifest.get("tasks") or []):
+        if not isinstance(task, dict):
+            continue
+        claim_worker = claim_workers[index % len(claim_workers)]
+        if task.get("claim_worker") != claim_worker:
+            task["claim_worker"] = claim_worker
+            changed += 1
+    return changed
+
 def update_workers_from_arg(value: str | None, *, default_ok: bool) -> list[dict[str, Any]]:
     workers = load_workers_arg(value, default_ok=default_ok)
     unique: list[dict[str, Any]] = []
@@ -1273,11 +1287,6 @@ def materialize_run(
 
     run_dir.mkdir(parents=True)
     materialized = materialize_manifest(template, run_name=run_name, run_dir=run_dir)
-    state_dir(materialized).mkdir(parents=True)
-    log_dir(materialized).mkdir(parents=True)
-    claim_dir(materialized).mkdir(parents=True)
-    (run_dir / "outputs").mkdir(parents=True)
-    write_json(manifest_path, materialized)
     payload = (
         workers_snapshot_payload
         if workers_snapshot_payload is not None
@@ -1287,6 +1296,16 @@ def materialize_run(
             inline_defaults_path=inline_worker_defaults,
         )
     )
+    if materialized.get("tasks"):
+        assign_task_claim_workers(
+            materialized,
+            workers_from_payload(payload, label=workers_arg),
+        )
+    state_dir(materialized).mkdir(parents=True)
+    log_dir(materialized).mkdir(parents=True)
+    claim_dir(materialized).mkdir(parents=True)
+    (run_dir / "outputs").mkdir(parents=True)
+    write_json(manifest_path, materialized)
     write_json(
         workers_snapshot,
         payload,
