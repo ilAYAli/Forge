@@ -71,9 +71,9 @@ crucible template list
 crucible template show sprt
 crucible sprt --candidate ~/assets/engines/enyo_9696dac --games 1000
 crucible sprt --candidate ~/assets/engines/enyo_9696dac --games 1000 \
-  --workers pwa-5090:8,pwa-mbp0:5,pwa-mbp:3,pwa-wsl:3,pwa-rce:3
+  --workers pwa-5090:8,pwa-mbp0:5,pwa-mbp:4,pwa-wsl:3,pwa-rce:3
 crucible sprt --candidate ~/assets/engines/enyo_9696dac --games 1000 \
-  --workers pwa-5090:8,pwa-mbp0:5,pwa-mbp:3,pwa-wsl:3,pwa-rce:3 --shards 176
+  --workers pwa-5090:8,pwa-mbp0:5,pwa-mbp:4,pwa-wsl:3,pwa-rce:3 --shards 184
 crucible sprt --candidate ~/assets/engines/enyo_9696dac --games 1000 \
   --candidate-uci nnue_file=~/code/cpp/chess/enyo/net/candidate.nn \
   --reference-uci nnue_file=~/code/cpp/chess/enyo/net/reference.nn
@@ -105,7 +105,7 @@ capped by the number of games. Pass `--shards N` to override it.
 Default workers can be configured in `~/.config/crucible/config.yml`:
 
 ```yaml
-default_workers: "pwa-5090:8,pwa-mbp0:5,pwa-mbp:3,pwa-wsl:3,pwa-rce:3"
+default_workers: "pwa-5090:8,pwa-mbp0:5,pwa-mbp:4,pwa-wsl:3,pwa-rce:3"
 coordinator_host: "pwa-5090"
 notify_command: "/path/to/notify-script"
 template_dirs:

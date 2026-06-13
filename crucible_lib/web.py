@@ -814,10 +814,32 @@ _HTML = r"""<!DOCTYPE html>
       </div>`;
     }
 
+    function removeRunCard(run) {
+      hiddenRunNames.add(String(run));
+      const body = document.getElementById(rbid(run));
+      const card = body?.closest?.('.run');
+      if (!card) return null;
+      const parent = card.parentNode;
+      const next = card.nextSibling;
+      card.remove();
+      return {card, parent, next};
+    }
+
+    function restoreRunCard(run, removed) {
+      hiddenRunNames.delete(String(run));
+      if (!removed?.card || !removed.parent) return;
+      if (removed.next && removed.next.parentNode === removed.parent) {
+        removed.parent.insertBefore(removed.card, removed.next);
+      } else {
+        removed.parent.appendChild(removed.card);
+      }
+    }
+
     async function runCmd(run, cmd, btn) {
       const oldText = btn.textContent;
       btn.disabled = true;
       btn.textContent = '…';
+      const hidden = (cmd === 'del' || cmd === 'hide') ? removeRunCard(run) : null;
       try {
         const res = await fetch('/api/cmd', {
           method: 'POST',
@@ -830,19 +852,15 @@ _HTML = r"""<!DOCTYPE html>
           document.getElementById('err').textContent = (data.stderr || data.error || 'command failed').trim();
           btn.disabled = false;
           btn.textContent = oldText;
+          restoreRunCard(run, hidden);
           return;
-        }
-        if (cmd === 'del' || cmd === 'hide') {
-          hiddenRunNames.add(String(run));
-          const body = document.getElementById(rbid(run));
-          const card = body?.closest?.('.run');
-          if (card) card.remove();
         }
       } catch(e) {
         document.getElementById('err').style.display = 'block';
         document.getElementById('err').textContent = e.message;
         btn.disabled = false;
         btn.textContent = oldText;
+        restoreRunCard(run, hidden);
         return;
       }
       refresh();
