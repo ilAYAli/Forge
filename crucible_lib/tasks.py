@@ -551,7 +551,8 @@ def worker_execution_manifest(
     manifest_path: Path,
 ) -> dict[str, Any]:
     local_manifest = apply_profile(copy.deepcopy(manifest), profile)
-    local_run_dir = expand_path(manifest_path).parent / "worker-state"
+    run_name = str(manifest.get("name") or manifest_checksum(manifest)[:16])
+    local_run_dir = expand_path(manifest_path).parent / "worker-state" / validate_run_name(run_name)
     local_output_dir = local_run_dir / "outputs"
     vars_obj = manifest.get("vars", {})
     if isinstance(vars_obj, dict):

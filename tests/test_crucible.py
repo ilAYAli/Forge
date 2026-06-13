@@ -3510,9 +3510,10 @@ except SystemExit as exc:
                 "/Users/pwahlman/code/cpp/chess/nnue_worker/runs/job/out.txt",
                 local["tasks"][0]["outputs"][0],
             )
-            self.assertEqual(str(manifest_path.parent / "worker-state" / "state"), local["state_dir"])
-            self.assertEqual(str(manifest_path.parent / "worker-state" / "logs"), local["log_dir"])
-            self.assertEqual(str(manifest_path.parent / "worker-state" / "claims"), local["claim_dir"])
+            worker_run = manifest_path.parent / "worker-state" / "worker-paths"
+            self.assertEqual(str(worker_run / "state"), local["state_dir"])
+            self.assertEqual(str(worker_run / "logs"), local["log_dir"])
+            self.assertEqual(str(worker_run / "claims"), local["claim_dir"])
 
     def test_worker_execution_manifest_keeps_outputs_local(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -3542,13 +3543,48 @@ except SystemExit as exc:
 
             local = crucible.worker_execution_manifest(manifest, profile=None, manifest_path=manifest_path)
 
-            worker_run = manifest_path.parent / "worker-state"
+            worker_run = manifest_path.parent / "worker-state" / "worker-output-paths"
             worker_output = worker_run / "outputs" / "task_0000" / "out.txt"
             self.assertEqual(str(worker_run), local["vars"]["run_dir"])
             self.assertEqual(str(worker_run / "outputs"), local["vars"]["output_dir"])
             self.assertEqual(str(worker_output), local["tasks"][0]["outputs"][0])
             self.assertIn(str(worker_output), local["tasks"][0]["command"])
             self.assertNotIn(str(coordinator_run), local["tasks"][0]["command"])
+
+    def test_worker_execution_manifest_isolates_state_by_run_name(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest_path = root / "cache" / "manifest.json"
+            manifest_path.parent.mkdir()
+            base = {
+                "schema": "crucible.task.v1",
+                "work_dir": "~",
+                "state_dir": "/coordinator/run/state",
+                "log_dir": "/coordinator/run/logs",
+                "claim_dir": "/coordinator/run/claims",
+                "tasks": [{"id": "sprt_0064", "index": 64, "command": "true", "outputs": []}],
+            }
+
+            first = crucible.worker_execution_manifest(
+                {**base, "name": "first-run"},
+                profile=None,
+                manifest_path=manifest_path,
+            )
+            second = crucible.worker_execution_manifest(
+                {**base, "name": "second-run"},
+                profile=None,
+                manifest_path=manifest_path,
+            )
+
+            self.assertEqual(
+                str(manifest_path.parent / "worker-state" / "first-run" / "state"),
+                first["state_dir"],
+            )
+            self.assertEqual(
+                str(manifest_path.parent / "worker-state" / "second-run" / "state"),
+                second["state_dir"],
+            )
+            self.assertNotEqual(first["state_dir"], second["state_dir"])
 
     def test_worker_waits_when_no_claim_but_coordinator_has_work(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
