@@ -49,7 +49,7 @@ _HTML = r"""<!DOCTYPE html>
     .run.done    { border-color: var(--border); opacity: .65; }
 
     /* run header — always visible */
-    .run-hdr { user-select: text; background: var(--bg2); padding: 8px 12px; }
+    .run-hdr { user-select: text; background: var(--bg2); padding: 8px 12px; cursor: pointer; }
     .run-hdr:hover { background: var(--bg3); }
     .run-hdr-top { display: flex; align-items: center; gap: 8px; }
     .arrow { color: var(--dim); cursor: pointer; font-size: 10px; flex-shrink: 0; transition: transform .15s; user-select: none; }
@@ -467,6 +467,14 @@ _HTML = r"""<!DOCTYPE html>
       saveUiState();
     }
 
+    function toggleRunHeader(event, id) {
+      if (event.defaultPrevented) return;
+      if (event.target.closest('button,a,input,select,textarea,.arrow')) return;
+      const selected = window.getSelection && String(window.getSelection());
+      if (selected) return;
+      toggleId(id);
+    }
+
     function makeSection(run, section, titleHtml, titleCls, detailHtml, defaultOpen) {
       const id = sid(run, section);
       const open = resolveOpen(id, defaultOpen);
@@ -870,7 +878,7 @@ _HTML = r"""<!DOCTYPE html>
       }
 
       return `<div class="run ${state}">
-        <div class="run-hdr">${hdr}</div>
+        <div class="run-hdr" onclick="toggleRunHeader(event,'${rId}')">${hdr}</div>
         <div class="pbar-wrap"><div class="pbar-fill" style="width:${pct}%"></div></div>
         <div class="run-body${bodyOpen?' open':''}" id="${rId}"><div class="run-tree">${sections.join('')}</div></div>
       </div>`;
