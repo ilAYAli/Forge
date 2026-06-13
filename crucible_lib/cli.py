@@ -34,6 +34,7 @@ WORKERS_ARG_HELP_RETRY_DEFAULT = (
 
 COMMON_COMMANDS = [
     "run",
+    "sprt",
     "start",
     "add",
     "del",
@@ -80,6 +81,12 @@ COMMAND_GROUPS = [
 ]
 
 
+def expand_template_command_aliases(args: list[str]) -> list[str]:
+    if args and args[0] == "sprt":
+        return ["run", "sprt", *args[1:]]
+    return args
+
+
 class CrucibleHelpFormatter(
     argparse.ArgumentDefaultsHelpFormatter,
     argparse.RawDescriptionHelpFormatter,
@@ -92,6 +99,11 @@ class CrucibleArgumentParser(argparse.ArgumentParser):
         self.command_groups = kwargs.pop("command_groups", [])
         self.command_help: dict[str, str] = {}
         super().__init__(*args, **kwargs)
+
+    def parse_args(self, args: list[str] | None = None, namespace: Any = None) -> argparse.Namespace:
+        if args is None:
+            args = sys.argv[1:]
+        return super().parse_args(expand_template_command_aliases(list(args)), namespace)
 
     def format_help(self) -> str:
         if not self.command_groups:
@@ -189,6 +201,18 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("template", help="Template name, e.g. sprt.")
     run.add_argument("template_args", nargs=argparse.REMAINDER, help="Run options and template parameters.")
     run.set_defaults(func=cmd_template_run)
+
+    sprt = sub.add_parser(
+        "sprt",
+        help="Run the SPRT template.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+        description=(
+            "Run the built-in SPRT template. This is equivalent to "
+            "`crucible run sprt ...`."
+        ),
+    )
+    sprt.add_argument("template_args", nargs=argparse.REMAINDER, help="Run options and SPRT parameters.")
+    sprt.set_defaults(func=cmd_template_run, template="sprt")
 
     template = sub.add_parser(
         "template",

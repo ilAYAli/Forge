@@ -282,12 +282,14 @@ class CrucibleTests(unittest.TestCase):
         advanced = stdout.index("Advanced:")
         common_positions = {
             command: stdout.index(f"    {command}")
-            for command in ("run", "start", "add", "del", "stop", "resume", "retry", "worker", "status", "update", "template")
+            for command in ("run", "sprt", "start", "add", "del", "stop", "resume", "retry", "worker", "status", "update", "template")
         }
         for position in common_positions.values():
             self.assertLess(common, position)
             self.assertLess(position, advanced)
         self.assertLess(common_positions["run"], common_positions["start"])
+        self.assertLess(common_positions["run"], common_positions["sprt"])
+        self.assertLess(common_positions["sprt"], common_positions["start"])
         self.assertLess(common_positions["start"], common_positions["add"])
         self.assertLess(common_positions["add"], common_positions["del"])
         self.assertLess(common_positions["del"], common_positions["stop"])
@@ -958,6 +960,22 @@ except SystemExit as exc:
             self.assertEqual(0, rc)
             self.assertEqual("worker-a:2", captured["args"].workers)
 
+    def test_sprt_command_alias_runs_sprt_template(self) -> None:
+        args = crucible.build_parser().parse_args([
+            "sprt",
+            "--reference", "~/assets/engines/reference",
+            "--candidate", "~/assets/engines/candidate",
+            "--games", "256",
+        ])
+
+        self.assertIs(args.func, crucible.cmd_template_run)
+        self.assertEqual("sprt", args.template)
+        self.assertEqual([
+            "--reference", "~/assets/engines/reference",
+            "--candidate", "~/assets/engines/candidate",
+            "--games", "256",
+        ], args.template_args)
+
     def test_run_template_uses_default_workers(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -1160,7 +1178,7 @@ except SystemExit as exc:
 
     def test_subcommand_help_is_available(self) -> None:
         commands = [
-            "run", "template", "plan", "add-input", "add-repo", "add-command", "sync-repos", "start", "run-task", "claim",
+            "run", "sprt", "template", "plan", "add-input", "add-repo", "add-command", "sync-repos", "start", "run-task", "claim",
             "release", "heartbeat", "work", "doctor", "status",
             "wait", "verify", "merge", "stop", "drain", "add", "del", "self-update",
             "update", "version", "deploy", "resume", "retry", "worker",
