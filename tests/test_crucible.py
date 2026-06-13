@@ -371,6 +371,7 @@ except SystemExit as exc:
         self.assertIn("firstProgressField(t.progress_data", web._HTML)
         self.assertIn("display.active_fields || active.fields || []", web._HTML)
         self.assertIn("function taskProgressText", web._HTML)
+        self.assertNotIn("pd.global_done", web._HTML)
         self.assertIn("'progress'", web._HTML)
         self.assertIn("['worker','label','shard','progress','output','rate']", web._HTML)
         self.assertNotIn("['worker','label','task','progress','output','rate']", web._HTML)

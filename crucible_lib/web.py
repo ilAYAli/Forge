@@ -507,11 +507,6 @@ _HTML = r"""<!DOCTYPE html>
       const pd = t.progress_data;
       if (!pd) return t.progress || '';
       const unit = pd.unit || 'items';
-      if (typeof pd.global_done === 'number' && typeof pd.global_total === 'number') {
-        const local = (typeof pd.done === 'number' && typeof pd.total === 'number')
-          ? ` (${pd.done}/${pd.total})` : '';
-        return `${unit}=${pd.global_done}/${pd.global_total}${local}`;
-      }
       if (typeof pd.done === 'number' && typeof pd.total === 'number') {
         return `${unit}=${pd.done}/${pd.total}`;
       }
@@ -567,7 +562,7 @@ _HTML = r"""<!DOCTYPE html>
       if (col === 'worker') return t.worker || '';
       if (col === 'label') return t.label || '';
       if (col === 'shard' || col === 'task') return String(t.index);
-      if (col === 'progress') return pd?.global_done ?? pd?.done ?? '';
+      if (col === 'progress') return pd?.done ?? '';
       if (col === 'output') return pd?.output ?? '';
       if (col === 'rate') return pd?.rate ?? '';
       if (col === 'eta') return remainingEtaS(pd) ?? 1e9;
