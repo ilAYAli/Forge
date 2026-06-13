@@ -134,8 +134,8 @@ _HTML = r"""<!DOCTYPE html>
                  align-items: center; color: var(--dim); font-size: 11px; }
     .graph-row svg { width: 100%; height: 66px; display: block; }
     .graph-line { fill: none; stroke-width: 1.25; vector-effect: non-scaling-stroke; }
-    .graph-zero { stroke: var(--dim); stroke-width: 1; opacity: .45;
-                  vector-effect: non-scaling-stroke; }
+    .graph-zero { stroke: var(--dim); stroke-width: .5; stroke-dasharray: 1 5;
+                  opacity: .22; vector-effect: non-scaling-stroke; }
 
     /* pending / fail groups */
     .group-row { font-size: 13px; color: var(--dim); padding: 2px 0; }
@@ -689,7 +689,7 @@ _HTML = r"""<!DOCTYPE html>
     function zeroLine(points, includeZero = false, w = 180, h = 66) {
       if (!includeZero || !points || points.length < 2) return '';
       const y = graphY(points.map(p => p.y), 0, true, h);
-      return `<line class="graph-zero" x1="0" y1="${y.toFixed(1)}" x2="10" y2="${y.toFixed(1)}"></line>`;
+      return `<line class="graph-zero" x1="0" y1="${y.toFixed(1)}" x2="${w}" y2="${y.toFixed(1)}"></line>`;
     }
 
     function sparkPath(points, includeZero = false, w = 180, h = 66) {
