@@ -1236,6 +1236,19 @@ def _normalize_web_run_payload(payload: dict[str, Any]) -> dict[str, Any]:
     normalized["state"] = "done"
     return normalized
 
+def _commands_need_refresh(payload: dict[str, Any]) -> bool:
+    commands = payload.get("commands")
+    if not isinstance(commands, list) or not commands:
+        return True
+    for item in commands:
+        if not isinstance(item, dict):
+            continue
+        label = str(item.get("label") or "")
+        command = str(item.get("command") or "")
+        if label.startswith("sprt:") or "--name sprt_" in command or "{output_dir}/sprt_" in command:
+            return True
+    return False
+
 def _collect_named_run_payload(run: str, coordinator_runs: str | None) -> dict[str, Any] | None:
     result = _run_web_cli(["status", run, "--json"], coordinator_runs=coordinator_runs)
     if result.returncode not in (0, 1) or not result.stdout.strip():
@@ -1301,7 +1314,7 @@ def _merge_lingering_runs(payload: dict[str, Any]) -> dict[str, Any]:
             if _run_payload_done(final_payload):
                 linger[name] = _normalize_web_run_payload(final_payload)
                 refreshed_done.add(name)
-                if final_payload.get("commands"):
+                if not _commands_need_refresh(final_payload):
                     command_checked.discard(name)
                 else:
                     command_checked.add(name)
@@ -1330,7 +1343,7 @@ def _merge_lingering_runs(payload: dict[str, Any]) -> dict[str, Any]:
                     continue
                 linger[name] = _normalize_web_run_payload(final_payload)
                 refreshed_done.add(name)
-                if final_payload.get("commands"):
+                if not _commands_need_refresh(final_payload):
                     command_checked.discard(name)
                 else:
                     command_checked.add(name)
@@ -1347,11 +1360,11 @@ def _merge_lingering_runs(payload: dict[str, Any]) -> dict[str, Any]:
                 command_checked.discard(name)
                 continue
             if name not in visible_names and isinstance(item, dict):
-                if item.get("commands"):
+                if not _commands_need_refresh(item):
                     command_checked.discard(name)
                 if (
                     _run_payload_done(item)
-                    and not item.get("commands")
+                    and _commands_need_refresh(item)
                     and name not in refreshed_done
                     and name not in command_checked
                 ):
@@ -1364,7 +1377,7 @@ def _merge_lingering_runs(payload: dict[str, Any]) -> dict[str, Any]:
                     ):
                         item = _normalize_web_run_payload(final_payload)
                         linger[name] = item
-                        if item.get("commands"):
+                        if not _commands_need_refresh(item):
                             command_checked.discard(name)
                 runs.append(_normalize_web_run_payload(item))
 

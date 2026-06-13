@@ -190,7 +190,61 @@ class CrucibleTests(unittest.TestCase):
             "collapsed_failures_count": 0,
         }) + "\n"
 
-    def test_run_status_payload_includes_command_groups(self) -> None:
+    def test_run_status_payload_includes_template_command(self) -> None:
+        summary = {
+            "run": "command-run",
+            "manifest": "/runs/command-run/manifest.json",
+            "tasks": 3,
+            "counts": {"done": 0, "fail": 0, "running": 0, "claimed": 0, "stale": 0, "pending": 3},
+            "groups": {"done": {}, "fail": {}, "stale": {}},
+            "active": [],
+            "active_count": 0,
+            "pending": [0, 1, 2],
+            "pending_groups": {"sprt:8": [0, 1], "sprt:6": [2]},
+            "rows": [],
+            "metadata": {"description": "Command run"},
+            "progress_totals": {},
+            "progress_done": {},
+            "progress_outputs": {},
+            "worker_outputs": {},
+            "worker_rates": {},
+            "diagnostics": [],
+            "manifest_payload": {
+                "template": {
+                    "name": "sprt",
+                    "parameters": {
+                        "candidate": "~/assets/engines/enyo_417eecb",
+                        "games": 1000,
+                        "reference": "~/assets/engines/enyo_637c4be",
+                        "candidate_uci": ["lmr_base=130"],
+                        "shards": 136,
+                        "sprt_extra_args": ["--opening-order", "random"],
+                    },
+                },
+                "tasks": [
+                    {"id": "sprt_0000", "index": 0, "label": "sprt:8", "command": "sprt --candidate c --games 8 --name sprt_0000"},
+                    {"id": "sprt_0001", "index": 1, "label": "sprt:8", "command": "sprt --candidate c --games 8 --name sprt_0001"},
+                    {"id": "sprt_0002", "index": 2, "label": "sprt:6", "command": "sprt --candidate c --games 6 --name sprt_0002"},
+                ],
+            },
+        }
+
+        payload = crucible.run_status_payload(summary)
+
+        self.assertEqual([
+            {
+                "label": "crucible sprt",
+                "count": 1,
+                "command": (
+                    "crucible sprt --candidate ~/assets/engines/enyo_417eecb --games 1000 "
+                    "--reference ~/assets/engines/enyo_637c4be --candidate-uci lmr_base=130 "
+                    "--shards 136 --opening-order random"
+                ),
+            },
+        ], payload["commands"])
+        self.assertNotIn("manifest_payload", payload)
+
+    def test_run_status_payload_collapses_shard_task_commands(self) -> None:
         summary = {
             "run": "command-run",
             "manifest": "/runs/command-run/manifest.json",
@@ -211,9 +265,9 @@ class CrucibleTests(unittest.TestCase):
             "diagnostics": [],
             "manifest_payload": {
                 "tasks": [
-                    {"id": "sprt_0000", "index": 0, "label": "sprt:8", "command": "sprt --candidate c --games 8 --name sprt_0000"},
-                    {"id": "sprt_0001", "index": 1, "label": "sprt:8", "command": "sprt --candidate c --games 8 --name sprt_0001"},
-                    {"id": "sprt_0002", "index": 2, "label": "sprt:6", "command": "sprt --candidate c --games 6 --name sprt_0002"},
+                    {"id": "sprt_0000", "index": 0, "label": "sprt:8", "command": "sprt --candidate c --games 8 --log-dir {output_dir}/sprt_0000/logs --name sprt_0000"},
+                    {"id": "sprt_0001", "index": 1, "label": "sprt:8", "command": "sprt --candidate c --games 8 --log-dir {output_dir}/sprt_0001/logs --name sprt_0001"},
+                    {"id": "sprt_0002", "index": 2, "label": "sprt:6", "command": "sprt --candidate c --games 6 --log-dir {output_dir}/sprt_0002/logs --name sprt_0002"},
                 ],
             },
         }
@@ -221,10 +275,8 @@ class CrucibleTests(unittest.TestCase):
         payload = crucible.run_status_payload(summary)
 
         self.assertEqual([
-            {"label": "sprt:8", "count": 2, "command": "sprt --candidate c --games 8 --name sprt_0000"},
-            {"label": "sprt:6", "count": 1, "command": "sprt --candidate c --games 6 --name sprt_0002"},
+            {"label": "sprt", "count": 3, "command": "sprt --candidate c"},
         ], payload["commands"])
-        self.assertNotIn("manifest_payload", payload)
 
     def retry_args(self, **overrides: Any) -> argparse.Namespace:
         args = argparse.Namespace(
@@ -1121,10 +1173,17 @@ except SystemExit as exc:
                 "state": "done",
                 "tasks": 1,
                 "counts": {"done": 1, "fail": 0, "running": 0, "claimed": 0, "stale": 0, "pending": 0},
+                "commands": [
+                    {
+                        "label": "sprt:8",
+                        "count": 2,
+                        "command": "sprt --candidate c --games 8 --log-dir {output_dir}/sprt_0000/logs --name sprt_0000",
+                    },
+                ],
             }
             fresh = {
                 **stale,
-                "commands": [{"label": "sprt:8", "count": 1, "command": "sprt --candidate c --games 8"}],
+                "commands": [{"label": "crucible sprt", "count": 1, "command": "crucible sprt --candidate c --games 16"}],
             }
             empty_payload = {
                 "runs": [],

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import shlex
 
 from .config import default_notify_command
 from .core import *
@@ -963,17 +964,89 @@ def run_speedup_field(summary: dict[str, Any]) -> str:
         return ""
     return f"speedup={sum(rates) / max_rate:.1f}x"
 
+def command_display_word(value: Any) -> str:
+    text = str(value)
+    if "~" in text and not any(char.isspace() for char in text):
+        return text
+    return shlex.quote(text)
+
+def command_display_join(parts: list[str]) -> str:
+    return " ".join(command_display_word(part) for part in parts if str(part))
+
+def template_command_group(manifest: dict[str, Any]) -> dict[str, Any] | None:
+    template = manifest.get("template")
+    if not isinstance(template, dict):
+        return None
+    template_name = str(template.get("name") or "").strip()
+    parameters = template.get("parameters")
+    if not template_name or not isinstance(parameters, dict):
+        return None
+    parts = ["crucible", template_name] if template_name == "sprt" else ["crucible", "run", template_name]
+    extra_args: list[str] = []
+    for key, value in parameters.items():
+        name = str(key)
+        if name.endswith("_extra_args") and isinstance(value, list):
+            extra_args.extend(str(item) for item in value if str(item))
+            continue
+        flag = "--" + name.replace("_", "-")
+        if isinstance(value, bool):
+            if value:
+                parts.append(flag)
+            continue
+        if isinstance(value, list):
+            for item in value:
+                if item is not None and str(item):
+                    parts.extend([flag, str(item)])
+            continue
+        if value is not None and str(value):
+            parts.extend([flag, str(value)])
+    parts.extend(extra_args)
+    label = " ".join(parts[:2]) if template_name == "sprt" else " ".join(parts[:3])
+    return {"label": label, "count": 1, "command": command_display_join(parts)}
+
+def display_task_command(command: str) -> str:
+    try:
+        parts = shlex.split(command)
+    except ValueError:
+        return command
+    if not parts or parts[0].rsplit("/", 1)[-1] != "sprt":
+        return command
+    kept: list[str] = []
+    skip_next = False
+    shard_options = {"--games", "--log-dir", "--name"}
+    for part in parts:
+        if skip_next:
+            skip_next = False
+            continue
+        if part in shard_options:
+            skip_next = True
+            continue
+        if any(part.startswith(option + "=") for option in shard_options):
+            continue
+        kept.append(part)
+    return command_display_join(kept)
+
+def command_group_label(manifest: dict[str, Any], task: dict[str, Any]) -> str:
+    label = task_display_label(manifest, task) or "task"
+    if label.startswith("sprt:"):
+        return "sprt"
+    return label
+
 def run_command_groups(manifest: dict[str, Any]) -> list[dict[str, Any]]:
+    template_group = template_command_group(manifest)
+    if template_group is not None:
+        return [template_group]
     groups: dict[str, dict[str, Any]] = {}
     for task in manifest.get("tasks") or []:
         if not isinstance(task, dict):
             continue
-        command = str(task.get("command") or "").strip()
+        command = display_task_command(str(task.get("command") or "").strip())
         if not command:
             continue
-        label = task_display_label(manifest, task) or "task"
+        label = command_group_label(manifest, task)
+        key = f"{label}\n{command}"
         group = groups.setdefault(
-            label,
+            key,
             {
                 "label": label,
                 "count": 0,
