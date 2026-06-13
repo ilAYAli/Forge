@@ -12,6 +12,8 @@ SSH_CONFIG_TIMEOUT_SECONDS = 5.0
 DEPLOY_BOOTSTRAP_TIMEOUT_SECONDS = 60.0
 DEPLOY_STARTUP_TIMEOUT_SECONDS = 20.0
 DEPLOY_STARTUP_POLL_SECONDS = 0.5
+QUEUE_LAUNCHER_POLL_SECONDS = 5.0
+QUEUE_MONITOR_NAME = "queue-monitor.json"
 SSH_TRANSIENT_RETRY_COUNT = 3
 SSH_TRANSIENT_RETRY_DELAY_SECONDS = 1.0
 SSH_TRANSIENT_RETRY_PATTERNS = (
@@ -24,6 +26,14 @@ SSH_TRANSIENT_RETRY_PATTERNS = (
     "operation timed out",
 )
 _SSH_CONFIG_HOSTNAME_CACHE: dict[str, str | None] = {}
+_QUEUE_LAUNCHER_CODE = r"""
+import json
+import sys
+
+from crucible_lib.workers import run_queue_launcher
+
+raise SystemExit(run_queue_launcher(json.loads(sys.argv[1])))
+"""
 
 
 def update_worker_label(worker: dict[str, Any]) -> str:
@@ -938,9 +948,17 @@ def start_wait_monitor(
     manifest_path: Path,
     args: argparse.Namespace,
     notify_command: str | None,
-) -> int | None:
-    if not notify_command:
-        return None
+) -> int:
+    monitor_path = run_dir / "wait-monitor.json"
+    if monitor_path.is_file():
+        try:
+            existing = read_json(monitor_path)
+            pid = int(existing.get("pid") or 0)
+            if pid > 0:
+                os.kill(pid, 0)
+                return pid
+        except (OSError, SystemExit, TypeError, ValueError):
+            pass
     command = [
         sys.executable,
         str(script_path()),
@@ -949,8 +967,9 @@ def start_wait_monitor(
         "--lease-seconds", str(getattr(args, "lease_seconds", 600)),
         "--interval-seconds", str(getattr(args, "interval_seconds", 30.0)),
         "--timeout-seconds", str(getattr(args, "timeout_seconds", 0.0)),
-        "--notify-command", notify_command,
     ]
+    if notify_command:
+        command.extend(["--notify-command", notify_command])
     if not bool(getattr(args, "fail_on_fail", True)):
         command.append("--no-fail-on-fail")
     log = (run_dir / "wait.log").open("ab", buffering=0)
@@ -966,6 +985,191 @@ def start_wait_monitor(
         "pid": process.pid,
         "command": command,
         "log": str(run_dir / "wait.log"),
+        "started_at": now(),
+        "started_epoch": epoch(),
+    })
+    return process.pid
+
+def remember_run_for_web(run_name: str, *, coordinator_runs: str | None = None) -> None:
+    try:
+        from .web import remember_web_run
+
+        remember_web_run(run_name, coordinator_runs=coordinator_runs)
+    except ModuleNotFoundError as exc:
+        if exc.name != "crucible_lib.web":
+            raise
+
+def queued_run_sort_key(summary: dict[str, Any]) -> tuple[float, str]:
+    queue = summary.get("queue")
+    if not isinstance(queue, dict):
+        return (0.0, str(summary.get("run") or ""))
+    try:
+        requested_epoch = float(queue.get("requested_epoch") or 0.0)
+    except (TypeError, ValueError):
+        requested_epoch = 0.0
+    return (requested_epoch, str(summary.get("run") or ""))
+
+def queue_blockers_for_run(run_name: str, summaries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    target = next((summary for summary in summaries if str(summary.get("run")) == run_name), None)
+    target_key = queued_run_sort_key(target or {"run": run_name})
+    blockers = []
+    for summary in summaries:
+        name = str(summary.get("run") or "")
+        if name == run_name:
+            continue
+        if run_active_count(summary) > 0 or run_launching(summary):
+            blockers.append(summary)
+            continue
+        if run_queue_requested(summary) and (target is None or queued_run_sort_key(summary) < target_key):
+            blockers.append(summary)
+    return blockers
+
+def active_or_queued_blockers(run_name: str, *, lease_seconds: int) -> list[dict[str, Any]]:
+    return queue_blockers_for_run(
+        run_name,
+        load_run_summaries(lease_seconds=lease_seconds),
+    )
+
+def queue_resume_command(args: argparse.Namespace, run_name: str) -> list[str]:
+    command = [sys.executable, str(script_path()), "resume", run_name]
+    if int(getattr(args, "jobs", 4)) != 4:
+        command.extend(["--jobs", str(args.jobs)])
+    if int(getattr(args, "task_attempts", 2)) != 2:
+        command.extend(["--task-attempts", str(args.task_attempts)])
+    if getattr(args, "coordinator_host", None):
+        command.extend(["--coordinator-host", str(args.coordinator_host)])
+    if float(getattr(args, "remote_timeout_seconds", 1800.0)) != 1800.0:
+        command.extend(["--remote-timeout-seconds", str(args.remote_timeout_seconds)])
+    if bool(getattr(args, "wait", False)):
+        command.append("--wait")
+    command.extend(["--lease-seconds", str(getattr(args, "lease_seconds", 600))])
+    command.extend(["--interval-seconds", str(getattr(args, "interval_seconds", 30.0))])
+    command.extend(["--timeout-seconds", str(getattr(args, "timeout_seconds", 0.0))])
+    if getattr(args, "verify", None) is True:
+        command.append("--verify")
+    elif getattr(args, "verify", None) is False:
+        command.append("--no-verify")
+    if getattr(args, "merge", None):
+        command.extend(["--merge", str(args.merge)])
+    if bool(getattr(args, "merge_force", False)):
+        command.append("--merge-force")
+    if bool(getattr(args, "newline_between", False)):
+        command.append("--newline-between")
+    if getattr(args, "notify_command", None):
+        command.extend(["--notify-command", str(args.notify_command)])
+    if not bool(getattr(args, "fail_on_fail", True)):
+        command.append("--no-fail-on-fail")
+    if bool(getattr(args, "no_color", False)):
+        command.append("--no-color")
+    if bool(getattr(args, "verbose", False)):
+        command.append("--verbose")
+    return command
+
+def queue_monitor_path(run_dir: Path) -> Path:
+    return run_dir / QUEUE_MONITOR_NAME
+
+def write_queue_request(
+    *,
+    run_dir: Path,
+    manifest: dict[str, Any],
+    command: list[str],
+    blockers: list[dict[str, Any]],
+) -> dict[str, Any]:
+    payload = {
+        "schema": SCHEMA,
+        "run": run_dir.name,
+        "requested_at": now(),
+        "requested_epoch": epoch(),
+        "host": socket.gethostname(),
+        "command": command,
+        "blocked_by": [str(summary.get("run") or "") for summary in blockers],
+    }
+    state_dir(manifest).mkdir(parents=True, exist_ok=True)
+    write_json(queue_request_path(manifest), payload)
+    return payload
+
+def write_launch_request(*, run_dir: Path, manifest: dict[str, Any], reason: str) -> dict[str, Any]:
+    payload = {
+        "schema": SCHEMA,
+        "run": run_dir.name,
+        "reason": reason,
+        "requested_at": now(),
+        "requested_epoch": epoch(),
+        "host": socket.gethostname(),
+    }
+    state_dir(manifest).mkdir(parents=True, exist_ok=True)
+    write_json(launch_request_path(manifest), payload)
+    return payload
+
+def clear_launch_request(manifest: dict[str, Any]) -> None:
+    launch_request_path(manifest).unlink(missing_ok=True)
+
+def run_queue_launcher(payload: dict[str, Any]) -> int:
+    run_name = str(payload["run"])
+    command = [str(item) for item in payload["command"]]
+    lease_seconds = int(payload.get("lease_seconds") or 600)
+    poll_seconds = max(0.5, float(payload.get("poll_seconds") or QUEUE_LAUNCHER_POLL_SECONDS))
+    if payload.get("runs_dir"):
+        os.environ[RUNS_DIR_ENV] = str(payload["runs_dir"])
+    os.environ[COORDINATOR_RUNS_ENV] = ""
+
+    last_blockers: list[str] | None = None
+    while True:
+        summaries = load_run_summaries(lease_seconds=lease_seconds)
+        target = next((summary for summary in summaries if str(summary.get("run")) == run_name), None)
+        if target is None:
+            print(f"queue: {run_name} disappeared", flush=True)
+            return 1
+        if not run_queue_requested(target):
+            print(f"queue: {run_name} is no longer queued", flush=True)
+            return 0
+        blockers = queue_blockers_for_run(run_name, summaries)
+        blocker_names = [str(summary.get("run") or "") for summary in blockers]
+        if not blockers:
+            break
+        if blocker_names != last_blockers:
+            print(f"queue: {run_name} waiting for {', '.join(blocker_names)}", flush=True)
+            last_blockers = blocker_names
+        time.sleep(poll_seconds)
+
+    manifest_path = run_manifest_path(run_name)
+    manifest = load_manifest(manifest_path)
+    write_launch_request(run_dir=manifest_path.parent, manifest=manifest, reason="queue")
+    queue_request_path(manifest).unlink(missing_ok=True)
+    print(f"queue: launching {run_name}: {shell_join(command)}", flush=True)
+    return subprocess.run(command, check=False).returncode
+
+def start_queue_monitor(
+    *,
+    run_dir: Path,
+    command: list[str],
+    lease_seconds: int,
+) -> int:
+    payload = {
+        "run": run_dir.name,
+        "runs_dir": str(runs_dir()),
+        "command": command,
+        "lease_seconds": lease_seconds,
+        "poll_seconds": QUEUE_LAUNCHER_POLL_SECONDS,
+    }
+    log = (run_dir / "queue.log").open("ab", buffering=0)
+    env = os.environ.copy()
+    env[RUNS_DIR_ENV] = str(runs_dir())
+    env[COORDINATOR_RUNS_ENV] = ""
+    process = subprocess.Popen(
+        [sys.executable, "-c", _QUEUE_LAUNCHER_CODE, json.dumps(payload)],
+        cwd=script_repo(),
+        stdin=subprocess.DEVNULL,
+        stdout=log,
+        stderr=subprocess.STDOUT,
+        env=env,
+        start_new_session=True,
+    )
+    write_json(queue_monitor_path(run_dir), {
+        "schema": SCHEMA,
+        "pid": process.pid,
+        "command": command,
+        "log": str(run_dir / "queue.log"),
         "started_at": now(),
         "started_epoch": epoch(),
     })
@@ -1118,6 +1322,10 @@ def cmd_deploy(args: argparse.Namespace) -> int:
     setup_retries = SSH_TRANSIENT_RETRY_COUNT
     manifest = load_manifest(manifest_path)
     has_tasks = bool(manifest.get("tasks"))
+    launch_marker_written = False
+    if has_tasks:
+        write_launch_request(run_dir=run_dir, manifest=manifest, reason="deploy")
+        launch_marker_written = True
     configured_coordinator_host = getattr(args, "coordinator_host", None) or default_coordinator_host()
     coordinator_host = coordinator_host_for_workers(workers, configured_coordinator_host)
     force_remote_coordinator = bool(configured_coordinator_host)
@@ -1429,6 +1637,8 @@ def cmd_deploy(args: argparse.Namespace) -> int:
         concurrent.futures.wait(futures, timeout=2)
         for future in futures:
             future.cancel()
+        if launch_marker_written:
+            clear_launch_request(manifest)
         return 130
     finally:
         if executor is not None:
@@ -1458,7 +1668,12 @@ def cmd_deploy(args: argparse.Namespace) -> int:
                 elapsed_seconds=time.monotonic() - started_at,
             ),
         )
-    if failed == 0 and has_tasks and bool(getattr(args, "launch_only", False)):
+    if (
+        failed == 0
+        and has_tasks
+        and bool(getattr(args, "launch_only", False))
+        and bool(getattr(args, "start_wait_monitor", False))
+    ):
         monitor_pid = start_wait_monitor(
             run_dir=run_dir,
             manifest_path=manifest_path,
@@ -1470,11 +1685,16 @@ def cmd_deploy(args: argparse.Namespace) -> int:
     commit_payload = getattr(args, "worker_snapshot_commit_payload", None)
     if failed == 0 and commit_payload is not None:
         write_json(workers_path, commit_payload)
+    if launch_marker_written:
+        clear_launch_request(manifest)
     return 1 if failed else 0
 
-def planned_run_paths(template_path: Path, run_name_arg: str | None) -> tuple[Path, Path]:
+def planned_run_name(template_path: Path, run_name_arg: str | None) -> str:
     template = load_manifest(template_path)
-    run_name = validate_run_name(run_name_arg) if run_name_arg else default_run_name(template_path, template)
+    return validate_run_name(run_name_arg) if run_name_arg else default_run_name(template_path, template)
+
+def planned_run_paths(template_path: Path, run_name_arg: str | None) -> tuple[Path, Path]:
+    run_name = planned_run_name(template_path, run_name_arg)
     run_dir = run_dir_for_name(run_name)
     return run_dir, run_dir / RUN_MANIFEST_NAME
 
@@ -1667,6 +1887,10 @@ def start_on_coordinator(args: argparse.Namespace, coordinator_runs: str) -> int
     host, _ = parse_coordinator(coordinator_runs)
     if not host:
         return None
+    remember_run_for_web(
+        planned_run_name(expand_path(args.manifest), getattr(args, "run", None)),
+        coordinator_runs=coordinator_runs,
+    )
     remote_manifest = copy_file_to_coordinator(host, expand_path(args.manifest))
     remote_workers = coordinator_workers_arg(host, str(args.workers))
     command = ["start", remote_manifest, "--workers", remote_workers]
@@ -1837,6 +2061,39 @@ def cmd_run_job(args: argparse.Namespace) -> int:
     explicit_verify = getattr(args, "verify", None)
     should_wait = bool(getattr(args, "wait", False) or getattr(args, "merge", None) or explicit_verify is True)
     should_verify = bool((should_wait and explicit_verify is not False) or getattr(args, "merge", None))
+    remember_run_for_web(run_name, coordinator_runs=configured_coordinator_runs())
+
+    if not bool(getattr(args, "resume", False)) and not bool(getattr(args, "replace", False)):
+        blockers = active_or_queued_blockers(run_name, lease_seconds=int(args.lease_seconds))
+        if blockers:
+            queued_run_dir, queued_manifest_path, _queued_workers_path = materialize_run(
+                template_path=template_path,
+                workers_arg=str(args.workers),
+                inline_worker_defaults=getattr(args, "worker_defaults", None),
+                workers_snapshot_payload=getattr(args, "worker_snapshot_payload", None),
+                preserve_workers_snapshot=bool(getattr(args, "preserve_workers_snapshot", False)),
+                run_name_arg=getattr(args, "run", None),
+                resume=False,
+                replace=False,
+            )
+            queued_manifest = load_manifest(queued_manifest_path)
+            command = queue_resume_command(args, run_name)
+            write_queue_request(
+                run_dir=queued_run_dir,
+                manifest=queued_manifest,
+                command=command,
+                blockers=blockers,
+            )
+            monitor_pid = start_queue_monitor(
+                run_dir=queued_run_dir,
+                command=command,
+                lease_seconds=int(args.lease_seconds),
+            )
+            blocker_names = ", ".join(str(summary.get("run") or "") for summary in blockers)
+            print(f"{label}: queued {run_name}; waiting for {blocker_names}")
+            print(f"{label}: queue monitor pid={monitor_pid}")
+            print(f"{label}: status: crucible status {run_name} --verbose")
+            return 0
 
     deploy_args = argparse.Namespace(
         workers=args.workers,
@@ -1860,6 +2117,7 @@ def cmd_run_job(args: argparse.Namespace) -> int:
         interval_seconds=args.interval_seconds,
         timeout_seconds=args.timeout_seconds,
         fail_on_fail=args.fail_on_fail,
+        start_wait_monitor=True,
         no_color=args.no_color,
         verbose=args.verbose,
     )
@@ -2018,6 +2276,10 @@ def cmd_resume(args: argparse.Namespace) -> int:
         if stop_path.exists():
             stop_path.unlink()
             print(f"resume: cleared stop request for {run_name}")
+        queue_path = queue_request_path(manifest)
+        if queue_path.exists():
+            queue_path.unlink()
+            print(f"resume: cleared queue request for {run_name}")
         resume_args = argparse.Namespace(
             manifest=str(manifest_path),
             workers=str(args.workers) if args.workers else str(workers_path),

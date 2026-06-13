@@ -68,6 +68,15 @@ def stop_request_path(manifest: dict[str, Any]) -> Path:
 def stop_requested(manifest: dict[str, Any]) -> bool:
     return stop_request_path(manifest).exists()
 
+def queue_request_path(manifest: dict[str, Any]) -> Path:
+    return state_dir(manifest) / "queue.json"
+
+def queue_requested(manifest: dict[str, Any]) -> bool:
+    return queue_request_path(manifest).exists()
+
+def launch_request_path(manifest: dict[str, Any]) -> Path:
+    return state_dir(manifest) / "launch.json"
+
 def drain_dir(manifest: dict[str, Any]) -> Path:
     return state_dir(manifest) / "drain"
 

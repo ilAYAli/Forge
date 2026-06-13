@@ -941,6 +941,37 @@ def _state_list(state: dict[str, Any], name: str) -> list[str]:
         state[name] = value
     return [str(item) for item in value]
 
+def remember_web_run(run: str, *, coordinator_runs: str | None = None) -> None:
+    with _WEB_STATE_LOCK:
+        state = _read_web_state()
+        hidden = set(_state_list(state, "hidden_runs"))
+        hidden.discard(run)
+        _state_dict(state, "seen_runs")[run] = {
+            "coordinator": coordinator_runs,
+            "last_seen": time.time(),
+        }
+        state["hidden_runs"] = sorted(hidden)
+        _write_web_state(state)
+    _invalidate_status_cache()
+
+def remember_web_run_payload(payload: dict[str, Any], *, coordinator_runs: str | None = None) -> None:
+    run = str(payload.get("run") or "")
+    if not run:
+        return
+    with _WEB_STATE_LOCK:
+        state = _read_web_state()
+        hidden = set(_state_list(state, "hidden_runs"))
+        hidden.discard(run)
+        _state_dict(state, "seen_runs")[run] = {
+            "coordinator": coordinator_runs,
+            "last_seen": time.time(),
+        }
+        if _run_payload_done(payload):
+            _state_dict(state, "lingering_runs")[run] = payload
+        state["hidden_runs"] = sorted(hidden)
+        _write_web_state(state)
+    _invalidate_status_cache()
+
 def _run_payload_state(run: dict[str, Any]) -> str:
     return str(run.get("state") or "")
 

@@ -110,6 +110,7 @@ class CrucibleTests(unittest.TestCase):
             mock.patch("crucible_lib.core.runs_dir", return_value=path),
             mock.patch("crucible_lib.status.runs_dir", return_value=path),
             mock.patch("crucible_lib.workers.runs_dir", return_value=path),
+            mock.patch("crucible_lib.web.runs_dir", return_value=path),
         ):
             yield
 
@@ -729,6 +730,33 @@ except SystemExit as exc:
             self.assertEqual(["short-sprt"], [run["run"] for run in payload["runs"]])
             self.assertEqual("done", payload["runs"][0]["state"])
             self.assertEqual(["short-sprt"], [run["run"] for run in again["runs"]])
+
+    def test_web_lingers_remembered_run_that_finished_between_polls(self) -> None:
+        import crucible_lib.web as web
+
+        with tempfile.TemporaryDirectory() as tmp:
+            runs = Path(tmp) / "runs"
+            done_payload = {
+                "run": "fast-sprt",
+                "state": "done",
+                "tasks": 1,
+                "counts": {"done": 1, "fail": 0, "running": 0, "claimed": 0, "stale": 0, "pending": 0},
+            }
+            empty_payload = {
+                "runs": [],
+                "collapsed_failures": [],
+                "collapsed_failures_count": 0,
+                "coordinator": None,
+            }
+
+            with self.patch_runs_dir(runs), mock.patch("crucible_lib.web.runs_dir", return_value=runs):
+                web.remember_web_run("fast-sprt")
+                with mock.patch("crucible_lib.web._collect_named_run_payload", return_value=done_payload) as named:
+                    payload = web._merge_lingering_runs(copy.deepcopy(empty_payload))
+
+            named.assert_called_once_with("fast-sprt", None)
+            self.assertEqual(["fast-sprt"], [run["run"] for run in payload["runs"]])
+            self.assertEqual("done", payload["runs"][0]["state"])
 
     def test_web_hide_removes_lingering_completed_run(self) -> None:
         import crucible_lib.web as web
@@ -1666,6 +1694,140 @@ except SystemExit as exc:
             wait.assert_not_called()
             verify.assert_not_called()
             self.assertIn("start: ok; status: crucible status launch-default --verbose", stdout.getvalue())
+
+    def test_start_queues_new_run_when_another_run_is_active(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            runs = root / "runs"
+            active_run = self.write_retry_run(runs, "active", failed=None)
+            active_manifest = crucible.load_manifest(active_run / "manifest.json")
+            crucible.claim_task(
+                active_manifest,
+                worker="worker-a",
+                profile=None,
+                lease_seconds=600,
+                retry_failed=False,
+            )
+            manifest = root / "template.json"
+            manifest.write_text(
+                json.dumps({
+                    "schema": "crucible.task.v1",
+                    "name": "queued-new",
+                    "work_dir": str(root),
+                    "tasks": [{"id": "task_0000", "index": 0, "command": "true", "outputs": []}],
+                }),
+                encoding="utf-8",
+            )
+
+            with (
+                self.patch_runs_dir(runs),
+                mock.patch("crucible_lib.workers.cmd_deploy") as deploy,
+                mock.patch("crucible_lib.workers.start_queue_monitor", return_value=4242) as queue_monitor,
+            ):
+                stdout = io.StringIO()
+                with contextlib.redirect_stdout(stdout):
+                    rc = crucible.cmd_run_job(argparse.Namespace(
+                        manifest=str(manifest),
+                        workers="worker-b",
+                        jobs=1,
+                        run=None,
+                        resume=False,
+                        replace=False,
+                        retry_failed=False,
+                        task_attempts=2,
+                        coordinator_host=None,
+                        remote_timeout_seconds=1800.0,
+                        wait=False,
+                        lease_seconds=600,
+                        interval_seconds=30.0,
+                        timeout_seconds=0.0,
+                        fail_on_fail=True,
+                        verify=None,
+                        merge=None,
+                        merge_force=False,
+                        newline_between=False,
+                        notify_command=None,
+                        no_color=True,
+                        verbose=False,
+                        command_label="start",
+                    ))
+
+            self.assertEqual(0, rc)
+            deploy.assert_not_called()
+            queue_monitor.assert_called_once()
+            queued_manifest = crucible.load_manifest(runs / "queued-new" / "manifest.json")
+            self.assertTrue(crucible.queue_request_path(queued_manifest).exists())
+            output = stdout.getvalue()
+            self.assertIn("start: queued queued-new; waiting for active", output)
+            self.assertIn("start: queue monitor pid=4242", output)
+
+            status = self.run_cli(
+                "status",
+                cwd=root,
+                env={"CRUCIBLE_RUNS_DIR": str(runs), "CRUCIBLE_COORDINATOR_RUNS": ""},
+            )
+            self.assertIn("run=queued-new", status.stdout)
+            payload = json.loads((runs / ".web-state.json").read_text(encoding="utf-8"))
+            self.assertIn("queued-new", payload["seen_runs"])
+
+    def test_start_queues_new_run_behind_existing_queued_run(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            runs = root / "runs"
+            queued_run = self.write_retry_run(runs, "already-queued", failed=None)
+            queued_manifest = crucible.load_manifest(queued_run / "manifest.json")
+            crucible.write_json(crucible.queue_request_path(queued_manifest), {
+                "schema": "crucible.task.v1",
+                "run": "already-queued",
+                "requested_epoch": 100.0,
+            })
+            manifest = root / "template.json"
+            manifest.write_text(
+                json.dumps({
+                    "schema": "crucible.task.v1",
+                    "name": "queued-behind",
+                    "work_dir": str(root),
+                    "tasks": [{"id": "task_0000", "index": 0, "command": "true", "outputs": []}],
+                }),
+                encoding="utf-8",
+            )
+
+            with (
+                self.patch_runs_dir(runs),
+                mock.patch("crucible_lib.workers.cmd_deploy") as deploy,
+                mock.patch("crucible_lib.workers.start_queue_monitor", return_value=4243),
+            ):
+                stdout = io.StringIO()
+                with contextlib.redirect_stdout(stdout):
+                    rc = crucible.cmd_run_job(argparse.Namespace(
+                        manifest=str(manifest),
+                        workers="worker-b",
+                        jobs=1,
+                        run=None,
+                        resume=False,
+                        replace=False,
+                        retry_failed=False,
+                        task_attempts=2,
+                        coordinator_host=None,
+                        remote_timeout_seconds=1800.0,
+                        wait=False,
+                        lease_seconds=600,
+                        interval_seconds=30.0,
+                        timeout_seconds=0.0,
+                        fail_on_fail=True,
+                        verify=None,
+                        merge=None,
+                        merge_force=False,
+                        newline_between=False,
+                        notify_command=None,
+                        no_color=True,
+                        verbose=False,
+                        command_label="start",
+                    ))
+
+            self.assertEqual(0, rc)
+            deploy.assert_not_called()
+            self.assertIn("start: queued queued-behind; waiting for already-queued", stdout.getvalue())
 
     def test_start_wait_verifies_by_default(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -4268,6 +4430,34 @@ except SystemExit as exc:
             self.assertIn("active", all_status.stdout)
             self.assertIn("queued", all_status.stdout)
             self.assertRegex(all_status.stdout, r"run=queued\n  tasks=0/1")
+
+    def test_status_shows_marked_queued_runs_by_default(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run = root / "runs" / "marked-queued"
+            manifest = {
+                "schema": "crucible.task.v1",
+                "name": "marked-queued",
+                "work_dir": str(run),
+                "state_dir": str(run / "state"),
+                "claim_dir": str(run / "claims"),
+                "tasks": [{"id": "task_0", "index": 0, "command": "true", "outputs": []}],
+            }
+            crucible.write_json(run / "manifest.json", manifest)
+            crucible.write_json(crucible.queue_request_path(manifest), {
+                "schema": "crucible.task.v1",
+                "run": "marked-queued",
+                "requested_epoch": 100.0,
+            })
+            env = {"CRUCIBLE_COORDINATOR_RUNS": "", "CRUCIBLE_RUNS_DIR": str(root / "runs")}
+
+            status = self.run_cli("status", cwd=root, env=env)
+            payload_result = self.run_cli("status", "--json", cwd=root, env=env)
+
+        self.assertEqual(0, status.returncode)
+        self.assertIn("run=marked-queued", status.stdout)
+        payload = json.loads(payload_result.stdout)
+        self.assertEqual("queued", payload["runs"][0]["state"])
 
     def test_default_status_prefilters_inactive_runs(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -6931,6 +7121,7 @@ except SystemExit as exc:
                     "crucible_lib.workers.run_process_command_with_retries",
                     return_value=subprocess.CompletedProcess(["rsync"], 0, stdout="", stderr=""),
                 ) as rsync_mock,
+                mock.patch("crucible_lib.workers.remember_run_for_web") as remember_web,
             ):
                 stdout = io.StringIO()
                 with contextlib.redirect_stdout(stdout):
@@ -6963,6 +7154,10 @@ except SystemExit as exc:
                     )
 
             self.assertEqual(0, rc)
+            remember_web.assert_called_once_with(
+                "delegated-start",
+                coordinator_runs="pwa-5090:/home/petter/code/cpp/chess/crucible/runs",
+            )
             self.assertIn("coordinator: pwa-5090:/home/petter/code/cpp/chess/crucible/runs", stdout.getvalue())
             self.assertEqual(2, rsync_mock.call_count)
             command = run_mock.call_args_list[-1].args[0]
@@ -7538,6 +7733,7 @@ except SystemExit as exc:
                 interval_seconds=7.0,
                 timeout_seconds=0.0,
                 fail_on_fail=True,
+                start_wait_monitor=True,
                 no_color=True,
                 verbose=False,
             )
@@ -7559,6 +7755,81 @@ except SystemExit as exc:
             self.assertIn("notify-me", monitor["command"])
             self.assertIn("--interval-seconds", monitor["command"])
             self.assertIn("7.0", monitor["command"])
+            popen.assert_called_once()
+
+    def test_deploy_launch_only_starts_wait_monitor_without_notifications(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            runs = root / "runs"
+            template = root / "template.manifest.json"
+            template.write_text(
+                json.dumps({
+                    "schema": "crucible.task.v1",
+                    "name": "launch-monitor-no-notify",
+                    "work_dir": str(root),
+                    "requirements": {"python_min": "3.11", "git_min": "2.38"},
+                    "tasks": [{"id": "task_0000", "index": 0, "command": "true", "outputs": []}],
+                }),
+                encoding="utf-8",
+            )
+            workers_path = root / "workers.json"
+            workers_path.write_text(
+                json.dumps({
+                    "schema": "crucible.workers.v1",
+                    "workers": [{"host": "worker-b", "profile": "worker-b", "local": True, "cache_dir": str(root / "cache-b")}],
+                }),
+                encoding="utf-8",
+            )
+
+            def fake_run(self, command, **kwargs):
+                if " work " in command[-1]:
+                    manifest = crucible.load_manifest(runs / "launch-monitor-no-notify" / "manifest.json")
+                    task = manifest["tasks"][0]
+                    crucible.write_json(crucible.task_running_path(manifest, task), {
+                        "task": task["id"],
+                        "index": task["index"],
+                        "worker": "worker-b",
+                        "state": "running",
+                    })
+                return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+            class FakePopen:
+                def __init__(self, command, **kwargs):
+                    self.pid = 4343
+                    self.command = command
+
+            args = argparse.Namespace(
+                manifest=str(template),
+                workers=str(workers_path),
+                jobs=1,
+                run="launch-monitor-no-notify",
+                resume=False,
+                replace=False,
+                launch_only=True,
+                remote_timeout_seconds=1800.0,
+                notify_command=None,
+                lease_seconds=600,
+                interval_seconds=7.0,
+                timeout_seconds=0.0,
+                fail_on_fail=True,
+                start_wait_monitor=True,
+                no_color=True,
+                verbose=False,
+            )
+            with (
+                self.patch_runs_dir(runs),
+                mock.patch("crucible.ProcessTracker.run", fake_run),
+                mock.patch("crucible_lib.workers.subprocess.Popen", side_effect=FakePopen) as popen,
+            ):
+                stdout = io.StringIO()
+                with contextlib.redirect_stdout(stdout):
+                    rc = crucible.cmd_deploy(args)
+
+            self.assertEqual(0, rc)
+            self.assertIn("deploy: wait monitor pid=4343", stdout.getvalue())
+            monitor = crucible.read_json(runs / "launch-monitor-no-notify" / "wait-monitor.json")
+            self.assertEqual(4343, monitor["pid"])
+            self.assertNotIn("--notify-command", monitor["command"])
             popen.assert_called_once()
 
     def test_deploy_preserves_worker_snapshot_until_success(self) -> None:

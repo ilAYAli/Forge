@@ -642,7 +642,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     deploy.add_argument("--no-color", action="store_true", help="Disable ANSI color output.")
     deploy.add_argument("--verbose", action="store_true", help="Print setup and worker phase details.")
-    deploy.set_defaults(func=cmd_deploy)
+    deploy.set_defaults(func=cmd_deploy, start_wait_monitor=True)
 
     run_job = sub.add_parser(
         "start",

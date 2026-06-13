@@ -45,6 +45,9 @@ crucible start manifest.json --workers workers.json --run my-run --wait
 syncs the runner and declared inputs to workers, verifies prerequisites, starts
 worker loops, verifies declared outputs, and optionally waits or merges output.
 It returns non-zero on setup, task, wait, verification, or merge failure.
+If another run is already using workers, `start` materializes the new run as
+queued, shows it in status and web, and starts it when older active or queued
+runs clear.
 
 Useful options:
 
@@ -109,8 +112,8 @@ template_dirs:
 
 ## Status
 
-`status` without a run name shows active runs. Failed inactive runs are
-collapsed near the top so they do not hide active work.
+`status` without a run name shows active and explicitly queued runs. Failed
+inactive runs are collapsed near the top so they do not hide active work.
 
 ```sh
 crucible status
@@ -367,6 +370,8 @@ failure is reported without polling.
 
 When `wait` sees a terminal state, Crucible writes `<run>/summary.json` with the
 same completion payload sent to notifications, including the final status line.
+Detached starts run a background wait monitor so completed runs still get that
+summary even when no notification command is configured.
 
 ## Updates
 

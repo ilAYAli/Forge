@@ -249,6 +249,8 @@ def run_manifest_paths() -> list[Path]:
 def run_manifest_has_attention_state(manifest: dict[str, Any]) -> bool:
     try:
         state = state_dir(manifest)
+        if queue_request_path(manifest).exists() or launch_request_path(manifest).exists():
+            return True
         if any(state.glob("*.fail.json")) or any(state.glob("*.running.json")):
             return True
         claims = claim_dir(manifest)
@@ -289,40 +291,56 @@ def run_started(summary: dict[str, Any]) -> bool:
     counts = summary["counts"]
     return counts["done"] + counts["fail"] + counts["running"] + counts["claimed"] + counts["stale"] > 0
 
+def run_launching(summary: dict[str, Any]) -> bool:
+    return isinstance(summary.get("launch"), dict)
+
 def run_queued(summary: dict[str, Any]) -> bool:
     counts = summary["counts"]
-    return summary["tasks"] > 0 and counts["pending"] == summary["tasks"] and not run_started(summary)
+    return (
+        run_queue_requested(summary)
+        or (summary["tasks"] > 0 and counts["pending"] == summary["tasks"] and not run_started(summary))
+    )
+
+def run_queue_requested(summary: dict[str, Any]) -> bool:
+    return isinstance(summary.get("queue"), dict)
 
 def run_current(summary: dict[str, Any]) -> bool:
     counts = summary["counts"]
     active = counts["running"] + counts["claimed"] + counts["stale"]
-    return active > 0 or (counts["pending"] > 0 and run_started(summary))
+    return run_launching(summary) or active > 0 or (counts["pending"] > 0 and run_started(summary))
 
 def run_active_count(summary: dict[str, Any]) -> int:
     counts = summary["counts"]
     return int(counts["running"] + counts["claimed"] + counts["stale"])
 
 def run_attention(summary: dict[str, Any]) -> bool:
-    return run_active_count(summary) > 0 or summary["counts"]["fail"] > 0
+    return (
+        run_active_count(summary) > 0
+        or run_launching(summary)
+        or summary["counts"]["fail"] > 0
+        or run_queue_requested(summary)
+    )
 
 def run_attention_sort_key(summary: dict[str, Any]) -> tuple[int, int, str]:
     active = run_active_count(summary)
     fail = int(summary["counts"]["fail"])
-    if active > 0:
+    if active > 0 or run_launching(summary):
         return (0, -active, str(summary["run"]))
     if fail > 0:
         return (1, -fail, str(summary["run"]))
-    return (2, 0, str(summary["run"]))
+    if run_queue_requested(summary):
+        return (2, 0, str(summary["run"]))
+    return (3, 0, str(summary["run"]))
 
 def run_state(summary: dict[str, Any]) -> str:
     if run_failed(summary):
         return "failed"
     if run_current(summary):
         return "current"
-    if run_queued(summary):
-        return "queued"
     if run_done(summary):
         return "done"
+    if run_queued(summary):
+        return "queued"
     return "empty"
 
 def filtered_run_summaries(
@@ -1650,6 +1668,8 @@ def task_heartbeat_progress_data(manifest: dict[str, Any], task: dict[str, Any])
 
 def status_summary(manifest: dict[str, Any], *, lease_seconds: int) -> dict[str, Any]:
     clear_state_diagnostics()
+    queue_payload = read_state_json(queue_request_path(manifest))
+    launch_payload = read_state_json(launch_request_path(manifest))
     counts = {"done": 0, "fail": 0, "running": 0, "claimed": 0, "stale": 0, "pending": 0}
     rows: list[dict[str, Any]] = []
     groups: dict[str, dict[str, list[int | str]]] = {
@@ -1799,6 +1819,8 @@ def status_summary(manifest: dict[str, Any], *, lease_seconds: int) -> dict[str,
         "progress_outputs": progress_outputs,
         "worker_outputs": worker_outputs,
         "worker_rates": worker_rates,
+        "queue": queue_payload,
+        "launch": launch_payload,
         "diagnostics": state_diagnostics(),
     }
 
@@ -1983,6 +2005,13 @@ def cmd_wait(args: argparse.Namespace) -> int:
             lease_seconds=args.lease_seconds,
         )
         write_json(run_summary_path(manifest_path), payload)
+        try:
+            from .web import remember_web_run_payload
+
+            remember_web_run_payload(payload, coordinator_runs=configured_coordinator_runs())
+        except ModuleNotFoundError as exc:
+            if exc.name != "crucible_lib.web":
+                raise
         if notify_command:
             run_notify_command(notify_command, payload)
         return rc
