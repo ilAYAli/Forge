@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import copy
 import io
 import inspect
 import json
@@ -495,6 +496,7 @@ except SystemExit as exc:
         with (
             mock.patch("crucible_lib.web._collect_status_payload", return_value=payload),
             mock.patch("crucible_lib.web.subprocess.run", return_value=completed) as run_mock,
+            mock.patch("crucible_lib.web._forget_web_run"),
         ):
             result = web._run_api_command("failed-run", "del")
 
@@ -521,6 +523,7 @@ except SystemExit as exc:
         with (
             mock.patch("crucible_lib.web._collect_status_payload", return_value=payload),
             mock.patch("crucible_lib.web.subprocess.run", return_value=completed) as run_mock,
+            mock.patch("crucible_lib.web._forget_web_run"),
         ):
             result = web._run_api_command("failed-run", "del")
 
@@ -627,12 +630,14 @@ except SystemExit as exc:
                 "collapsed_failures": [],
                 "collapsed_failures_count": 0,
             }
-            with (
-                mock.patch("crucible_lib.web.time.time", return_value=10.0),
-                mock.patch("crucible_lib.web._collect_local_status_payload", return_value=local_payload),
-                mock.patch("crucible_lib.web._start_status_refresh") as start_refresh,
-            ):
-                payload = json.loads(web._api_status().decode())
+            with tempfile.TemporaryDirectory() as tmp:
+                with (
+                    mock.patch("crucible_lib.web.runs_dir", return_value=Path(tmp) / "runs"),
+                    mock.patch("crucible_lib.web.time.time", return_value=10.0),
+                    mock.patch("crucible_lib.web._collect_local_status_payload", return_value=local_payload),
+                    mock.patch("crucible_lib.web._start_status_refresh") as start_refresh,
+                ):
+                    payload = json.loads(web._api_status().decode())
             start_refresh.assert_called_once_with()
             self.assertEqual([{"run": "local"}], payload["runs"])
             self.assertTrue(payload["refreshing"])
@@ -671,15 +676,136 @@ except SystemExit as exc:
             "collapsed_failures_count": 0,
             "coordinator": "pwa-5090:/runs",
         }
-        with (
-            mock.patch("crucible_lib.web.configured_coordinator_runs", return_value="pwa-5090:/runs"),
-            mock.patch("crucible_lib.web._collect_local_status_payload", return_value=local_payload),
-            mock.patch("crucible_lib.web._collect_coordinator_status_payload", return_value=coordinator_payload),
-        ):
-            payload = web._collect_status_payload()
+        with tempfile.TemporaryDirectory() as tmp:
+            with (
+                mock.patch("crucible_lib.web.runs_dir", return_value=Path(tmp) / "runs"),
+                mock.patch("crucible_lib.web.configured_coordinator_runs", return_value="pwa-5090:/runs"),
+                mock.patch("crucible_lib.web._collect_local_status_payload", return_value=local_payload),
+                mock.patch("crucible_lib.web._collect_coordinator_status_payload", return_value=coordinator_payload),
+            ):
+                payload = web._collect_status_payload()
 
         self.assertEqual(["local-active"], [run["run"] for run in payload["runs"]])
         self.assertIsNone(payload["coordinator"])
+
+    def test_web_lingers_completed_seen_runs_without_all_status(self) -> None:
+        import crucible_lib.web as web
+
+        with tempfile.TemporaryDirectory() as tmp:
+            runs = Path(tmp) / "runs"
+            active_payload = {
+                "runs": [
+                    {
+                        "run": "short-sprt",
+                        "state": "current",
+                        "tasks": 1,
+                        "counts": {"done": 0, "fail": 0, "running": 1, "claimed": 0, "stale": 0, "pending": 0},
+                    },
+                ],
+                "collapsed_failures": [],
+                "collapsed_failures_count": 0,
+                "coordinator": None,
+            }
+            done_payload = {
+                "run": "short-sprt",
+                "state": "done",
+                "tasks": 1,
+                "counts": {"done": 1, "fail": 0, "running": 0, "claimed": 0, "stale": 0, "pending": 0},
+            }
+            empty_payload = {
+                "runs": [],
+                "collapsed_failures": [],
+                "collapsed_failures_count": 0,
+                "coordinator": None,
+            }
+
+            with self.patch_runs_dir(runs), mock.patch("crucible_lib.web.runs_dir", return_value=runs):
+                web._merge_lingering_runs(copy.deepcopy(active_payload))
+                with mock.patch("crucible_lib.web._collect_named_run_payload", return_value=done_payload) as named:
+                    payload = web._merge_lingering_runs(copy.deepcopy(empty_payload))
+                    again = web._merge_lingering_runs(copy.deepcopy(empty_payload))
+
+            named.assert_called_once_with("short-sprt", None)
+            self.assertEqual(["short-sprt"], [run["run"] for run in payload["runs"]])
+            self.assertEqual("done", payload["runs"][0]["state"])
+            self.assertEqual(["short-sprt"], [run["run"] for run in again["runs"]])
+
+    def test_web_hide_removes_lingering_completed_run(self) -> None:
+        import crucible_lib.web as web
+
+        with tempfile.TemporaryDirectory() as tmp:
+            runs = Path(tmp) / "runs"
+            done_payload = {
+                "runs": [
+                    {
+                        "run": "short-sprt",
+                        "state": "done",
+                        "tasks": 1,
+                        "counts": {"done": 1, "fail": 0, "running": 0, "claimed": 0, "stale": 0, "pending": 0},
+                    },
+                ],
+                "collapsed_failures": [],
+                "collapsed_failures_count": 0,
+                "coordinator": None,
+            }
+            empty_payload = {
+                "runs": [],
+                "collapsed_failures": [],
+                "collapsed_failures_count": 0,
+                "coordinator": None,
+            }
+
+            with self.patch_runs_dir(runs), mock.patch("crucible_lib.web.runs_dir", return_value=runs):
+                web._merge_lingering_runs(copy.deepcopy(done_payload))
+                web._hide_web_run("short-sprt")
+                payload = web._merge_lingering_runs(copy.deepcopy(empty_payload))
+
+            self.assertEqual([], payload["runs"])
+
+    def test_web_delete_allows_completed_runs(self) -> None:
+        import crucible_lib.web as web
+
+        done_payload = {
+            "runs": [
+                {
+                    "run": "short-sprt",
+                    "state": "done",
+                    "tasks": 1,
+                    "counts": {"done": 1, "fail": 0, "running": 0, "claimed": 0, "stale": 0, "pending": 0},
+                },
+            ],
+            "collapsed_failures": [],
+            "collapsed_failures_count": 0,
+            "coordinator": None,
+        }
+        completed = subprocess.CompletedProcess(["del"], 0, stdout="deleted\n", stderr="")
+        with (
+            mock.patch("crucible_lib.web._collect_status_payload", return_value=done_payload),
+            mock.patch("crucible_lib.web._run_web_cli", return_value=completed) as run_cli,
+            mock.patch("crucible_lib.web._forget_web_run") as forget,
+        ):
+            result = web._run_api_command("short-sprt", "del")
+
+        self.assertEqual(0, result.returncode)
+        run_cli.assert_called_once_with(["del", "short-sprt", "--force"], coordinator_runs=None)
+        forget.assert_called_once_with("short-sprt")
+
+    def test_web_local_status_does_not_use_all(self) -> None:
+        import crucible_lib.web as web
+
+        result = subprocess.CompletedProcess(
+            ["crucible"],
+            0,
+            stdout=json.dumps({"runs": [], "collapsed_failures": [], "collapsed_failures_count": 0}),
+            stderr="",
+        )
+        with mock.patch("crucible_lib.web.subprocess.run", return_value=result) as run_mock:
+            web._collect_local_status_payload()
+
+        command = run_mock.call_args.args[0]
+        self.assertIn("status", command)
+        self.assertIn("--json", command)
+        self.assertNotIn("--all", command)
 
     def test_config_yml_supplies_default_workers_and_template_dirs(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

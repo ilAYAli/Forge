@@ -666,6 +666,8 @@ _HTML = r"""<!DOCTYPE html>
       const failCount = Number(fail.count || r.fail || 0);
       if (state === 'current') actions.push(`<button class="act stop"   onclick="event.stopPropagation();runCmd('${runArg}','stop',this)">stop</button>`);
       if (state !== 'done' && state !== 'empty') actions.push(`<button class="act resume" onclick="event.stopPropagation();runCmd('${runArg}','resume',this)">resume</button>`);
+      if (state === 'done') actions.push(`<button class="act" onclick="event.stopPropagation();runCmd('${runArg}','hide',this)">hide</button>`);
+      if (state === 'done') actions.push(`<button class="act del" onclick="event.stopPropagation();runCmd('${runArg}','del',this)">del</button>`);
       if (failCount > 0 && activeCount === 0) actions.push(`<button class="act del" onclick="event.stopPropagation();runCmd('${runArg}','del',this)">del</button>`);
 
       // header — always visible
@@ -865,6 +867,8 @@ _WEB_HOST = "127.0.0.1"
 _WEB_PORT = 0
 _WEB_RESTART_DELAY_SECONDS = 0.2
 _WEB_RESTARTER_WAIT_SECONDS = 15.0
+_WEB_STATE_NAME = ".web-state.json"
+_WEB_STATE_LOCK = threading.Lock()
 _WEB_RESTARTER_CODE = r"""
 import json
 import os
@@ -900,9 +904,134 @@ def _collect_status_payload() -> dict[str, Any]:
     if coordinator_runs:
         local_payload = _collect_local_status_payload()
         if _status_payload_has_current_run(local_payload):
-            return local_payload
-        return _collect_coordinator_status_payload(coordinator_runs)
-    return _collect_local_status_payload()
+            return _merge_lingering_runs(local_payload)
+        return _merge_lingering_runs(_collect_coordinator_status_payload(coordinator_runs))
+    return _merge_lingering_runs(_collect_local_status_payload())
+
+def _web_state_path() -> Path:
+    return runs_dir() / _WEB_STATE_NAME
+
+def _read_web_state() -> dict[str, Any]:
+    path = _web_state_path()
+    if not path.is_file():
+        return {}
+    try:
+        payload = read_json(path)
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+def _write_web_state(state: dict[str, Any]) -> None:
+    path = _web_state_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    write_json(path, state)
+
+def _state_dict(state: dict[str, Any], name: str) -> dict[str, Any]:
+    value = state.get(name)
+    if isinstance(value, dict):
+        return value
+    value = {}
+    state[name] = value
+    return value
+
+def _state_list(state: dict[str, Any], name: str) -> list[str]:
+    value = state.get(name)
+    if not isinstance(value, list):
+        value = []
+        state[name] = value
+    return [str(item) for item in value]
+
+def _run_payload_state(run: dict[str, Any]) -> str:
+    return str(run.get("state") or "")
+
+def _run_payload_done(run: dict[str, Any]) -> bool:
+    if _run_payload_state(run) == "done":
+        return True
+    counts = run.get("counts")
+    if not isinstance(counts, dict):
+        return False
+    try:
+        return (
+            int(counts.get("done") or 0) == int(run.get("tasks") or 0)
+            and int(counts.get("fail") or 0) == 0
+            and int(counts.get("running") or 0) == 0
+            and int(counts.get("claimed") or 0) == 0
+            and int(counts.get("stale") or 0) == 0
+            and int(counts.get("pending") or 0) == 0
+        )
+    except (TypeError, ValueError):
+        return False
+
+def _collect_named_run_payload(run: str, coordinator_runs: str | None) -> dict[str, Any] | None:
+    result = _run_web_cli(["status", run, "--json"], coordinator_runs=coordinator_runs)
+    if result.returncode not in (0, 1) or not result.stdout.strip():
+        return None
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(payload, dict) or not isinstance(payload.get("counts"), dict):
+        return None
+    return payload
+
+def _merge_lingering_runs(payload: dict[str, Any]) -> dict[str, Any]:
+    runs = payload.get("runs")
+    if not isinstance(runs, list):
+        return payload
+    coordinator_runs = payload.get("coordinator")
+    coordinator = str(coordinator_runs) if coordinator_runs else None
+    with _WEB_STATE_LOCK:
+        state = _read_web_state()
+        seen = _state_dict(state, "seen_runs")
+        linger = _state_dict(state, "lingering_runs")
+        hidden = set(_state_list(state, "hidden_runs"))
+        visible_names = {
+            str(item.get("run"))
+            for item in runs
+            if isinstance(item, dict) and item.get("run") is not None
+        }
+
+        for item in runs:
+            if not isinstance(item, dict) or item.get("run") is None:
+                continue
+            name = str(item["run"])
+            if _run_payload_done(item):
+                if name not in hidden:
+                    linger[name] = item
+            else:
+                hidden.discard(name)
+                seen[name] = {"coordinator": coordinator, "last_seen": time.time()}
+                linger.pop(name, None)
+
+        for name, info in list(seen.items()):
+            if name in visible_names or name in hidden or name in linger:
+                continue
+            if isinstance(info, dict):
+                run_coordinator = info.get("coordinator")
+                run_coordinator = str(run_coordinator) if run_coordinator else None
+            else:
+                run_coordinator = coordinator
+            final_payload = _collect_named_run_payload(name, run_coordinator)
+            if final_payload is None:
+                seen.pop(name, None)
+                linger.pop(name, None)
+                continue
+            if _run_payload_done(final_payload):
+                linger[name] = final_payload
+            elif _run_payload_state(final_payload):
+                runs.append(final_payload)
+
+        for name, item in list(linger.items()):
+            if name in hidden:
+                linger.pop(name, None)
+                continue
+            if name not in visible_names and isinstance(item, dict):
+                runs.append(item)
+
+        state["hidden_runs"] = sorted(hidden)
+        _write_web_state(state)
+    payload["runs"] = runs
+    return payload
 
 def _status_payload_has_current_run(payload: dict[str, Any]) -> bool:
     for run in payload.get("runs") or []:
@@ -1020,7 +1149,7 @@ def _api_status() -> bytes:
         refreshing = _STATUS_REFRESHING
     if cached is None:
         try:
-            cached = _collect_local_status_payload()
+            cached = _merge_lingering_runs(_collect_local_status_payload())
             cached["timestamp"] = now
             with _STATUS_CACHE_LOCK:
                 _STATUS_CACHE = copy.deepcopy(cached)
@@ -1038,6 +1167,31 @@ def _api_status() -> bytes:
     if error:
         cached["error"] = error
     return json.dumps(cached).encode()
+
+def _invalidate_status_cache() -> None:
+    global _STATUS_CACHE_EPOCH
+    with _STATUS_CACHE_LOCK:
+        _STATUS_CACHE_EPOCH = 0.0
+
+def _forget_web_run(run: str) -> None:
+    with _WEB_STATE_LOCK:
+        state = _read_web_state()
+        _state_dict(state, "seen_runs").pop(run, None)
+        _state_dict(state, "lingering_runs").pop(run, None)
+        hidden = [name for name in _state_list(state, "hidden_runs") if name != run]
+        state["hidden_runs"] = hidden
+        _write_web_state(state)
+    _invalidate_status_cache()
+
+def _hide_web_run(run: str) -> None:
+    with _WEB_STATE_LOCK:
+        state = _read_web_state()
+        hidden = set(_state_list(state, "hidden_runs"))
+        hidden.add(run)
+        state["hidden_runs"] = sorted(hidden)
+        _state_dict(state, "lingering_runs").pop(run, None)
+        _write_web_state(state)
+    _invalidate_status_cache()
 
 def _payload_run(payload: dict[str, Any], run: str) -> dict[str, Any] | None:
     for item in payload.get("runs") or []:
@@ -1070,10 +1224,10 @@ def _validate_web_delete(run: str) -> str | None:
     item = _payload_run(payload, run)
     if item is None:
         raise RuntimeError(f"{run}: run is not visible in status")
-    if _payload_fail_count(item) <= 0:
-        raise RuntimeError(f"{run}: delete is only available for failed runs")
     if _payload_active_count(item) > 0:
         raise RuntimeError(f"{run}: run has active tasks; stop it before deleting")
+    if _payload_fail_count(item) <= 0 and not _run_payload_done(item):
+        raise RuntimeError(f"{run}: delete is only available for failed or completed runs")
     coordinator = payload.get("coordinator")
     return str(coordinator) if coordinator else None
 
@@ -1162,7 +1316,13 @@ def _run_api_command(run: str, cmd: str, *, server: ThreadingHTTPServer | None =
         return subprocess.CompletedProcess(["restart-web"], 0, stdout="web restart requested\n", stderr="")
     if cmd == "del":
         coordinator_runs = _validate_web_delete(run)
-        return _run_web_cli(["del", run, "--force"], coordinator_runs=coordinator_runs)
+        result = _run_web_cli(["del", run, "--force"], coordinator_runs=coordinator_runs)
+        if result.returncode == 0:
+            _forget_web_run(run)
+        return result
+    if cmd == "hide":
+        _hide_web_run(run)
+        return subprocess.CompletedProcess(["hide", run], 0, stdout="run hidden\n", stderr="")
     if cmd in ("stop", "resume", "retry"):
         return _run_web_cli([cmd, run])
     raise ValueError(f"unknown command: {cmd}")
