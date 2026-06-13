@@ -81,12 +81,16 @@ _HTML = r"""<!DOCTYPE html>
     .done    .pbar-fill { background: var(--grn); }
 
     /* body — collapsible */
-    .run-body { display: none; border-top: 1px solid var(--border); }
+    .run-body { display: none; border-top: 1px solid var(--border); background: rgba(0,0,0,.08); }
     .run-body.open { display: block; }
+    .run-tree { margin-left: 24px; padding: 7px 12px 9px 16px;
+                border-left: 1px solid var(--border); }
 
     /* sections */
-    .section { padding: 6px 12px; }
-    .section + .section { border-top: 1px solid var(--border); }
+    .section { position: relative; padding: 5px 0 6px; }
+    .section::before { content: ''; position: absolute; left: -16px; top: 16px;
+                       width: 11px; border-top: 1px solid var(--border); }
+    .section + .section { border-top: 1px solid rgba(35,35,41,.55); }
     .section-hdr { display: flex; align-items: center; gap: 6px; cursor: pointer;
                    user-select: none; padding: 2px 0; }
     .section-hdr:hover .section-title { color: var(--text); }
@@ -94,7 +98,8 @@ _HTML = r"""<!DOCTYPE html>
     .section-title.yel { color: var(--yel); }
     .section-title.red { color: var(--red); }
     .section-title.dim { color: var(--dim); }
-    .section-detail { display: none; padding-top: 4px; }
+    .section-detail { display: none; margin-left: 18px; padding: 5px 0 2px 10px;
+                      border-left: 1px solid rgba(35,35,41,.7); }
     .section-detail.open { display: block; }
 
     /* worker summary chips */
@@ -863,7 +868,7 @@ _HTML = r"""<!DOCTYPE html>
       return `<div class="run ${state}">
         <div class="run-hdr">${hdr}</div>
         <div class="pbar-wrap"><div class="pbar-fill" style="width:${pct}%"></div></div>
-        <div class="run-body${bodyOpen?' open':''}" id="${rId}">${sections.join('')}</div>
+        <div class="run-body${bodyOpen?' open':''}" id="${rId}"><div class="run-tree">${sections.join('')}</div></div>
       </div>`;
     }
 
