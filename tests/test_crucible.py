@@ -5417,6 +5417,45 @@ except SystemExit as exc:
             self.assertIn("tasks=0/1 games=38/50 elo=-18.3 ci=89.8 llr=-0.09/2.94 (-3%) los=34.1% draw=36.8%", status.stdout)
             self.assertIn("worker-a sprt shard=0 [games=38/50, elo=-18.3, ci=89.8, llr=-0.09/2.94 (-3%), los=34.1, draw=36.8]", status.stdout)
 
+    def test_status_header_shows_total_games_before_progress(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run = root / "sprt-run"
+            state = run / "state"
+            logs = run / "logs"
+            state.mkdir(parents=True)
+            logs.mkdir(parents=True)
+            manifest = {
+                "schema": "crucible.task.v1",
+                "name": "sprt-run",
+                "kind": "sprt",
+                "work_dir": str(run),
+                "state_dir": str(state),
+                "log_dir": str(logs),
+                "tasks": [
+                    {
+                        "id": "task_0",
+                        "index": 0,
+                        "command": "true",
+                        "outputs": [],
+                        "progress": {"unit": "games", "total": 128},
+                    },
+                    {
+                        "id": "task_1",
+                        "index": 1,
+                        "command": "true",
+                        "outputs": [],
+                        "progress": {"unit": "games", "total": 128},
+                    },
+                ],
+            }
+            (run / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+            status = self.run_cli("status", str(run))
+
+            self.assertEqual(0, status.returncode, status.stderr)
+            self.assertIn("tasks=0/2 games=0/256", status.stdout)
+
     def test_status_eta_counts_down_from_log_timestamp(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

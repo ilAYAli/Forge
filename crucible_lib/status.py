@@ -673,7 +673,9 @@ def summary_progress(summary: dict[str, Any]) -> str:
             if eta:
                 etas.append(eta)
         parts.append(text)
+    emitted_units: set[str] = set()
     for unit, bucket in sorted(by_unit.items()):
+        emitted_units.add(unit)
         active_done = int(bucket["done"])
         active_total = int(bucket["total"])
         total_work = summary.get("progress_totals", {}).get(unit)
@@ -705,6 +707,17 @@ def summary_progress(summary: dict[str, Any]) -> str:
             parts.append(text)
         else:
             parts.append(f"{unit}=~{compact_count(active_done)}")
+    progress_totals = summary.get("progress_totals", {})
+    progress_done = summary.get("progress_done", {})
+    if isinstance(progress_totals, dict) and isinstance(progress_done, dict):
+        for unit, total_work in sorted(progress_totals.items()):
+            unit = str(unit)
+            if unit in emitted_units or not isinstance(total_work, int) or total_work <= 0:
+                continue
+            done_work = progress_done.get(unit, 0)
+            done = int(done_work) if isinstance(done_work, int) else 0
+            done = min(total_work, max(0, done))
+            parts.append(f"{unit}={compact_count(done)}/{compact_count(total_work)}")
     if not outputs:
         summary_outputs = summary.get("progress_outputs", {})
         if isinstance(summary_outputs, dict):
