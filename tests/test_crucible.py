@@ -1679,6 +1679,31 @@ except SystemExit as exc:
         self.assertEqual(["sprt", "fastchess"], [repo["name"] for repo in manifest["requirements"]["repos"]])
         self.assertIn("--candidate ~/code/cpp/chess/enyo/build/enyo", manifest["tasks"][0]["command"])
 
+    def test_sprt_template_resolves_candidate_symlink_for_run_name(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.home()) as tmp:
+            root = Path(tmp)
+            engines = root / "assets" / "engines"
+            engines.mkdir(parents=True)
+            target = engines / "enyo_637c4be"
+            target.write_text("#!/bin/sh\n", encoding="utf-8")
+            link = engines / "reference"
+            link.symlink_to(target)
+            link_arg = "~/" + str(link.relative_to(Path.home()))
+            target_arg = "~/" + str(target.relative_to(Path.home()))
+            template_path = ROOT / "templates" / "sprt.template.json"
+            template = crucible.load_template(template_path)
+
+            params = crucible.parse_sprt_template_parameters(
+                "sprt",
+                template,
+                ["--candidate", link_arg, "--games", "256", "--shards", "1"],
+            )
+            manifest = crucible.expand_template("sprt", template_path, template, params)
+
+        self.assertEqual(target_arg, manifest["template"]["parameters"]["candidate"])
+        self.assertTrue(manifest["name"].startswith("sprt-enyo_637c4be-256-"))
+        self.assertIn(f"--candidate {target_arg}", manifest["tasks"][0]["command"])
+
     def test_sprt_template_passes_unknown_sprt_args_through(self) -> None:
         template_path = ROOT / "templates" / "sprt.template.json"
         template = crucible.load_template(template_path)
@@ -1687,6 +1712,7 @@ except SystemExit as exc:
             template,
             [
                 "--candidate", "~/assets/engines/enyo_9696dac",
+                "--reference", "~/assets/engines/reference-static",
                 "--games", "125",
                 "--shards", "3",
                 "--opening-order", "random",
@@ -1696,7 +1722,7 @@ except SystemExit as exc:
         manifest = crucible.expand_template("sprt", template_path, template, params)
 
         self.assertEqual(["--opening-order", "random", "--custom-flag"], manifest["template"]["parameters"]["sprt_extra_args"])
-        self.assertIn("--reference ~/assets/engines/reference", manifest["tasks"][0]["command"])
+        self.assertIn("--reference ~/assets/engines/reference-static", manifest["tasks"][0]["command"])
         self.assertIn("--opening-order random --custom-flag", manifest["tasks"][0]["command"])
         self.assertIn("--games 42", manifest["tasks"][0]["command"])
         self.assertIn("--games 41", manifest["tasks"][2]["command"])

@@ -188,14 +188,22 @@ def sprt_shell_args(template: dict[str, Any], values: dict[str, Any]) -> str:
     return " ".join(sprt_shell_word(part) for part in parts)
 
 
+def resolve_worker_path_symlink(path: Path) -> Path:
+    if path.is_symlink():
+        return path.resolve(strict=False)
+    return path
+
 def worker_path_parameter(value: str, *, directory_executable: str = "") -> str:
     if value and not value.startswith("~") and not Path(value).is_absolute():
         cwd = Path(os.environ.get("PWD") or str(Path.cwd()))
         value = os.path.normpath(str(cwd / value))
+    local = Path(os.path.expandvars(value)).expanduser()
     if directory_executable:
-        local = Path(os.path.expandvars(value)).expanduser()
         if local.is_dir():
-            value = str(local / directory_executable)
+            local = resolve_worker_path_symlink(local)
+            local = local / directory_executable
+    local = resolve_worker_path_symlink(local)
+    value = str(local)
     home = str(Path.home())
     if value == home:
         return "~"
