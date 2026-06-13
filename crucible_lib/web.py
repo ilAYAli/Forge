@@ -133,7 +133,7 @@ _HTML = r"""<!DOCTYPE html>
     .graph-row { display: grid; grid-template-columns: 42px 1fr 48px; gap: 6px;
                  align-items: center; color: var(--dim); font-size: 11px; }
     .graph-row svg { width: 100%; height: 66px; display: block; }
-    .graph-line { fill: none; stroke-width: 1.25; }
+    .graph-line { fill: none; stroke-width: 1.25; vector-effect: non-scaling-stroke; }
 
     /* pending / fail groups */
     .group-row { font-size: 13px; color: var(--dim); padding: 2px 0; }
