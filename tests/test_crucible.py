@@ -758,6 +758,34 @@ except SystemExit as exc:
             self.assertEqual(["fast-sprt"], [run["run"] for run in payload["runs"]])
             self.assertEqual("done", payload["runs"][0]["state"])
 
+    def test_web_drops_remembered_run_that_never_started(self) -> None:
+        import crucible_lib.web as web
+
+        with tempfile.TemporaryDirectory() as tmp:
+            runs = Path(tmp) / "runs"
+            empty_run_payload = {
+                "run": "failed-setup",
+                "state": "empty",
+                "tasks": 1,
+                "counts": {"done": 0, "fail": 0, "running": 0, "claimed": 0, "stale": 0, "pending": 1},
+            }
+            empty_payload = {
+                "runs": [],
+                "collapsed_failures": [],
+                "collapsed_failures_count": 0,
+                "coordinator": None,
+            }
+
+            with self.patch_runs_dir(runs), mock.patch("crucible_lib.web.runs_dir", return_value=runs):
+                web.remember_web_run("failed-setup")
+                with mock.patch("crucible_lib.web._collect_named_run_payload", return_value=empty_run_payload) as named:
+                    payload = web._merge_lingering_runs(copy.deepcopy(empty_payload))
+                    again = web._merge_lingering_runs(copy.deepcopy(empty_payload))
+
+            named.assert_called_once_with("failed-setup", None)
+            self.assertEqual([], payload["runs"])
+            self.assertEqual([], again["runs"])
+
     def test_web_hide_removes_lingering_completed_run(self) -> None:
         import crucible_lib.web as web
 
@@ -4431,6 +4459,12 @@ except SystemExit as exc:
             self.assertIn("queued", all_status.stdout)
             self.assertRegex(all_status.stdout, r"run=queued\n  tasks=0/1")
 
+            all_json = self.run_cli("status", "--all", "--json", cwd=root, env=env)
+            self.assertEqual(1, all_json.returncode)
+            all_payload = json.loads(all_json.stdout)
+            queued_run = next(item for item in all_payload["runs"] if item["run"] == "queued")
+            self.assertEqual("empty", queued_run["state"])
+
     def test_status_shows_marked_queued_runs_by_default(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -7616,6 +7650,90 @@ except SystemExit as exc:
             self.assertEqual(2, launched_done)
             scripts = [command[-1] for command in commands if command[0] == "sh"]
             self.assertEqual(4, len([script for script in scripts if " work " in script]))
+
+    def test_deploy_launch_only_skips_workers_that_fail_setup(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            runs = root / "runs"
+            template = root / "template.manifest.json"
+            template.write_text(
+                json.dumps({
+                    "schema": "crucible.task.v1",
+                    "name": "partial-launch",
+                    "work_dir": str(root),
+                    "requirements": {"python_min": "3.11", "git_min": "2.38"},
+                    "tasks": [{"id": "task_0000", "index": 0, "command": "true", "outputs": []}],
+                }),
+                encoding="utf-8",
+            )
+            workers_path = root / "workers.json"
+            workers_path.write_text(
+                json.dumps({
+                    "schema": "crucible.workers.v1",
+                    "workers": [
+                        {
+                            "host": "worker-a",
+                            "profile": "worker-a",
+                            "local": True,
+                            "cache_dir": str(root / "cache-a"),
+                            "path_map": {str(root): str(root)},
+                        },
+                        {
+                            "host": "worker-b",
+                            "profile": "worker-b",
+                            "local": True,
+                            "cache_dir": str(root / "cache-b"),
+                            "path_map": {str(root): str(root)},
+                        },
+                    ],
+                }),
+                encoding="utf-8",
+            )
+            commands = []
+
+            def fake_run(self, command, **kwargs):
+                commands.append(command)
+                script = command[-1]
+                if "--profile worker-b" in script and " doctor " in script:
+                    return subprocess.CompletedProcess(command, 1, stdout="", stderr="missing worker-b engine")
+                if "--worker worker-a" in script and " work " in script:
+                    manifest = crucible.load_manifest(runs / "partial-launch" / "manifest.json")
+                    task = manifest["tasks"][0]
+                    crucible.write_json(crucible.task_running_path(manifest, task), {
+                        "task": task["id"],
+                        "index": task["index"],
+                        "worker": "worker-a",
+                        "state": "running",
+                    })
+                return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+            args = argparse.Namespace(
+                manifest=str(template),
+                workers=str(workers_path),
+                jobs=2,
+                run="partial-launch",
+                resume=False,
+                replace=False,
+                launch_only=True,
+                remote_timeout_seconds=1800.0,
+                no_color=True,
+                verbose=False,
+            )
+            with self.patch_runs_dir(runs), mock.patch("crucible.ProcessTracker.run", fake_run):
+                stdout = io.StringIO()
+                with contextlib.redirect_stdout(stdout):
+                    rc = crucible.cmd_deploy(args)
+
+            self.assertEqual(0, rc)
+            output = stdout.getvalue()
+            self.assertIn("FAILED worker-b: setup rc=1", output)
+            self.assertIn("deploy: setup partial; 1/2 slots ready", output)
+            self.assertIn("deploy: setup partial; launching ready workers", output)
+            self.assertIn("  OK     worker-a: launch", output)
+            self.assertIn("deploy: launch complete", output)
+            scripts = [command[-1] for command in commands if command[0] == "sh"]
+            self.assertEqual(1, len([script for script in scripts if " work " in script and "--worker worker-a" in script]))
+            self.assertEqual(0, len([script for script in scripts if " work " in script and "--worker worker-b" in script]))
 
     def test_deploy_launch_only_cleans_up_when_workers_do_not_start(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

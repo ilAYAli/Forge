@@ -665,7 +665,7 @@ _HTML = r"""<!DOCTYPE html>
       const activeCount = Number(active.count || 0);
       const failCount = Number(fail.count || r.fail || 0);
       if (state === 'current') actions.push(`<button class="act stop"   onclick="event.stopPropagation();runCmd('${runArg}','stop',this)">stop</button>`);
-      if (state !== 'done' && state !== 'empty') actions.push(`<button class="act resume" onclick="event.stopPropagation();runCmd('${runArg}','resume',this)">resume</button>`);
+      if (state === 'current') actions.push(`<button class="act resume" onclick="event.stopPropagation();runCmd('${runArg}','resume',this)">resume</button>`);
       if (state === 'done') actions.push(`<button class="act" onclick="event.stopPropagation();runCmd('${runArg}','hide',this)">hide</button>`);
       if (state === 'done') actions.push(`<button class="act del" onclick="event.stopPropagation();runCmd('${runArg}','del',this)">del</button>`);
       if (failCount > 0 && activeCount === 0) actions.push(`<button class="act del" onclick="event.stopPropagation();runCmd('${runArg}','del',this)">del</button>`);
@@ -1049,8 +1049,11 @@ def _merge_lingering_runs(payload: dict[str, Any]) -> dict[str, Any]:
                 continue
             if _run_payload_done(final_payload):
                 linger[name] = final_payload
-            elif _run_payload_state(final_payload):
+            elif _run_payload_state(final_payload) not in ("", "empty"):
                 runs.append(final_payload)
+            else:
+                seen.pop(name, None)
+                linger.pop(name, None)
 
         for name, item in list(linger.items()):
             if name in hidden:

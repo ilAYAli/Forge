@@ -45,6 +45,8 @@ crucible start manifest.json --workers workers.json --run my-run --wait
 syncs the runner and declared inputs to workers, verifies prerequisites, starts
 worker loops, verifies declared outputs, and optionally waits or merges output.
 It returns non-zero on setup, task, wait, verification, or merge failure.
+If some workers fail setup but at least one slot is ready, task launch continues
+on the ready slots and reports the skipped setup failures.
 If another run is already using workers, `start` materializes the new run as
 queued, shows it in status and web, and starts it when older active or queued
 runs clear.

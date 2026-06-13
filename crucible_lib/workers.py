@@ -1590,24 +1590,44 @@ def cmd_deploy(args: argparse.Namespace) -> int:
             setup_results_list.extend(group_results)
             print_results(group_results)
         setup_failed = sum(1 for item in setup_results_list if not item["ok"])
-        if setup_failed or not has_tasks:
+        setup_failed_results = [item for item in setup_results_list if not item["ok"]]
+        ready_worker_items = [
+            (int(item["index"]), workers[int(item["index"])])
+            for item in setup_results_list
+            if item["ok"]
+        ]
+        if not has_tasks or not ready_worker_items:
             results = setup_results_list
         else:
+            if setup_failed:
+                status(
+                    colorize(
+                        f"deploy: setup partial; {len(ready_worker_items)}/{len(workers)} slots ready",
+                        "yellow",
+                        enabled=color_enabled,
+                    ),
+                )
             executor.shutdown(wait=True)
-            executor = concurrent.futures.ThreadPoolExecutor(max_workers=max(1, len(workers)))
+            executor = concurrent.futures.ThreadPoolExecutor(max_workers=max(1, len(ready_worker_items)))
             if bool(getattr(args, "launch_only", False)):
-                status(colorize("deploy: setup complete; launching workers", "green", enabled=color_enabled))
+                launch_message = (
+                    "deploy: setup complete; launching workers"
+                    if setup_failed == 0
+                    else "deploy: setup partial; launching ready workers"
+                )
+                status(colorize(launch_message, "green" if setup_failed == 0 else "yellow", enabled=color_enabled))
                 before_launch = status_summary(manifest, lease_seconds=600)
                 before_counts = before_launch["counts"]
                 before_started = started_task_count(before_counts)
-                expected_new_started = min(before_counts["pending"], len(workers))
+                expected_new_started = min(before_counts["pending"], len(ready_worker_items))
                 futures = [
                     executor.submit(launch_worker, index, worker)
-                    for index, worker in enumerate(workers)
+                    for index, worker in ready_worker_items
                 ]
-                results = [future.result() for future in concurrent.futures.as_completed(futures)]
-                print_results(results)
-                if all(item["ok"] for item in results):
+                launch_results = [future.result() for future in concurrent.futures.as_completed(futures)]
+                results = setup_failed_results + launch_results
+                print_results(launch_results)
+                if all(item["ok"] for item in launch_results):
                     status(colorize("deploy: verifying workers started", "cyan", enabled=color_enabled))
                     if launch_started_enough(before_started, expected_new_started):
                         status(colorize("deploy: workers active", "green", enabled=color_enabled))
@@ -1621,15 +1641,21 @@ def cmd_deploy(args: argparse.Namespace) -> int:
                             ),
                             error=True,
                         )
-                        cleanup_failed_launch(results, "workers did not become active after launch")
+                        cleanup_failed_launch(launch_results, "workers did not become active after launch")
             else:
-                status(colorize("deploy: setup complete; starting tasks", "green", enabled=color_enabled))
+                task_message = (
+                    "deploy: setup complete; starting tasks"
+                    if setup_failed == 0
+                    else "deploy: setup partial; starting tasks on ready workers"
+                )
+                status(colorize(task_message, "green" if setup_failed == 0 else "yellow", enabled=color_enabled))
                 futures = [
                     executor.submit(run_worker, index, worker)
-                    for index, worker in enumerate(workers)
+                    for index, worker in ready_worker_items
                 ]
-                results = [future.result() for future in concurrent.futures.as_completed(futures)]
-                print_results(results)
+                task_results = [future.result() for future in concurrent.futures.as_completed(futures)]
+                results = setup_failed_results + task_results
+                print_results(task_results)
     except KeyboardInterrupt:
         interrupted = True
         status(colorize("deploy: interrupted; stopping active worker commands", "yellow", enabled=color_enabled), error=True)
@@ -1644,10 +1670,19 @@ def cmd_deploy(args: argparse.Namespace) -> int:
         if executor is not None:
             executor.shutdown(wait=not interrupted, cancel_futures=interrupted)
 
-    failed = sum(1 for item in results if not item["ok"]) + (1 if startup_failed else 0)
+    command_stage_started = any(item["stage"] in ("launch", "tasks") for item in results)
+    if not has_tasks:
+        failed = sum(1 for item in results if not item["ok"])
+    elif not command_stage_started:
+        failed = max(1, sum(1 for item in results if not item["ok"]))
+    else:
+        failed = (
+            sum(1 for item in results if item["stage"] in ("launch", "tasks") and not item["ok"])
+            + (1 if startup_failed else 0)
+        )
     if not has_tasks:
         status(colorize("deploy: setup complete", "green", enabled=color_enabled) if failed == 0 else colorize("deploy: setup failed", "red", enabled=color_enabled))
-    elif any(item["stage"] == "setup" for item in results):
+    elif not command_stage_started:
         status(colorize("deploy: setup failed; no tasks started", "red", enabled=color_enabled))
     elif bool(getattr(args, "launch_only", False)):
         status(colorize("deploy: launch complete", "green", enabled=color_enabled) if failed == 0 else colorize("deploy: launch failed", "red", enabled=color_enabled))

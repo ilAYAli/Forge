@@ -295,11 +295,7 @@ def run_launching(summary: dict[str, Any]) -> bool:
     return isinstance(summary.get("launch"), dict)
 
 def run_queued(summary: dict[str, Any]) -> bool:
-    counts = summary["counts"]
-    return (
-        run_queue_requested(summary)
-        or (summary["tasks"] > 0 and counts["pending"] == summary["tasks"] and not run_started(summary))
-    )
+    return run_queue_requested(summary)
 
 def run_queue_requested(summary: dict[str, Any]) -> bool:
     return isinstance(summary.get("queue"), dict)
