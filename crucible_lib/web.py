@@ -785,7 +785,7 @@ _HTML = r"""<!DOCTYPE html>
       if (state === 'done') actions.push(`<button class="act" onclick="event.stopPropagation();runCmd('${runArg}','hide',this)">hide</button>`);
       if (state === 'done') actions.push(`<button class="act del" onclick="event.stopPropagation();runCmd('${runArg}','del',this)">del</button>`);
       if (failCount > 0 && activeCount === 0) actions.push(`<button class="act del" onclick="event.stopPropagation();runCmd('${runArg}','del',this)">del</button>`);
-      if ((state === 'stopped' || state === 'queued' || state === 'empty') && activeCount === 0) actions.push(`<button class="act del" onclick="event.stopPropagation();runCmd('${runArg}','del',this)">del</button>`);
+      if (state === 'stopped' && activeCount === 0) actions.push(`<button class="act del" onclick="event.stopPropagation();runCmd('${runArg}','del',this)">del</button>`);
 
       // header — always visible
       const hdr = `
@@ -1531,7 +1531,7 @@ def _validate_web_delete(run: str) -> str | None:
     if _payload_active_count(item) > 0:
         raise RuntimeError(f"{run}: run has active tasks; stop it before deleting")
     state = _run_payload_state(item)
-    if _payload_fail_count(item) <= 0 and not _run_payload_done(item) and state not in ("stopped", "queued", "empty"):
+    if _payload_fail_count(item) <= 0 and not _run_payload_done(item) and state != "stopped":
         raise RuntimeError(f"{run}: delete is only available for inactive runs")
     coordinator = payload.get("coordinator")
     return str(coordinator) if coordinator else None

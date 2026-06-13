@@ -1218,6 +1218,34 @@ except SystemExit as exc:
         run_cli.assert_called_once_with(["del", "stopped-sprt", "--force"], coordinator_runs="pwa-5090:/runs")
         delete.assert_called_once_with("stopped-sprt")
 
+    def test_web_delete_refuses_empty_and_queued_runs(self) -> None:
+        import crucible_lib.web as web
+
+        for state in ("empty", "queued"):
+            payload = {
+                "runs": [
+                    {
+                        "run": f"{state}-sprt",
+                        "state": state,
+                        "tasks": 136,
+                        "counts": {"done": 0, "fail": 0, "running": 0, "claimed": 0, "stale": 0, "pending": 136},
+                    },
+                ],
+                "collapsed_failures": [],
+                "collapsed_failures_count": 0,
+                "coordinator": None,
+            }
+            with (
+                mock.patch("crucible_lib.web._collect_status_payload", return_value=payload),
+                mock.patch("crucible_lib.web._run_web_cli") as run_cli,
+                mock.patch("crucible_lib.web._delete_web_run") as delete,
+                self.assertRaisesRegex(RuntimeError, "delete is only available for inactive runs"),
+            ):
+                web._run_api_command(f"{state}-sprt", "del")
+
+            run_cli.assert_not_called()
+            delete.assert_not_called()
+
     def test_web_current_detection_ignores_stopped_runs(self) -> None:
         import crucible_lib.web as web
 
