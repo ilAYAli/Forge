@@ -358,9 +358,14 @@ def run_queued(summary: dict[str, Any]) -> bool:
 def run_queue_requested(summary: dict[str, Any]) -> bool:
     return isinstance(summary.get("queue"), dict)
 
+def run_stopped(summary: dict[str, Any]) -> bool:
+    return isinstance(summary.get("stop"), dict)
+
 def run_current(summary: dict[str, Any]) -> bool:
     counts = summary["counts"]
     active = counts["running"] + counts["claimed"] + counts["stale"]
+    if run_stopped(summary) and active == 0 and not run_launching(summary):
+        return False
     return run_launching(summary) or active > 0 or (counts["pending"] > 0 and run_started(summary))
 
 def run_active_count(summary: dict[str, Any]) -> int:
@@ -393,6 +398,8 @@ def run_state(summary: dict[str, Any]) -> str:
         return "current"
     if run_done(summary):
         return "done"
+    if run_stopped(summary):
+        return "stopped"
     if run_queued(summary):
         return "queued"
     return "empty"
@@ -1961,6 +1968,7 @@ def status_summary(manifest: dict[str, Any], *, lease_seconds: int) -> dict[str,
     clear_state_diagnostics()
     queue_payload = read_state_json(queue_request_path(manifest))
     launch_payload = read_state_json(launch_request_path(manifest))
+    stop_payload = read_state_json(stop_request_path(manifest))
     counts = {"done": 0, "fail": 0, "running": 0, "claimed": 0, "stale": 0, "pending": 0}
     rows: list[dict[str, Any]] = []
     groups: dict[str, dict[str, list[int | str]]] = {
@@ -2122,6 +2130,7 @@ def status_summary(manifest: dict[str, Any], *, lease_seconds: int) -> dict[str,
         "worker_rates": worker_rates,
         "queue": queue_payload,
         "launch": launch_payload,
+        "stop": stop_payload,
         "progress_graph": progress_graph,
         "diagnostics": state_diagnostics(),
     }

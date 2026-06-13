@@ -1169,6 +1169,49 @@ except SystemExit as exc:
         run_cli.assert_called_once_with(["del", "short-sprt", "--force"], coordinator_runs=None)
         delete.assert_called_once_with("short-sprt")
 
+    def test_web_delete_allows_stopped_incomplete_runs(self) -> None:
+        import crucible_lib.web as web
+
+        stopped_payload = {
+            "runs": [
+                {
+                    "run": "stopped-sprt",
+                    "state": "stopped",
+                    "tasks": 2,
+                    "counts": {"done": 1, "fail": 0, "running": 0, "claimed": 0, "stale": 0, "pending": 1},
+                },
+            ],
+            "collapsed_failures": [],
+            "collapsed_failures_count": 0,
+            "coordinator": "pwa-5090:/runs",
+        }
+        completed = subprocess.CompletedProcess(["del"], 0, stdout="deleted\n", stderr="")
+        with (
+            mock.patch("crucible_lib.web._collect_status_payload", return_value=stopped_payload),
+            mock.patch("crucible_lib.web._run_web_cli", return_value=completed) as run_cli,
+            mock.patch("crucible_lib.web._delete_web_run") as delete,
+        ):
+            result = web._run_api_command("stopped-sprt", "del")
+
+        self.assertEqual(0, result.returncode)
+        run_cli.assert_called_once_with(["del", "stopped-sprt", "--force"], coordinator_runs="pwa-5090:/runs")
+        delete.assert_called_once_with("stopped-sprt")
+
+    def test_web_current_detection_ignores_stopped_runs(self) -> None:
+        import crucible_lib.web as web
+
+        payload = {
+            "runs": [
+                {
+                    "run": "stopped-sprt",
+                    "state": "stopped",
+                    "counts": {"done": 1, "fail": 0, "running": 0, "claimed": 0, "stale": 0, "pending": 1},
+                },
+            ],
+        }
+
+        self.assertFalse(web._status_payload_has_current_run(payload))
+
     def test_web_local_status_does_not_use_all(self) -> None:
         import crucible_lib.web as web
 
@@ -4924,6 +4967,34 @@ except SystemExit as exc:
         self.assertIn("run=marked-queued", status.stdout)
         payload = json.loads(payload_result.stdout)
         self.assertEqual("queued", payload["runs"][0]["state"])
+
+    def test_status_reports_stopped_incomplete_run(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run = root / "runs" / "stopped-run"
+            state = run / "state"
+            manifest = {
+                "schema": "crucible.task.v1",
+                "name": "stopped-run",
+                "work_dir": str(run),
+                "state_dir": str(state),
+                "claim_dir": str(run / "claims"),
+                "tasks": [
+                    {"id": "task_0", "index": 0, "command": "true", "outputs": []},
+                    {"id": "task_1", "index": 1, "command": "true", "outputs": []},
+                ],
+            }
+            crucible.write_json(run / "manifest.json", manifest)
+            crucible.write_json(state / "task_0.done.json", {"task": "task_0", "host": "worker"})
+            crucible.write_json(crucible.stop_request_path(manifest), {"run": "stopped-run"})
+            env = {"CRUCIBLE_COORDINATOR_RUNS": "", "CRUCIBLE_RUNS_DIR": str(root / "runs")}
+
+            status = self.run_cli("status", "stopped-run", "--json", cwd=root, env=env)
+
+        self.assertEqual(0, status.returncode)
+        payload = json.loads(status.stdout)
+        self.assertEqual("stopped", payload["state"])
+        self.assertEqual({"done": 1, "fail": 0, "running": 0, "claimed": 0, "stale": 0, "pending": 1}, payload["counts"])
 
     def test_default_status_prefilters_inactive_runs(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

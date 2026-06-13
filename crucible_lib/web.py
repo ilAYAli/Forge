@@ -61,6 +61,7 @@ _HTML = r"""<!DOCTYPE html>
     .badge.failed  { background: rgba(217,95,95,.15);  color: var(--red); }
     .badge.done    { background: rgba(77,179,106,.12);  color: var(--grn); }
     .badge.queued  { background: rgba(118,118,128,.15); color: var(--dim); }
+    .badge.stopped { background: rgba(200,142,74,.16); color: var(--warn); }
     .badge.empty   { background: rgba(118,118,128,.12); color: var(--dim); }
     /* summary line below the run name — always visible */
     .run-summary { display: flex; align-items: center; gap: 12px; margin-top: 4px;
@@ -740,11 +741,12 @@ _HTML = r"""<!DOCTYPE html>
       const runArg = attrEsc(jsSingle(r.run));
       const activeCount = Number(active.count || 0);
       const failCount = Number(fail.count || r.fail || 0);
-      if (state === 'current') actions.push(`<button class="act stop"   onclick="event.stopPropagation();runCmd('${runArg}','stop',this)">stop</button>`);
-      if (state === 'current') actions.push(`<button class="act resume" onclick="event.stopPropagation();runCmd('${runArg}','resume',this)">resume</button>`);
+      if (state === 'current' || state === 'queued') actions.push(`<button class="act stop"   onclick="event.stopPropagation();runCmd('${runArg}','stop',this)">stop</button>`);
+      if (state === 'stopped') actions.push(`<button class="act resume" onclick="event.stopPropagation();runCmd('${runArg}','resume',this)">resume</button>`);
       if (state === 'done') actions.push(`<button class="act" onclick="event.stopPropagation();runCmd('${runArg}','hide',this)">hide</button>`);
       if (state === 'done') actions.push(`<button class="act del" onclick="event.stopPropagation();runCmd('${runArg}','del',this)">del</button>`);
       if (failCount > 0 && activeCount === 0) actions.push(`<button class="act del" onclick="event.stopPropagation();runCmd('${runArg}','del',this)">del</button>`);
+      if ((state === 'stopped' || state === 'queued' || state === 'empty') && activeCount === 0) actions.push(`<button class="act del" onclick="event.stopPropagation();runCmd('${runArg}','del',this)">del</button>`);
 
       // header — always visible
       const hdr = `
@@ -1245,6 +1247,8 @@ def _status_payload_has_current_run(payload: dict[str, Any]) -> bool:
         counts = run.get("counts") if isinstance(run, dict) else None
         if not isinstance(counts, dict):
             continue
+        if _run_payload_state(run) == "stopped":
+            continue
         active = int(counts.get("running") or 0) + int(counts.get("claimed") or 0) + int(counts.get("stale") or 0)
         started = active + int(counts.get("done") or 0) + int(counts.get("fail") or 0)
         if active > 0 or (started > 0 and int(counts.get("pending") or 0) > 0):
@@ -1453,8 +1457,9 @@ def _validate_web_delete(run: str) -> str | None:
         raise RuntimeError(f"{run}: run is not visible in status")
     if _payload_active_count(item) > 0:
         raise RuntimeError(f"{run}: run has active tasks; stop it before deleting")
-    if _payload_fail_count(item) <= 0 and not _run_payload_done(item):
-        raise RuntimeError(f"{run}: delete is only available for failed or completed runs")
+    state = _run_payload_state(item)
+    if _payload_fail_count(item) <= 0 and not _run_payload_done(item) and state not in ("stopped", "queued", "empty"):
+        raise RuntimeError(f"{run}: delete is only available for inactive runs")
     coordinator = payload.get("coordinator")
     return str(coordinator) if coordinator else None
 
