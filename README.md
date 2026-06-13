@@ -66,13 +66,13 @@ crucible template list
 crucible template show sprt
 crucible sprt --candidate ~/assets/engines/enyo_9696dac --games 1000
 crucible sprt --candidate ~/assets/engines/enyo_9696dac --games 1000 \
-  --workers pwa-mbp:8,pwa-mbp0:10,pwa-5090:16
+  --workers pwa-mbp:4,pwa-mbp0:5,pwa-5090:6
 crucible sprt --candidate ~/assets/engines/enyo_9696dac --games 1000 \
-  --workers pwa-mbp:8,pwa-mbp0:10,pwa-5090:16 --shards 64
+  --workers pwa-mbp:4,pwa-mbp0:5,pwa-5090:6 --shards 64
 crucible sprt --candidate ~/assets/engines/enyo_9696dac --games 1000 \
   --candidate-uci nnue_file=~/code/cpp/chess/enyo/net/candidate.nn \
   --reference-uci nnue_file=~/code/cpp/chess/enyo/net/reference.nn
-crucible sprt --workers pwa-mbp:8 -- --candidate ~/assets/engines/enyo_9696dac --games 1000
+crucible sprt --workers pwa-mbp:4 -- --candidate ~/assets/engines/enyo_9696dac --games 1000
 ```
 
 `crucible sprt ...` is shorthand for `crucible run sprt ...`.
@@ -90,24 +90,18 @@ Use `--candidate-uci` and `--reference-uci` for net-vs-net runs where both
 sides use the same engine binary but different NNUE files. These flags are
 repeatable and are passed through to the underlying `sprt` command.
 
-For `crucible sprt`, inline worker counts are host thread budgets, not raw
-worker slots. Crucible converts each host budget into task slots with:
-
-```text
-slots = floor(thread_budget / (2 * --concurrency * --threads))
-```
-
-With the default `--concurrency 1 --threads 1`, `pwa-mbp:8` launches 4 SPRT
-tasks, not 8, because each task runs candidate and reference engines. Use
-`:0` to disable a host. A non-zero budget smaller than one task is rejected.
-If `--shards` is omitted, Crucible chooses 4 shards per converted worker slot,
+For `crucible sprt`, inline worker counts are worker slots. `pwa-mbp:4`
+launches 4 SPRT shards on `pwa-mbp`. Use `:0` to disable a host.
+`--concurrency` and `--threads` are passed to `sprt` and affect the engine work
+inside each shard; they do not change the number of Crucible worker slots.
+If `--shards` is omitted, Crucible chooses 4 shards per worker slot,
 capped by the number of games. Pass `--shards N` to override it.
 
 Default workers can be configured in `~/.config/crucible/config.yml`:
 
 ```yaml
-default_workers: "pwa-mbp:8,pwa-mbp0:8,pwa-5090:8"
-coordinator_host: "pwa-mbp"
+default_workers: "pwa-mbp:4,pwa-mbp0:5,pwa-5090:6,pwa-rce:4,pwa-wsl:4"
+coordinator_host: "pwa-5090"
 notify_command: "/path/to/notify-script"
 template_dirs:
   - "~/.config/crucible/templates"
@@ -244,10 +238,6 @@ crucible start manifest.json --workers worker-a:0,worker-b
 Use `:N` to override the slot count for that invocation. Use `:0` to omit a
 worker without rewriting the workers file. Negative and non-integer slot counts
 are invalid.
-
-Exception: `crucible run sprt` treats `:N` and worker-file `slots` as thread
-budgets and derives SPRT task slots from engine cost. Generic `start`, `add`,
-`deploy`, `retry`, and non-SPRT templates still treat `slots` as worker slots.
 
 Workers files as JSON:
 

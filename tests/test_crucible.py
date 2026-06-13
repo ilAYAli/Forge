@@ -1040,12 +1040,12 @@ except SystemExit as exc:
         manifest = json.loads(stdout.getvalue())
 
         self.assertEqual(0, rc)
-        self.assertEqual(28, manifest["template"]["parameters"]["shards"])
-        self.assertEqual(28, len(manifest["tasks"]))
+        self.assertEqual(60, manifest["template"]["parameters"]["shards"])
+        self.assertEqual(60, len(manifest["tasks"]))
         totals = [task["progress"]["total"] for task in manifest["tasks"]]
         self.assertEqual(256, sum(totals))
-        self.assertEqual(16, totals.count(10))
-        self.assertEqual(12, totals.count(8))
+        self.assertEqual(8, totals.count(6))
+        self.assertEqual(52, totals.count(4))
 
     def test_sprt_command_preserves_explicit_shards(self) -> None:
         stdout = io.StringIO()
@@ -1214,48 +1214,39 @@ except SystemExit as exc:
         self.assertEqual(f"~/assets/engines/engine_{commit[:7]}", manifest["template"]["parameters"]["candidate"])
         self.assertEqual(f"run ~/assets/engines/engine_{commit[:7]}", manifest["tasks"][0]["command"])
 
-    def test_sprt_template_converts_worker_threads_to_slots(self) -> None:
+    def test_sprt_template_uses_inline_worker_slots_literally(self) -> None:
         with mock.patch("crucible_lib.workers.default_workers_path", side_effect=SystemExit("no workers")):
-            payload = crucible.sprt_worker_thread_budget_payload(
-                "pwa-mbp:8,pwa-5090:10,pwa-rce:0",
-                {"concurrency": 1, "threads": 1},
-            )
+            payload = crucible.sprt_worker_slots_payload("pwa-mbp:4,pwa-mbp0:5,pwa-5090:6,pwa-rce:0")
 
         self.assertEqual(
             [
                 {"host": "pwa-mbp", "profile": "pwa-mbp", "local": False, "slots": 4},
-                {"host": "pwa-5090", "profile": "pwa-5090", "local": False, "slots": 5},
+                {"host": "pwa-mbp0", "profile": "pwa-mbp0", "local": False, "slots": 5},
+                {"host": "pwa-5090", "profile": "pwa-5090", "local": False, "slots": 6},
             ],
             payload["workers"],
         )
-        self.assertEqual(2, payload["sprt_thread_budget"]["threads_per_task"])
+        self.assertNotIn("sprt_thread_budget", payload)
 
-    def test_sprt_template_scales_slots_by_engine_threads_and_concurrency(self) -> None:
+    def test_sprt_template_does_not_scale_slots_by_engine_settings(self) -> None:
         with mock.patch("crucible_lib.workers.default_workers_path", side_effect=SystemExit("no workers")):
-            payload = crucible.sprt_worker_thread_budget_payload(
-                "pwa-mbp:16",
-                {"concurrency": 2, "threads": 2},
-            )
+            payload = crucible.sprt_worker_slots_payload("pwa-mbp:16")
 
         self.assertEqual(
-            [{"host": "pwa-mbp", "profile": "pwa-mbp", "local": False, "slots": 2}],
+            [{"host": "pwa-mbp", "profile": "pwa-mbp", "local": False, "slots": 16}],
             payload["workers"],
         )
-        self.assertEqual(8, payload["sprt_thread_budget"]["threads_per_task"])
 
-    def test_sprt_template_rejects_too_small_nonzero_thread_budget(self) -> None:
-        with (
-            mock.patch("crucible_lib.workers.default_workers_path", side_effect=SystemExit("no workers")),
-            self.assertRaises(SystemExit) as raised,
-        ):
-            crucible.sprt_worker_thread_budget_payload(
-                "pwa-mbp:1",
-                {"concurrency": 1, "threads": 1},
-            )
+    def test_sprt_template_accepts_one_worker_slot(self) -> None:
+        with mock.patch("crucible_lib.workers.default_workers_path", side_effect=SystemExit("no workers")):
+            payload = crucible.sprt_worker_slots_payload("pwa-mbp:1")
 
-        self.assertIn("below 2 threads per task", str(raised.exception))
+        self.assertEqual(
+            [{"host": "pwa-mbp", "profile": "pwa-mbp", "local": False}],
+            payload["workers"],
+        )
 
-    def test_sprt_template_converts_worker_file_thread_budgets(self) -> None:
+    def test_sprt_template_uses_worker_file_slots_literally(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             workers_path = Path(tmp) / "workers.json"
             workers_path.write_text(
@@ -1263,22 +1254,20 @@ except SystemExit as exc:
                     "schema": "crucible.workers.v1",
                     "workers": [
                         {"host": "pwa-mbp", "profile": "mac", "slots": 8},
-                        {"host": "pwa-5090", "thread_budget": 10},
+                        {"host": "pwa-5090", "slots": 10},
                         {"host": "pwa-rce", "slots": 0},
                     ],
                 }),
                 encoding="utf-8",
             )
 
-            payload = crucible.sprt_worker_thread_budget_payload(
-                str(workers_path),
-                {"concurrency": 1, "threads": 1},
-            )
+            payload = crucible.sprt_worker_slots_payload(str(workers_path))
 
         self.assertEqual(
             [
-                {"host": "pwa-mbp", "profile": "mac", "local": False, "slots": 4},
-                {"host": "pwa-5090", "profile": "pwa-5090", "local": False, "slots": 5},
+                {"host": "pwa-mbp", "profile": "mac", "local": False, "slots": 8},
+                {"host": "pwa-5090", "profile": "pwa-5090", "local": False, "slots": 10},
+                {"host": "pwa-rce", "profile": "pwa-rce", "local": False, "slots": 0},
             ],
             payload["workers"],
         )

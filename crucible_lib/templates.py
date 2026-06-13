@@ -561,132 +561,19 @@ def resolved_workers_arg(run_options: argparse.Namespace, config: dict[str, Any]
     return workers
 
 
-def sprt_task_thread_cost(params: dict[str, Any]) -> int:
-    concurrency = as_int(params.get("concurrency", 1), label="sprt.concurrency")
-    threads = as_int(params.get("threads", 1), label="sprt.threads")
-    return 2 * concurrency * threads
-
-
-def sprt_worker_budget(item: dict[str, Any], *, default_budget: int) -> int:
-    for key in ("thread_budget", "threads", "slots"):
-        if key in item:
-            try:
-                return int(item[key])
-            except (TypeError, ValueError) as exc:
-                label = str(item.get("host") or "worker")
-                raise SystemExit(f"{label}: SPRT thread budget must be a non-negative integer") from exc
-    return default_budget
-
-
-def sprt_slots_from_thread_budget(budget: int, task_cost: int, *, label: str) -> int:
-    if budget < 0:
-        raise SystemExit(f"{label}: SPRT thread budget must be a non-negative integer")
-    if budget == 0:
-        return 0
-    slots = budget // task_cost
-    if slots < 1:
-        raise SystemExit(
-            f"{label}: SPRT thread budget {budget} is below {task_cost} threads per task; "
-            "use 0 to disable this worker"
-        )
-    return slots
-
-
-def sprt_inline_worker_records(workers_arg: str, *, task_cost: int) -> list[dict[str, Any]]:
+def sprt_worker_slots_payload(workers_arg: str) -> dict[str, Any]:
     from .workers import (
-        DEFAULT_INLINE_WORKER_SLOTS,
-        default_inline_worker_records,
-        parse_inline_worker_spec,
+        worker_records_from_payload,
+        workers_payload_from_arg,
+        workers_payload_from_records,
     )
 
-    entries = [entry.strip() for entry in workers_arg.split(",")]
-    if not entries or any(not entry for entry in entries):
-        raise SystemExit("inline workers must be a comma-separated host list")
-
-    defaults = default_inline_worker_records()
-    records: list[dict[str, Any]] = []
-    for entry in entries:
-        host, profile, budget = parse_inline_worker_spec(entry)
-        base = dict(defaults.get(host, {}))
-        record = base if base else {
-            "host": host,
-            "profile": host,
-            "local": host in ("localhost", "127.0.0.1"),
-        }
-        record["host"] = host
-        if profile is not None:
-            record["profile"] = profile
-        elif not record.get("profile"):
-            record["profile"] = host
-        if "local" not in record:
-            record["local"] = host in ("localhost", "127.0.0.1")
-        if budget is None:
-            budget = int(record.get("slots", DEFAULT_INLINE_WORKER_SLOTS if not base else task_cost))
-        record.pop("slots", None)
-        record["thread_budget"] = budget
-        records.append(record)
-    return records
-
-
-def sprt_file_worker_records(workers_arg: str, *, task_cost: int) -> list[dict[str, Any]]:
-    from .workers import parse_worker_record, worker_arg_looks_like_path
-
-    path = expand_path(workers_arg)
-    if not path.exists():
-        if worker_arg_looks_like_path(workers_arg):
-            raise SystemExit(f"workers file not found: {workers_arg}")
-        return sprt_inline_worker_records(workers_arg, task_cost=task_cost)
-
-    payload = read_json(path)
-    if payload.get("schema") not in (None, "crucible.workers.v1"):
-        raise SystemExit(f"{workers_arg}: unsupported schema {payload.get('schema')!r}")
-    raw_workers = payload.get("workers")
-    if not isinstance(raw_workers, list):
-        raise SystemExit(f"{workers_arg}: workers must be a list")
-
-    records: list[dict[str, Any]] = []
-    for raw in raw_workers:
-        raw_budget = task_cost
-        if isinstance(raw, dict):
-            raw_budget = sprt_worker_budget(raw, default_budget=task_cost)
-        worker = parse_worker_record(raw)
-        if not worker:
-            continue
-        worker.pop("slots", None)
-        worker["thread_budget"] = raw_budget
-        records.append(worker)
-    return records
-
-
-def sprt_worker_thread_budget_payload(workers_arg: str, params: dict[str, Any]) -> dict[str, Any]:
-    task_cost = sprt_task_thread_cost(params)
-    records = sprt_file_worker_records(workers_arg, task_cost=task_cost)
-
-    converted: list[dict[str, Any] | str] = []
-    for worker in records:
-        host = str(worker.get("host") or "").strip()
-        if not host:
-            raise SystemExit("SPRT worker host must not be empty")
-        budget = sprt_worker_budget(worker, default_budget=task_cost)
-        slots = sprt_slots_from_thread_budget(budget, task_cost, label=host)
-        if slots == 0:
-            continue
-        converted_worker = dict(worker)
-        converted_worker.pop("threads", None)
-        converted_worker.pop("thread_budget", None)
-        converted_worker["slots"] = slots
-        converted.append(converted_worker)
-
-    if not converted:
+    payload = workers_payload_from_arg(workers_arg, default_ok=False)
+    records = worker_records_from_payload(payload, label=workers_arg)
+    payload = workers_payload_from_records(records)
+    if sprt_worker_slot_count(payload) <= 0:
         raise SystemExit("SPRT workers resolve to zero task slots")
-    return {
-        "schema": "crucible.workers.v1",
-        "workers": converted,
-        "sprt_thread_budget": {
-            "threads_per_task": task_cost,
-            "note": "SPRT template converts host thread budgets to worker slots.",
-        },
-    }
+    return payload
 
 
 def sprt_worker_slot_count(payload: dict[str, Any]) -> int:
@@ -730,7 +617,7 @@ def cmd_template_run(args: argparse.Namespace) -> int:
         )
         if needs_workers:
             workers_arg = resolved_workers_arg(run_options, config)
-            sprt_workers_payload = sprt_worker_thread_budget_payload(workers_arg, params)
+            sprt_workers_payload = sprt_worker_slots_payload(workers_arg)
         if not shards_supplied:
             params = dict(params)
             params["shards"] = auto_sprt_shards(params, sprt_workers_payload or {})
@@ -749,7 +636,7 @@ def cmd_template_run(args: argparse.Namespace) -> int:
         write_json(manifest_path, manifest)
         if template_name == "sprt":
             workers_path = Path(tmp) / "workers.json"
-            write_json(workers_path, sprt_workers_payload or sprt_worker_thread_budget_payload(workers_arg, params))
+            write_json(workers_path, sprt_workers_payload or sprt_worker_slots_payload(workers_arg))
             workers_arg = str(workers_path)
         from .workers import cmd_run_job
 
