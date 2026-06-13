@@ -3824,8 +3824,9 @@ except SystemExit as exc:
 
             graph = payload["progress_graph"]
             series = {item["name"]: item["points"] for item in graph["series"]}
-            self.assertEqual([{"x": 2.0, "y": 0.1}, {"x": 4.0, "y": -0.1}], series["llr"])
-            self.assertEqual([{"x": 2.0, "y": 10.0}, {"x": 4.0, "y": -10.0}], series["elo"])
+            self.assertEqual([{"x": 2.0, "y": 0.1}, {"x": 4.0, "y": 0.0}], series["llr"])
+            self.assertAlmostEqual(10.0, series["elo"][0]["y"], places=1)
+            self.assertAlmostEqual(0.0, series["elo"][1]["y"], places=1)
 
     def test_wait_sends_fail_notification_payload(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -5729,8 +5730,9 @@ except SystemExit as exc:
             graph = summary["progress_graph"]
             self.assertIsNotNone(graph)
             series = {item["name"]: item["points"] for item in graph["series"]}
-            self.assertEqual([{"x": 2.0, "y": 0.01}, {"x": 4.0, "y": -0.02}], series["llr"])
-            self.assertEqual([{"x": 2.0, "y": 10.0}, {"x": 4.0, "y": -20.0}], series["elo"])
+            self.assertEqual([{"x": 2.0, "y": 0.01}, {"x": 4.0, "y": -0.01}], series["llr"])
+            self.assertAlmostEqual(10.0, series["elo"][0]["y"], places=1)
+            self.assertAlmostEqual(-5.0, series["elo"][1]["y"], places=1)
 
     def test_status_sprt_header_shows_aggregated_elo(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

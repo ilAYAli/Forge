@@ -1659,6 +1659,9 @@ def run_progress_graph_from_rows(
 ) -> dict[str, Any] | None:
     tasks_by_id = {str(task["id"]): task for task in manifest["tasks"]}
     points_by_name: dict[str, list[dict[str, float]]] = {}
+    sprt_rows: list[dict[str, Any]] = []
+    sprt_series_names: dict[str, str] = {}
+    is_sprt = str(manifest_metadata(manifest).get("kind") or "").lower() == "sprt"
     x_unit = ""
     for row in rows:
         task = tasks_by_id.get(str(row.get("id") or ""))
@@ -1673,6 +1676,7 @@ def run_progress_graph_from_rows(
         fields = data.get("fields")
         if not isinstance(fields, dict):
             continue
+        fields = normalize_progress_fields(fields)
         graph_data = dict(data)
         config_progress = progress_config_unit_total(task)
         if config_progress is not None and isinstance(data.get("done"), int):
@@ -1682,13 +1686,25 @@ def run_progress_graph_from_rows(
             if offset_unit == unit:
                 graph_data.setdefault("global_done", offset + int(data["done"]))
                 graph_data.setdefault("global_total", progress_unit_totals.get(unit, task_total))
+        sprt_x: float | None = None
         for spec in specs:
             x_name = "global_done" if spec["x"] == "done" and "global_done" in graph_data else spec["x"]
             x = progress_numeric_value(x_name, graph_data, fields)
             y = progress_numeric_value(spec["field"], graph_data, fields)
             if x is None or y is None:
                 continue
+            field_name = str(spec["field"]).lower()
+            if is_sprt and field_name in {"elo", "llr"}:
+                sprt_series_names.setdefault(spec["name"], field_name)
+                sprt_x = x if sprt_x is None else sprt_x
+                continue
             points_by_name.setdefault(spec["name"], []).append({"x": x, "y": y})
+        done = graph_data.get("done")
+        if sprt_x is not None and isinstance(done, int) and done > 0:
+            sprt_rows.append({"x": sprt_x, "done": done, "fields": fields})
+
+    for name, points in sprt_aggregate_graph_points(sprt_rows, sprt_series_names).items():
+        points_by_name[name] = points
 
     series = []
     for name, points in points_by_name.items():
@@ -1708,6 +1724,40 @@ def elo_score_rate(elo: float) -> float:
 def score_rate_elo(score_rate: float) -> float:
     bounded = min(1.0 - 1e-12, max(1e-12, score_rate))
     return 400.0 * math.log10(bounded / (1.0 - bounded))
+
+def sprt_aggregate_graph_points(
+    rows: list[dict[str, Any]],
+    series_names: dict[str, str],
+) -> dict[str, list[dict[str, float]]]:
+    if not rows or not series_names:
+        return {}
+    points: dict[str, list[dict[str, float]]] = {name: [] for name in series_names}
+    weighted_score = 0.0
+    weight_total = 0
+    cumulative_done = 0
+    llr_total = 0.0
+    llr_seen = False
+    for row in sorted(rows, key=lambda item: float(item["x"])):
+        done = row.get("done")
+        fields = row.get("fields")
+        if not isinstance(done, int) or done <= 0 or not isinstance(fields, dict):
+            continue
+        cumulative_done += done
+        x = float(cumulative_done)
+        elo = progress_field_float(fields, "elo", "elo~", "Elo")
+        if elo is not None:
+            weighted_score += elo_score_rate(elo) * done
+            weight_total += done
+        llr, _bound = progress_field_llr(fields)
+        if math.isfinite(llr):
+            llr_total += llr
+            llr_seen = True
+        for name, field_name in series_names.items():
+            if field_name == "elo" and weight_total > 0:
+                points[name].append({"x": x, "y": score_rate_elo(weighted_score / weight_total)})
+            elif field_name == "llr" and llr_seen:
+                points[name].append({"x": x, "y": llr_total})
+    return {name: values for name, values in points.items() if values}
 
 def sprt_summary_rows(summary: dict[str, Any]) -> list[dict[str, Any]]:
     rows = summary.get("rows")
