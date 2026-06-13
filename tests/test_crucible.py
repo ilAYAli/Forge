@@ -309,6 +309,20 @@ class CrucibleTests(unittest.TestCase):
         self.assertLess(advanced, stdout.index("\n    work "))
         self.assertNotIn("positional arguments:", stdout)
 
+    def test_empty_delegated_status_uses_coordinator_runs_label(self) -> None:
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            rc = crucible.print_run_status(
+                [],
+                color_enabled=False,
+                as_json=False,
+                filter_name=None,
+                runs_label="pwa-5090:/runs",
+            )
+
+        self.assertEqual(0, rc)
+        self.assertIn("no active Crucible runs found in pwa-5090:/runs", stdout.getvalue())
+
     def test_web_command_is_optional_when_module_is_missing(self) -> None:
         script = f"""
 import argparse
@@ -386,6 +400,9 @@ except SystemExit as exc:
         self.assertIn("/api/status?restart=", web._HTML)
         self.assertIn("restart requested but server did not come back", web._HTML)
         self.assertIn("id=\"restart\"", web._HTML)
+        self.assertIn("localStorage.setItem(UI_STATE_KEY", web._HTML)
+        self.assertIn("clearOldHashState()", web._HTML)
+        self.assertNotIn("location.replace('#'", web._HTML)
         self.assertIn('path = self.path.split("?", 1)[0]', inspect.getsource(web._Handler.do_GET))
         self.assertNotIn("games/s", web._HTML)
         self.assertIn("ThreadingHTTPServer", web.ThreadingHTTPServer.__name__)

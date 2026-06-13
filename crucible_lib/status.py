@@ -167,7 +167,7 @@ def run_status_on_coordinator(args: argparse.Namespace, coordinator_runs: str) -
             print(result.stderr, end="", file=sys.stderr)
         return result.returncode
     print(f"coordinator: {coordinator_runs}")
-    rc = print_delegated_status_payload(args, payload)
+    rc = print_delegated_status_payload(args, payload, runs_label=coordinator_runs)
     if result.stderr:
         print(result.stderr, end="", file=sys.stderr)
     return rc
@@ -205,7 +205,7 @@ def normalize_status_json_payload(payload: Any) -> Any:
         return normalized
     return normalize_status_summary_payload(payload)
 
-def print_delegated_status_payload(args: argparse.Namespace, payload: Any) -> int:
+def print_delegated_status_payload(args: argparse.Namespace, payload: Any, *, runs_label: str | None = None) -> int:
     selected = [name for name in ("all", "done", "failed") if bool(getattr(args, name))]
     filter_name = selected[0] if selected else None
     color_enabled = status_color_enabled(args)
@@ -223,6 +223,7 @@ def print_delegated_status_payload(args: argparse.Namespace, payload: Any) -> in
             collapse_inactive_failures=bool(filter_name is None and not getattr(args, "verbose", False)),
             show_details=bool(filter_name is None or args.all or args.done or args.failed or getattr(args, "show_done", False) or getattr(args, "verbose", False)),
             show_done=bool(args.done or getattr(args, "show_done", False)),
+            runs_label=runs_label,
         )
     if args.run is not None and isinstance(payload, dict) and isinstance(payload.get("counts"), dict):
         summary = status_summary_from_payload(payload)
@@ -1083,6 +1084,7 @@ def print_run_status(
     collapse_inactive_failures: bool = False,
     show_details: bool = False,
     show_done: bool = False,
+    runs_label: str | None = None,
 ) -> int:
     filtered = filtered_run_summaries(
         summaries,
@@ -1110,7 +1112,7 @@ def print_run_status(
         }
         label = labels.get(filter_name, "")
         qualifier = f"{label} " if label else ""
-        print(f"no {qualifier}Crucible runs found in {runs_dir()}")
+        print(f"no {qualifier}Crucible runs found in {runs_label or runs_dir()}")
         return 0
     collapsed_failures = [
         summary for summary in filtered

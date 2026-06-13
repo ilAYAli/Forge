@@ -303,21 +303,32 @@ _HTML = r"""<!DOCTYPE html>
       if (started > 0) playDing();
     }
 
-    // URL hash persistence
-    function saveToHash() {
+    // UI state persistence
+    const UI_STATE_KEY = 'crucible.ui.v1';
+    function clearOldHashState() {
+      if (!location.hash) return;
       try {
-        location.replace('#' + btoa(JSON.stringify({o: openState, s: taskSort, c: taskColWidths})));
+        history.replaceState(null, document.title, location.pathname + location.search);
+      } catch(e) {
+        location.hash = '';
+      }
+    }
+    function saveUiState() {
+      try {
+        localStorage.setItem(UI_STATE_KEY, JSON.stringify({o: openState, s: taskSort, c: taskColWidths}));
       } catch(e) {}
     }
-    function loadFromHash() {
+    function loadUiState() {
       try {
-        if (!location.hash) return;
-        const st = JSON.parse(atob(location.hash.slice(1)));
+        let raw = localStorage.getItem(UI_STATE_KEY);
+        clearOldHashState();
+        if (!raw) return;
+        const st = JSON.parse(raw);
         if (st.o) Object.assign(openState, st.o);
         if (st.s) Object.assign(taskSort, st.s);
         if (taskSort.col === 'task') taskSort.col = 'shard';
         if (st.c) taskColWidths = st.c;
-      } catch(e) {}
+      } catch(e) { clearOldHashState(); }
     }
 
     // Column widths and sort state — persisted across refreshes
@@ -336,7 +347,7 @@ _HTML = r"""<!DOCTYPE html>
       if (taskSort.col === col) taskSort.dir *= -1;
       else { taskSort.col = col; taskSort.dir = 1; }
       applySortToAllTables();
-      saveToHash();
+      saveUiState();
     }
 
     function applySortToAllTables() {
@@ -385,7 +396,7 @@ _HTML = r"""<!DOCTYPE html>
               handle.classList.remove('active');
               document.removeEventListener('mousemove', onMove);
               document.removeEventListener('mouseup', onUp);
-              saveToHash();
+              saveUiState();
             };
             document.addEventListener('mousemove', onMove);
             document.addEventListener('mouseup', onUp);
@@ -406,9 +417,17 @@ _HTML = r"""<!DOCTYPE html>
     }
 
     function saveState() {
+      const seen = new Set();
       document.querySelectorAll('.run-body, .section-detail').forEach(el => {
-        if (el.id) openState[el.id] = el.classList.contains('open');
+        if (!el.id) return;
+        seen.add(el.id);
+        openState[el.id] = el.classList.contains('open');
       });
+      if (seen.size > 0) {
+        for (const key of Object.keys(openState)) {
+          if (!seen.has(key)) delete openState[key];
+        }
+      }
     }
 
     function resolveOpen(id, defaultOpen) {
@@ -423,7 +442,7 @@ _HTML = r"""<!DOCTYPE html>
       openState[id] = nowOpen;
       const hdr = el.previousElementSibling;
       if (hdr) { const a = hdr.querySelector('.arrow'); if (a) a.classList.toggle('open', nowOpen); }
-      saveToHash();
+      saveUiState();
     }
 
     function toggleRunHeader(event, id) {
@@ -805,6 +824,7 @@ _HTML = r"""<!DOCTYPE html>
         el.innerHTML = parts.join('');
         initResizableTables();
         applySortToAllTables();
+        saveUiState();
       } catch(e) {
         document.getElementById('dot').className = 'err';
         document.getElementById('err').style.display = 'block';
@@ -815,7 +835,7 @@ _HTML = r"""<!DOCTYPE html>
       }
     }
 
-    loadFromHash();
+    loadUiState();
     updateSoundButton();
     document.addEventListener('click', () => {
       if (soundEnabled) ensureAudioContext();
