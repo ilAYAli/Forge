@@ -190,6 +190,42 @@ class CrucibleTests(unittest.TestCase):
             "collapsed_failures_count": 0,
         }) + "\n"
 
+    def test_run_status_payload_includes_command_groups(self) -> None:
+        summary = {
+            "run": "command-run",
+            "manifest": "/runs/command-run/manifest.json",
+            "tasks": 3,
+            "counts": {"done": 0, "fail": 0, "running": 0, "claimed": 0, "stale": 0, "pending": 3},
+            "groups": {"done": {}, "fail": {}, "stale": {}},
+            "active": [],
+            "active_count": 0,
+            "pending": [0, 1, 2],
+            "pending_groups": {"sprt:8": [0, 1], "sprt:6": [2]},
+            "rows": [],
+            "metadata": {"description": "Command run"},
+            "progress_totals": {},
+            "progress_done": {},
+            "progress_outputs": {},
+            "worker_outputs": {},
+            "worker_rates": {},
+            "diagnostics": [],
+            "manifest_payload": {
+                "tasks": [
+                    {"id": "sprt_0000", "index": 0, "label": "sprt:8", "command": "sprt --candidate c --games 8 --name sprt_0000"},
+                    {"id": "sprt_0001", "index": 1, "label": "sprt:8", "command": "sprt --candidate c --games 8 --name sprt_0001"},
+                    {"id": "sprt_0002", "index": 2, "label": "sprt:6", "command": "sprt --candidate c --games 6 --name sprt_0002"},
+                ],
+            },
+        }
+
+        payload = crucible.run_status_payload(summary)
+
+        self.assertEqual([
+            {"label": "sprt:8", "count": 2, "command": "sprt --candidate c --games 8 --name sprt_0000"},
+            {"label": "sprt:6", "count": 1, "command": "sprt --candidate c --games 6 --name sprt_0002"},
+        ], payload["commands"])
+        self.assertNotIn("manifest_payload", payload)
+
     def retry_args(self, **overrides: Any) -> argparse.Namespace:
         args = argparse.Namespace(
             run=None,
@@ -412,6 +448,10 @@ except SystemExit as exc:
         self.assertIn("function renderRunGraph", web._HTML)
         self.assertNotIn("renderTaskGraphs(active.tasks)", web._HTML)
         self.assertIn("r.progress_graph", web._HTML)
+        self.assertIn("function renderCommands", web._HTML)
+        self.assertIn("r.commands", web._HTML)
+        self.assertIn("cmd-line", web._HTML)
+        self.assertIn("'commands'", web._HTML)
         self.assertIn("function attrEsc", web._HTML)
         self.assertIn("failCount > 0 && activeCount === 0", web._HTML)
         self.assertIn("runCmd('${runArg}','del',this)", web._HTML)
@@ -1067,6 +1107,43 @@ except SystemExit as exc:
             self.assertEqual([], merged["runs"])
             self.assertEqual({}, state["seen_runs"])
             self.assertEqual({}, state["lingering_runs"])
+
+    def test_web_enriches_lingering_completed_run_commands(self) -> None:
+        import crucible_lib.web as web
+
+        with tempfile.TemporaryDirectory() as tmp:
+            runs = Path(tmp) / "runs"
+            run_dir = runs / "done-run"
+            stale = {
+                "run": "done-run",
+                "run_dir": str(run_dir),
+                "manifest": str(run_dir / "manifest.json"),
+                "state": "done",
+                "tasks": 1,
+                "counts": {"done": 1, "fail": 0, "running": 0, "claimed": 0, "stale": 0, "pending": 0},
+            }
+            fresh = {
+                **stale,
+                "commands": [{"label": "sprt:8", "count": 1, "command": "sprt --candidate c --games 8"}],
+            }
+            empty_payload = {
+                "runs": [],
+                "collapsed_failures": [],
+                "collapsed_failures_count": 0,
+                "coordinator": None,
+            }
+
+            with self.patch_runs_dir(runs), mock.patch("crucible_lib.web.runs_dir", return_value=runs):
+                crucible.write_json(runs / ".web-state.json", {
+                    "lingering_runs": {"done-run": stale},
+                })
+                with mock.patch("crucible_lib.web._collect_named_run_payload", return_value=fresh) as named:
+                    merged = web._merge_lingering_runs(copy.deepcopy(empty_payload))
+                    state = web._read_web_state()
+
+            named.assert_called_once_with("done-run", None)
+            self.assertEqual(fresh["commands"], merged["runs"][0]["commands"])
+            self.assertEqual(fresh["commands"], state["lingering_runs"]["done-run"]["commands"])
 
     def test_web_drops_remembered_run_that_never_started(self) -> None:
         import crucible_lib.web as web
@@ -3865,6 +3942,7 @@ except SystemExit as exc:
             self.assertEqual([{"x": 2.0, "y": 0.1}, {"x": 4.0, "y": 0.0}], series["llr"])
             self.assertAlmostEqual(10.0, series["elo"][0]["y"], places=1)
             self.assertAlmostEqual(0.0, series["elo"][1]["y"], places=1)
+            self.assertEqual([{"label": "sprt", "count": 2, "command": "true"}], payload["commands"])
 
     def test_wait_sends_fail_notification_payload(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -963,6 +963,26 @@ def run_speedup_field(summary: dict[str, Any]) -> str:
         return ""
     return f"speedup={sum(rates) / max_rate:.1f}x"
 
+def run_command_groups(manifest: dict[str, Any]) -> list[dict[str, Any]]:
+    groups: dict[str, dict[str, Any]] = {}
+    for task in manifest.get("tasks") or []:
+        if not isinstance(task, dict):
+            continue
+        command = str(task.get("command") or "").strip()
+        if not command:
+            continue
+        label = task_display_label(manifest, task) or "task"
+        group = groups.setdefault(
+            label,
+            {
+                "label": label,
+                "count": 0,
+                "command": command,
+            },
+        )
+        group["count"] = int(group["count"]) + 1
+    return list(groups.values())
+
 def run_status_payload(summary: dict[str, Any]) -> dict[str, Any]:
     counts = summary["counts"]
     fields = [
@@ -975,7 +995,11 @@ def run_status_payload(summary: dict[str, Any]) -> dict[str, Any]:
     fields.extend(run_progress_fields(summary))
     active_summary = active_worker_summary(summary)
     active_fields = active_section_fields(summary)
-    payload = copy.deepcopy(summary)
+    payload = {
+        key: copy.deepcopy(value)
+        for key, value in summary.items()
+        if key != "manifest_payload"
+    }
     payload.update({
         "run": summary["run"],
         "state": run_state(summary),
@@ -1029,6 +1053,11 @@ def run_status_payload(summary: dict[str, Any]) -> dict[str, Any]:
     if progress:
         payload["progress"] = progress
         payload["progress_fields"] = summary_progress_fields(summary)
+    manifest_payload = summary.get("manifest_payload")
+    if isinstance(manifest_payload, dict):
+        commands = run_command_groups(manifest_payload)
+        if commands:
+            payload["commands"] = commands
     return payload
 
 def run_title(summary: dict[str, Any]) -> str:
@@ -2183,6 +2212,7 @@ def status_summary(manifest: dict[str, Any], *, lease_seconds: int) -> dict[str,
         "stop": stop_payload,
         "progress_graph": progress_graph,
         "diagnostics": state_diagnostics(),
+        "manifest_payload": manifest,
     }
 
 def sort_status_values(values: list[int | str]) -> list[int | str]:
@@ -2480,7 +2510,9 @@ def run_completion_event_payload(
     summary["manifest"] = str(manifest_path)
     summary["run"] = manifest_path.parent.name
     summary["metadata"] = metadata
-    display = run_status_payload(summary).get("display")
+    status_payload = run_status_payload(summary)
+    display = status_payload.get("display")
+    commands = status_payload.get("commands")
     fields = display.get("fields") if isinstance(display, dict) else None
     payload: dict[str, Any] = {
         "event": event,
@@ -2498,6 +2530,8 @@ def run_completion_event_payload(
         payload["display"] = display
     if isinstance(fields, list):
         payload["status_line"] = " ".join(str(field) for field in fields)
+    if isinstance(commands, list):
+        payload["commands"] = commands
     progress_graph = summary.get("progress_graph")
     if isinstance(progress_graph, dict):
         payload["progress_graph"] = progress_graph

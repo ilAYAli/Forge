@@ -139,6 +139,11 @@ _HTML = r"""<!DOCTYPE html>
 
     /* pending / fail groups */
     .group-row { font-size: 13px; color: var(--dim); padding: 2px 0; }
+    .cmd-list { display: grid; gap: 8px; }
+    .cmd-meta { color: var(--dim); font-size: 12px; margin-bottom: 3px; }
+    .cmd-line { margin: 0; padding: 7px 8px; border: 1px solid var(--border);
+                border-radius: 4px; background: var(--bg); color: var(--text);
+                white-space: pre-wrap; overflow-x: auto; user-select: text; }
 
     .empty { color: var(--dim); padding: 10px 0; font-size: 13px; }
 
@@ -741,6 +746,21 @@ _HTML = r"""<!DOCTYPE html>
       ).join('');
     }
 
+    function renderCommands(commands) {
+      const rows = (commands || [])
+        .filter(c => c && c.command)
+        .map(c => {
+          const label = c.label || 'task';
+          const count = Number(c.count || 0);
+          const suffix = count > 1 ? ` [${count}]` : '';
+          return `<div class="cmd-row">`
+            + `<div class="cmd-meta">${esc(label + suffix)}</div>`
+            + `<pre class="cmd-line"><code>${esc(c.command)}</code></pre>`
+            + `</div>`;
+        }).join('');
+      return rows ? `<div class="cmd-list">${rows}</div>` : '';
+    }
+
     function renderChips(str) {
       return '<div class="ws-chips">' + (str||'').split(' ').filter(Boolean).map(tok => {
         const elo = eloFieldClass(tok);
@@ -803,6 +823,14 @@ _HTML = r"""<!DOCTYPE html>
         sections.push(makeSection(r.run, 'graphs',
           'graphs', 'dim',
           runGraph, isCurrent
+        ));
+      }
+
+      const commandRows = renderCommands(r.commands);
+      if (commandRows) {
+        sections.push(makeSection(r.run, 'commands',
+          'commands', 'dim',
+          commandRows, false
         ));
       }
 
@@ -1233,6 +1261,8 @@ def _merge_lingering_runs(payload: dict[str, Any]) -> dict[str, Any]:
         seen = _state_dict(state, "seen_runs")
         linger = _state_dict(state, "lingering_runs")
         hidden = set(_state_list(state, "hidden_runs"))
+        command_checked = set(_state_list(state, "command_checked_runs"))
+        refreshed_done = set()
         if isinstance(remote_hidden_runs, list):
             hidden.update(str(item) for item in remote_hidden_runs)
         visible_names = {
@@ -1250,6 +1280,7 @@ def _merge_lingering_runs(payload: dict[str, Any]) -> dict[str, Any]:
                     linger[name] = _normalize_web_run_payload(item)
             else:
                 hidden.discard(name)
+                command_checked.discard(name)
                 seen[name] = {"coordinator": coordinator, "last_seen": time.time()}
                 linger.pop(name, None)
 
@@ -1265,14 +1296,21 @@ def _merge_lingering_runs(payload: dict[str, Any]) -> dict[str, Any]:
             if final_payload is None:
                 seen.pop(name, None)
                 linger.pop(name, None)
+                command_checked.discard(name)
                 continue
             if _run_payload_done(final_payload):
                 linger[name] = _normalize_web_run_payload(final_payload)
+                refreshed_done.add(name)
+                if final_payload.get("commands"):
+                    command_checked.discard(name)
+                else:
+                    command_checked.add(name)
             elif _run_payload_state(final_payload) not in ("", "empty"):
                 runs.append(final_payload)
             else:
                 seen.pop(name, None)
                 linger.pop(name, None)
+                command_checked.discard(name)
 
         if isinstance(remote_lingering_runs, dict):
             for name, item in remote_lingering_runs.items():
@@ -1291,20 +1329,47 @@ def _merge_lingering_runs(payload: dict[str, Any]) -> dict[str, Any]:
                 ):
                     continue
                 linger[name] = _normalize_web_run_payload(final_payload)
+                refreshed_done.add(name)
+                if final_payload.get("commands"):
+                    command_checked.discard(name)
+                else:
+                    command_checked.add(name)
                 seen[name] = {"coordinator": coordinator, "last_seen": time.time()}
 
         for name, item in list(linger.items()):
             if name in hidden:
                 linger.pop(name, None)
+                command_checked.discard(name)
                 continue
             if isinstance(item, dict) and not _payload_belongs_to_web_runs(item, coordinator):
                 linger.pop(name, None)
                 seen.pop(name, None)
+                command_checked.discard(name)
                 continue
             if name not in visible_names and isinstance(item, dict):
+                if item.get("commands"):
+                    command_checked.discard(name)
+                if (
+                    _run_payload_done(item)
+                    and not item.get("commands")
+                    and name not in refreshed_done
+                    and name not in command_checked
+                ):
+                    final_payload = _collect_named_run_payload(name, coordinator)
+                    command_checked.add(name)
+                    if (
+                        final_payload is not None
+                        and _run_payload_done(final_payload)
+                        and _payload_belongs_to_web_runs(final_payload, coordinator)
+                    ):
+                        item = _normalize_web_run_payload(final_payload)
+                        linger[name] = item
+                        if item.get("commands"):
+                            command_checked.discard(name)
                 runs.append(_normalize_web_run_payload(item))
 
         state["hidden_runs"] = sorted(hidden)
+        state["command_checked_runs"] = sorted(name for name in command_checked if name in linger and name not in hidden)
         _write_web_state(state)
     payload["runs"] = runs
     return payload
