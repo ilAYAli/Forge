@@ -134,8 +134,8 @@ _HTML = r"""<!DOCTYPE html>
                  align-items: center; color: var(--dim); font-size: 11px; }
     .graph-row svg { width: 100%; height: 66px; display: block; }
     .graph-line { fill: none; stroke-width: 1.25; vector-effect: non-scaling-stroke; }
-    .graph-zero { stroke: var(--dim); stroke-width: .75; stroke-dasharray: 2 4;
-                  opacity: .38; vector-effect: non-scaling-stroke; }
+    .graph-zero { stroke: var(--dim); stroke-width: 1; opacity: .45;
+                  vector-effect: non-scaling-stroke; }
     .graph-dot { stroke: var(--bg); stroke-width: 1.5; vector-effect: non-scaling-stroke; }
     .graph-dot.pos, .graph-value.pos { fill: var(--grn); color: var(--grn); }
     .graph-dot.neg, .graph-value.neg { fill: var(--red); color: var(--red); }
@@ -678,6 +678,10 @@ _HTML = r"""<!DOCTYPE html>
       return ['elo', 'llr'].includes(String(name || '').toLowerCase());
     }
 
+    function graphDisplayPoints(name, points) {
+      return signedGraphSeries(name) && points.length > 48 ? points.slice(-48) : points;
+    }
+
     function graphSignClass(value) {
       const n = Number(value);
       if (!Number.isFinite(n) || n === 0) return 'zero';
@@ -695,7 +699,7 @@ _HTML = r"""<!DOCTYPE html>
     function zeroLine(points, includeZero = false, w = 180, h = 66) {
       if (!includeZero || !points || points.length < 2) return '';
       const y = graphY(points.map(p => p.y), 0, true, h);
-      return `<line class="graph-zero" x1="0" y1="${y.toFixed(1)}" x2="${w}" y2="${y.toFixed(1)}"></line>`;
+      return `<line class="graph-zero" x1="0" y1="${y.toFixed(1)}" x2="10" y2="${y.toFixed(1)}"></line>`;
     }
 
     function endpointDot(points, includeZero = false, w = 180, h = 66) {
@@ -738,7 +742,7 @@ _HTML = r"""<!DOCTYPE html>
         .map((s, i) => ({
           name: s.name || '',
           color: GRAPH_COLORS[i % GRAPH_COLORS.length],
-          points: graphPoints(s),
+          points: graphDisplayPoints(s.name, graphPoints(s)),
         }))
         .filter(s => s.points.length >= 2);
       if (!series.length) return '';
