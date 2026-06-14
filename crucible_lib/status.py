@@ -411,6 +411,11 @@ def run_state(summary: dict[str, Any]) -> str:
         return "stopped"
     return "empty"
 
+def run_state_fields(summary: dict[str, Any]) -> list[str]:
+    if run_queued(summary):
+        return ["state=queued"]
+    return []
+
 def filtered_run_summaries(
     summaries: list[dict[str, Any]],
     filter_name: str | None,
@@ -1097,6 +1102,7 @@ def run_status_payload(summary: dict[str, Any]) -> dict[str, Any]:
     counts = summary["counts"]
     fields = [
         f"tasks={counts['done']}/{summary['tasks']}",
+        *run_state_fields(summary),
     ]
     if counts["fail"]:
         fields.append(f"fail={counts['fail']}")
@@ -1221,7 +1227,7 @@ def status_field_color(field: str, summary: dict[str, Any] | None = None) -> str
         return elo_value_color(value)
     if key in {"fail", "stale"}:
         return "red"
-    if key in {"active", "claimed", "pending", "running"}:
+    if key in {"active", "claimed", "pending", "running", "state"}:
         return "yellow"
     if key == "eta" and field == "eta=unknown":
         return "yellow"
@@ -1374,6 +1380,7 @@ def print_run_status(
                 print(f"  {color_status_field(description, summary=summary, color_enabled=color_enabled)}")
         fields = [
             f"tasks={counts['done']}/{summary['tasks']}",
+            *run_state_fields(summary),
         ]
         if not show_details:
             fields = [run_title(summary), *fields]
