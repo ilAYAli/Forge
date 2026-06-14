@@ -308,7 +308,7 @@ def run_manifest_paths() -> list[Path]:
 def run_manifest_has_attention_state(manifest: dict[str, Any]) -> bool:
     try:
         state = state_dir(manifest)
-        if queue_request_path(manifest).exists() or launch_request_path(manifest).exists():
+        if queue_request_path(manifest).exists() or launch_request_path(manifest).exists() or stop_request_path(manifest).exists():
             return True
         if any(state.glob("*.fail.json")) or any(state.glob("*.running.json")):
             return True
@@ -362,6 +362,9 @@ def run_queue_requested(summary: dict[str, Any]) -> bool:
 def run_stopped(summary: dict[str, Any]) -> bool:
     return isinstance(summary.get("stop"), dict)
 
+def run_stopped_incomplete(summary: dict[str, Any]) -> bool:
+    return run_stopped(summary) and not run_done(summary)
+
 def run_current(summary: dict[str, Any]) -> bool:
     counts = summary["counts"]
     active = counts["running"] + counts["claimed"] + counts["stale"]
@@ -379,6 +382,7 @@ def run_attention(summary: dict[str, Any]) -> bool:
         or run_launching(summary)
         or summary["counts"]["fail"] > 0
         or run_queue_requested(summary)
+        or run_stopped_incomplete(summary)
     )
 
 def run_attention_sort_key(summary: dict[str, Any]) -> tuple[int, int, str]:
@@ -390,7 +394,9 @@ def run_attention_sort_key(summary: dict[str, Any]) -> tuple[int, int, str]:
         return (1, -active, str(summary["run"]))
     if fail > 0:
         return (2, -fail, str(summary["run"]))
-    return (3, 0, str(summary["run"]))
+    if run_stopped_incomplete(summary):
+        return (3, 0, str(summary["run"]))
+    return (4, 0, str(summary["run"]))
 
 def run_state(summary: dict[str, Any]) -> str:
     if run_failed(summary):

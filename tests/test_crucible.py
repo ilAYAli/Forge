@@ -5275,11 +5275,20 @@ except SystemExit as exc:
             env = {"CRUCIBLE_COORDINATOR_RUNS": "", "CRUCIBLE_RUNS_DIR": str(root / "runs")}
 
             status = self.run_cli("status", "stopped-run", "--json", cwd=root, env=env)
+            default_status = self.run_cli("status", cwd=root, env=env)
+            default_payload = self.run_cli("status", "--json", cwd=root, env=env)
 
         self.assertEqual(0, status.returncode)
         payload = json.loads(status.stdout)
         self.assertEqual("stopped", payload["state"])
         self.assertEqual({"done": 1, "fail": 0, "running": 0, "claimed": 0, "stale": 0, "pending": 1}, payload["counts"])
+        self.assertEqual(0, default_status.returncode)
+        self.assertIn("run=stopped-run", default_status.stdout)
+        self.assertIn("tasks=1/2", default_status.stdout)
+        self.assertEqual(0, default_payload.returncode)
+        listed = json.loads(default_payload.stdout)
+        self.assertEqual(["stopped-run"], [run["run"] for run in listed["runs"]])
+        self.assertEqual("stopped", listed["runs"][0]["state"])
 
     def test_default_status_prefilters_inactive_runs(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -5315,6 +5324,9 @@ except SystemExit as exc:
             write_run("bbb-queued", "queued")
             write_run("ccc-failed", "failed")
             write_run("ddd-running", "running")
+            write_run("eee-stopped", "running")
+            stopped_manifest = crucible.load_manifest(runs / "eee-stopped" / "manifest.json")
+            crucible.write_json(crucible.stop_request_path(stopped_manifest), {"run": "eee-stopped"})
             calls: list[str] = []
             original = crucible.status_summary
 
@@ -5340,7 +5352,7 @@ except SystemExit as exc:
             ):
                 rc = crucible.cmd_status(args)
             self.assertEqual(1, rc)
-            self.assertEqual(["ccc-failed", "ddd-running"], calls)
+            self.assertEqual(["ccc-failed", "ddd-running", "eee-stopped"], calls)
 
     def test_status_empty_active_message_is_specific(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
