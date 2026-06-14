@@ -12,7 +12,7 @@ SSH_CONFIG_TIMEOUT_SECONDS = 5.0
 DEPLOY_BOOTSTRAP_TIMEOUT_SECONDS = 60.0
 DEPLOY_STARTUP_TIMEOUT_SECONDS = 20.0
 DEPLOY_STARTUP_POLL_SECONDS = 0.5
-QUEUE_LAUNCHER_POLL_SECONDS = 5.0
+QUEUE_LAUNCHER_POLL_SECONDS = 1.0
 QUEUE_MONITOR_NAME = "queue-monitor.json"
 SSH_TRANSIENT_RETRY_COUNT = 3
 SSH_TRANSIENT_RETRY_DELAY_SECONDS = 1.0
@@ -1319,6 +1319,40 @@ def cmd_deploy(args: argparse.Namespace) -> int:
 
     started_at = time.monotonic()
     template_path = expand_path(args.manifest)
+    planned_run_dir, _planned_manifest_path = planned_run_paths(template_path, getattr(args, "run", None))
+    run_name = planned_run_dir.name
+    lease_seconds = int(getattr(args, "lease_seconds", 600))
+    if not bool(getattr(args, "replace", False)):
+        blockers = active_or_queued_blockers(run_name, lease_seconds=lease_seconds)
+        if blockers:
+            queued_run_dir, queued_manifest_path, _queued_workers_path = materialize_run(
+                template_path=template_path,
+                workers_arg=str(args.workers),
+                inline_worker_defaults=getattr(args, "worker_defaults", None),
+                workers_snapshot_payload=getattr(args, "worker_snapshot_payload", None),
+                preserve_workers_snapshot=bool(getattr(args, "preserve_workers_snapshot", False)),
+                run_name_arg=getattr(args, "run", None),
+                resume=bool(getattr(args, "resume", False)),
+                replace=False,
+            )
+            queued_manifest = load_manifest(queued_manifest_path)
+            command = queue_resume_command(args, run_name)
+            write_queue_request(
+                run_dir=queued_run_dir,
+                manifest=queued_manifest,
+                command=command,
+                blockers=blockers,
+            )
+            monitor_pid = start_queue_monitor(
+                run_dir=queued_run_dir,
+                command=command,
+                lease_seconds=lease_seconds,
+            )
+            blocker_names = ", ".join(str(summary.get("run") or "") for summary in blockers)
+            print(f"deploy: queued {run_name}; waiting for {blocker_names}")
+            print(f"deploy: queue monitor pid={monitor_pid}")
+            print(f"deploy: status: crucible status {run_name} --verbose")
+            return 0
     run_dir, manifest_path, workers_path = materialize_run(
         template_path=template_path,
         workers_arg=str(args.workers),
@@ -2170,9 +2204,10 @@ def cmd_run_job(args: argparse.Namespace) -> int:
     should_verify = bool((should_wait and explicit_verify is not False) or getattr(args, "merge", None))
     remember_run_for_web(run_name, coordinator_runs=configured_coordinator_runs())
 
-    if not bool(getattr(args, "resume", False)) and not bool(getattr(args, "replace", False)):
+    if not bool(getattr(args, "replace", False)):
         blockers = active_or_queued_blockers(run_name, lease_seconds=int(args.lease_seconds))
         if blockers:
+            resume = bool(getattr(args, "resume", False))
             queued_run_dir, queued_manifest_path, _queued_workers_path = materialize_run(
                 template_path=template_path,
                 workers_arg=str(args.workers),
@@ -2180,7 +2215,7 @@ def cmd_run_job(args: argparse.Namespace) -> int:
                 workers_snapshot_payload=getattr(args, "worker_snapshot_payload", None),
                 preserve_workers_snapshot=bool(getattr(args, "preserve_workers_snapshot", False)),
                 run_name_arg=getattr(args, "run", None),
-                resume=False,
+                resume=resume,
                 replace=False,
             )
             queued_manifest = load_manifest(queued_manifest_path)

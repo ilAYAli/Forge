@@ -2464,6 +2464,56 @@ except SystemExit as exc:
             payload = json.loads((runs / ".web-state.json").read_text(encoding="utf-8"))
             self.assertIn("queued-new", payload["seen_runs"])
 
+    def test_deploy_resume_queues_when_another_run_is_active(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runs = Path(tmp) / "runs"
+            active_run = self.write_retry_run(runs, "active", failed=None)
+            active_manifest = crucible.load_manifest(active_run / "manifest.json")
+            crucible.claim_task(
+                active_manifest,
+                worker="worker-a",
+                profile=None,
+                lease_seconds=600,
+                retry_failed=False,
+            )
+            paused_run = self.write_retry_run(runs, "paused", failed=None)
+
+            with (
+                self.patch_runs_dir(runs),
+                mock.patch("crucible_lib.workers.run_worker_shell") as run_worker_shell,
+                mock.patch("crucible_lib.workers.start_queue_monitor", return_value=4245) as queue_monitor,
+            ):
+                stdout = io.StringIO()
+                with contextlib.redirect_stdout(stdout):
+                    rc = crucible.cmd_deploy(argparse.Namespace(
+                        workers="worker-b:2",
+                        worker_defaults=None,
+                        worker_snapshot_payload=None,
+                        preserve_workers_snapshot=False,
+                        launch_workers_payload=None,
+                        manifest=str(paused_run / "manifest.json"),
+                        jobs=2,
+                        run="paused",
+                        resume=True,
+                        replace=False,
+                        coordinator_host=None,
+                        remote_timeout_seconds=1800.0,
+                        retry_failed=False,
+                        task_attempts=2,
+                        notify_command=None,
+                        no_color=True,
+                        verbose=False,
+                    ))
+
+            self.assertEqual(0, rc)
+            run_worker_shell.assert_not_called()
+            queue_monitor.assert_called_once()
+            queued_manifest = crucible.load_manifest(paused_run / "manifest.json")
+            self.assertTrue(crucible.queue_request_path(queued_manifest).exists())
+            output = stdout.getvalue()
+            self.assertIn("deploy: queued paused; waiting for active", output)
+            self.assertIn("deploy: queue monitor pid=4245", output)
+
     def test_start_queues_new_run_behind_existing_queued_run(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
