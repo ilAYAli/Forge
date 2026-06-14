@@ -9064,7 +9064,7 @@ except SystemExit as exc:
             with (
                 self.patch_runs_dir(runs),
                 mock.patch("crucible.ProcessTracker.run", fake_run),
-                mock.patch("crucible_lib.workers.run_notify_command", return_value=0),
+                mock.patch("crucible_lib.workers.run_notify_command", return_value=0) as notify,
                 mock.patch("crucible_lib.workers.subprocess.Popen", side_effect=FakePopen) as popen,
             ):
                 stdout = io.StringIO()
@@ -9080,6 +9080,7 @@ except SystemExit as exc:
             self.assertIn("--interval-seconds", monitor["command"])
             self.assertIn("7.0", monitor["command"])
             popen.assert_called_once()
+            notify.assert_not_called()
 
     def test_deploy_launch_only_starts_wait_monitor_without_notifications(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

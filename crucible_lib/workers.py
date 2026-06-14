@@ -1759,20 +1759,7 @@ def cmd_deploy(args: argparse.Namespace) -> int:
     else:
         status(colorize("deploy: tasks complete", "green", enabled=color_enabled) if failed == 0 else colorize("deploy: tasks failed", "red", enabled=color_enabled))
     notify_command = getattr(args, "notify_command", None) or default_notify_command()
-    if notify_command:
-        run_notify_command(
-            notify_command,
-            deploy_event_payload(
-                run_dir=run_dir,
-                manifest_path=manifest_path,
-                workers_path=workers_path,
-                manifest=manifest,
-                results=results,
-                failed=failed,
-                has_tasks=has_tasks,
-                elapsed_seconds=time.monotonic() - started_at,
-            ),
-        )
+    completion_deferred_to_wait = False
     if (
         failed == 0
         and has_tasks
@@ -1786,7 +1773,22 @@ def cmd_deploy(args: argparse.Namespace) -> int:
             notify_command=notify_command,
         )
         if monitor_pid:
+            completion_deferred_to_wait = True
             status(colorize(f"deploy: wait monitor pid={monitor_pid}", "green", enabled=color_enabled))
+    if notify_command and not completion_deferred_to_wait:
+        run_notify_command(
+            notify_command,
+            deploy_event_payload(
+                run_dir=run_dir,
+                manifest_path=manifest_path,
+                workers_path=workers_path,
+                manifest=manifest,
+                results=results,
+                failed=failed,
+                has_tasks=has_tasks,
+                elapsed_seconds=time.monotonic() - started_at,
+            ),
+        )
     commit_payload = getattr(args, "worker_snapshot_commit_payload", None)
     if failed == 0 and commit_payload is not None:
         write_json(workers_path, commit_payload)
