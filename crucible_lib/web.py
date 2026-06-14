@@ -499,9 +499,13 @@ _HTML = r"""<!DOCTYPE html>
     function toggleRunHeader(event, id) {
       if (event.defaultPrevented) return;
       if (event.target.closest('button,a,input,select,textarea,.arrow')) return;
-      const selected = window.getSelection && String(window.getSelection());
-      if (selected) return;
+      if (hasTextSelection()) return;
       toggleId(id);
+    }
+
+    function hasTextSelection() {
+      const selection = window.getSelection && window.getSelection();
+      return !!(selection && !selection.isCollapsed && String(selection).trim());
     }
 
     function makeSection(run, section, titleHtml, titleCls, detailHtml, defaultOpen) {
@@ -1065,6 +1069,7 @@ _HTML = r"""<!DOCTYPE html>
             return a.run<b.run?-1:a.run>b.run?1:0;
           });
 
+        if (hasTextSelection()) return;
         saveState();
         const el = document.getElementById('runs');
         const parts = [];

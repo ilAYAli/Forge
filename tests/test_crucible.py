@@ -518,6 +518,8 @@ except SystemExit as exc:
         self.assertIn("nonEtaFields.map(renderField)", web._HTML)
         self.assertIn("function progressEtaFromRate", web._HTML)
         self.assertIn("(pd.total - pd.done) / pd.rate", web._HTML)
+        self.assertIn("function hasTextSelection", web._HTML)
+        self.assertIn("if (hasTextSelection()) return;", web._HTML)
         self.assertIn("pd?.eta_estimate ? '~' : ''", web._HTML)
         self.assertIn("data-eta-estimate", web._HTML)
         self.assertIn("return r.toFixed(4) + '/s'", web._HTML)
