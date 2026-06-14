@@ -1422,7 +1422,9 @@ def _merge_lingering_runs(payload: dict[str, Any]) -> dict[str, Any]:
         if isinstance(remote_lingering_runs, dict):
             for name, item in remote_lingering_runs.items():
                 name = str(name)
-                if name in hidden or name in visible_names or not isinstance(item, dict):
+                if name in hidden or name in visible_names or name in linger or not isinstance(item, dict):
+                    continue
+                if name not in seen:
                     continue
                 if not _run_payload_done(item):
                     continue
@@ -1611,7 +1613,7 @@ def _api_status() -> bytes:
         refreshing = _STATUS_REFRESHING
     if cached is None:
         try:
-            cached = _merge_lingering_runs(_collect_local_status_payload())
+            cached = _collect_status_payload()
             cached["timestamp"] = now
             with _STATUS_CACHE_LOCK:
                 _STATUS_CACHE = copy.deepcopy(cached)

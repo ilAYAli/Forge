@@ -809,7 +809,7 @@ except SystemExit as exc:
                     web._STATUS_REFRESHING,
                 ) = previous
 
-    def test_web_status_api_returns_local_payload_before_first_refresh(self) -> None:
+    def test_web_status_api_uses_coordinator_payload_before_first_refresh(self) -> None:
         import crucible_lib.web as web
 
         with web._STATUS_CACHE_LOCK:
@@ -824,21 +824,23 @@ except SystemExit as exc:
             web._STATUS_CACHE_ERROR = None
             web._STATUS_REFRESHING = False
         try:
-            local_payload = {
-                "runs": [{"run": "local"}],
+            coordinator_payload = {
+                "runs": [{"run": "coordinator"}],
                 "collapsed_failures": [],
                 "collapsed_failures_count": 0,
+                "coordinator": "pwa-5090:/runs",
             }
             with tempfile.TemporaryDirectory() as tmp:
                 with (
                     mock.patch("crucible_lib.web.runs_dir", return_value=Path(tmp) / "runs"),
                     mock.patch("crucible_lib.web.time.time", return_value=10.0),
-                    mock.patch("crucible_lib.web._collect_local_status_payload", return_value=local_payload),
+                    mock.patch("crucible_lib.web._collect_status_payload", return_value=coordinator_payload) as collect_status,
                     mock.patch("crucible_lib.web._start_status_refresh") as start_refresh,
                 ):
                     payload = json.loads(web._api_status().decode())
+            collect_status.assert_called_once_with()
             start_refresh.assert_called_once_with()
-            self.assertEqual([{"run": "local"}], payload["runs"])
+            self.assertEqual([{"run": "coordinator"}], payload["runs"])
             self.assertTrue(payload["refreshing"])
             self.assertNotIn("loading", payload)
         finally:
@@ -1103,7 +1105,40 @@ except SystemExit as exc:
             self.assertEqual(done_payload, payload["remote_lingering_runs"]["remote-done"])
             self.assertEqual(["hidden-done"], payload["remote_hidden_runs"])
 
-    def test_web_imports_coordinator_lingering_run(self) -> None:
+    def test_web_ignores_unseen_coordinator_lingering_run(self) -> None:
+        import crucible_lib.web as web
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            local_runs = root / "local-runs"
+            coordinator = root / "coordinator-runs"
+            run_dir = coordinator / "remote-done"
+            done_payload = {
+                "run": "remote-done",
+                "run_dir": str(run_dir),
+                "manifest": str(run_dir / "manifest.json"),
+                "state": "ok",
+                "tasks": 1,
+                "counts": {"done": 1, "fail": 0, "running": 0, "claimed": 0, "stale": 0, "pending": 0},
+            }
+            empty_payload = {
+                "runs": [],
+                "collapsed_failures": [],
+                "collapsed_failures_count": 0,
+                "coordinator": str(coordinator),
+                "remote_lingering_runs": {"remote-done": done_payload},
+            }
+
+            with self.patch_runs_dir(local_runs), mock.patch("crucible_lib.web.runs_dir", return_value=local_runs):
+                with mock.patch("crucible_lib.web._collect_named_run_payload") as named:
+                    merged = web._merge_lingering_runs(copy.deepcopy(empty_payload))
+                    state = web._read_web_state()
+
+            named.assert_not_called()
+            self.assertEqual([], merged["runs"])
+            self.assertEqual({}, state["lingering_runs"])
+
+    def test_web_imports_seen_coordinator_lingering_run(self) -> None:
         import crucible_lib.web as web
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -1133,6 +1168,9 @@ except SystemExit as exc:
             }
 
             with self.patch_runs_dir(local_runs), mock.patch("crucible_lib.web.runs_dir", return_value=local_runs):
+                web._write_web_state({
+                    "seen_runs": {"remote-done": {"coordinator": str(coordinator), "last_seen": 1.0}},
+                })
                 crucible.write_json(run_dir / "manifest.json", {
                     "schema": "crucible.task.v1",
                     "name": "remote-done",
@@ -1206,6 +1244,9 @@ except SystemExit as exc:
             }
 
             with self.patch_runs_dir(local_runs), mock.patch("crucible_lib.web.runs_dir", return_value=local_runs):
+                web._write_web_state({
+                    "seen_runs": {"deleted-done": {"coordinator": str(coordinator), "last_seen": 1.0}},
+                })
                 with mock.patch("crucible_lib.web._collect_named_run_payload", return_value=None) as named:
                     merged = web._merge_lingering_runs(copy.deepcopy(empty_payload))
                     state = web._read_web_state()
