@@ -81,7 +81,13 @@ title = "Crucible"
 kind = event.get("kind")
 if kind:
     title += f" {kind}"
-title += " done" if event.get("state") == "ok" else " failed"
+state = event.get("state")
+if state == "ok":
+    title += " done"
+elif state == "stopped":
+    title += " stopped"
+else:
+    title += " failed"
 
 sprt = sprt_aggregate(str(event.get("run_dir", ""))) if kind == "sprt" else None
 
@@ -188,7 +194,12 @@ def sprt_summary(path):
         f"elo={elo:.2f}+/-{ci95:.2f} los={los:.1f}%."
     )
 
-verb = "complete" if state == "ok" else "failed"
+if state == "ok":
+    verb = "complete"
+elif state == "stopped":
+    verb = "stopped"
+else:
+    verb = "failed"
 print(
     f"Crucible run {verb}: run={run} state={state} "
     f"tasks={done}/{tasks} fail={failed}."

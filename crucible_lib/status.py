@@ -2530,6 +2530,9 @@ def cmd_wait(args: argparse.Namespace) -> int:
             return finish("run_fail", "failed", 1, manifest)
         if counts["done"] == total:
             return finish("run_done", "ok", 0, manifest)
+        active = counts["running"] + counts["claimed"] + counts["stale"]
+        if stop_requested(manifest) and active == 0:
+            return finish("run_stopped", "stopped", 130, manifest)
         if deadline is not None and time.monotonic() >= deadline:
             print("timeout waiting for tasks", file=sys.stderr)
             return finish("run_timeout", "timeout", 124, manifest)

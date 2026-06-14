@@ -4120,6 +4120,59 @@ except SystemExit as exc:
             self.assertEqual("failed", summary["state"])
             self.assertIn("fail=1", summary["status_line"])
 
+    def test_wait_sends_stopped_notification_after_drain(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest = root / "wait-stopped" / "manifest.json"
+            crucible.write_json(manifest, {
+                "schema": "crucible.task.v1",
+                "name": "wait-stopped",
+                "work_dir": str(root),
+                "state_dir": str(root / "wait-stopped" / "state"),
+                "log_dir": str(root / "wait-stopped" / "logs"),
+                "claim_dir": str(root / "wait-stopped" / "claims"),
+                "tasks": [
+                    {"id": "task_0", "index": 0, "command": "true", "outputs": []},
+                    {"id": "task_1", "index": 1, "command": "true", "outputs": []},
+                ],
+            })
+            loaded = crucible.load_manifest(manifest)
+            crucible.write_json(crucible.task_done_path(loaded, loaded["tasks"][0]), {"task": "task_0"})
+            crucible.write_json(crucible.stop_request_path(loaded), {"run": "wait-stopped"})
+            payloads: list[dict[str, object]] = []
+
+            def capture_notify(command: str | None, payload: dict[str, object]) -> int:
+                self.assertEqual("notify-me", command)
+                payloads.append(payload)
+                return 0
+
+            args = argparse.Namespace(
+                manifest=str(manifest),
+                profile=None,
+                lease_seconds=600,
+                interval_seconds=0.01,
+                timeout_seconds=1.0,
+                fail_on_fail=True,
+                notify_command="notify-me",
+            )
+            with mock.patch("crucible_lib.status.run_notify_command", capture_notify):
+                stdout = io.StringIO()
+                with contextlib.redirect_stdout(stdout):
+                    rc = crucible.cmd_wait(args)
+
+            self.assertEqual(130, rc)
+            self.assertEqual(1, len(payloads))
+            payload = payloads[0]
+            self.assertEqual("run_stopped", payload["event"])
+            self.assertEqual("wait-stopped", payload["run"])
+            self.assertEqual("stopped", payload["state"])
+            self.assertEqual(130, payload["rc"])
+            self.assertEqual(1, payload["counts"]["done"])
+            self.assertEqual(1, payload["counts"]["pending"])
+            summary = json.loads((manifest.parent / "summary.json").read_text(encoding="utf-8"))
+            self.assertEqual("run_stopped", summary["event"])
+            self.assertEqual("stopped", summary["state"])
+
     def test_claim_is_atomic_status_visible_and_released(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
