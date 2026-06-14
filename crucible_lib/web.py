@@ -46,11 +46,14 @@ _HTML = r"""<!DOCTYPE html>
     .run { border: 1px solid var(--border); border-radius: 7px; overflow: hidden; }
     .run.current { border-color: #2a3848; }
     .run.failed  { border-color: #3d2424; }
+    .run.stopped { border-color: rgba(200,142,74,.65); }
     .run.done    { border-color: var(--border); opacity: .65; }
 
     /* run header — always visible */
     .run-hdr { user-select: text; background: var(--bg2); padding: 8px 12px; cursor: pointer; }
     .run-hdr:hover { background: var(--bg3); }
+    .run.stopped .run-hdr { background: rgba(200,142,74,.08); }
+    .run.stopped .run-hdr:hover { background: rgba(200,142,74,.13); }
     .run-hdr-top { display: flex; align-items: center; gap: 8px; }
     .arrow { color: var(--dim); cursor: pointer; font-size: 10px; flex-shrink: 0; transition: transform .15s; user-select: none; }
     .arrow.open { transform: rotate(90deg); }
@@ -68,6 +71,8 @@ _HTML = r"""<!DOCTYPE html>
     .run-summary { display: flex; align-items: center; gap: 12px; margin-top: 4px;
                    padding-left: 18px; font-size: 13px; flex-wrap: wrap; cursor: text; }
     .run-desc  { color: var(--dim); }
+    .run-state { font-weight: 700; }
+    .run-state.stopped { color: var(--warn); }
     .run-fields { color: var(--text); }
     .run-eta   { color: var(--yel); font-weight: 600; }
     .elo-pos { color: var(--grn); font-weight: 600; }
@@ -816,6 +821,7 @@ _HTML = r"""<!DOCTYPE html>
       const nonEtaFields = (display.fields||[]).filter(f=>!f.startsWith('eta='));
       const descText = display.description || '';
       const runDate = runDatePrefix(r);
+      const stateField = state === 'stopped' ? '<span class="run-state stopped">state=stopped</span>' : '';
 
       const actions = [];
       const runArg = attrEsc(jsSingle(r.run));
@@ -839,6 +845,7 @@ _HTML = r"""<!DOCTYPE html>
         </div>
         <div class="run-summary">
           ${descText ? `<span class="run-desc">${esc(descText)}</span>` : ''}
+          ${stateField}
           <span class="run-fields">${nonEtaFields.map(renderField).join(' &nbsp;')}</span>
           ${eta ? `<span class="run-eta" data-etas="${parseEtaStr(eta)??''}">${esc(eta)}</span>` : ''}
         </div>`;
