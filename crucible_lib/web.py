@@ -154,7 +154,8 @@ _HTML = r"""<!DOCTYPE html>
     .cmd-meta { color: var(--dim); font-size: 12px; margin-bottom: 3px; }
     .cmd-line { margin: 0; padding: 7px 8px; border: 1px solid var(--border);
                 border-radius: 4px; background: var(--bg); color: var(--text);
-                white-space: pre-wrap; overflow-x: auto; user-select: text; }
+                white-space: pre-wrap; overflow-wrap: anywhere; overflow-x: auto;
+                line-height: 1.4; user-select: text; }
 
     .empty { color: var(--dim); padding: 10px 0; font-size: 13px; }
 
@@ -777,6 +778,15 @@ _HTML = r"""<!DOCTYPE html>
       ).join('');
     }
 
+    function commandDisplayText(command) {
+      const text = String(command || '');
+      if (text.includes('\n') || text.length < 180 || !text.includes('; ')) return text;
+      return text
+        .replace(/; /g, ';\n')
+        .replace(/ (then|do) /g, ' $1\n')
+        .replace(/ (fi|done);/g, '\n$1;');
+    }
+
     function renderCommands(commands) {
       const rows = (commands || [])
         .filter(c => c && c.command)
@@ -786,7 +796,7 @@ _HTML = r"""<!DOCTYPE html>
           const suffix = count > 1 ? ` [${count}]` : '';
           return `<div class="cmd-row">`
             + `<div class="cmd-meta">${esc(label + suffix)}</div>`
-            + `<pre class="cmd-line"><code>${esc(c.command)}</code></pre>`
+            + `<pre class="cmd-line"><code>${esc(commandDisplayText(c.command))}</code></pre>`
             + `</div>`;
         }).join('');
       return rows ? `<div class="cmd-list">${rows}</div>` : '';
