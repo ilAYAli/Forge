@@ -2776,6 +2776,48 @@ except SystemExit as exc:
             self.assertFalse(resume_args.retry_failed)
             self.assertEqual("resume", resume_args.command_label)
 
+    def test_resume_queues_stopped_run_when_another_run_is_active(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runs = Path(tmp) / "runs"
+            active_run = self.write_retry_run(runs, "active", failed=None)
+            active_manifest = crucible.load_manifest(active_run / "manifest.json")
+            crucible.claim_task(
+                active_manifest,
+                worker="worker-a",
+                profile=None,
+                lease_seconds=600,
+                retry_failed=False,
+            )
+            paused_run = self.write_retry_run(runs, "paused", failed=None)
+            paused_manifest = crucible.load_manifest(paused_run / "manifest.json")
+            crucible.write_json(crucible.stop_request_path(paused_manifest), {
+                "schema": "crucible.task.v1",
+                "run": "paused",
+            })
+
+            with (
+                self.patch_runs_dir(runs),
+                mock.patch("crucible_lib.workers.cmd_run_job", return_value=0) as run_job,
+                mock.patch("crucible_lib.workers.start_queue_monitor", return_value=4244) as queue_monitor,
+            ):
+                stdout = io.StringIO()
+                with contextlib.redirect_stdout(stdout):
+                    rc = crucible.cmd_resume(self.retry_args(run="paused"))
+
+            self.assertEqual(0, rc)
+            run_job.assert_not_called()
+            queue_monitor.assert_called_once()
+            self.assertFalse(crucible.stop_request_path(paused_manifest).exists())
+            queue = crucible.read_json(crucible.queue_request_path(paused_manifest))
+            self.assertEqual("paused", queue["run"])
+            self.assertEqual(["active"], queue["blocked_by"])
+            self.assertIn("resume", queue["command"])
+            self.assertIn("paused", queue["command"])
+            output = stdout.getvalue()
+            self.assertIn("resume: cleared stop request for paused", output)
+            self.assertIn("resume: queued paused; waiting for active", output)
+            self.assertIn("resume: queue monitor pid=4244", output)
+
     def test_resume_named_run_delegates_to_coordinator(self) -> None:
         remote_result = subprocess.CompletedProcess(
             args=["ssh"],

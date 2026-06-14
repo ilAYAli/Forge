@@ -2412,6 +2412,33 @@ def cmd_resume(args: argparse.Namespace) -> int:
             verbose=args.verbose,
             command_label="resume",
         )
+        blockers = active_or_queued_blockers(run_name, lease_seconds=int(args.lease_seconds))
+        if blockers:
+            materialize_run(
+                template_path=manifest_path,
+                workers_arg=str(args.workers) if args.workers else str(workers_path),
+                run_name_arg=run_name,
+                resume=True,
+                replace=False,
+            )
+            manifest = load_manifest(manifest_path)
+            command = queue_resume_command(resume_args, run_name)
+            write_queue_request(
+                run_dir=manifest_path.parent,
+                manifest=manifest,
+                command=command,
+                blockers=blockers,
+            )
+            monitor_pid = start_queue_monitor(
+                run_dir=manifest_path.parent,
+                command=command,
+                lease_seconds=int(args.lease_seconds),
+            )
+            blocker_names = ", ".join(str(summary.get("run") or "") for summary in blockers)
+            print(f"resume: queued {run_name}; waiting for {blocker_names}")
+            print(f"resume: queue monitor pid={monitor_pid}")
+            print(f"resume: status: crucible status {run_name} --verbose")
+            continue
         failed += 1 if cmd_run_job(resume_args) else 0
     return 1 if failed else 0
 
