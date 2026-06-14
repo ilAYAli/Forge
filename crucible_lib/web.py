@@ -1249,6 +1249,24 @@ def _payload_belongs_to_web_runs(payload: dict[str, Any], coordinator_runs: str 
         return True
     return any(_path_is_under(path, root) for path in paths for root in roots)
 
+def _payload_belongs_to_coordinator_runs(payload: dict[str, Any], coordinator_runs: str | None) -> bool:
+    if not coordinator_runs:
+        return False
+    try:
+        _host, coordinator_root = parse_coordinator(coordinator_runs)
+    except ValueError:
+        return False
+    paths = [str(payload.get(key) or "") for key in ("run_dir", "manifest")]
+    return any(path and _path_is_under(path, coordinator_root) for path in paths)
+
+def _seen_run_tracks_completion(info: Any, coordinator_runs: str | None) -> bool:
+    if not isinstance(info, dict):
+        return coordinator_runs is None
+    source = str(info.get("source") or "")
+    if source in {"remember", "status"}:
+        return True
+    return coordinator_runs is None
+
 def _payload_local_manifest_missing(payload: dict[str, Any], coordinator_runs: str | None) -> bool:
     roots = [str(runs_dir())]
     if coordinator_runs:
@@ -1274,6 +1292,7 @@ def remember_web_run(run: str, *, coordinator_runs: str | None = None) -> None:
         _state_dict(state, "seen_runs")[run] = {
             "coordinator": coordinator_runs,
             "last_seen": time.time(),
+            "source": "remember",
         }
         state["hidden_runs"] = sorted(hidden)
         _write_web_state(state)
@@ -1293,6 +1312,7 @@ def remember_web_run_payload(payload: dict[str, Any], *, coordinator_runs: str |
         _state_dict(state, "seen_runs")[run] = {
             "coordinator": coordinator_runs,
             "last_seen": time.time(),
+            "source": "remember",
         }
         if _run_payload_done(payload):
             _state_dict(state, "lingering_runs")[run] = payload
@@ -1388,7 +1408,7 @@ def _merge_lingering_runs(payload: dict[str, Any]) -> dict[str, Any]:
             else:
                 hidden.discard(name)
                 command_checked.discard(name)
-                seen[name] = {"coordinator": coordinator, "last_seen": time.time()}
+                seen[name] = {"coordinator": coordinator, "last_seen": time.time(), "source": "status"}
                 linger.pop(name, None)
 
         for name, info in list(seen.items()):
@@ -1424,7 +1444,7 @@ def _merge_lingering_runs(payload: dict[str, Any]) -> dict[str, Any]:
                 name = str(name)
                 if name in hidden or name in visible_names or name in linger or not isinstance(item, dict):
                     continue
-                if name not in seen:
+                if not _seen_run_tracks_completion(seen.get(name), coordinator):
                     continue
                 if not _run_payload_done(item):
                     continue
@@ -1443,7 +1463,7 @@ def _merge_lingering_runs(payload: dict[str, Any]) -> dict[str, Any]:
                     command_checked.discard(name)
                 else:
                     command_checked.add(name)
-                seen[name] = {"coordinator": coordinator, "last_seen": time.time()}
+                seen[name] = {"coordinator": coordinator, "last_seen": time.time(), "source": "status"}
 
         for name, item in list(linger.items()):
             if name in hidden:
@@ -1451,6 +1471,15 @@ def _merge_lingering_runs(payload: dict[str, Any]) -> dict[str, Any]:
                 command_checked.discard(name)
                 continue
             if isinstance(item, dict) and not _payload_belongs_to_web_runs(item, coordinator):
+                linger.pop(name, None)
+                seen.pop(name, None)
+                command_checked.discard(name)
+                continue
+            if (
+                isinstance(item, dict)
+                and _payload_belongs_to_coordinator_runs(item, coordinator)
+                and not _seen_run_tracks_completion(seen.get(name), coordinator)
+            ):
                 linger.pop(name, None)
                 seen.pop(name, None)
                 command_checked.discard(name)

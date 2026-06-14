@@ -1169,7 +1169,7 @@ except SystemExit as exc:
 
             with self.patch_runs_dir(local_runs), mock.patch("crucible_lib.web.runs_dir", return_value=local_runs):
                 web._write_web_state({
-                    "seen_runs": {"remote-done": {"coordinator": str(coordinator), "last_seen": 1.0}},
+                    "seen_runs": {"remote-done": {"coordinator": str(coordinator), "last_seen": 1.0, "source": "status"}},
                 })
                 crucible.write_json(run_dir / "manifest.json", {
                     "schema": "crucible.task.v1",
@@ -1219,6 +1219,41 @@ except SystemExit as exc:
             self.assertEqual([], merged["runs"])
             self.assertEqual({}, state["lingering_runs"])
 
+    def test_web_prunes_legacy_imported_coordinator_lingering_run(self) -> None:
+        import crucible_lib.web as web
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            local_runs = root / "local-runs"
+            coordinator = root / "coordinator-runs"
+            run_dir = coordinator / "old-remote-done"
+            stale_payload = {
+                "run": "old-remote-done",
+                "run_dir": str(run_dir),
+                "manifest": str(run_dir / "manifest.json"),
+                "state": "done",
+                "tasks": 1,
+                "counts": {"done": 1, "fail": 0, "running": 0, "claimed": 0, "stale": 0, "pending": 0},
+            }
+            empty_payload = {
+                "runs": [],
+                "collapsed_failures": [],
+                "collapsed_failures_count": 0,
+                "coordinator": str(coordinator),
+            }
+
+            with self.patch_runs_dir(local_runs), mock.patch("crucible_lib.web.runs_dir", return_value=local_runs):
+                web._write_web_state({
+                    "seen_runs": {"old-remote-done": {"coordinator": str(coordinator), "last_seen": 1.0}},
+                    "lingering_runs": {"old-remote-done": stale_payload},
+                })
+                merged = web._merge_lingering_runs(copy.deepcopy(empty_payload))
+                state = web._read_web_state()
+
+            self.assertEqual([], merged["runs"])
+            self.assertEqual({}, state["seen_runs"])
+            self.assertEqual({}, state["lingering_runs"])
+
     def test_web_does_not_reimport_deleted_coordinator_lingering_run(self) -> None:
         import crucible_lib.web as web
 
@@ -1245,7 +1280,7 @@ except SystemExit as exc:
 
             with self.patch_runs_dir(local_runs), mock.patch("crucible_lib.web.runs_dir", return_value=local_runs):
                 web._write_web_state({
-                    "seen_runs": {"deleted-done": {"coordinator": str(coordinator), "last_seen": 1.0}},
+                    "seen_runs": {"deleted-done": {"coordinator": str(coordinator), "last_seen": 1.0, "source": "status"}},
                 })
                 with mock.patch("crucible_lib.web._collect_named_run_payload", return_value=None) as named:
                     merged = web._merge_lingering_runs(copy.deepcopy(empty_payload))
