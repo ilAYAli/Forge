@@ -46,14 +46,14 @@ _HTML = r"""<!DOCTYPE html>
     .run { border: 1px solid var(--border); border-radius: 7px; overflow: hidden; }
     .run.current { border-color: #2a3848; }
     .run.failed  { border-color: #3d2424; }
-    .run.stopped { border-color: rgba(200,142,74,.65); }
+    .run.stopped-early { border-color: rgba(200,142,74,.65); }
     .run.done    { border-color: var(--border); opacity: .65; }
 
     /* run header — always visible */
     .run-hdr { user-select: text; background: var(--bg2); padding: 8px 12px; cursor: pointer; }
     .run-hdr:hover { background: var(--bg3); }
-    .run.stopped .run-hdr { background: rgba(200,142,74,.08); }
-    .run.stopped .run-hdr:hover { background: rgba(200,142,74,.13); }
+    .run.stopped-early .run-hdr { background: rgba(200,142,74,.08); }
+    .run.stopped-early .run-hdr:hover { background: rgba(200,142,74,.13); }
     .run-hdr-top { display: flex; align-items: center; gap: 8px; }
     .arrow { color: var(--dim); cursor: pointer; font-size: 10px; flex-shrink: 0; transition: transform .15s; user-select: none; }
     .arrow.open { transform: rotate(90deg); }
@@ -72,7 +72,7 @@ _HTML = r"""<!DOCTYPE html>
                    padding-left: 18px; font-size: 13px; flex-wrap: wrap; cursor: text; }
     .run-desc  { color: var(--dim); }
     .run-state { font-weight: 700; }
-    .run-state.stopped { color: var(--warn); }
+    .run-state.stopped-early { color: var(--warn); }
     .run-fields { color: var(--text); }
     .run-eta   { color: var(--yel); font-weight: 600; }
     .elo-pos { color: var(--grn); font-weight: 600; }
@@ -810,6 +810,17 @@ _HTML = r"""<!DOCTYPE html>
       }).join(' ') + '</div>';
     }
 
+    function runStoppedEarly(r, pending, fail, display) {
+      if ((r.state || '') !== 'stopped') return false;
+      const pendingCount = Number(pending?.count || r.pending || 0);
+      if (pendingCount <= 0) return false;
+      if (Number(r.done || 0) > 0 || Number(fail?.count || r.fail || 0) > 0) return true;
+      return (display.fields || []).some(f => {
+        const m = String(f).match(/^games=(\d+)\/\d+/);
+        return m && Number(m[1]) > 0;
+      });
+    }
+
     function renderRun(r) {
       const state  = r.state||'empty';
       const active  = r.sections?.active  || {count:0, tasks:[]};
@@ -831,7 +842,8 @@ _HTML = r"""<!DOCTYPE html>
       const nonEtaFields = (display.fields||[]).filter(f=>!f.startsWith('eta='));
       const descText = display.description || '';
       const runDate = runDatePrefix(r);
-      const stateField = state === 'stopped' ? '<span class="run-state stopped">state=stopped</span>' : '';
+      const stoppedEarly = runStoppedEarly(r, pending, fail, display);
+      const stateField = stoppedEarly ? '<span class="run-state stopped-early">stopped early</span>' : '';
 
       const actions = [];
       const runArg = attrEsc(jsSingle(r.run));
@@ -905,7 +917,7 @@ _HTML = r"""<!DOCTYPE html>
         ));
       }
 
-      return `<div class="run ${state}">
+      return `<div class="run ${state}${stoppedEarly?' stopped-early':''}">
         <div class="run-hdr" onclick="toggleRunHeader(event,'${rId}')">${hdr}</div>
         <div class="pbar-wrap"><div class="pbar-fill" style="width:${pct}%"></div></div>
         <div class="run-body${bodyOpen?' open':''}" id="${rId}"><div class="run-tree">${sections.join('')}</div></div>
