@@ -1038,6 +1038,7 @@ def display_task_command(command: str) -> str:
     kept: list[str] = []
     skip_next = False
     shard_options = {"--games", "--log-dir", "--name"}
+    normalized_options = {"--srand": "{seed}"}
     for part in parts:
         if skip_next:
             skip_next = False
@@ -1046,6 +1047,18 @@ def display_task_command(command: str) -> str:
             skip_next = True
             continue
         if any(part.startswith(option + "=") for option in shard_options):
+            continue
+        if part in normalized_options:
+            kept.extend([part, normalized_options[part]])
+            skip_next = True
+            continue
+        normalized = False
+        for option, value in normalized_options.items():
+            if part.startswith(option + "="):
+                kept.append(f"{option}={value}")
+                normalized = True
+                break
+        if normalized:
             continue
         kept.append(part)
     return command_display_join(kept)

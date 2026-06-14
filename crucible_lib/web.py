@@ -154,7 +154,7 @@ _HTML = r"""<!DOCTYPE html>
     .cmd-meta { color: var(--dim); font-size: 12px; margin-bottom: 3px; }
     .cmd-line { margin: 0; padding: 7px 8px; border: 1px solid var(--border);
                 border-radius: 4px; background: var(--bg); color: var(--text);
-                white-space: pre; overflow-wrap: normal; overflow-x: auto;
+                white-space: pre-wrap; overflow-wrap: normal; word-break: normal; overflow-x: auto;
                 line-height: 1.4; user-select: text; }
 
     .empty { color: var(--dim); padding: 10px 0; font-size: 13px; }

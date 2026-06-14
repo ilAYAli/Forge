@@ -306,6 +306,17 @@ class CrucibleTests(unittest.TestCase):
             crucible.display_task_command(command),
         )
 
+    def test_display_task_command_normalizes_sprt_seed(self) -> None:
+        command = (
+            "$HOME/.local/bin/sprt --candidate c --reference r --games 50 "
+            "--log-dir logs --name sprt_0000 --srand 2026060800 --no-eta"
+        )
+
+        self.assertEqual(
+            "$HOME/.local/bin/sprt --candidate c --reference r --srand {seed} --no-eta",
+            crucible.display_task_command(command),
+        )
+
     def retry_args(self, **overrides: Any) -> argparse.Namespace:
         args = argparse.Namespace(
             run=None,
@@ -536,8 +547,9 @@ except SystemExit as exc:
         self.assertIn("function renderCommands", web._HTML)
         self.assertIn("function commandDisplayText", web._HTML)
         self.assertIn(".replace(/\\s+/g, ' ')", web._HTML)
-        self.assertIn("white-space: pre", web._HTML)
+        self.assertIn("white-space: pre-wrap", web._HTML)
         self.assertIn("overflow-wrap: normal", web._HTML)
+        self.assertIn("word-break: normal", web._HTML)
         self.assertIn("r.commands", web._HTML)
         self.assertIn("cmd-line", web._HTML)
         self.assertIn("'commands'", web._HTML)
