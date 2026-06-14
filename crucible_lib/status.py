@@ -1630,6 +1630,17 @@ def confirm_delete(paths: list[Path], *, force: bool) -> None:
     if answer != "yes":
         raise SystemExit("delete cancelled")
 
+def mark_deleted_run_for_web(run: str) -> None:
+    try:
+        from .web import _delete_web_run
+
+        _delete_web_run(run)
+    except ModuleNotFoundError as exc:
+        if exc.name != "crucible_lib.web":
+            raise
+    except Exception as exc:
+        print(f"warning: web state not updated for {run}: {exc}", file=sys.stderr)
+
 def cmd_del(args: argparse.Namespace) -> int:
     coordinator_runs = configured_coordinator_runs()
     if coordinator_runs and status_can_delegate(args.run):
@@ -1653,6 +1664,7 @@ def cmd_del(args: argparse.Namespace) -> int:
     confirm_delete(targets, force=bool(args.force))
     for path in targets:
         shutil.rmtree(path)
+        mark_deleted_run_for_web(path.name)
         print(f"deleted: {path.name}")
     return 0
 

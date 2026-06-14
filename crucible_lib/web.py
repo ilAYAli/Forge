@@ -1249,6 +1249,23 @@ def _payload_belongs_to_web_runs(payload: dict[str, Any], coordinator_runs: str 
         return True
     return any(_path_is_under(path, root) for path in paths for root in roots)
 
+def _payload_local_manifest_missing(payload: dict[str, Any], coordinator_runs: str | None) -> bool:
+    roots = [str(runs_dir())]
+    if coordinator_runs:
+        try:
+            host, coordinator_root = parse_coordinator(coordinator_runs)
+            if not host:
+                roots.append(coordinator_root)
+        except ValueError:
+            pass
+    manifest = str(payload.get("manifest") or "")
+    if not manifest:
+        run_dir = str(payload.get("run_dir") or "")
+        manifest = str(Path(run_dir) / RUN_MANIFEST_NAME) if run_dir else ""
+    if not manifest or not any(_path_is_under(manifest, root) for root in roots):
+        return False
+    return not Path(manifest).expanduser().is_file()
+
 def remember_web_run(run: str, *, coordinator_runs: str | None = None) -> None:
     with _WEB_STATE_LOCK:
         state = _read_web_state()
@@ -1432,6 +1449,11 @@ def _merge_lingering_runs(payload: dict[str, Any]) -> dict[str, Any]:
                 command_checked.discard(name)
                 continue
             if isinstance(item, dict) and not _payload_belongs_to_web_runs(item, coordinator):
+                linger.pop(name, None)
+                seen.pop(name, None)
+                command_checked.discard(name)
+                continue
+            if isinstance(item, dict) and _payload_local_manifest_missing(item, coordinator):
                 linger.pop(name, None)
                 seen.pop(name, None)
                 command_checked.discard(name)

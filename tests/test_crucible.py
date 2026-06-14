@@ -1013,6 +1013,13 @@ except SystemExit as exc:
             }
 
             with self.patch_runs_dir(runs), mock.patch("crucible_lib.web.runs_dir", return_value=runs):
+                crucible.write_json(run_dir / "manifest.json", {
+                    "schema": "crucible.task.v1",
+                    "name": "ok-finished",
+                    "work_dir": str(run_dir),
+                    "state_dir": str(run_dir / "state"),
+                    "tasks": [],
+                })
                 web.remember_web_run_payload(payload)
                 merged = web._merge_lingering_runs(copy.deepcopy(empty_payload))
 
@@ -1126,6 +1133,13 @@ except SystemExit as exc:
             }
 
             with self.patch_runs_dir(local_runs), mock.patch("crucible_lib.web.runs_dir", return_value=local_runs):
+                crucible.write_json(run_dir / "manifest.json", {
+                    "schema": "crucible.task.v1",
+                    "name": "remote-done",
+                    "work_dir": str(run_dir),
+                    "state_dir": str(run_dir / "state"),
+                    "tasks": [],
+                })
                 with mock.patch("crucible_lib.web._collect_named_run_payload", return_value=full_payload) as named:
                     merged = web._merge_lingering_runs(copy.deepcopy(empty_payload))
                     state = web._read_web_state()
@@ -1268,6 +1282,13 @@ except SystemExit as exc:
             }
 
             with self.patch_runs_dir(runs), mock.patch("crucible_lib.web.runs_dir", return_value=runs):
+                crucible.write_json(run_dir / "manifest.json", {
+                    "schema": "crucible.task.v1",
+                    "name": "done-run",
+                    "work_dir": str(run_dir),
+                    "state_dir": str(run_dir / "state"),
+                    "tasks": [],
+                })
                 crucible.write_json(runs / ".web-state.json", {
                     "lingering_runs": {"done-run": stale},
                 })
@@ -1351,6 +1372,42 @@ except SystemExit as exc:
                 payload = web._merge_lingering_runs(copy.deepcopy(empty_payload))
 
             self.assertEqual([], payload["runs"])
+
+    def test_web_prunes_deleted_lingering_completed_run(self) -> None:
+        import crucible_lib.web as web
+
+        with tempfile.TemporaryDirectory() as tmp:
+            runs = Path(tmp) / "runs"
+            deleted = runs / "deleted-sprt"
+            stale = {
+                "run": "deleted-sprt",
+                "run_dir": str(deleted),
+                "manifest": str(deleted / "manifest.json"),
+                "state": "done",
+                "tasks": 1,
+                "counts": {"done": 1, "fail": 0, "running": 0, "claimed": 0, "stale": 0, "pending": 0},
+                "commands": [{"label": "crucible sprt", "count": 1, "command": "crucible sprt --games 1"}],
+            }
+            empty_payload = {
+                "runs": [],
+                "collapsed_failures": [],
+                "collapsed_failures_count": 0,
+                "coordinator": None,
+            }
+
+            with self.patch_runs_dir(runs), mock.patch("crucible_lib.web.runs_dir", return_value=runs):
+                state = {
+                    "seen_runs": {"deleted-sprt": {"coordinator": None, "last_seen": 1.0}},
+                    "lingering_runs": {"deleted-sprt": stale},
+                    "hidden_runs": [],
+                }
+                web._write_web_state(state)
+                payload = web._merge_lingering_runs(copy.deepcopy(empty_payload))
+                state = web._read_web_state()
+
+            self.assertEqual([], payload["runs"])
+            self.assertEqual({}, state["seen_runs"])
+            self.assertEqual({}, state["lingering_runs"])
 
     def test_web_delete_prevents_coordinator_lingering_reimport(self) -> None:
         import crucible_lib.web as web
@@ -7482,9 +7539,12 @@ except SystemExit as exc:
 
             with self.patch_runs_dir(runs):
                 rc = crucible.cmd_del(argparse.Namespace(run=None, done=True, force=True, lease_seconds=600))
+                state = json.loads((runs / ".web-state.json").read_text(encoding="utf-8"))
 
             self.assertEqual(0, rc)
             self.assertFalse(run_dir.exists())
+            self.assertEqual(["finished"], state["hidden_runs"])
+            self.assertEqual({}, state["lingering_runs"])
 
     def test_delete_named_run_delegates_to_coordinator(self) -> None:
         remote_result = subprocess.CompletedProcess(
