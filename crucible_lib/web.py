@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import re
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
@@ -1299,6 +1300,8 @@ def _commands_need_refresh(payload: dict[str, Any]) -> bool:
         label = str(item.get("label") or "")
         command = str(item.get("command") or "")
         if label.startswith("sprt:") or "--name sprt_" in command or "{output_dir}/sprt_" in command:
+            return True
+        if re.search(r"(?<!\S)--srand(?:=|\s+)\d+\b", command):
             return True
     return False
 

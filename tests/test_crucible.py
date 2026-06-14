@@ -1275,6 +1275,19 @@ except SystemExit as exc:
             self.assertEqual(fresh["commands"], merged["runs"][0]["commands"])
             self.assertEqual(fresh["commands"], state["lingering_runs"]["done-run"]["commands"])
 
+    def test_web_refreshes_seed_specific_legacy_commands(self) -> None:
+        import crucible_lib.web as web
+
+        self.assertTrue(web._commands_need_refresh({
+            "commands": [{"label": "sprt", "count": 80, "command": "sprt --candidate c --srand 2026060800"}],
+        }))
+        self.assertTrue(web._commands_need_refresh({
+            "commands": [{"label": "sprt", "count": 80, "command": "sprt --candidate c --srand=2026060800"}],
+        }))
+        self.assertFalse(web._commands_need_refresh({
+            "commands": [{"label": "sprt", "count": 80, "command": "sprt --candidate c --srand {seed}"}],
+        }))
+
     def test_web_drops_remembered_run_that_never_started(self) -> None:
         import crucible_lib.web as web
 
@@ -5396,6 +5409,36 @@ except SystemExit as exc:
         payload = json.loads(payload_result.stdout)
         self.assertEqual("queued", payload["runs"][0]["state"])
         self.assertEqual("marked-queued", payload["runs"][0]["run"])
+
+    def test_status_reports_partially_done_queued_run_as_queued(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run = root / "runs" / "queued-resume"
+            manifest = {
+                "schema": "crucible.task.v1",
+                "name": "queued-resume",
+                "work_dir": str(run),
+                "state_dir": str(run / "state"),
+                "claim_dir": str(run / "claims"),
+                "tasks": [
+                    {"id": "task_0", "index": 0, "command": "true", "outputs": []},
+                    {"id": "task_1", "index": 1, "command": "true", "outputs": []},
+                ],
+            }
+            crucible.write_json(run / "manifest.json", manifest)
+            crucible.write_json(run / "state" / "task_0.done.json", {"task": "task_0"})
+            crucible.write_json(crucible.queue_request_path(manifest), {
+                "schema": "crucible.task.v1",
+                "run": "queued-resume",
+                "requested_epoch": 100.0,
+            })
+            env = {"CRUCIBLE_COORDINATOR_RUNS": "", "CRUCIBLE_RUNS_DIR": str(root / "runs")}
+
+            payload_result = self.run_cli("status", "--json", cwd=root, env=env)
+
+        payload = json.loads(payload_result.stdout)
+        self.assertEqual("queued", payload["runs"][0]["state"])
+        self.assertEqual("queued-resume", payload["runs"][0]["run"])
 
     def test_status_reports_stopped_incomplete_run(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
