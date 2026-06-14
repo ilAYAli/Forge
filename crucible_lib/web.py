@@ -154,7 +154,7 @@ _HTML = r"""<!DOCTYPE html>
     .cmd-meta { color: var(--dim); font-size: 12px; margin-bottom: 3px; }
     .cmd-line { margin: 0; padding: 7px 8px; border: 1px solid var(--border);
                 border-radius: 4px; background: var(--bg); color: var(--text);
-                white-space: pre-wrap; overflow-wrap: anywhere; overflow-x: auto;
+                white-space: pre; overflow-wrap: normal; overflow-x: auto;
                 line-height: 1.4; user-select: text; }
 
     .empty { color: var(--dim); padding: 10px 0; font-size: 13px; }
@@ -779,12 +779,7 @@ _HTML = r"""<!DOCTYPE html>
     }
 
     function commandDisplayText(command) {
-      const text = String(command || '');
-      if (text.includes('\n') || text.length < 180 || !text.includes('; ')) return text;
-      return text
-        .replace(/; /g, ';\n')
-        .replace(/ (then|do) /g, ' $1\n')
-        .replace(/ (fi|done);/g, '\n$1;');
+      return String(command || '').replace(/\s+/g, ' ').trim();
     }
 
     function renderCommands(commands) {
@@ -843,7 +838,8 @@ _HTML = r"""<!DOCTYPE html>
       const descText = display.description || '';
       const runDate = runDatePrefix(r);
       const stoppedEarly = runStoppedEarly(r, pending, fail, display);
-      const stateField = stoppedEarly ? '<span class="run-state stopped-early">stopped early</span>' : '';
+      const stateField = stoppedEarly ? '<span class="run-state stopped-early">stopped</span>' : '';
+      const stateLabel = state === 'current' ? 'active' : state === 'done' ? 'completed' : state;
 
       const actions = [];
       const runArg = attrEsc(jsSingle(r.run));
@@ -863,7 +859,7 @@ _HTML = r"""<!DOCTYPE html>
           ${runDate ? `<span class="run-date">${esc(runDate)}</span>` : ''}
           <span class="run-name">${esc(r.run)}</span>
           <div class="run-actions">${actions.join('')}</div>
-          <span class="badge ${state}">${state==='current'?'active':state}</span>
+          <span class="badge ${state}">${stateLabel}</span>
         </div>
         <div class="run-summary">
           ${descText ? `<span class="run-desc">${esc(descText)}</span>` : ''}
