@@ -76,6 +76,7 @@ def cmd_status(args: argparse.Namespace) -> int:
     summary["manifest"] = str(manifest_path)
     summary["run"] = manifest_path.parent.name
     summary["metadata"] = manifest_metadata(manifest)
+    annotate_run_ordering(summary, manifest_path=manifest_path, manifest=manifest)
     if args.json:
         print(json.dumps(run_status_payload(summary), sort_keys=True))
         return 0 if summary["counts"]["fail"] == 0 else 1
@@ -305,6 +306,88 @@ def run_manifest_paths() -> list[Path]:
         if path.is_dir() and (path / RUN_MANIFEST_NAME).is_file()
     )
 
+RUN_SUMMARY_NAME = "summary.json"
+
+
+def run_summary_path(manifest_path: Path) -> Path:
+    return manifest_path.parent / RUN_SUMMARY_NAME
+
+
+def format_epoch_timestamp(value: float) -> str:
+    return datetime.datetime.fromtimestamp(value).astimezone().strftime("%Y-%m-%dT%H:%M:%S%z")
+
+
+def file_mtime_epoch(path: Path) -> float | None:
+    try:
+        return path.stat().st_mtime
+    except OSError:
+        return None
+
+
+def request_payload_epoch(payload: Any) -> float | None:
+    if not isinstance(payload, dict):
+        return None
+    for key in ("requested_epoch", "queued_epoch"):
+        value = parse_timestamp_epoch(payload.get(key))
+        if value is not None:
+            return value
+    return parse_timestamp_epoch(payload.get("requested_at"))
+
+
+def completion_payload_epoch(payload: Any) -> float | None:
+    if not isinstance(payload, dict):
+        return None
+    for key in ("completed_epoch", "finished_epoch"):
+        value = parse_timestamp_epoch(payload.get(key))
+        if value is not None:
+            return value
+    for key in ("completed_at", "finished_at"):
+        value = parse_timestamp_epoch(payload.get(key))
+        if value is not None:
+            return value
+    return None
+
+
+def read_run_summary_payload(manifest_path: Path) -> dict[str, Any] | None:
+    try:
+        return read_json(run_summary_path(manifest_path))
+    except (OSError, SystemExit):
+        return None
+
+
+def latest_done_file_epoch(manifest: dict[str, Any]) -> float | None:
+    latest: float | None = None
+    for task in manifest.get("tasks") or []:
+        if not isinstance(task, dict):
+            continue
+        value = file_mtime_epoch(task_done_path(manifest, task))
+        if value is not None and (latest is None or value > latest):
+            latest = value
+    return latest
+
+
+def annotate_run_ordering(
+    summary: dict[str, Any],
+    *,
+    manifest_path: Path,
+    manifest: dict[str, Any],
+) -> None:
+    queued_epoch = request_payload_epoch(summary.get("queue"))
+    if queued_epoch is not None:
+        summary["queued_epoch"] = queued_epoch
+        summary["queued_at"] = format_epoch_timestamp(queued_epoch)
+    if not run_done(summary):
+        return
+    completed_epoch = completion_payload_epoch(read_run_summary_payload(manifest_path))
+    if completed_epoch is None:
+        completed_epoch = file_mtime_epoch(run_summary_path(manifest_path))
+    if completed_epoch is None:
+        completed_epoch = latest_done_file_epoch(manifest)
+    if completed_epoch is not None:
+        summary["completed_epoch"] = completed_epoch
+        summary["completed_at"] = format_epoch_timestamp(completed_epoch)
+
+
 def run_manifest_has_attention_state(manifest: dict[str, Any]) -> bool:
     try:
         state = state_dir(manifest)
@@ -329,6 +412,7 @@ def load_run_summaries(*, lease_seconds: int, attention_only: bool = False) -> l
         summary["manifest"] = str(path)
         summary["run"] = path.parent.name
         summary["metadata"] = manifest_metadata(manifest)
+        annotate_run_ordering(summary, manifest_path=path, manifest=manifest)
         summaries.append(summary)
     return summaries
 
@@ -385,11 +469,38 @@ def run_attention(summary: dict[str, Any]) -> bool:
         or run_stopped_incomplete(summary)
     )
 
-def run_attention_sort_key(summary: dict[str, Any]) -> tuple[int, int, str]:
+def run_queued_sort_key(summary: dict[str, Any]) -> tuple[float, str]:
+    value = parse_timestamp_epoch(summary.get("queued_epoch"))
+    if value is None:
+        value = request_payload_epoch(summary.get("queue"))
+    return (value if value is not None else 0.0, str(summary.get("run") or ""))
+
+
+def run_completed_sort_key(summary: dict[str, Any]) -> tuple[float, str]:
+    value = parse_timestamp_epoch(summary.get("completed_epoch"))
+    return (-(value if value is not None else 0.0), str(summary.get("run") or ""))
+
+
+def run_list_sort_key(summary: dict[str, Any]) -> tuple[Any, ...]:
+    state = run_state(summary)
+    if state == "queued":
+        return (0, *run_queued_sort_key(summary))
+    if state == "current":
+        return (1, -run_active_count(summary), str(summary.get("run") or ""))
+    if state == "failed":
+        return (2, -int(summary["counts"]["fail"]), str(summary.get("run") or ""))
+    if state == "stopped":
+        return (3, str(summary.get("run") or ""))
+    if state == "done":
+        return (4, *run_completed_sort_key(summary))
+    return (5, str(summary.get("run") or ""))
+
+
+def run_attention_sort_key(summary: dict[str, Any]) -> tuple[Any, ...]:
     active = run_active_count(summary)
     fail = int(summary["counts"]["fail"])
     if run_queue_requested(summary):
-        return (0, 0, str(summary["run"]))
+        return (0, *run_queued_sort_key(summary))
     if active > 0 or run_launching(summary):
         return (1, -active, str(summary["run"]))
     if fail > 0:
@@ -423,7 +534,7 @@ def filtered_run_summaries(
     include_started_pending: bool = False,
 ) -> list[dict[str, Any]]:
     if filter_name == "done":
-        return [item for item in summaries if run_done(item)]
+        return sorted((item for item in summaries if run_done(item)), key=run_completed_sort_key)
     if filter_name in {None, "current"}:
         filtered = [
             item for item in summaries
@@ -431,7 +542,7 @@ def filtered_run_summaries(
         ]
         return sorted(filtered, key=run_attention_sort_key)
     if filter_name == "all":
-        return summaries
+        return sorted(summaries, key=run_list_sort_key)
     if filter_name == "failed":
         return [item for item in summaries if run_failed(item)]
     return summaries
@@ -1424,6 +1535,7 @@ def run_summary_for(run: str | Path, *, lease_seconds: int) -> dict[str, Any]:
     summary["manifest"] = str(path)
     summary["run"] = path.parent.name
     summary["metadata"] = manifest_metadata(manifest)
+    annotate_run_ordering(summary, manifest_path=path, manifest=manifest)
     return summary
 
 def cmd_stop(args: argparse.Namespace) -> int:
@@ -2498,13 +2610,6 @@ def print_compact_status(
         indent="  ",
     )
 
-RUN_SUMMARY_NAME = "summary.json"
-
-
-def run_summary_path(manifest_path: Path) -> Path:
-    return manifest_path.parent / RUN_SUMMARY_NAME
-
-
 def cmd_wait(args: argparse.Namespace) -> int:
     started_at = time.monotonic()
     manifest_path = expand_path(args.manifest)
@@ -2637,9 +2742,13 @@ def run_completion_event_payload(
 ) -> dict[str, Any]:
     summary = status_summary(manifest, lease_seconds=lease_seconds)
     metadata = manifest_metadata(manifest)
+    completed_epoch = epoch() if event == "run_done" and state == "ok" else None
     summary["manifest"] = str(manifest_path)
     summary["run"] = manifest_path.parent.name
     summary["metadata"] = metadata
+    if completed_epoch is not None:
+        summary["completed_epoch"] = completed_epoch
+        summary["completed_at"] = format_epoch_timestamp(completed_epoch)
     status_payload = run_status_payload(summary)
     display = status_payload.get("display")
     commands = status_payload.get("commands")
@@ -2656,6 +2765,9 @@ def run_completion_event_payload(
         "counts": summary["counts"],
         "active_count": summary["active_count"],
     }
+    if completed_epoch is not None:
+        payload["completed_epoch"] = completed_epoch
+        payload["completed_at"] = format_epoch_timestamp(completed_epoch)
     if isinstance(display, dict):
         payload["display"] = display
     if isinstance(fields, list):

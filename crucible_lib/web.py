@@ -270,6 +270,19 @@ _HTML = r"""<!DOCTYPE html>
       return {queued:0,current:1,failed:2,stopped:3,done:4,empty:5}[r.state]??6;
     }
 
+    function numericField(value, fallback=0) {
+      const n = Number(value);
+      return Number.isFinite(n) ? n : fallback;
+    }
+
+    function queuedEpoch(r) {
+      return numericField(r?.queued_epoch ?? r?.queue?.requested_epoch, 0);
+    }
+
+    function completedEpoch(r) {
+      return numericField(r?.completed_epoch, 0);
+    }
+
     let soundEnabled = localStorage.getItem('crucible.sound') === '1';
     let audioCtx = null;
     let activeJobKeys = null;
@@ -1037,9 +1050,17 @@ _HTML = r"""<!DOCTYPE html>
           .sort((a,b) => {
             const dp = statePri(a)-statePri(b);
             if (dp) return dp;
+            if (a.state==='queued') {
+              const qa=queuedEpoch(a), qb=queuedEpoch(b);
+              if (qa!==qb) return qa-qb;
+            }
             if (a.state==='current') {
               const ea=runEtaS(a)??1e9, eb=runEtaS(b)??1e9;
               if (ea!==eb) return ea-eb;
+            }
+            if (a.state==='done') {
+              const ca=completedEpoch(a), cb=completedEpoch(b);
+              if (ca!==cb) return cb-ca;
             }
             return a.run<b.run?-1:a.run>b.run?1:0;
           });
