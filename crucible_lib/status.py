@@ -2482,6 +2482,7 @@ def print_compact_status(
         print(f"  {color_status_field(description, summary=summary, color_enabled=color_enabled)}")
     fields = [
         f"tasks={counts['done']}/{summary['tasks']}",
+        *run_state_fields(summary),
     ]
     if counts["fail"]:
         fields.append(f"fail={counts['fail']}")

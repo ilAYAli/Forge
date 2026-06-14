@@ -5435,9 +5435,11 @@ except SystemExit as exc:
             env = {"CRUCIBLE_COORDINATOR_RUNS": "", "CRUCIBLE_RUNS_DIR": str(root / "runs")}
 
             status = self.run_cli("status", cwd=root, env=env)
+            named_status = self.run_cli("status", "queued-resume", "--verbose", cwd=root, env=env)
             payload_result = self.run_cli("status", "--json", cwd=root, env=env)
 
         self.assertIn("state=queued", status.stdout)
+        self.assertIn("state=queued", named_status.stdout)
         payload = json.loads(payload_result.stdout)
         self.assertEqual("queued", payload["runs"][0]["state"])
         self.assertIn("state=queued", payload["runs"][0]["display"]["fields"])
