@@ -4948,6 +4948,11 @@ except SystemExit as exc:
             self.assertEqual(2, run_task.call_count)
             self.assertEqual(2, sync_result.call_count)
 
+    def test_worker_progress_heartbeat_interval_is_capped(self) -> None:
+        self.assertEqual(10.0, crucible.heartbeat_interval_seconds(600))
+        self.assertEqual(10.0, crucible.heartbeat_interval_seconds(0))
+        self.assertEqual(5.0, crucible.heartbeat_interval_seconds(15))
+
     def test_worker_doctor_checks_coordinator_callback(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

@@ -838,6 +838,17 @@ def heartbeat_on_coordinator(
     if result.returncode != 0:
         raise RuntimeError(result.stderr.strip() or result.stdout.strip() or "coordinator heartbeat failed")
 
+def heartbeat_interval_seconds(lease_seconds: int) -> float:
+    lease_interval = (
+        lease_seconds / 3
+        if lease_seconds > 0
+        else HEARTBEAT_DEFAULT_INTERVAL_SECONDS
+    )
+    return max(
+        HEARTBEAT_MIN_INTERVAL_SECONDS,
+        min(HEARTBEAT_MAX_INTERVAL_SECONDS, lease_interval),
+    )
+
 def heartbeat_loop(
     *,
     coordinator: str,
@@ -851,14 +862,7 @@ def heartbeat_loop(
 ) -> None:
     from .status import task_log_progress_data
 
-    interval = max(
-        HEARTBEAT_MIN_INTERVAL_SECONDS,
-        min(
-            HEARTBEAT_MAX_INTERVAL_SECONDS,
-            lease_seconds / 3 if lease_seconds > 0
-            else HEARTBEAT_DEFAULT_INTERVAL_SECONDS,
-        ),
-    )
+    interval = heartbeat_interval_seconds(lease_seconds)
     while not stop.is_set():
         try:
             heartbeat_on_coordinator(
