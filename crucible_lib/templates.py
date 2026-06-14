@@ -293,9 +293,23 @@ def parse_sprt_template_parameters(template_name: str, template: dict[str, Any],
         raw_args,
         allow_unknown=True,
     )
+    validate_sprt_uci_options(values)
     if unknown:
         values["sprt_extra_args"] = unknown
     return values
+
+
+def validate_sprt_uci_options(values: dict[str, Any]) -> None:
+    for key, flag in (("candidate_uci", "--candidate-uci"), ("reference_uci", "--reference-uci")):
+        items = values.get(key)
+        if items is None:
+            continue
+        if not isinstance(items, list):
+            items = [items]
+        for item in items:
+            text = str(item)
+            if "=" in text and text.split("=", 1)[1] == "":
+                raise SystemExit(f"{flag} {text}: empty UCI option values are rejected; omit the option instead")
 
 
 def template_parameter_supplied(template: dict[str, Any], raw_args: list[str], parameter_names: set[str]) -> bool:

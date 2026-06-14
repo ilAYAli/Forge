@@ -2204,6 +2204,22 @@ except SystemExit as exc:
         self.assertIn("--candidate-uci Hash=128", command)
         self.assertIn("--reference-uci nnue_file=~/code/cpp/chess/enyo/net/reference.nn", command)
 
+    def test_sprt_template_rejects_empty_uci_option_values(self) -> None:
+        template_path = ROOT / "templates" / "sprt.template.json"
+        template = crucible.load_template(template_path)
+
+        with self.assertRaisesRegex(SystemExit, "--reference-uci nnue_file="):
+            crucible.parse_sprt_template_parameters(
+                "sprt",
+                template,
+                [
+                    "--candidate", "~/assets/engines/enyo_9696dac",
+                    "--reference", "~/assets/engines/reference",
+                    "--games", "50",
+                    "--reference-uci", "nnue_file=",
+                ],
+            )
+
     def test_subcommand_help_is_available(self) -> None:
         commands = [
             "run", "sprt", "template", "plan", "add-input", "add-repo", "add-command", "sync-repos", "start", "run-task", "claim",
