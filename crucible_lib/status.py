@@ -1070,6 +1070,10 @@ def run_status_payload(summary: dict[str, Any]) -> dict[str, Any]:
     fields.extend(run_progress_fields(summary))
     active_summary = active_worker_summary(summary)
     active_fields = active_section_fields(summary)
+    manifest_payload = summary.get("manifest_payload")
+    created_at = summary.get("created_at")
+    if isinstance(manifest_payload, dict) and isinstance(manifest_payload.get("created_at"), str):
+        created_at = manifest_payload["created_at"]
     payload = {
         key: copy.deepcopy(value)
         for key, value in summary.items()
@@ -1121,6 +1125,8 @@ def run_status_payload(summary: dict[str, Any]) -> dict[str, Any]:
             },
         },
     })
+    if isinstance(created_at, str) and created_at.strip():
+        payload["created_at"] = created_at.strip()
     metadata = summary.get("metadata")
     if isinstance(metadata, dict):
         payload.update(metadata)
@@ -1128,7 +1134,6 @@ def run_status_payload(summary: dict[str, Any]) -> dict[str, Any]:
     if progress:
         payload["progress"] = progress
         payload["progress_fields"] = summary_progress_fields(summary)
-    manifest_payload = summary.get("manifest_payload")
     if isinstance(manifest_payload, dict):
         commands = run_command_groups(manifest_payload)
         if commands:

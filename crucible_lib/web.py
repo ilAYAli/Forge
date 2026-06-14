@@ -54,6 +54,7 @@ _HTML = r"""<!DOCTYPE html>
     .run-hdr-top { display: flex; align-items: center; gap: 8px; }
     .arrow { color: var(--dim); cursor: pointer; font-size: 10px; flex-shrink: 0; transition: transform .15s; user-select: none; }
     .arrow.open { transform: rotate(90deg); }
+    .run-date { color: var(--dim); font-size: 12px; font-variant-numeric: tabular-nums; flex-shrink: 0; }
     .run-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis;
                 white-space: nowrap; font-weight: 600; cursor: text; }
     .badge { font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 10px; flex-shrink: 0; }
@@ -223,6 +224,14 @@ _HTML = r"""<!DOCTYPE html>
 
     function renderField(field) {
       return `<span class="field${eloFieldClass(field)}">${esc(field)}</span>`;
+    }
+
+    function runDatePrefix(r) {
+      const text = String(r?.created_at || '');
+      let m = text.match(/^(\d{4}-\d{2}-\d{2})T(\d{2}):(\d{2})/);
+      if (m) return `${m[1]}-${m[2]}:${m[3]}`;
+      m = String(r?.run || '').match(/(?:^|-)(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(?:\d{2})?(?:$|-)/);
+      return m ? `${m[1]}-${m[2]}-${m[3]}-${m[4]}:${m[5]}` : '';
     }
 
     function fmtAge(s) {
@@ -806,6 +815,7 @@ _HTML = r"""<!DOCTYPE html>
 
       const nonEtaFields = (display.fields||[]).filter(f=>!f.startsWith('eta='));
       const descText = display.description || '';
+      const runDate = runDatePrefix(r);
 
       const actions = [];
       const runArg = attrEsc(jsSingle(r.run));
@@ -822,6 +832,7 @@ _HTML = r"""<!DOCTYPE html>
       const hdr = `
         <div class="run-hdr-top">
           <span class="arrow${bodyOpen?' open':''}" onclick="event.stopPropagation();toggleId('${rId}')">&#9654;</span>
+          ${runDate ? `<span class="run-date">${esc(runDate)}</span>` : ''}
           <span class="run-name">${esc(r.run)}</span>
           <div class="run-actions">${actions.join('')}</div>
           <span class="badge ${state}">${state==='current'?'active':state}</span>

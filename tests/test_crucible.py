@@ -210,6 +210,7 @@ class CrucibleTests(unittest.TestCase):
             "worker_rates": {},
             "diagnostics": [],
             "manifest_payload": {
+                "created_at": "2026-06-13T17:13:02+0200",
                 "template": {
                     "name": "sprt",
                     "parameters": {
@@ -242,6 +243,7 @@ class CrucibleTests(unittest.TestCase):
                 ),
             },
         ], payload["commands"])
+        self.assertEqual("2026-06-13T17:13:02+0200", payload["created_at"])
         self.assertNotIn("manifest_payload", payload)
 
     def test_run_status_payload_collapses_shard_task_commands(self) -> None:
@@ -527,6 +529,10 @@ except SystemExit as exc:
         self.assertIn("event.target.closest('button,a,input,select,textarea,.arrow')", web._HTML)
         self.assertIn("window.getSelection", web._HTML)
         self.assertIn('<div class="run-hdr" onclick="toggleRunHeader(event,', web._HTML)
+        self.assertIn("function runDatePrefix", web._HTML)
+        self.assertIn(".run-date", web._HTML)
+        self.assertIn("r?.created_at", web._HTML)
+        self.assertIn('${runDate ? `<span class="run-date">${esc(runDate)}</span>` : \'\'}', web._HTML)
         self.assertIn("restartWeb(this)", web._HTML)
         self.assertIn("cmd: 'restart-web'", web._HTML)
         self.assertIn("await waitForRestart()", web._HTML)
