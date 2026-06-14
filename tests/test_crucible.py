@@ -280,6 +280,32 @@ class CrucibleTests(unittest.TestCase):
             {"label": "sprt", "count": 3, "command": "sprt --candidate c"},
         ], payload["commands"])
 
+    def test_run_status_payload_extracts_sprt_from_shell_wrapper(self) -> None:
+        command = (
+            'set -euo pipefail; book="$HOME/.cache/crucible/books/book.epd"; '
+            'if [ ! -f "$book" ]; then book="$HOME/Library/Caches/crucible/books/book.epd"; fi; '
+            'test -f "$book"; out={output}; logdir="$(dirname "$out")/logs"; '
+            'name=warning-selfcheck-{task_id}; for attempt in 1 2; do rm -rf "$logdir"; mkdir -p "$logdir"; '
+            '$HOME/.local/bin/sprt --candidate $HOME/assets/engines/enyo_09ae1a4 '
+            '--reference $HOME/assets/engines/enyo_09ae1a4 --candidate-uci use_syzygy=false '
+            '--reference-uci use_syzygy=false --games 25 --concurrency 1 --threads 1 --tc 2+0.02 '
+            '--fastchess $HOME/.local/bin/fastchess --book "$book" --log-dir "$logdir" '
+            '--name "$name" --order random --srand {seed} --no-ntfy --no-eta; '
+            'if grep -q "Score of candidate vs reference:" "$logdir/$name.log"; then cp "$logdir/$name.log" "$out"; exit 0; fi; '
+            'echo missing >&2; done; exit 1'
+        )
+
+        self.assertEqual(
+            (
+                "$HOME/.local/bin/sprt --candidate $HOME/assets/engines/enyo_09ae1a4 "
+                "--reference $HOME/assets/engines/enyo_09ae1a4 --candidate-uci use_syzygy=false "
+                "--reference-uci use_syzygy=false --concurrency 1 --threads 1 --tc 2+0.02 "
+                "--fastchess $HOME/.local/bin/fastchess --book $book --order random "
+                "--srand {seed} --no-ntfy --no-eta"
+            ),
+            crucible.display_task_command(command),
+        )
+
     def retry_args(self, **overrides: Any) -> argparse.Namespace:
         args = argparse.Namespace(
             run=None,

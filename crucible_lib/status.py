@@ -976,6 +976,10 @@ def command_display_word(value: Any) -> str:
     text = str(value)
     if "~" in text and not any(char.isspace() for char in text):
         return text
+    if re.fullmatch(r"\$[A-Za-z_][A-Za-z0-9_]*(?:[/:._A-Za-z0-9{}+-].*)?", text):
+        return text
+    if re.fullmatch(r"\{[A-Za-z_][A-Za-z0-9_]*\}", text):
+        return text
     return shlex.quote(text)
 
 def command_display_join(parts: list[str]) -> str:
@@ -1014,9 +1018,21 @@ def template_command_group(manifest: dict[str, Any]) -> dict[str, Any] | None:
 
 def display_task_command(command: str) -> str:
     try:
-        parts = shlex.split(command)
+        lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
+        lexer.whitespace_split = True
+        parts = list(lexer)
     except ValueError:
         return command
+    if parts and parts[0].rsplit("/", 1)[-1] != "sprt":
+        for index, part in enumerate(parts):
+            if part.rsplit("/", 1)[-1] == "sprt":
+                end = len(parts)
+                for offset, item in enumerate(parts[index + 1:], start=index + 1):
+                    if item in {";", "&&", "||"}:
+                        end = offset
+                        break
+                parts = parts[index:end]
+                break
     if not parts or parts[0].rsplit("/", 1)[-1] != "sprt":
         return command
     kept: list[str] = []
