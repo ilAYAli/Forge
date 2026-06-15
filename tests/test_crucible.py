@@ -2399,18 +2399,19 @@ except SystemExit as exc:
                     {"host": "worker-a", "slots": 1, "cache_dir": "/tmp/duplicate"},
                 ],
             })
-            captured: dict[str, Any] = {}
+            seen: list[tuple[dict[str, Any], str]] = []
 
-            def fake_run_job(args: argparse.Namespace) -> int:
-                captured["manifest"] = crucible.read_json(runs / ".sh-tmp" / "sh-test" / "template.json")
-                captured["workers"] = crucible.read_json(runs / ".sh-tmp" / "sh-test" / "workers.json")
-                captured["args"] = args
-                return 0
+            def fake_run_worker_shell(
+                worker: dict[str, Any],
+                command: str,
+                **_kwargs: Any,
+            ) -> subprocess.CompletedProcess[str]:
+                seen.append((worker, command))
+                return subprocess.CompletedProcess(["sh"], 0, stdout=f"{worker['host']} output\n", stderr="")
 
             with (
                 self.patch_runs_dir(runs),
-                mock.patch("crucible_lib.shell.cmd_run_job", side_effect=fake_run_job),
-                mock.patch("crucible_lib.shell.cleanup_shell_run") as cleanup,
+                mock.patch("crucible_lib.shell.run_worker_shell", side_effect=fake_run_worker_shell),
             ):
                 rc = crucible.cmd_sh(argparse.Namespace(
                     command="echo hi",
@@ -2428,31 +2429,32 @@ except SystemExit as exc:
                 ))
 
             self.assertEqual(0, rc)
-            manifest = captured["manifest"]
-            workers = captured["workers"]
-            run_args = captured["args"]
-            self.assertEqual(str(runs / ".sh-tmp" / "sh-test" / "workers.json"), run_args.workers)
+            seen_sorted = sorted(seen, key=lambda item: item[0]["host"])
             self.assertEqual([
                 {"cache_dir": "/tmp/a", "host": "worker-a", "local": False, "profile": "worker-a"},
                 {"host": "worker-b", "local": False, "profile": "worker-b", "python": "/usr/bin/python3"},
-            ], workers["workers"])
-            self.assertEqual(["worker-a", "worker-b"], [task["claim_worker"] for task in manifest["tasks"]])
-            self.assertNotIn("slots", workers["workers"][0])
-            cleanup.assert_called_once_with("sh-test", lease_seconds=600)
+            ], [worker for worker, _command in seen_sorted])
+            self.assertEqual(["echo hi", "echo hi"], [command for _worker, command in seen_sorted])
+            self.assertFalse((runs / ".sh-tmp").exists())
+            self.assertFalse((runs / "sh-test").exists())
 
-    def test_sh_escapes_shell_command_for_manifest_formatting(self) -> None:
+    def test_sh_prints_grouped_output_and_preserves_command(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             runs = Path(tmp) / "runs"
-            captured: dict[str, Any] = {}
+            seen: list[str] = []
 
-            def fake_run_job(_args: argparse.Namespace) -> int:
-                captured["manifest"] = crucible.read_json(runs / ".sh-tmp" / "sh-braces" / "template.json")
-                return 0
+            def fake_run_worker_shell(
+                _worker: dict[str, Any],
+                command: str,
+                **_kwargs: Any,
+            ) -> subprocess.CompletedProcess[str]:
+                seen.append(command)
+                return subprocess.CompletedProcess(["sh"], 0, stdout="{ok}\n", stderr="")
 
             with (
                 self.patch_runs_dir(runs),
-                mock.patch("crucible_lib.shell.cmd_run_job", side_effect=fake_run_job),
-                mock.patch("crucible_lib.shell.cleanup_shell_run"),
+                mock.patch("crucible_lib.shell.run_worker_shell", side_effect=fake_run_worker_shell),
+                contextlib.redirect_stdout(io.StringIO()) as stdout,
             ):
                 rc = crucible.cmd_sh(argparse.Namespace(
                     command="printf '{ok}\\n'",
@@ -2470,8 +2472,48 @@ except SystemExit as exc:
                 ))
 
             self.assertEqual(0, rc)
-            manifest = captured["manifest"]
-            self.assertEqual("(printf '{{ok}}\\n') > {output} 2>&1", manifest["tasks"][0]["command"])
+            self.assertEqual(["printf '{ok}\\n'"], seen)
+            output = stdout.getvalue()
+            self.assertIn("localhost: OK", output)
+            self.assertIn("  {ok}", output)
+            self.assertIn("sh: ok", output)
+
+    def test_sh_reports_failed_hosts(self) -> None:
+        def fake_run_worker_shell(
+            worker: dict[str, Any],
+            _command: str,
+            **_kwargs: Any,
+        ) -> subprocess.CompletedProcess[str]:
+            if worker["host"] == "worker-b":
+                return subprocess.CompletedProcess(["ssh"], 7, stdout="", stderr="boom\n")
+            return subprocess.CompletedProcess(["ssh"], 0, stdout="fine\n", stderr="")
+
+        with (
+            mock.patch("crucible_lib.shell.run_worker_shell", side_effect=fake_run_worker_shell),
+            contextlib.redirect_stdout(io.StringIO()) as stdout,
+            contextlib.redirect_stderr(io.StringIO()) as stderr,
+        ):
+            rc = crucible.cmd_sh(argparse.Namespace(
+                command="do thing",
+                workers="worker-a,worker-b",
+                jobs=4,
+                run="sh-fail",
+                coordinator_host=None,
+                remote_timeout_seconds=1800.0,
+                lease_seconds=600,
+                interval_seconds=2.0,
+                timeout_seconds=0.0,
+                notify_command=None,
+                no_color=True,
+                verbose=False,
+            ))
+
+        self.assertEqual(1, rc)
+        output = stdout.getvalue()
+        self.assertIn("worker-a: OK", output)
+        self.assertIn("worker-b: FAILED rc=7", output)
+        self.assertIn("  boom", output)
+        self.assertIn("sh: failed on 1/2 host(s)", stderr.getvalue())
 
     def test_terminal_color_enabled_detects_watch_parent(self) -> None:
         calls = iter([

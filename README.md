@@ -36,8 +36,8 @@ crucible sh "cd ~/code/cpp/chess/enyo; git switch main; git pull; cmake --build 
 ```
 
 `sh` uses the default worker pool unless `--workers` is supplied, but caps each
-host to one worker slot. It waits for completion, reports failures, and deletes
-the materialized Crucible run afterward so no run history lingers.
+host to one worker slot. It waits for completion, prints grouped output for each
+host, and does not create Crucible run history.
 
 ```sh
 crucible sh --workers pwa-5090,pwa-mbp0,pwa-mbp "hostname; git --version"

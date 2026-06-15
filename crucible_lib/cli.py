@@ -222,25 +222,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="Run a shell command once on each worker host.",
         formatter_class=CrucibleHelpFormatter,
         description=(
-            "Run a shell command once on each selected worker host and delete "
-            "the materialized run after completion.\n\n"
+            "Run a shell command once on each selected worker host and print "
+            "grouped per-host output.\n\n"
             "Examples:\n"
             "  crucible sh \"cd ~/repo; git pull; cmake --build build\"\n"
             "  crucible sh --workers pwa-5090,pwa-mbp \"hostname && git --version\""
         ),
     )
-    shell.add_argument("command", help="Shell command passed to bash -lc on each host.")
+    shell.add_argument("command", help="Shell command run on each host.")
     shell.add_argument("--workers", help=WORKERS_ARG_HELP_WITH_DEFAULT)
-    shell.add_argument("--jobs", type=int, default=4, help="Maximum workers to prepare concurrently.")
-    shell.add_argument("--run", help="Temporary run name. Defaults to sh-YYYYMMDD-HHMMSS.")
-    shell.add_argument("--coordinator-host", help="Coordinator hostname workers should SSH back to.")
-    shell.add_argument("--remote-timeout-seconds", type=float, default=1800.0, help="Timeout for remote setup/work commands.")
-    shell.add_argument("--lease-seconds", type=int, default=600, help="Claim lease duration before stale.")
-    shell.add_argument("--interval-seconds", type=float, default=2.0, help="Polling interval while waiting.")
-    shell.add_argument("--timeout-seconds", type=float, default=0.0, help="Overall wait timeout; 0 means no timeout.")
-    shell.add_argument("--notify-command", help="Command run on completion with CRUCIBLE_EVENT_JSON and JSON on stdin.")
-    shell.add_argument("--no-color", action="store_true", help="Disable ANSI color output.")
-    shell.add_argument("--verbose", action="store_true", help="Print setup and worker phase details.")
+    shell.add_argument("--jobs", type=int, default=4, help="Maximum hosts to run concurrently.")
+    shell.add_argument("--remote-timeout-seconds", type=float, default=1800.0, help="Timeout for each host command.")
     shell.set_defaults(func=cmd_sh)
 
     template = sub.add_parser(
