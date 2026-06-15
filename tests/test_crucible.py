@@ -7099,7 +7099,7 @@ except SystemExit as exc:
         }
         self.assertEqual("progress=rows=200/400, eta=10s", crucible.summary_progress(summary))
 
-    def test_summary_eta_not_less_than_slowest_active_task(self) -> None:
+    def test_summary_eta_uses_aggregate_rate_not_noisy_slowest_task(self) -> None:
         summary = {
             "active": [
                 {
@@ -7128,7 +7128,7 @@ except SystemExit as exc:
             "progress_done": {"rows": 100},
             "progress_totals": {"rows": 400},
         }
-        self.assertEqual("progress=rows=200/400, eta=30s", crucible.summary_progress(summary))
+        self.assertEqual("progress=rows=200/400, eta=10s", crucible.summary_progress(summary))
 
     def test_summary_eta_counts_claimed_work_without_claimed_rate(self) -> None:
         summary = {

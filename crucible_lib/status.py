@@ -850,17 +850,19 @@ def summary_progress(summary: dict[str, Any]) -> str:
     outputs: dict[str, int] = {}
     etas: list[str] = []
 
-    def append_eta_with_active_floor(done: Any, total: Any, rate: Any, active_etas: list[tuple[float, bool]]) -> None:
+    def append_aggregate_eta(done: Any, total: Any, rate: Any, active_etas: list[tuple[float, bool]]) -> None:
         aggregate_eta = progress_eta_seconds(done, total, rate)
-        if aggregate_eta is None:
-            return
-        unknown_when_elapsed = False
-        if active_etas:
+        if aggregate_eta is not None:
+            unknown_when_elapsed = False
+            if waiting_count == 0 and len(active_etas) == 1:
+                active_eta, active_unknown_when_elapsed = active_etas[0]
+                if active_eta < aggregate_eta:
+                    aggregate_eta = active_eta
+                    unknown_when_elapsed = active_unknown_when_elapsed
+            etas.append(eta_field(aggregate_eta, unknown_when_elapsed=unknown_when_elapsed))
+        elif active_etas:
             max_active_eta, active_unknown_when_elapsed = max(active_etas, key=lambda item: item[0])
-            if max_active_eta > aggregate_eta:
-                aggregate_eta = max_active_eta
-                unknown_when_elapsed = active_unknown_when_elapsed
-        etas.append(eta_field(aggregate_eta, unknown_when_elapsed=unknown_when_elapsed))
+            etas.append(eta_field(max_active_eta, unknown_when_elapsed=active_unknown_when_elapsed))
 
     for row in summary["active"]:
         if row.get("state", "running") != "running":
@@ -937,11 +939,10 @@ def summary_progress(summary: dict[str, Any]) -> str:
         if isinstance(total_work, int) and total_work > 0:
             done = min(total_work, int(done_work) + active_done)
             text = f"{unit}={compact_count(done)}/{compact_count(total_work)}"
-            if waiting_count == 0 and bucket["etas"]:
-                max_eta, unknown_when_elapsed = max(bucket["etas"], key=lambda item: item[0])
-                etas.append(eta_field(max_eta, unknown_when_elapsed=unknown_when_elapsed))
-            elif bucket["rate"] > 0:
-                append_eta_with_active_floor(done, total_work, bucket["rate"], bucket["etas"])
+            if bucket["rate"] > 0:
+                append_aggregate_eta(done, total_work, bucket["rate"], bucket["etas"])
+            elif waiting_count == 0 and bucket["etas"]:
+                append_aggregate_eta(done, total_work, bucket["rate"], bucket["etas"])
             parts.append(text)
         elif bucket["all_total"] and active_total > 0:
             text = f"{unit}={compact_count(active_done)}/{compact_count(active_total)}"
@@ -949,15 +950,11 @@ def summary_progress(summary: dict[str, Any]) -> str:
                 bucket["all_rate"] and bucket["count"] == running_count
                 and waiting_count == 0
             ):
-                if bucket["etas"]:
-                    max_eta, unknown_when_elapsed = max(bucket["etas"], key=lambda item: item[0])
-                    eta = eta_field(max_eta, unknown_when_elapsed=unknown_when_elapsed)
-                else:
-                    eta = progress_eta_text(active_done, active_total, bucket["rate"])
+                eta = progress_eta_text(active_done, active_total, bucket["rate"])
                 if eta:
                     etas.append(eta)
             elif bucket["all_rate"] and bucket["rate"] > 0:
-                append_eta_with_active_floor(active_done, active_total, bucket["rate"], bucket["etas"])
+                append_aggregate_eta(active_done, active_total, bucket["rate"], bucket["etas"])
             parts.append(text)
         else:
             parts.append(f"{unit}=~{compact_count(active_done)}")
