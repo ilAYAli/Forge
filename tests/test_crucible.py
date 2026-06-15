@@ -111,6 +111,7 @@ class CrucibleTests(unittest.TestCase):
             mock.patch("crucible_lib.status.runs_dir", return_value=path),
             mock.patch("crucible_lib.workers.runs_dir", return_value=path),
             mock.patch("crucible_lib.web.runs_dir", return_value=path),
+            mock.patch("crucible_lib.shell.runs_dir", return_value=path),
         ):
             yield
 
@@ -2360,7 +2361,7 @@ except SystemExit as exc:
 
     def test_subcommand_help_is_available(self) -> None:
         commands = [
-            "run", "sprt", "template", "plan", "add-input", "add-repo", "add-command", "sync-repos", "start", "run-task", "claim",
+            "run", "sprt", "sh", "template", "plan", "add-input", "add-repo", "add-command", "sync-repos", "start", "run-task", "claim",
             "release", "heartbeat", "work", "doctor", "status",
             "wait", "verify", "merge", "stop", "drain", "add", "del", "self-update",
             "update", "version", "deploy", "resume", "retry", "worker",
@@ -2372,6 +2373,7 @@ except SystemExit as exc:
                 self.assertEqual(0, result.returncode)
                 self.assertIn("usage:", result.stdout)
         self.assertIn("--progress-log-regex", self.run_cli("plan", "--help").stdout)
+        self.assertIn("Run a shell command once", self.run_cli("sh", "--help").stdout)
         self.assertIn("Coordinator manifest", self.run_cli("claim", "--help").stdout)
         self.assertIn("comma-separated workers", self.run_cli("deploy", "--help").stdout)
         self.assertIn("--merge", self.run_cli("start", "--help").stdout)
@@ -2385,6 +2387,91 @@ except SystemExit as exc:
         self.assertIn("--coordinator", self.run_cli("doctor", "--help").stdout)
         self.assertIn("comma-separated workers", self.run_cli("update", "--help").stdout)
         self.assertNotEqual(0, self.run_cli("run-job", "--help").returncode)
+
+    def test_sh_caps_default_workers_to_one_slot_per_host(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runs = Path(tmp) / "runs"
+            crucible.write_json(runs / "workers.json", {
+                "schema": "crucible.workers.v1",
+                "workers": [
+                    {"host": "worker-a", "slots": 4, "cache_dir": "/tmp/a"},
+                    {"host": "worker-b", "slots": 2, "python": "/usr/bin/python3"},
+                    {"host": "worker-a", "slots": 1, "cache_dir": "/tmp/duplicate"},
+                ],
+            })
+            captured: dict[str, Any] = {}
+
+            def fake_run_job(args: argparse.Namespace) -> int:
+                captured["manifest"] = crucible.read_json(runs / ".sh-tmp" / "sh-test" / "template.json")
+                captured["workers"] = crucible.read_json(runs / ".sh-tmp" / "sh-test" / "workers.json")
+                captured["args"] = args
+                return 0
+
+            with (
+                self.patch_runs_dir(runs),
+                mock.patch("crucible_lib.shell.cmd_run_job", side_effect=fake_run_job),
+                mock.patch("crucible_lib.shell.cleanup_shell_run") as cleanup,
+            ):
+                rc = crucible.cmd_sh(argparse.Namespace(
+                    command="echo hi",
+                    workers=None,
+                    jobs=4,
+                    run="sh-test",
+                    coordinator_host=None,
+                    remote_timeout_seconds=1800.0,
+                    lease_seconds=600,
+                    interval_seconds=2.0,
+                    timeout_seconds=0.0,
+                    notify_command=None,
+                    no_color=True,
+                    verbose=False,
+                ))
+
+            self.assertEqual(0, rc)
+            manifest = captured["manifest"]
+            workers = captured["workers"]
+            run_args = captured["args"]
+            self.assertEqual(str(runs / ".sh-tmp" / "sh-test" / "workers.json"), run_args.workers)
+            self.assertEqual([
+                {"cache_dir": "/tmp/a", "host": "worker-a", "local": False, "profile": "worker-a"},
+                {"host": "worker-b", "local": False, "profile": "worker-b", "python": "/usr/bin/python3"},
+            ], workers["workers"])
+            self.assertEqual(["worker-a", "worker-b"], [task["claim_worker"] for task in manifest["tasks"]])
+            self.assertNotIn("slots", workers["workers"][0])
+            cleanup.assert_called_once_with("sh-test", lease_seconds=600)
+
+    def test_sh_escapes_shell_command_for_manifest_formatting(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runs = Path(tmp) / "runs"
+            captured: dict[str, Any] = {}
+
+            def fake_run_job(_args: argparse.Namespace) -> int:
+                captured["manifest"] = crucible.read_json(runs / ".sh-tmp" / "sh-braces" / "template.json")
+                return 0
+
+            with (
+                self.patch_runs_dir(runs),
+                mock.patch("crucible_lib.shell.cmd_run_job", side_effect=fake_run_job),
+                mock.patch("crucible_lib.shell.cleanup_shell_run"),
+            ):
+                rc = crucible.cmd_sh(argparse.Namespace(
+                    command="printf '{ok}\\n'",
+                    workers="localhost:4",
+                    jobs=4,
+                    run="sh-braces",
+                    coordinator_host=None,
+                    remote_timeout_seconds=1800.0,
+                    lease_seconds=600,
+                    interval_seconds=2.0,
+                    timeout_seconds=0.0,
+                    notify_command=None,
+                    no_color=True,
+                    verbose=False,
+                ))
+
+            self.assertEqual(0, rc)
+            manifest = captured["manifest"]
+            self.assertEqual("(printf '{{ok}}\\n') > {output} 2>&1", manifest["tasks"][0]["command"])
 
     def test_terminal_color_enabled_detects_watch_parent(self) -> None:
         calls = iter([

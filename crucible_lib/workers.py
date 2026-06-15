@@ -2202,6 +2202,7 @@ def cmd_run_job(args: argparse.Namespace) -> int:
     explicit_verify = getattr(args, "verify", None)
     should_wait = bool(getattr(args, "wait", False) or getattr(args, "merge", None) or explicit_verify is True)
     should_verify = bool((should_wait and explicit_verify is not False) or getattr(args, "merge", None))
+    ephemeral = bool(getattr(args, "ephemeral", False))
     remember_run_for_web(run_name, coordinator_runs=configured_coordinator_runs())
 
     if not bool(getattr(args, "replace", False)):
@@ -2265,7 +2266,8 @@ def cmd_run_job(args: argparse.Namespace) -> int:
     )
     rc = run_command_stage(label, "deploy", cmd_deploy, deploy_args)
     if rc:
-        print(f"{label}: inspect with: crucible status {run_name} --verbose", file=sys.stderr)
+        if not ephemeral:
+            print(f"{label}: inspect with: crucible status {run_name} --verbose", file=sys.stderr)
         return rc
 
     if should_wait:
@@ -2280,7 +2282,8 @@ def cmd_run_job(args: argparse.Namespace) -> int:
         )
         rc = run_command_stage(label, "wait", cmd_wait, wait_args)
         if rc:
-            print(f"{label}: inspect with: crucible status {run_name} --verbose", file=sys.stderr)
+            if not ephemeral:
+                print(f"{label}: inspect with: crucible status {run_name} --verbose", file=sys.stderr)
             return rc
 
     if should_verify:
@@ -2291,7 +2294,8 @@ def cmd_run_job(args: argparse.Namespace) -> int:
             argparse.Namespace(run=str(manifest_path.parent), skip_requirements=True),
         )
         if rc:
-            print(f"{label}: inspect with: crucible status {run_name} --verbose", file=sys.stderr)
+            if not ephemeral:
+                print(f"{label}: inspect with: crucible status {run_name} --verbose", file=sys.stderr)
             return rc
 
     if args.merge:
@@ -2304,10 +2308,14 @@ def cmd_run_job(args: argparse.Namespace) -> int:
         )
         rc = run_command_stage(label, "merge", cmd_merge, merge_args)
         if rc:
-            print(f"{label}: inspect with: crucible status {run_name} --verbose", file=sys.stderr)
+            if not ephemeral:
+                print(f"{label}: inspect with: crucible status {run_name} --verbose", file=sys.stderr)
             return rc
 
-    print(f"{label}: ok; status: crucible status {run_name} --verbose")
+    if ephemeral:
+        print(f"{label}: ok")
+    else:
+        print(f"{label}: ok; status: crucible status {run_name} --verbose")
     return 0
 
 def materialized_run_paths(run_dir: Path, *, label: str) -> tuple[str, Path, Path]:

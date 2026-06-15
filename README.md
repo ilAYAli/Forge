@@ -10,6 +10,7 @@ connect out through SSH/rsync; no daemon or database is required.
 
 ```sh
 crucible --help
+crucible sh "cd ~/repo; git pull; cmake --build build"
 crucible start manifest.json --workers worker-a,worker-b:4
 crucible stop my-run
 crucible resume my-run
@@ -25,6 +26,22 @@ Use `crucible start --help`, `crucible add --help`, `crucible del --help`,
 `crucible stop --help`, `crucible resume --help`, `crucible retry --help`,
 `crucible worker --help`, and `crucible status --help` for normal workflow
 options.
+
+## One-Shot Shell Commands
+
+Run the same shell command once on each selected host:
+
+```sh
+crucible sh "cd ~/code/cpp/chess/enyo; git switch main; git pull; cmake --build build && ./scripts/deploy.sh --candidate"
+```
+
+`sh` uses the default worker pool unless `--workers` is supplied, but caps each
+host to one worker slot. It waits for completion, reports failures, and deletes
+the materialized Crucible run afterward so no run history lingers.
+
+```sh
+crucible sh --workers pwa-5090,pwa-mbp0,pwa-mbp "hostname; git --version"
+```
 
 ## Start Work
 
