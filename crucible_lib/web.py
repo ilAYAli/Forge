@@ -137,17 +137,19 @@ _HTML = r"""<!DOCTYPE html>
     .task-th { cursor: pointer; }
     .task-th.sorted-asc .sort-ind::after  { content: ' ▲'; font-size: 9px; color: var(--yel); }
     .task-th.sorted-desc .sort-ind::after { content: ' ▼'; font-size: 9px; color: var(--yel); }
-    .task-graphs { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-                   gap: 8px; margin-top: 8px; }
-    .task-graph { border-top: 1px solid var(--border); padding-top: 5px; }
+    .task-graphs { margin-top: 8px; }
+    .task-graph { border-top: 1px solid var(--border); padding-top: 5px;
+                  display: grid; gap: 10px; }
     .graph-title { color: var(--dim); font-size: 11px; margin-bottom: 3px;
                    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .graph-row { display: grid; grid-template-columns: 42px 1fr 48px; gap: 6px;
+    .graph-row { display: grid; grid-template-columns: 42px 1fr 58px; gap: 8px;
                  align-items: center; color: var(--dim); font-size: 11px; }
-    .graph-row svg { width: 100%; height: 66px; display: block; }
-    .graph-line { fill: none; stroke-width: 1.25; vector-effect: non-scaling-stroke; }
+    .graph-row svg { width: 100%; height: 132px; display: block; }
+    .graph-line { fill: none; stroke-width: 1.1; vector-effect: non-scaling-stroke; }
     .graph-zero { stroke: var(--dim); stroke-width: .5; stroke-dasharray: 1 5;
-                  opacity: .22; vector-effect: non-scaling-stroke; }
+                  opacity: .32; vector-effect: non-scaling-stroke; }
+    .graph-bound { stroke: var(--red); stroke-width: .5; stroke-dasharray: 4 7;
+                   opacity: .24; vector-effect: non-scaling-stroke; }
 
     /* pending / fail groups */
     .group-row { font-size: 13px; color: var(--dim); padding: 2px 0; }
@@ -723,70 +725,148 @@ _HTML = r"""<!DOCTYPE html>
       return ['elo', 'llr'].includes(String(name || '').toLowerCase());
     }
 
-    function graphDisplayPoints(name, points) {
-      return signedGraphSeries(name) && points.length > 48 ? points.slice(-48) : points;
+    function graphSeriesName(name) {
+      return String(name || '').toLowerCase();
     }
 
-    function graphY(values, y, includeZero = false, h = 66) {
-      const pad = 2;
-      const [minY, maxY] = graphDomain(values, includeZero);
+    function graphColor(name, index) {
+      const key = graphSeriesName(name);
+      if (key === 'llr') return 'var(--yel)';
+      if (key === 'elo') return 'var(--blu)';
+      return GRAPH_COLORS[index % GRAPH_COLORS.length];
+    }
+
+    function graphDisplayPoints(name, points) {
+      const key = graphSeriesName(name);
+      if (key !== 'elo' || points.length < 6) return points;
+      const filtered = points.filter(p => p.x >= 20);
+      return filtered.length >= 3 ? filtered : points;
+    }
+
+    function graphYDomain(name, values, extras = []) {
+      const all = values.concat(extras).filter(Number.isFinite);
+      if (!all.length) return [0, 1];
+      if (signedGraphSeries(name)) {
+        const bound = Math.max(1e-9, ...all.map(v => Math.abs(v)));
+        return [-bound * 1.08, bound * 1.08];
+      }
+      return graphDomain(all, false);
+    }
+
+    function graphScale(name, points, extras = [], w = 180, h = 132) {
+      const pad = 4;
+      const xs = points.map(p => p.x);
+      const ys = points.map(p => p.y);
+      const minX = Math.min(...xs), maxX = Math.max(...xs);
+      const [minY, maxY] = graphYDomain(name, ys, extras);
+      return {
+        x: maxX === minX
+          ? () => w / 2
+          : x => pad + ((x - minX) / (maxX - minX)) * (w - pad * 2),
+        y: maxY === minY
+          ? () => h / 2
+          : y => h - pad - ((y - minY) / (maxY - minY)) * (h - pad * 2),
+      };
+    }
+
+    function graphY(name, values, y, extras = [], h = 132) {
+      const pad = 4;
+      const [minY, maxY] = graphYDomain(name, values, extras);
       return maxY === minY
         ? h / 2
         : h - pad - ((y - minY) / (maxY - minY)) * (h - pad * 2);
     }
 
-    function zeroLine(points, includeZero = false, w = 180, h = 66) {
-      if (!includeZero || !points || points.length < 2) return '';
-      const y = graphY(points.map(p => p.y), 0, true, h);
+    function zeroLine(name, points, extras = [], w = 180, h = 132) {
+      if (!signedGraphSeries(name) || !points || points.length < 2) return '';
+      const y = graphY(name, points.map(p => p.y), 0, extras, h);
       return `<line class="graph-zero" x1="0" y1="${y.toFixed(1)}" x2="${w}" y2="${y.toFixed(1)}"></line>`;
     }
 
-    function sparkPath(points, includeZero = false, w = 180, h = 66) {
+    function graphBoundLines(name, points, options = {}, w = 180, h = 132) {
+      if (graphSeriesName(name) !== 'llr' || !points || points.length < 2) return '';
+      const bound = Number(options.llrBound);
+      if (!Number.isFinite(bound) || bound <= 0) return '';
+      const values = points.map(p => p.y);
+      const extras = [-bound, bound];
+      return extras.map(v => {
+        const y = graphY(name, values, v, extras, h);
+        return `<line class="graph-bound" x1="0" y1="${y.toFixed(1)}" x2="${w}" y2="${y.toFixed(1)}"></line>`;
+      }).join('');
+    }
+
+    function sparkPath(name, points, extras = [], w = 180, h = 132) {
       if (!points || points.length < 2) return '';
-      const pad = 2;
-      const xs = points.map(p => p.x);
-      const ys = points.map(p => p.y);
-      const minX = Math.min(...xs), maxX = Math.max(...xs);
-      const [minY, maxY] = graphDomain(ys, includeZero);
-      const sx = maxX === minX
-        ? () => w / 2
-        : x => pad + ((x - minX) / (maxX - minX)) * (w - pad * 2);
-      const sy = maxY === minY
-        ? () => h / 2
-        : y => h - pad - ((y - minY) / (maxY - minY)) * (h - pad * 2);
+      const scale = graphScale(name, points, extras, w, h);
       return points.map((p, i) =>
-        `${i ? 'L' : 'M'}${sx(p.x).toFixed(1)},${sy(p.y).toFixed(1)}`
+        `${i ? 'L' : 'M'}${scale.x(p.x).toFixed(1)},${scale.y(p.y).toFixed(1)}`
       ).join(' ');
     }
 
-    function graphCard(graph, title) {
+    function fmtGraphValue(name, value) {
+      const text = fmtGraphNumber(value);
+      if (!text || !signedGraphSeries(name)) return text;
+      return Number(value) > 0 ? `+${text}` : text;
+    }
+
+    function graphTextSources(r) {
+      return []
+        .concat(r?.display?.fields || [])
+        .concat(r?.display?.active_fields || [])
+        .concat([r?.status_line, r?.progress])
+        .filter(Boolean)
+        .map(String);
+    }
+
+    function llrBoundFromRun(r) {
+      for (const text of graphTextSources(r)) {
+        const match = text.match(/(?:^|\b)llr\s*=\s*[+-]?(?:\d+(?:\.\d+)?|\.\d+)\s*\/\s*([+-]?(?:\d+(?:\.\d+)?|\.\d+))/i)
+          || text.match(/(?:^|\b)LLR\s+[+-]?(?:\d+(?:\.\d+)?|\.\d+)\s*\/\s*([+-]?(?:\d+(?:\.\d+)?|\.\d+))/);
+        if (match) {
+          const bound = Math.abs(Number(match[1]));
+          if (Number.isFinite(bound) && bound > 0) return bound;
+        }
+      }
+      return null;
+    }
+
+    function graphCard(graph, title, run) {
+      const options = {llrBound: llrBoundFromRun(run)};
       const series = (graph?.series || [])
         .map((s, i) => ({
           name: s.name || '',
-          color: GRAPH_COLORS[i % GRAPH_COLORS.length],
+          color: graphColor(s.name, i),
           points: graphDisplayPoints(s.name, graphPoints(s)),
         }))
         .filter(s => s.points.length >= 2);
       if (!series.length) return '';
       const rows = series.map(s => {
-        const includeZero = signedGraphSeries(s.name);
-        const path = sparkPath(s.points, includeZero);
-        const zero = zeroLine(s.points, includeZero);
+        const bound = graphSeriesName(s.name) === 'llr' ? Number(options.llrBound) : null;
+        const extras = Number.isFinite(bound) && bound > 0 ? [-bound, bound] : [];
+        const path = sparkPath(s.name, s.points, extras);
+        const zero = zeroLine(s.name, s.points, extras);
+        const bounds = graphBoundLines(s.name, s.points, options);
         const last = s.points[s.points.length - 1]?.y;
+        const lastX = s.points[s.points.length - 1]?.x;
+        const unit = graph?.x_unit ? ` ${graph.x_unit}` : '';
+        const tooltip = `${s.name}: ${fmtGraphValue(s.name, last)} at${unit} ${fmtGraphNumber(lastX)}`;
         return `<div class="graph-row">`
           + `<span>${esc(s.name)}</span>`
-          + `<svg viewBox="0 0 180 66" preserveAspectRatio="none" aria-hidden="true">`
+          + `<svg viewBox="0 0 180 132" preserveAspectRatio="none" aria-label="${esc(tooltip)}">`
+          + `<title>${esc(tooltip)}</title>`
+          + bounds
           + zero
           + `<path class="graph-line" d="${esc(path)}" style="stroke:${esc(s.color)}"></path>`
           + `</svg>`
-          + `<span>${esc(fmtGraphNumber(last))}</span>`
+          + `<span>${esc(fmtGraphValue(s.name, last))}</span>`
           + `</div>`;
       }).join('');
-      return `<div class="task-graph"><div class="graph-title">${esc(title)}</div>${rows}</div>`;
+      const unit = graph?.x_unit ? ` · x: ${graph.x_unit}` : '';
+      return `<div class="task-graph"><div class="graph-title">${esc(title + unit)}</div>${rows}</div>`;
     }
 
     function renderRunGraph(r) {
-      const graph = graphCard(r.progress_graph, 'run trend');
+      const graph = graphCard(r.progress_graph, 'run trend', r);
       return graph ? `<div class="task-graphs">${graph}</div>` : '';
     }
 
