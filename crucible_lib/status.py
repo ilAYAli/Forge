@@ -9,6 +9,9 @@ from .manifest import *
 from .tasks import *
 
 
+QUEUE_MONITOR_NAME = "queue-monitor.json"
+
+
 def cmd_status(args: argparse.Namespace) -> int:
     color_enabled = status_color_enabled(args)
     selected = [name for name in ("all", "done", "failed") if bool(getattr(args, name))]
@@ -306,6 +309,58 @@ def run_manifest_paths() -> list[Path]:
         if path.is_dir() and (path / RUN_MANIFEST_NAME).is_file()
     )
 
+def queue_monitor_path_for_manifest(manifest_path: Path) -> Path:
+    return manifest_path.parent / QUEUE_MONITOR_NAME
+
+def process_is_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+def queue_monitor_state(manifest_path: Path) -> tuple[str | None, dict[str, Any] | None]:
+    path = queue_monitor_path_for_manifest(manifest_path)
+    if not path.exists():
+        return None, None
+    payload = read_state_json(path, missing_ok=False)
+    if payload is None:
+        return "invalid", None
+    try:
+        pid = int(payload.get("pid"))
+    except (TypeError, ValueError):
+        record_state_diagnostic(path, "queue monitor pid is not numeric")
+        return "invalid", payload
+    return ("running" if process_is_alive(pid) else "dead"), payload
+
+def load_run_summary_from_manifest(path: Path, *, lease_seconds: int, attention_only: bool) -> dict[str, Any] | None:
+    try:
+        manifest = load_manifest(path)
+    except OSError:
+        return None
+    except SystemExit:
+        return None
+    if attention_only and not run_manifest_has_attention_state(manifest):
+        return None
+    summary = status_summary(manifest, lease_seconds=lease_seconds)
+    summary["manifest"] = str(path)
+    summary["run"] = path.parent.name
+    summary["metadata"] = manifest_metadata(manifest)
+    if run_queue_requested(summary):
+        monitor_state, monitor_payload = queue_monitor_state(path)
+        if monitor_state is not None:
+            summary["queue_monitor_state"] = monitor_state
+        if monitor_payload is not None:
+            summary["queue_monitor"] = monitor_payload
+        if monitor_state in {"dead", "invalid"}:
+            summary.setdefault("diagnostics", []).append(f"queue monitor {monitor_state}")
+    annotate_run_ordering(summary, manifest_path=path, manifest=manifest)
+    return summary
+
 RUN_SUMMARY_NAME = "summary.json"
 
 
@@ -405,15 +460,13 @@ def run_manifest_has_attention_state(manifest: dict[str, Any]) -> bool:
 def load_run_summaries(*, lease_seconds: int, attention_only: bool = False) -> list[dict[str, Any]]:
     summaries = []
     for path in run_manifest_paths():
-        manifest = load_manifest(path)
-        if attention_only and not run_manifest_has_attention_state(manifest):
-            continue
-        summary = status_summary(manifest, lease_seconds=lease_seconds)
-        summary["manifest"] = str(path)
-        summary["run"] = path.parent.name
-        summary["metadata"] = manifest_metadata(manifest)
-        annotate_run_ordering(summary, manifest_path=path, manifest=manifest)
-        summaries.append(summary)
+        summary = load_run_summary_from_manifest(
+            path,
+            lease_seconds=lease_seconds,
+            attention_only=attention_only,
+        )
+        if summary is not None:
+            summaries.append(summary)
     return summaries
 
 def run_done(summary: dict[str, Any]) -> bool:
@@ -442,6 +495,9 @@ def run_queued(summary: dict[str, Any]) -> bool:
 
 def run_queue_requested(summary: dict[str, Any]) -> bool:
     return isinstance(summary.get("queue"), dict)
+
+def run_queue_stalled(summary: dict[str, Any]) -> bool:
+    return run_queue_requested(summary) and summary.get("queue_monitor_state") in {"dead", "invalid"}
 
 def run_stopped(summary: dict[str, Any]) -> bool:
     return isinstance(summary.get("stop"), dict)
@@ -483,35 +539,41 @@ def run_completed_sort_key(summary: dict[str, Any]) -> tuple[float, str]:
 
 def run_list_sort_key(summary: dict[str, Any]) -> tuple[Any, ...]:
     state = run_state(summary)
-    if state == "queued":
+    if state == "stalled":
         return (0, *run_queued_sort_key(summary))
+    if state == "queued":
+        return (1, *run_queued_sort_key(summary))
     if state == "current":
-        return (1, -run_active_count(summary), str(summary.get("run") or ""))
+        return (2, -run_active_count(summary), str(summary.get("run") or ""))
     if state == "failed":
-        return (2, -int(summary["counts"]["fail"]), str(summary.get("run") or ""))
+        return (3, -int(summary["counts"]["fail"]), str(summary.get("run") or ""))
     if state == "stopped":
-        return (3, str(summary.get("run") or ""))
+        return (4, str(summary.get("run") or ""))
     if state == "done":
-        return (4, *run_completed_sort_key(summary))
-    return (5, str(summary.get("run") or ""))
+        return (5, *run_completed_sort_key(summary))
+    return (6, str(summary.get("run") or ""))
 
 
 def run_attention_sort_key(summary: dict[str, Any]) -> tuple[Any, ...]:
     active = run_active_count(summary)
     fail = int(summary["counts"]["fail"])
-    if run_queue_requested(summary):
+    if run_queue_stalled(summary):
         return (0, *run_queued_sort_key(summary))
+    if run_queue_requested(summary):
+        return (1, *run_queued_sort_key(summary))
     if active > 0 or run_launching(summary):
-        return (1, -active, str(summary["run"]))
+        return (2, -active, str(summary["run"]))
     if fail > 0:
-        return (2, -fail, str(summary["run"]))
+        return (3, -fail, str(summary["run"]))
     if run_stopped_incomplete(summary):
-        return (3, 0, str(summary["run"]))
-    return (4, 0, str(summary["run"]))
+        return (4, 0, str(summary["run"]))
+    return (5, 0, str(summary["run"]))
 
 def run_state(summary: dict[str, Any]) -> str:
     if run_failed(summary):
         return "failed"
+    if run_queue_stalled(summary):
+        return "stalled"
     if run_queued(summary):
         return "queued"
     if run_current(summary):
@@ -523,6 +585,8 @@ def run_state(summary: dict[str, Any]) -> str:
     return "empty"
 
 def run_state_fields(summary: dict[str, Any]) -> list[str]:
+    if run_queue_stalled(summary):
+        return ["state=stalled"]
     if run_queued(summary):
         return ["state=queued"]
     return []

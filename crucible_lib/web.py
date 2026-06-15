@@ -863,8 +863,8 @@ _HTML = r"""<!DOCTYPE html>
       const runArg = attrEsc(jsSingle(r.run));
       const activeCount = Number(active.count || 0);
       const failCount = Number(fail.count || r.fail || 0);
-      if (state === 'current' || state === 'queued') actions.push(`<button class="act stop"   onclick="event.stopPropagation();runCmd('${runArg}','stop',this)">stop</button>`);
-      if (state === 'stopped') actions.push(`<button class="act resume" onclick="event.stopPropagation();runCmd('${runArg}','resume',this)">resume</button>`);
+      if (state === 'current' || state === 'queued' || state === 'stalled') actions.push(`<button class="act stop"   onclick="event.stopPropagation();runCmd('${runArg}','stop',this)">stop</button>`);
+      if (state === 'stopped' || state === 'stalled') actions.push(`<button class="act resume" onclick="event.stopPropagation();runCmd('${runArg}','resume',this)">resume</button>`);
       if (state === 'done') actions.push(`<button class="act" onclick="event.stopPropagation();runCmd('${runArg}','hide',this)">hide</button>`);
       if (state === 'done') actions.push(`<button class="act del" onclick="event.stopPropagation();runCmd('${runArg}','del',this)">del</button>`);
       if (failCount > 0 && activeCount === 0) actions.push(`<button class="act del" onclick="event.stopPropagation();runCmd('${runArg}','del',this)">del</button>`);
@@ -1386,6 +1386,7 @@ def _merge_lingering_runs(payload: dict[str, Any]) -> dict[str, Any]:
         return payload
     remote_lingering_runs = payload.pop("remote_lingering_runs", {})
     remote_hidden_runs = payload.pop("remote_hidden_runs", [])
+    remote_seen_runs = payload.pop("remote_seen_runs", {})
     coordinator_runs = payload.get("coordinator")
     coordinator = str(coordinator_runs) if coordinator_runs else None
     with _WEB_STATE_LOCK:
@@ -1395,6 +1396,7 @@ def _merge_lingering_runs(payload: dict[str, Any]) -> dict[str, Any]:
         hidden = set(_state_list(state, "hidden_runs"))
         command_checked = set(_state_list(state, "command_checked_runs"))
         refreshed_done = set()
+        missing_named_runs = set()
         if isinstance(remote_hidden_runs, list):
             hidden.update(str(item) for item in remote_hidden_runs)
         visible_names = {
@@ -1426,6 +1428,7 @@ def _merge_lingering_runs(payload: dict[str, Any]) -> dict[str, Any]:
                 run_coordinator = coordinator
             final_payload = _collect_named_run_payload(name, run_coordinator)
             if final_payload is None:
+                missing_named_runs.add(name)
                 seen.pop(name, None)
                 linger.pop(name, None)
                 command_checked.discard(name)
@@ -1449,7 +1452,13 @@ def _merge_lingering_runs(payload: dict[str, Any]) -> dict[str, Any]:
                 name = str(name)
                 if name in hidden or name in visible_names or name in linger or not isinstance(item, dict):
                     continue
-                if not _seen_run_tracks_completion(seen.get(name), coordinator):
+                if name in missing_named_runs:
+                    continue
+                remote_seen = remote_seen_runs.get(name) if isinstance(remote_seen_runs, dict) else None
+                if (
+                    not _seen_run_tracks_completion(seen.get(name), coordinator)
+                    and not _seen_run_tracks_completion(remote_seen, coordinator)
+                ):
                     continue
                 if not _run_payload_done(item):
                     continue
@@ -1592,6 +1601,9 @@ def _collect_coordinator_status_payload(coordinator_runs: str) -> dict[str, Any]
     remote_lingering_runs = web_state.get("lingering_runs")
     if isinstance(remote_lingering_runs, dict):
         data["remote_lingering_runs"] = remote_lingering_runs
+    remote_seen_runs = web_state.get("seen_runs")
+    if isinstance(remote_seen_runs, dict):
+        data["remote_seen_runs"] = remote_seen_runs
     remote_hidden_runs = web_state.get("hidden_runs")
     if isinstance(remote_hidden_runs, list):
         data["remote_hidden_runs"] = remote_hidden_runs

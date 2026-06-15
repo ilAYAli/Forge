@@ -1092,6 +1092,7 @@ except SystemExit as exc:
             }
             crucible.write_json(coordinator / ".web-state.json", {
                 "hidden_runs": ["hidden-done"],
+                "seen_runs": {"remote-done": {"source": "remember"}},
                 "lingering_runs": {"remote-done": done_payload},
             })
             status = subprocess.CompletedProcess(
@@ -1105,6 +1106,7 @@ except SystemExit as exc:
                 payload = web._collect_coordinator_status_payload(str(coordinator))
 
             self.assertEqual(done_payload, payload["remote_lingering_runs"]["remote-done"])
+            self.assertEqual({"source": "remember"}, payload["remote_seen_runs"]["remote-done"])
             self.assertEqual(["hidden-done"], payload["remote_hidden_runs"])
 
     def test_web_ignores_unseen_coordinator_lingering_run(self) -> None:
@@ -1292,6 +1294,42 @@ except SystemExit as exc:
             self.assertEqual([], merged["runs"])
             self.assertEqual({}, state["lingering_runs"])
             self.assertEqual({}, state["seen_runs"])
+
+    def test_web_imports_verified_coordinator_lingering_run_after_local_state_reset(self) -> None:
+        import crucible_lib.web as web
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            local_runs = root / "local-runs"
+            coordinator_root = root / "coordinator-runs"
+            coordinator = f"pwa-5090:{coordinator_root}"
+            run_dir = coordinator_root / "remote-done"
+            stale_payload = {
+                "run": "remote-done",
+                "run_dir": str(run_dir),
+                "manifest": str(run_dir / "manifest.json"),
+                "state": "done",
+                "tasks": 1,
+                "counts": {"done": 1, "fail": 0, "running": 0, "claimed": 0, "stale": 0, "pending": 0},
+            }
+            empty_payload = {
+                "runs": [],
+                "collapsed_failures": [],
+                "collapsed_failures_count": 0,
+                "coordinator": coordinator,
+                "remote_lingering_runs": {"remote-done": stale_payload},
+                "remote_seen_runs": {"remote-done": {"source": "remember"}},
+            }
+
+            with self.patch_runs_dir(local_runs), mock.patch("crucible_lib.web.runs_dir", return_value=local_runs):
+                with mock.patch("crucible_lib.web._collect_named_run_payload", return_value=stale_payload) as named:
+                    merged = web._merge_lingering_runs(copy.deepcopy(empty_payload))
+                    state = web._read_web_state()
+
+        named.assert_called_once_with("remote-done", coordinator)
+        self.assertEqual(["remote-done"], [run["run"] for run in merged["runs"]])
+        self.assertIn("remote-done", state["lingering_runs"])
+        self.assertEqual(coordinator, state["seen_runs"]["remote-done"]["coordinator"])
 
     def test_web_prunes_lingering_runs_outside_runs_root(self) -> None:
         import crucible_lib.web as web
@@ -5651,6 +5689,61 @@ except SystemExit as exc:
         payload = json.loads(payload_result.stdout)
         self.assertEqual("queued", payload["runs"][0]["state"])
         self.assertEqual("marked-queued", payload["runs"][0]["run"])
+
+    def test_load_run_summaries_skips_manifest_that_disappears(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            runs = root / "runs"
+            missing = runs / "deleted-run" / "manifest.json"
+            live = runs / "live-run"
+            manifest = {
+                "schema": "crucible.task.v1",
+                "name": "live-run",
+                "work_dir": str(live),
+                "state_dir": str(live / "state"),
+                "claim_dir": str(live / "claims"),
+                "tasks": [{"id": "task_0", "index": 0, "command": "true", "outputs": []}],
+            }
+            crucible.write_json(live / "manifest.json", manifest)
+
+            with mock.patch("crucible_lib.status.run_manifest_paths", return_value=[missing, live / "manifest.json"]):
+                summaries = crucible.load_run_summaries(lease_seconds=600)
+
+        self.assertEqual(["live-run"], [summary["run"] for summary in summaries])
+
+    def test_status_marks_queued_run_with_dead_monitor_as_stalled(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run = root / "runs" / "marked-queued"
+            manifest = {
+                "schema": "crucible.task.v1",
+                "name": "marked-queued",
+                "work_dir": str(run),
+                "state_dir": str(run / "state"),
+                "claim_dir": str(run / "claims"),
+                "tasks": [{"id": "task_0", "index": 0, "command": "true", "outputs": []}],
+            }
+            crucible.write_json(run / "manifest.json", manifest)
+            crucible.write_json(crucible.queue_request_path(manifest), {
+                "schema": "crucible.task.v1",
+                "run": "marked-queued",
+                "requested_epoch": 100.0,
+            })
+            crucible.write_json(run / "queue-monitor.json", {
+                "schema": "crucible.task.v1",
+                "pid": 999999999,
+            })
+            env = {"CRUCIBLE_COORDINATOR_RUNS": "", "CRUCIBLE_RUNS_DIR": str(root / "runs")}
+
+            status = self.run_cli("status", cwd=root, env=env)
+            payload_result = self.run_cli("status", "--json", cwd=root, env=env)
+
+        self.assertEqual(0, status.returncode)
+        self.assertIn("state=stalled", status.stdout)
+        payload = json.loads(payload_result.stdout)
+        self.assertEqual("stalled", payload["runs"][0]["state"])
+        self.assertEqual("dead", payload["runs"][0]["queue_monitor_state"])
+        self.assertIn("queue monitor dead", payload["runs"][0]["diagnostics"])
 
     def test_status_sorts_queued_runs_fifo(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
