@@ -892,6 +892,7 @@ except SystemExit as exc:
     def test_web_status_payload_prefers_local_active_runs(self) -> None:
         import crucible_lib.web as web
 
+        coordinator = "pwa-5090:/runs"
         local_payload = {
             "runs": [
                 {
@@ -912,18 +913,34 @@ except SystemExit as exc:
             ],
             "collapsed_failures": [],
             "collapsed_failures_count": 0,
-            "coordinator": "pwa-5090:/runs",
+            "coordinator": coordinator,
+        }
+        remote_done = {
+            "run": "remote-done",
+            "run_dir": "/runs/remote-done",
+            "manifest": "/runs/remote-done/manifest.json",
+            "state": "done",
+            "tasks": 1,
+            "counts": {"done": 1, "fail": 0, "running": 0, "claimed": 0, "stale": 0, "pending": 0},
         }
         with tempfile.TemporaryDirectory() as tmp:
             with (
                 mock.patch("crucible_lib.web.runs_dir", return_value=Path(tmp) / "runs"),
-                mock.patch("crucible_lib.web.configured_coordinator_runs", return_value="pwa-5090:/runs"),
+                mock.patch("crucible_lib.web.configured_coordinator_runs", return_value=coordinator),
                 mock.patch("crucible_lib.web._collect_local_status_payload", return_value=local_payload),
-                mock.patch("crucible_lib.web._collect_coordinator_status_payload", return_value=coordinator_payload),
+                mock.patch("crucible_lib.web._collect_coordinator_status_payload", return_value=coordinator_payload) as collect_coordinator,
+                mock.patch("crucible_lib.web._read_coordinator_web_state", return_value={
+                    "seen_runs": {"remote-done": {"source": "remember"}},
+                    "lingering_runs": {"remote-done": remote_done},
+                }),
+                mock.patch("crucible_lib.web._collect_named_run_payload", return_value=remote_done) as named,
             ):
                 payload = web._collect_status_payload()
 
-        self.assertEqual(["local-active"], [run["run"] for run in payload["runs"]])
+        collect_coordinator.assert_not_called()
+        named.assert_called_once_with("remote-done", coordinator)
+        self.assertEqual(["local-active", "remote-done"], [run["run"] for run in payload["runs"]])
+        self.assertEqual("done", payload["runs"][1]["state"])
         self.assertIsNone(payload["coordinator"])
 
     def test_web_lingers_completed_seen_runs_without_all_status(self) -> None:

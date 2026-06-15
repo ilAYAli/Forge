@@ -1165,6 +1165,7 @@ def _collect_status_payload() -> dict[str, Any]:
     if coordinator_runs:
         local_payload = _collect_local_status_payload()
         if _status_payload_has_current_run(local_payload):
+            _attach_coordinator_web_state(local_payload, coordinator_runs)
             return _merge_lingering_runs(local_payload)
         return _merge_lingering_runs(_collect_coordinator_status_payload(coordinator_runs))
     return _merge_lingering_runs(_collect_local_status_payload())
@@ -1211,6 +1212,19 @@ def _read_coordinator_web_state(coordinator_runs: str) -> dict[str, Any]:
     except json.JSONDecodeError:
         return {}
     return payload if isinstance(payload, dict) else {}
+
+def _attach_coordinator_web_state(data: dict[str, Any], coordinator_runs: str) -> None:
+    web_state = _read_coordinator_web_state(coordinator_runs)
+    data["remote_coordinator"] = coordinator_runs
+    remote_lingering_runs = web_state.get("lingering_runs")
+    if isinstance(remote_lingering_runs, dict):
+        data["remote_lingering_runs"] = remote_lingering_runs
+    remote_seen_runs = web_state.get("seen_runs")
+    if isinstance(remote_seen_runs, dict):
+        data["remote_seen_runs"] = remote_seen_runs
+    remote_hidden_runs = web_state.get("hidden_runs")
+    if isinstance(remote_hidden_runs, list):
+        data["remote_hidden_runs"] = remote_hidden_runs
 
 def _write_web_state(state: dict[str, Any]) -> None:
     path = _web_state_path()
@@ -1387,8 +1401,10 @@ def _merge_lingering_runs(payload: dict[str, Any]) -> dict[str, Any]:
     remote_lingering_runs = payload.pop("remote_lingering_runs", {})
     remote_hidden_runs = payload.pop("remote_hidden_runs", [])
     remote_seen_runs = payload.pop("remote_seen_runs", {})
+    remote_coordinator_runs = payload.pop("remote_coordinator", None)
     coordinator_runs = payload.get("coordinator")
     coordinator = str(coordinator_runs) if coordinator_runs else None
+    remote_coordinator = str(remote_coordinator_runs) if remote_coordinator_runs else coordinator
     with _WEB_STATE_LOCK:
         state = _read_web_state()
         seen = _state_dict(state, "seen_runs")
@@ -1456,19 +1472,19 @@ def _merge_lingering_runs(payload: dict[str, Any]) -> dict[str, Any]:
                     continue
                 remote_seen = remote_seen_runs.get(name) if isinstance(remote_seen_runs, dict) else None
                 if (
-                    not _seen_run_tracks_completion(seen.get(name), coordinator)
-                    and not _seen_run_tracks_completion(remote_seen, coordinator)
+                    not _seen_run_tracks_completion(seen.get(name), remote_coordinator)
+                    and not _seen_run_tracks_completion(remote_seen, remote_coordinator)
                 ):
                     continue
                 if not _run_payload_done(item):
                     continue
-                if not _payload_belongs_to_web_runs(item, coordinator):
+                if not _payload_belongs_to_web_runs(item, remote_coordinator):
                     continue
-                final_payload = _collect_named_run_payload(name, coordinator)
+                final_payload = _collect_named_run_payload(name, remote_coordinator)
                 if (
                     final_payload is None
                     or not _run_payload_done(final_payload)
-                    or not _payload_belongs_to_web_runs(final_payload, coordinator)
+                    or not _payload_belongs_to_web_runs(final_payload, remote_coordinator)
                 ):
                     continue
                 linger[name] = _normalize_web_run_payload(final_payload)
@@ -1477,28 +1493,34 @@ def _merge_lingering_runs(payload: dict[str, Any]) -> dict[str, Any]:
                     command_checked.discard(name)
                 else:
                     command_checked.add(name)
-                seen[name] = {"coordinator": coordinator, "last_seen": time.time(), "source": "status"}
+                seen[name] = {"coordinator": remote_coordinator, "last_seen": time.time(), "source": "status"}
 
         for name, item in list(linger.items()):
+            item_seen = seen.get(name)
+            if isinstance(item_seen, dict):
+                item_coordinator_raw = item_seen.get("coordinator")
+                item_coordinator = str(item_coordinator_raw) if item_coordinator_raw else coordinator
+            else:
+                item_coordinator = coordinator
             if name in hidden:
                 linger.pop(name, None)
                 command_checked.discard(name)
                 continue
-            if isinstance(item, dict) and not _payload_belongs_to_web_runs(item, coordinator):
+            if isinstance(item, dict) and not _payload_belongs_to_web_runs(item, item_coordinator):
                 linger.pop(name, None)
                 seen.pop(name, None)
                 command_checked.discard(name)
                 continue
             if (
                 isinstance(item, dict)
-                and _payload_belongs_to_coordinator_runs(item, coordinator)
-                and not _seen_run_tracks_completion(seen.get(name), coordinator)
+                and _payload_belongs_to_coordinator_runs(item, item_coordinator)
+                and not _seen_run_tracks_completion(seen.get(name), item_coordinator)
             ):
                 linger.pop(name, None)
                 seen.pop(name, None)
                 command_checked.discard(name)
                 continue
-            if isinstance(item, dict) and _payload_local_manifest_missing(item, coordinator):
+            if isinstance(item, dict) and _payload_local_manifest_missing(item, item_coordinator):
                 linger.pop(name, None)
                 seen.pop(name, None)
                 command_checked.discard(name)
@@ -1512,12 +1534,12 @@ def _merge_lingering_runs(payload: dict[str, Any]) -> dict[str, Any]:
                     and name not in refreshed_done
                     and name not in command_checked
                 ):
-                    final_payload = _collect_named_run_payload(name, coordinator)
+                    final_payload = _collect_named_run_payload(name, item_coordinator)
                     command_checked.add(name)
                     if (
                         final_payload is not None
                         and _run_payload_done(final_payload)
-                        and _payload_belongs_to_web_runs(final_payload, coordinator)
+                        and _payload_belongs_to_web_runs(final_payload, item_coordinator)
                     ):
                         item = _normalize_web_run_payload(final_payload)
                         linger[name] = item
@@ -1597,16 +1619,7 @@ def _collect_coordinator_status_payload(coordinator_runs: str) -> dict[str, Any]
         raise RuntimeError(result.stderr.strip() or f"crucible status exit {result.returncode}")
     data = json.loads(result.stdout)
     data["coordinator"] = coordinator_runs
-    web_state = _read_coordinator_web_state(coordinator_runs)
-    remote_lingering_runs = web_state.get("lingering_runs")
-    if isinstance(remote_lingering_runs, dict):
-        data["remote_lingering_runs"] = remote_lingering_runs
-    remote_seen_runs = web_state.get("seen_runs")
-    if isinstance(remote_seen_runs, dict):
-        data["remote_seen_runs"] = remote_seen_runs
-    remote_hidden_runs = web_state.get("hidden_runs")
-    if isinstance(remote_hidden_runs, list):
-        data["remote_hidden_runs"] = remote_hidden_runs
+    _attach_coordinator_web_state(data, coordinator_runs)
     return data
 
 def _refresh_status_cache() -> None:
