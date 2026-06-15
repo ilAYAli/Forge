@@ -1708,7 +1708,10 @@ def mark_deleted_run_for_web(run: str) -> None:
 def cmd_del(args: argparse.Namespace) -> int:
     coordinator_runs = configured_coordinator_runs()
     if coordinator_runs and status_can_delegate(args.run):
-        return run_state_control_on_coordinator("del", args, coordinator_runs)
+        rc = run_state_control_on_coordinator("del", args, coordinator_runs)
+        if rc == 0 and args.run:
+            mark_deleted_run_for_web(str(args.run))
+        return rc
     if args.done and args.run:
         raise SystemExit("del accepts either a run name or --done")
     if not args.done and not args.run:

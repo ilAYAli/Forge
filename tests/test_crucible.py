@@ -1557,8 +1557,30 @@ except SystemExit as exc:
 
             named.assert_not_called()
             self.assertEqual([], payload["runs"])
-            self.assertEqual(["remote-done"], state["hidden_runs"])
+            self.assertEqual([], state["hidden_runs"])
+            self.assertEqual({}, state["seen_runs"])
             self.assertEqual({}, state["lingering_runs"])
+
+    def test_web_delete_purges_all_local_run_metadata(self) -> None:
+        import crucible_lib.web as web
+
+        with tempfile.TemporaryDirectory() as tmp:
+            runs = Path(tmp) / "runs"
+
+            with self.patch_runs_dir(runs), mock.patch("crucible_lib.web.runs_dir", return_value=runs):
+                web._write_web_state({
+                    "seen_runs": {"dead-run": {"source": "status"}},
+                    "lingering_runs": {"dead-run": {"run": "dead-run", "state": "done"}},
+                    "hidden_runs": ["dead-run", "other-run"],
+                    "command_checked_runs": ["dead-run", "other-run"],
+                })
+                web._delete_web_run("dead-run")
+                state = web._read_web_state()
+
+            self.assertEqual({}, state["seen_runs"])
+            self.assertEqual({}, state["lingering_runs"])
+            self.assertEqual(["other-run"], state["hidden_runs"])
+            self.assertEqual(["other-run"], state["command_checked_runs"])
 
     def test_web_delete_allows_completed_runs(self) -> None:
         import crucible_lib.web as web
@@ -7735,7 +7757,7 @@ except SystemExit as exc:
 
             self.assertEqual(0, rc)
             self.assertFalse(run_dir.exists())
-            self.assertEqual(["finished"], state["hidden_runs"])
+            self.assertEqual([], state["hidden_runs"])
             self.assertEqual({}, state["lingering_runs"])
 
     def test_delete_named_run_delegates_to_coordinator(self) -> None:
@@ -7745,19 +7767,32 @@ except SystemExit as exc:
             stdout="remote delete\n",
             stderr="",
         )
-        with mock.patch.dict(
-            os.environ,
-            {"CRUCIBLE_COORDINATOR_RUNS": "pwa-5090:/home/petter/code/cpp/chess/crucible/runs"},
-        ), mock.patch("crucible.subprocess.run", return_value=remote_result) as run_mock:
-            stdout = io.StringIO()
-            with contextlib.redirect_stdout(stdout):
-                rc = crucible.cmd_del(argparse.Namespace(run="queued", done=False, force=True, lease_seconds=600))
+        with tempfile.TemporaryDirectory() as tmp:
+            runs = Path(tmp) / "runs"
+            with self.patch_runs_dir(runs), mock.patch.dict(
+                os.environ,
+                {"CRUCIBLE_COORDINATOR_RUNS": "pwa-5090:/home/petter/code/cpp/chess/crucible/runs"},
+            ), mock.patch("crucible.subprocess.run", return_value=remote_result) as run_mock:
+                crucible.write_json(runs / ".web-state.json", {
+                    "seen_runs": {"queued": {"source": "status"}},
+                    "lingering_runs": {"queued": {"run": "queued", "state": "done"}},
+                    "hidden_runs": ["queued"],
+                    "command_checked_runs": ["queued"],
+                })
+                stdout = io.StringIO()
+                with contextlib.redirect_stdout(stdout):
+                    rc = crucible.cmd_del(argparse.Namespace(run="queued", done=False, force=True, lease_seconds=600))
+                state = json.loads((runs / ".web-state.json").read_text(encoding="utf-8"))
 
         self.assertEqual(0, rc)
         self.assertEqual(
             "coordinator: pwa-5090:/home/petter/code/cpp/chess/crucible/runs\nremote delete\n",
             stdout.getvalue(),
         )
+        self.assertEqual({}, state["seen_runs"])
+        self.assertEqual({}, state["lingering_runs"])
+        self.assertEqual([], state["hidden_runs"])
+        self.assertEqual([], state["command_checked_runs"])
         command = run_mock.call_args.args[0]
         self.assertEqual("ssh", command[0])
         self.assertIn("pwa-5090", command)

@@ -1691,7 +1691,9 @@ def _forget_web_run(run: str) -> None:
         _state_dict(state, "seen_runs").pop(run, None)
         _state_dict(state, "lingering_runs").pop(run, None)
         hidden = [name for name in _state_list(state, "hidden_runs") if name != run]
+        command_checked = [name for name in _state_list(state, "command_checked_runs") if name != run]
         state["hidden_runs"] = hidden
+        state["command_checked_runs"] = command_checked
         _write_web_state(state)
     _invalidate_status_cache()
 
@@ -1700,9 +1702,10 @@ def _delete_web_run(run: str) -> None:
         state = _read_web_state()
         _state_dict(state, "seen_runs").pop(run, None)
         _state_dict(state, "lingering_runs").pop(run, None)
-        hidden = set(_state_list(state, "hidden_runs"))
-        hidden.add(run)
-        state["hidden_runs"] = sorted(hidden)
+        hidden = [name for name in _state_list(state, "hidden_runs") if name != run]
+        command_checked = [name for name in _state_list(state, "command_checked_runs") if name != run]
+        state["hidden_runs"] = hidden
+        state["command_checked_runs"] = command_checked
         _write_web_state(state)
     _invalidate_status_cache()
 
