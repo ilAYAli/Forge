@@ -1577,7 +1577,7 @@ def cmd_deploy(args: argparse.Namespace) -> int:
         cleanup_launched_workers(items)
 
     def started_task_count(counts: dict[str, int]) -> int:
-        return counts["done"] + counts["running"] + counts["claimed"] + counts["stale"]
+        return counts["done"] + counts["fail"] + counts["running"] + counts["claimed"] + counts["stale"]
 
     def wait_for_launch_started(before_started: int, expected_new_started: int) -> int:
         if expected_new_started <= 0:
@@ -1587,8 +1587,6 @@ def cmd_deploy(args: argparse.Namespace) -> int:
         while True:
             summary = status_summary(manifest, lease_seconds=600)
             counts = summary["counts"]
-            if counts["fail"] > 0:
-                return observed_new_started
             started = started_task_count(counts)
             observed_new_started = max(observed_new_started, max(0, started - before_started))
             if started >= before_started + expected_new_started:
