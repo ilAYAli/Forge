@@ -331,6 +331,7 @@ def parse_run_options(raw_args: list[str]) -> tuple[argparse.Namespace, list[str
     parser.add_argument("--workers")
     parser.add_argument("--jobs", type=int, default=4)
     parser.add_argument("--run")
+    parser.add_argument("--comment")
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--replace", action="store_true")
     parser.add_argument("--retry-failed", action="store_true")
@@ -491,6 +492,7 @@ def expand_template(template_name: str, template_path_: Path, template: dict[str
     name_template = str(template.get("run_name") or f"{template_name}-{{timestamp}}")
     run_name = validate_run_name(str(safe_format(name_template, values)))
     description = clean_manifest_text(safe_format(template.get("description"), values), label="description")
+    comment = clean_manifest_text(safe_format(template.get("comment"), values), label="comment")
     work_dir = str(safe_format(template.get("work_dir") or ".", values))
     task_template = template.get("task")
     if not isinstance(task_template, dict):
@@ -567,6 +569,8 @@ def expand_template(template_name: str, template_path_: Path, template: dict[str
     }
     if description:
         manifest["description"] = description
+    if comment:
+        manifest["comment"] = comment
     path_maps = template.get("path_maps")
     if path_maps is not None:
         manifest["path_maps"] = safe_format(path_maps, values)
@@ -647,6 +651,9 @@ def cmd_template_run(args: argparse.Namespace) -> int:
     else:
         params = parse_template_parameters(template_name, template, template_args)
     manifest = expand_template(template_name, path, template, params)
+    comment = clean_manifest_text(run_options.comment, label="--comment")
+    if comment:
+        manifest["comment"] = comment
     if run_options.print_manifest or run_options.dry_run:
         print(json.dumps(manifest, indent=2, sort_keys=True))
         return 0
@@ -684,6 +691,7 @@ def cmd_template_run(args: argparse.Namespace) -> int:
             merge_force=run_options.merge_force,
             newline_between=run_options.newline_between,
             notify_command=notify_command,
+            comment=comment,
             no_color=run_options.no_color,
             verbose=run_options.verbose,
             command_label="run",

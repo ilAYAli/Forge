@@ -203,7 +203,7 @@ class CrucibleTests(unittest.TestCase):
             "pending": [0, 1, 2],
             "pending_groups": {"sprt:8": [0, 1], "sprt:6": [2]},
             "rows": [],
-            "metadata": {"description": "Command run"},
+            "metadata": {"description": "Command run", "comment": "quick smoke"},
             "progress_totals": {},
             "progress_done": {},
             "progress_outputs": {},
@@ -233,6 +233,8 @@ class CrucibleTests(unittest.TestCase):
 
         payload = crucible.run_status_payload(summary)
 
+        self.assertEqual("quick smoke", payload["comment"])
+        self.assertEqual("comment=quick smoke", payload["display"]["comment"])
         self.assertEqual([
             {
                 "label": "crucible sprt",
@@ -560,6 +562,8 @@ except SystemExit as exc:
         self.assertIn("lines.join('\\n')", web._HTML)
         self.assertIn("commandDisplayBlock(c.command)", web._HTML)
         self.assertIn("function commandDisplayText", web._HTML)
+        self.assertIn("const commentText = display.comment || ''", web._HTML)
+        self.assertIn("run-comment", web._HTML)
         self.assertIn(".replace(/\\s+/g, ' ')", web._HTML)
         self.assertIn("white-space: pre-wrap", web._HTML)
         self.assertIn("overflow-wrap: normal", web._HTML)
@@ -2062,12 +2066,14 @@ except SystemExit as exc:
     def test_sprt_command_alias_accepts_dashdash_passthrough(self) -> None:
         run_options, template_args = crucible.parse_run_options([
             "--workers", "pwa-mbp:4",
+            "--comment", "quick smoke",
             "--",
             "--candidate", "~/assets/engines/candidate",
             "--games", "256",
         ])
 
         self.assertEqual("pwa-mbp:4", run_options.workers)
+        self.assertEqual("quick smoke", run_options.comment)
         self.assertEqual([
             "--candidate", "~/assets/engines/candidate",
             "--games", "256",
@@ -2081,6 +2087,7 @@ except SystemExit as exc:
                 template_args=[
                     "--dry-run",
                     "--workers", "pwa-mbp:4,pwa-mbp0:5,pwa-5090:6",
+                    "--comment", "quick smoke",
                     "--candidate", "~/assets/engines/enyo_9696dac",
                     "--games", "256",
                 ],
@@ -2088,6 +2095,7 @@ except SystemExit as exc:
         manifest = json.loads(stdout.getvalue())
 
         self.assertEqual(0, rc)
+        self.assertEqual("quick smoke", manifest["comment"])
         self.assertEqual(120, manifest["template"]["parameters"]["shards"])
         self.assertEqual(120, len(manifest["tasks"]))
         totals = [task["progress"]["total"] for task in manifest["tasks"]]
@@ -2599,6 +2607,7 @@ except SystemExit as exc:
                 "--name", "test",
                 "--kind", "sprt",
                 "--description", "native check",
+                "--comment", "quick smoke",
                 "--task-label", "sprt-game",
                 "--shards", "3",
                 "--work-dir", str(root),
@@ -2611,6 +2620,7 @@ except SystemExit as exc:
             manifest_payload = json.loads(manifest.read_text(encoding="utf-8"))
             self.assertEqual("sprt", manifest_payload["kind"])
             self.assertEqual("native check", manifest_payload["description"])
+            self.assertEqual("quick smoke", manifest_payload["comment"])
             self.assertEqual("sprt-game", manifest_payload["tasks"][0]["label"])
 
             add = self.run_cli(
@@ -2632,8 +2642,9 @@ except SystemExit as exc:
             self.assertEqual(0, status.returncode)
             self.assertIn("tasks=3/3", status.stdout)
             self.assertIn("run=test\n  desc=native check", status.stdout)
+            self.assertIn("  comment=quick smoke", status.stdout)
             self.assertNotIn("kind=", status.stdout)
-            self.assertRegex(status.stdout.splitlines()[2], r"^  tasks=3/3")
+            self.assertTrue(any(line.startswith("  tasks=3/3") for line in status.stdout.splitlines()))
 
             merged = root / "merged.txt"
             merge = self.run_cli(
@@ -6203,6 +6214,7 @@ except SystemExit as exc:
             run = self.write_retry_run(runs, "color", failed=None)
             manifest = json.loads((run / "manifest.json").read_text(encoding="utf-8"))
             manifest["description"] = "Run description"
+            manifest["comment"] = "quick smoke"
             crucible.write_json(run / "manifest.json", manifest)
             stdout = io.StringIO()
             with mock.patch.dict(os.environ, {"CRUCIBLE_COLOR": "always"}), contextlib.redirect_stdout(stdout):
@@ -6225,6 +6237,7 @@ except SystemExit as exc:
             blue = crucible.STATUS_BLUE_SGR
             self.assertIn(f"run=\033[{blue}mcolor\033[0m", text)
             self.assertIn("desc=Run description", text)
+            self.assertIn("comment=quick smoke", text)
             self.assertNotIn("desc=\033[", text)
             self.assertIn("tasks=\033[33m0/1", text)
             self.assertIn("pending: \033[33m1", text)
@@ -7707,12 +7720,14 @@ except SystemExit as exc:
                 _run_dir, manifest_path, _workers_path = crucible.materialize_run(
                     template_path=template,
                     workers_arg="worker-a:2,worker-b:1",
+                    comment="ordered smoke",
                     run_name_arg=None,
                     resume=False,
                     replace=False,
                 )
 
             materialized = crucible.read_json(manifest_path)
+            self.assertEqual("ordered smoke", materialized["comment"])
             self.assertEqual(
                 ["worker-a", "worker-a", "worker-b", "worker-a", "worker-a", "worker-b", "worker-a"],
                 [task.get("claim_worker") for task in materialized["tasks"]],

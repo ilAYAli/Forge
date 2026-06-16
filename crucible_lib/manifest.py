@@ -327,6 +327,7 @@ def cmd_plan(args: argparse.Namespace) -> int:
     logs = expand_path(args.log_dir) if args.log_dir else out.parent / "logs"
     kind = clean_manifest_text(args.kind, label="--kind")
     description = clean_manifest_text(args.description, label="--description")
+    comment = clean_manifest_text(getattr(args, "comment", None), label="--comment")
     task_label = clean_manifest_text(args.task_label, label="--task-label")
     vars_obj: dict[str, str] = {}
     for item in args.var:
@@ -454,6 +455,8 @@ def cmd_plan(args: argparse.Namespace) -> int:
         manifest["kind"] = kind
     if description:
         manifest["description"] = description
+    if comment:
+        manifest["comment"] = comment
     write_json(out, manifest)
     print(out)
     return 0

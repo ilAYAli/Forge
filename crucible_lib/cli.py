@@ -255,6 +255,7 @@ def build_parser() -> argparse.ArgumentParser:
     plan.add_argument("--name", required=True, help="Run name stored in the manifest.")
     plan.add_argument("--kind", help="Short user-defined run type shown in status.")
     plan.add_argument("--description", help="Short single-line run description shown in status.")
+    plan.add_argument("--comment", help="Short single-line run comment shown in status and web.")
     plan.add_argument(
         "--task-label",
         help="Short per-task label shown in detailed status. Supports templates.",
@@ -650,6 +651,7 @@ def build_parser() -> argparse.ArgumentParser:
     deploy.add_argument("manifest", help="Manifest template to materialize into runs/<name>.")
     deploy.add_argument("--jobs", type=int, default=4, help="Maximum workers to prepare concurrently.")
     deploy.add_argument("--run", help="Run directory name under runs/. Defaults to manifest name.")
+    deploy.add_argument("--comment", help="Short single-line run comment shown in status and web.")
     deploy.add_argument("--resume", action="store_true", help="Resume an existing materialized run.")
     deploy.add_argument("--replace", action="store_true", help="Delete and recreate an existing run.")
     deploy.add_argument("--retry-failed", action="store_true", help="Allow failed tasks to be claimed again.")
@@ -680,6 +682,7 @@ def build_parser() -> argparse.ArgumentParser:
     run_job.add_argument("--workers", required=True, help=WORKERS_ARG_HELP)
     run_job.add_argument("--jobs", type=int, default=4, help="Maximum workers to prepare concurrently.")
     run_job.add_argument("--run", help="Run directory name under runs/. Defaults to manifest name.")
+    run_job.add_argument("--comment", help="Short single-line run comment shown in status and web.")
     run_job.add_argument("--resume", action="store_true", help="Resume an existing materialized run.")
     run_job.add_argument("--replace", action="store_true", help="Delete and recreate an existing run.")
     run_job.add_argument("--retry-failed", action="store_true", help="Allow failed tasks to be claimed again.")

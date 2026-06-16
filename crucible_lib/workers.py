@@ -1250,6 +1250,7 @@ def materialize_run(
     inline_worker_defaults: str | Path | None = None,
     workers_snapshot_payload: dict[str, Any] | None = None,
     preserve_workers_snapshot: bool = False,
+    comment: str | None = None,
     run_name_arg: str | None,
     resume: bool,
     replace: bool,
@@ -1287,6 +1288,9 @@ def materialize_run(
 
     run_dir.mkdir(parents=True)
     materialized = materialize_manifest(template, run_name=run_name, run_dir=run_dir)
+    clean_comment = clean_manifest_text(comment, label="--comment")
+    if clean_comment:
+        materialized["comment"] = clean_comment
     payload = (
         workers_snapshot_payload
         if workers_snapshot_payload is not None
@@ -1331,6 +1335,7 @@ def cmd_deploy(args: argparse.Namespace) -> int:
                 inline_worker_defaults=getattr(args, "worker_defaults", None),
                 workers_snapshot_payload=getattr(args, "worker_snapshot_payload", None),
                 preserve_workers_snapshot=bool(getattr(args, "preserve_workers_snapshot", False)),
+                comment=getattr(args, "comment", None),
                 run_name_arg=getattr(args, "run", None),
                 resume=bool(getattr(args, "resume", False)),
                 replace=False,
@@ -1359,6 +1364,7 @@ def cmd_deploy(args: argparse.Namespace) -> int:
         inline_worker_defaults=getattr(args, "worker_defaults", None),
         workers_snapshot_payload=getattr(args, "worker_snapshot_payload", None),
         preserve_workers_snapshot=bool(getattr(args, "preserve_workers_snapshot", False)),
+        comment=getattr(args, "comment", None),
         run_name_arg=getattr(args, "run", None),
         resume=bool(getattr(args, "resume", False)),
         replace=bool(getattr(args, "replace", False)),
@@ -1958,6 +1964,8 @@ def coordinator_workers_arg(host: str, workers_arg: str) -> str:
 def append_deploy_options(command: list[str], args: argparse.Namespace, *, coordinator_host: str) -> None:
     if getattr(args, "run", None):
         command.extend(["--run", str(args.run)])
+    if getattr(args, "comment", None):
+        command.extend(["--comment", str(args.comment)])
     for flag in ("resume", "replace", "retry_failed", "no_color", "verbose"):
         if bool(getattr(args, flag, False)):
             command.append("--" + flag.replace("_", "-"))
@@ -2213,6 +2221,7 @@ def cmd_run_job(args: argparse.Namespace) -> int:
                 inline_worker_defaults=getattr(args, "worker_defaults", None),
                 workers_snapshot_payload=getattr(args, "worker_snapshot_payload", None),
                 preserve_workers_snapshot=bool(getattr(args, "preserve_workers_snapshot", False)),
+                comment=getattr(args, "comment", None),
                 run_name_arg=getattr(args, "run", None),
                 resume=resume,
                 replace=False,
@@ -2247,6 +2256,7 @@ def cmd_run_job(args: argparse.Namespace) -> int:
         manifest=args.manifest,
         jobs=args.jobs,
         run=args.run,
+        comment=getattr(args, "comment", None),
         resume=args.resume,
         replace=args.replace,
         coordinator_host=args.coordinator_host,

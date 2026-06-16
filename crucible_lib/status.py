@@ -1306,6 +1306,7 @@ def run_status_payload(summary: dict[str, Any]) -> dict[str, Any]:
         "display": {
             "title": run_title(summary),
             "description": run_description_field(summary),
+            "comment": run_comment_field(summary),
             "fields": split_eta_last(fields),
             "active_fields": active_fields,
             "active_summary": active_worker_summary_payload(summary),
@@ -1363,6 +1364,15 @@ def run_description_field(summary: dict[str, Any]) -> str:
     description = str(metadata.get("description") or "").strip()
     if description:
         return f"desc={description}"
+    return ""
+
+def run_comment_field(summary: dict[str, Any]) -> str:
+    metadata = summary.get("metadata")
+    if not isinstance(metadata, dict):
+        return ""
+    comment = str(metadata.get("comment") or "").strip()
+    if comment:
+        return f"comment={comment}"
     return ""
 
 def summary_progress_fields(summary: dict[str, Any]) -> list[str]:
@@ -1550,6 +1560,8 @@ def print_run_status(
             print(color_status_field(run_title(summary), summary=summary, color_enabled=color_enabled))
             if description := run_description_field(summary):
                 print(f"  {color_status_field(description, summary=summary, color_enabled=color_enabled)}")
+            if comment := run_comment_field(summary):
+                print(f"  {color_status_field(comment, summary=summary, color_enabled=color_enabled)}")
         fields = [
             f"tasks={counts['done']}/{summary['tasks']}",
             *run_state_fields(summary),
@@ -2668,6 +2680,8 @@ def print_compact_status(
     print(color_status_field(run_title(summary), summary=summary, color_enabled=color_enabled))
     if description := run_description_field(summary):
         print(f"  {color_status_field(description, summary=summary, color_enabled=color_enabled)}")
+    if comment := run_comment_field(summary):
+        print(f"  {color_status_field(comment, summary=summary, color_enabled=color_enabled)}")
     fields = [
         f"tasks={counts['done']}/{summary['tasks']}",
         *run_state_fields(summary),

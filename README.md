@@ -88,6 +88,8 @@ crucible template list
 crucible template show sprt
 crucible sprt --candidate ~/assets/engines/enyo_9696dac --games 1000
 crucible sprt --candidate ~/assets/engines/enyo_9696dac --games 1000 \
+  --comment "quick smoke"
+crucible sprt --candidate ~/assets/engines/enyo_9696dac --games 1000 \
   --workers pwa-5090:8,pwa-mbp0:5,pwa-mbp:4
 crucible sprt --candidate ~/assets/engines/enyo_9696dac --games 1000 \
   --workers pwa-5090:8,pwa-mbp0:5,pwa-mbp:4 --shards 136
@@ -99,10 +101,11 @@ crucible sprt --workers pwa-mbp:4 -- --candidate ~/assets/engines/enyo_9696dac -
 
 `crucible sprt ...` is shorthand for `crucible run sprt ...`.
 Crucible consumes only run orchestration flags such as `--workers`, `--jobs`,
-`--wait`, and `--notify-command`; SPRT flags can be passed directly, with `--`
-available as an optional separator when a flag name conflicts. Template defaults
-such as `--reference`, `--book`, `--tc`, `--threads`, and `--concurrency` are
-added to the underlying `sprt` command when they are not supplied.
+`--wait`, `--notify-command`, and `--comment`; SPRT flags can be passed
+directly, with `--` available as an optional separator when a flag name
+conflicts. Template defaults such as `--reference`, `--book`, `--tc`,
+`--threads`, and `--concurrency` are added to the underlying `sprt` command
+when they are not supplied.
 
 `sprt` derives the Enyo candidate commit from the executable name
 (`enyo_9696dac` -> `9696dac`). Before games start, the materialized manifest

@@ -182,10 +182,13 @@ def manifest_metadata(manifest: dict[str, Any]) -> dict[str, str]:
     metadata: dict[str, str] = {}
     kind = clean_manifest_text(manifest.get("kind"), label="kind")
     description = clean_manifest_text(manifest.get("description"), label="description")
+    comment = clean_manifest_text(manifest.get("comment"), label="comment")
     if kind:
         metadata["kind"] = kind
     if description:
         metadata["description"] = description
+    if comment:
+        metadata["comment"] = comment
     return metadata
 
 def task_display_label(manifest: dict[str, Any], task: dict[str, Any]) -> str:

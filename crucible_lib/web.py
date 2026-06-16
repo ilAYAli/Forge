@@ -72,6 +72,7 @@ _HTML = r"""<!DOCTYPE html>
     .run-summary { display: flex; align-items: center; gap: 12px; margin-top: 4px;
                    padding-left: 18px; font-size: 13px; flex-wrap: wrap; cursor: text; }
     .run-desc  { color: var(--dim); }
+    .run-comment { color: var(--warn); }
     .run-state { font-weight: 700; }
     .run-state.stopped-early { color: var(--warn); }
     .run-fields { color: var(--text); }
@@ -999,6 +1000,7 @@ _HTML = r"""<!DOCTYPE html>
 
       const nonEtaFields = (display.fields||[]).filter(f=>!f.startsWith('eta='));
       const descText = display.description || '';
+      const commentText = display.comment || '';
       const runDate = runDatePrefix(r);
       const stoppedEarly = runStoppedEarly(r, pending, fail, display);
       const stateField = stoppedEarly ? '<span class="run-state stopped-early">stopped</span>' : '';
@@ -1026,6 +1028,7 @@ _HTML = r"""<!DOCTYPE html>
         </div>
         <div class="run-summary">
           ${descText ? `<span class="run-desc">${esc(descText)}</span>` : ''}
+          ${commentText ? `<span class="run-comment">${esc(commentText)}</span>` : ''}
           ${stateField}
           <span class="run-fields">${nonEtaFields.map(renderField).join(' &nbsp;')}</span>
           ${eta ? `<span class="run-eta" data-etas="${parseEtaStr(eta)??''}">${esc(eta)}</span>` : ''}
