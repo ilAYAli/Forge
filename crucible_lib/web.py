@@ -146,8 +146,8 @@ _HTML = r"""<!DOCTYPE html>
                  align-items: center; color: var(--dim); font-size: 11px; }
     .graph-row svg { width: 100%; height: 132px; display: block; }
     .graph-line { fill: none; stroke-width: 1.1; vector-effect: non-scaling-stroke; }
-    .graph-zero { stroke: var(--dim); stroke-width: .5; stroke-dasharray: 1 5;
-                  opacity: .32; vector-effect: non-scaling-stroke; }
+    .graph-zero { stroke: var(--text); stroke-width: .8; stroke-dasharray: 3 5;
+                  opacity: .42; vector-effect: non-scaling-stroke; }
     .graph-bound { stroke: var(--red); stroke-width: .5; stroke-dasharray: 4 7;
                    opacity: .24; vector-effect: non-scaling-stroke; }
 

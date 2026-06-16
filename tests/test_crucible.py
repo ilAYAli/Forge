@@ -536,7 +536,7 @@ except SystemExit as exc:
         self.assertIn(".graph-bound", web._HTML)
         self.assertNotIn("points.slice(-48)", web._HTML)
         self.assertIn('x2="${w}"', web._HTML)
-        self.assertIn("stroke-dasharray: 1 5", web._HTML)
+        self.assertIn("stroke-dasharray: 3 5", web._HTML)
         self.assertNotIn(".graph-dot", web._HTML)
         self.assertNotIn("function endpointDot", web._HTML)
         self.assertIn(".sort((a, b) => a.x - b.x)", web._HTML)
