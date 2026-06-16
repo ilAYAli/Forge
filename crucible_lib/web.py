@@ -880,6 +880,71 @@ _HTML = r"""<!DOCTYPE html>
       return String(command || '').replace(/\s+/g, ' ').trim();
     }
 
+    function shellWords(text) {
+      const words = [];
+      let word = '';
+      let quote = '';
+      let escaped = false;
+      for (const ch of String(text || '')) {
+        if (escaped) {
+          word += ch;
+          escaped = false;
+          continue;
+        }
+        if (ch === '\\') {
+          word += ch;
+          escaped = true;
+          continue;
+        }
+        if (quote) {
+          word += ch;
+          if (ch === quote) quote = '';
+          continue;
+        }
+        if (ch === '"' || ch === "'") {
+          word += ch;
+          quote = ch;
+          continue;
+        }
+        if (/\s/.test(ch)) {
+          if (word) {
+            words.push(word);
+            word = '';
+          }
+          continue;
+        }
+        word += ch;
+      }
+      if (word) words.push(word);
+      return words;
+    }
+
+    function commandDisplayLines(command) {
+      const words = shellWords(commandDisplayText(command));
+      if (!words.length) return [];
+      const lines = [];
+      let current = [];
+      for (const word of words) {
+        if (word.startsWith('--') && current.length) {
+          lines.push(current.join(' '));
+          current = [word];
+        } else {
+          current.push(word);
+        }
+      }
+      if (current.length) lines.push(current.join(' '));
+      return lines.map((line, index) => {
+        const prefix = index === 0 ? '' : '  ';
+        const suffix = index + 1 < lines.length ? ' \\' : '';
+        return prefix + line + suffix;
+      });
+    }
+
+    function commandDisplayBlock(command) {
+      const lines = commandDisplayLines(command);
+      return lines.length ? lines.join('\n') : commandDisplayText(command);
+    }
+
     function renderCommands(commands) {
       const rows = (commands || [])
         .filter(c => c && c.command)
@@ -889,7 +954,7 @@ _HTML = r"""<!DOCTYPE html>
           const suffix = count > 1 ? ` [${count}]` : '';
           return `<div class="cmd-row">`
             + `<div class="cmd-meta">${esc(label + suffix)}</div>`
-            + `<pre class="cmd-line"><code>${esc(commandDisplayText(c.command))}</code></pre>`
+            + `<pre class="cmd-line"><code>${esc(commandDisplayBlock(c.command))}</code></pre>`
             + `</div>`;
         }).join('');
       return rows ? `<div class="cmd-list">${rows}</div>` : '';
