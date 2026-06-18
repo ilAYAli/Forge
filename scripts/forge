@@ -21,7 +21,7 @@
 # Usage:
 #   forge engine <hash>                                                      # build+deploy (skips if already built), prints engine path
 #   forge test   <cand_hash> [ref_hash] [-- crucible-args]                   # if ref omitted, uses cand's parent commit as reference
-#   forge nnue   <hash> --candidate-nnue file [--reference-nnue file] [-- crucible-args]  # default reference: engine default net
+#   forge nnue   <hash> --candidate-nnue file [--reference-nnue file] [-- crucible-args]  # default reference: ~/code/cpp/chess/enyo/net/default.net
 #
 # Anything after `--` is passed straight through to `crucible sprt`,
 # e.g.:
@@ -35,6 +35,7 @@ set -u
 ENYO_DIR=~/code/cpp/chess/enyo
 CRUCIBLE_DIR=~/code/cpp/chess/crucible
 WORKERS_FILE=$CRUCIBLE_DIR/runs/workers.json
+DEFAULT_REFERENCE_NNUE='~/code/cpp/chess/enyo/net/default.net'
 
 host_args_fn() {
     [[ -n "${CRUCIBLE_HOST:-}" ]] && printf '%s\n' --host "$CRUCIBLE_HOST"
@@ -99,10 +100,7 @@ sprt_engines() {
 sprt_nnue() {
     local bin="$1" cand_nnue="$2" ref_nnue="$3"; shift 3
     local -a cmd=(crucible run "$CRUCIBLE_DIR/templates/sprt.template.json" --workers "$WORKERS_FILE" --candidate "$bin" --reference "$bin" \
-        --candidate-uci "nnue_file=$cand_nnue")
-    if [[ -n "$ref_nnue" ]]; then
-        cmd+=(--reference-uci "nnue_file=$ref_nnue")
-    fi
+        --candidate-uci "nnue_file=$cand_nnue" --reference-uci "nnue_file=$ref_nnue")
     cmd+=("$@")
     echo "+ ${cmd[*]}" >&2
     "${cmd[@]}"
@@ -206,21 +204,21 @@ with open('$WORKERS_FILE') as f:
 
 # --- High-level: build one hash, then SPRT candidate NNUE vs reference NNUE ---
 # forge nnue <hash> --candidate-nnue file [--reference-nnue file] [-- crucible-args]
-# --reference-nnue defaults to the engine default net if omitted.
+# --reference-nnue defaults to ~/code/cpp/chess/enyo/net/default.net if omitted.
 # anything after `--` is passed through to `crucible sprt` as-is
 # (e.g. --games 200). Default --games 1500 if omitted.
 forge_nnue() {
     local hash="${1:-}"
     [[ $# -gt 0 ]] && shift
-    local cand_nnue="" ref_nnue=""
+    local cand_nnue="" ref_nnue="$DEFAULT_REFERENCE_NNUE" ref_supplied=0
     local -a extra=()
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --candidate-nnue) cand_nnue="$2"; shift 2 ;;
             --candidate-nnue=*) cand_nnue="${1#--candidate-nnue=}"; shift ;;
-            --reference-nnue) ref_nnue="$2"; shift 2 ;;
-            --reference-nnue=*) ref_nnue="${1#--reference-nnue=}"; shift ;;
+            --reference-nnue) ref_nnue="$2"; ref_supplied=1; shift 2 ;;
+            --reference-nnue=*) ref_nnue="${1#--reference-nnue=}"; ref_supplied=1; shift ;;
             --) shift; extra+=("$@"); break ;;
             *) extra+=("$1"); shift ;;
         esac
@@ -235,9 +233,9 @@ forge_nnue() {
         return 1
     }
 
-    # Expand tilde in local paths
+    # Expand tilde only for local files we need to verify and sync.
     cand_nnue="${cand_nnue/#\~/$HOME}"
-    [[ -n "$ref_nnue" ]] && ref_nnue="${ref_nnue/#\~/$HOME}"
+    [[ "$ref_supplied" == 1 ]] && ref_nnue="${ref_nnue/#\~/$HOME}"
 
     # Verify candidate net exists locally
     [[ ! -f "$cand_nnue" ]] && {
@@ -256,9 +254,9 @@ forge_nnue() {
     local remote_cand
     remote_cand=$(sync_net_to_workers "$cand_nnue") || return 1
 
-    # Sync reference net only when explicitly supplied. Empty nnue_file uses the engine default.
+    # Sync reference net only when explicitly supplied. The default is a worker-side path.
     local remote_ref="$ref_nnue"
-    if [[ -n "$ref_nnue" ]]; then
+    if [[ "$ref_supplied" == 1 ]]; then
         [[ ! -f "$ref_nnue" ]] && {
             echo "Reference NNUE file not found: $ref_nnue" >&2
             return 1
