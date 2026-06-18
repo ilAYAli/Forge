@@ -21,7 +21,7 @@
 # Usage:
 #   forge engine <hash>                                                      # build+deploy (skips if already built), prints engine path
 #   forge test   <cand_hash> [ref_hash] [-- crucible-args]                   # if ref omitted, uses cand's parent commit as reference
-#   forge nnue   <hash> --candidate-nnue file [--reference-nnue file] [-- crucible-args]  # default reference: default.net
+#   forge nnue   <hash> --candidate-nnue file [--reference-nnue file] [-- crucible-args]  # default reference: engine default net
 #
 # Anything after `--` is passed straight through to `crucible sprt`,
 # e.g.:
@@ -86,20 +86,24 @@ is_ancestor() {
 }
 
 # --- Raw SPRT between two already-built engine binaries ---
-# Extra args (e.g. --games 200) are appended verbatim to `crucible sprt`.
+# Extra args (e.g. --games 200) are appended verbatim to the SPRT template.
 sprt_engines() {
     local ref="$1" cand="$2"; shift 2
-    local -a cmd=(crucible sprt --workers "$WORKERS_FILE" --reference "$ref" --candidate "$cand" "$@")
+    local -a cmd=(crucible run "$CRUCIBLE_DIR/templates/sprt.template.json" --workers "$WORKERS_FILE" --reference "$ref" --candidate "$cand" "$@")
     echo "+ ${cmd[*]}" >&2
     "${cmd[@]}"
 }
 
 # --- Raw SPRT: candidate NNUE vs reference NNUE on a single binary ---
-# Extra args (e.g. --games 200) are appended verbatim to `crucible sprt`.
+# Extra args (e.g. --games 200) are appended verbatim to the SPRT template.
 sprt_nnue() {
     local bin="$1" cand_nnue="$2" ref_nnue="$3"; shift 3
-    local -a cmd=(crucible sprt --workers "$WORKERS_FILE" --candidate "$bin" --reference "$bin" \
-        --candidate-uci "nnue_file=$cand_nnue" --reference-uci "nnue_file=$ref_nnue" "$@")
+    local -a cmd=(crucible run "$CRUCIBLE_DIR/templates/sprt.template.json" --workers "$WORKERS_FILE" --candidate "$bin" --reference "$bin" \
+        --candidate-uci "nnue_file=$cand_nnue")
+    if [[ -n "$ref_nnue" ]]; then
+        cmd+=(--reference-uci "nnue_file=$ref_nnue")
+    fi
+    cmd+=("$@")
     echo "+ ${cmd[*]}" >&2
     "${cmd[@]}"
 }
@@ -196,18 +200,19 @@ with open('$WORKERS_FILE') as f:
         }
     done
 
-    echo "$remote_path"
+    # Return tilde path - will be expanded by worker's shell
+    echo "~/assets/nets/$remote_basename"
 }
 
 # --- High-level: build one hash, then SPRT candidate NNUE vs reference NNUE ---
 # forge nnue <hash> --candidate-nnue file [--reference-nnue file] [-- crucible-args]
-# --reference-nnue defaults to default.net if omitted.
+# --reference-nnue defaults to the engine default net if omitted.
 # anything after `--` is passed through to `crucible sprt` as-is
 # (e.g. --games 200). Default --games 1500 if omitted.
 forge_nnue() {
     local hash="${1:-}"
     [[ $# -gt 0 ]] && shift
-    local cand_nnue="" ref_nnue="default.net"
+    local cand_nnue="" ref_nnue=""
     local -a extra=()
 
     while [[ $# -gt 0 ]]; do
@@ -232,7 +237,7 @@ forge_nnue() {
 
     # Expand tilde in local paths
     cand_nnue="${cand_nnue/#\~/$HOME}"
-    [[ "$ref_nnue" != "default.net" ]] && ref_nnue="${ref_nnue/#\~/$HOME}"
+    [[ -n "$ref_nnue" ]] && ref_nnue="${ref_nnue/#\~/$HOME}"
 
     # Verify candidate net exists locally
     [[ ! -f "$cand_nnue" ]] && {
@@ -251,9 +256,9 @@ forge_nnue() {
     local remote_cand
     remote_cand=$(sync_net_to_workers "$cand_nnue") || return 1
 
-    # Sync reference net if not default.net
+    # Sync reference net only when explicitly supplied. Empty nnue_file uses the engine default.
     local remote_ref="$ref_nnue"
-    if [[ "$ref_nnue" != "default.net" ]]; then
+    if [[ -n "$ref_nnue" ]]; then
         [[ ! -f "$ref_nnue" ]] && {
             echo "Reference NNUE file not found: $ref_nnue" >&2
             return 1
