@@ -33,6 +33,8 @@
 set -u
 
 ENYO_DIR=~/code/cpp/chess/enyo
+CRUCIBLE_DIR=~/code/cpp/chess/crucible
+WORKERS_FILE=$CRUCIBLE_DIR/runs/workers.json
 
 host_args_fn() {
     [[ -n "${CRUCIBLE_HOST:-}" ]] && printf '%s\n' --host "$CRUCIBLE_HOST"
@@ -45,13 +47,14 @@ forge_engine() {
     [[ -z "$hash" ]] && { echo "Usage: forge engine <hash>" >&2; return 1; }
 
     local engine_path="~/assets/engines/enyo_$hash"
-    local -a host_args=( $(host_args_fn) )
+    local -a host_args=()
+    [[ -n "${CRUCIBLE_HOST:-}" ]] && host_args=(--host "$CRUCIBLE_HOST")
 
-    if crucible sh "${host_args[@]}" "[ -f $engine_path ]" >/dev/null 2>&1; then
+    if crucible sh "${host_args[@]+"${host_args[@]}"}" "[ -f $engine_path ]" >/dev/null 2>&1; then
         echo "enyo_$hash already exists, skipping build" >&2
     else
         local out rc
-        out=$( (set -o pipefail; crucible sh "${host_args[@]}" "cd ~/code/cpp/chess/enyo && \
+        out=$( (set -o pipefail; crucible sh "${host_args[@]+"${host_args[@]}"}" "cd ~/code/cpp/chess/enyo && \
             git fetch origin && \
             git -c advice.detachedHead=false checkout -f $hash && \
             cmake --build build && \
@@ -86,7 +89,7 @@ is_ancestor() {
 # Extra args (e.g. --games 200) are appended verbatim to `crucible sprt`.
 sprt_engines() {
     local ref="$1" cand="$2"; shift 2
-    local -a cmd=(crucible sprt --reference "$ref" --candidate "$cand" "$@")
+    local -a cmd=(crucible sprt --workers "$WORKERS_FILE" --reference "$ref" --candidate "$cand" "$@")
     echo "+ ${cmd[*]}" >&2
     "${cmd[@]}"
 }
@@ -95,7 +98,7 @@ sprt_engines() {
 # Extra args (e.g. --games 200) are appended verbatim to `crucible sprt`.
 sprt_nnue() {
     local bin="$1" cand_nnue="$2" ref_nnue="$3"; shift 3
-    local -a cmd=(crucible sprt --candidate "$bin" --reference "$bin" \
+    local -a cmd=(crucible sprt --workers "$WORKERS_FILE" --candidate "$bin" --reference "$bin" \
         --candidate-uci "nnue_file=$cand_nnue" --reference-uci "nnue_file=$ref_nnue" "$@")
     echo "+ ${cmd[*]}" >&2
     "${cmd[@]}"
@@ -153,6 +156,49 @@ forge_test() {
     sprt_engines "$ref_bin" "$cand_bin" "${extra[@]}"
 }
 
+# --- Sync a local file to ~/assets/nets/ on all workers ---
+sync_net_to_workers() {
+    local local_path="$1"
+    local remote_basename="$(basename "$local_path")"
+    local remote_path="~/assets/nets/$remote_basename"
+
+    echo "Syncing $remote_basename to all workers..." >&2
+
+    # Create target directory on all workers
+    crucible sh --workers "$WORKERS_FILE" "mkdir -p ~/assets/nets" >/dev/null || return 1
+
+    # Extract unique non-local hosts from workers.json
+    local -a hosts=()
+    while IFS= read -r host; do
+        [[ -n "$host" && "$host" != "localhost" && "$host" != "127.0.0.1" ]] && hosts+=("$host")
+    done < <(python3 -c "
+import json, sys
+with open('$WORKERS_FILE') as f:
+    data = json.load(f)
+    for w in data.get('workers', []):
+        if isinstance(w, str):
+            print(w.split('=')[0] if '=' in w else w)
+        elif isinstance(w, dict) and not w.get('local', False):
+            print(w.get('host', ''))
+" | sort -u)
+
+    if [[ ${#hosts[@]} -eq 0 ]]; then
+        echo "No remote hosts found in $WORKERS_FILE (all local?)" >&2
+        return 0
+    fi
+
+    # rsync to each host
+    for host in "${hosts[@]}"; do
+        echo "  → $host" >&2
+        rsync -a "$local_path" "$host:$remote_path" || {
+            echo "Failed to sync to $host" >&2
+            return 1
+        }
+    done
+
+    echo "$remote_path"
+}
+
 # --- High-level: build one hash, then SPRT candidate NNUE vs reference NNUE ---
 # forge nnue <hash> --candidate-nnue file [--reference-nnue file] [-- crucible-args]
 # --reference-nnue defaults to default.net if omitted.
@@ -184,6 +230,16 @@ forge_nnue() {
         return 1
     }
 
+    # Expand tilde in local paths
+    cand_nnue="${cand_nnue/#\~/$HOME}"
+    [[ "$ref_nnue" != "default.net" ]] && ref_nnue="${ref_nnue/#\~/$HOME}"
+
+    # Verify candidate net exists locally
+    [[ ! -f "$cand_nnue" ]] && {
+        echo "Candidate NNUE file not found: $cand_nnue" >&2
+        return 1
+    }
+
     if [[ ! " ${extra[*]} " =~ " --games" ]]; then
         extra+=(--games 1500)
     fi
@@ -191,7 +247,21 @@ forge_nnue() {
     local bin
     bin=$(forge_engine "$hash") || return 1
 
-    sprt_nnue "$bin" "$cand_nnue" "$ref_nnue" "${extra[@]}"
+    # Sync candidate net to all workers
+    local remote_cand
+    remote_cand=$(sync_net_to_workers "$cand_nnue") || return 1
+
+    # Sync reference net if not default.net
+    local remote_ref="$ref_nnue"
+    if [[ "$ref_nnue" != "default.net" ]]; then
+        [[ ! -f "$ref_nnue" ]] && {
+            echo "Reference NNUE file not found: $ref_nnue" >&2
+            return 1
+        }
+        remote_ref=$(sync_net_to_workers "$ref_nnue") || return 1
+    fi
+
+    sprt_nnue "$bin" "$remote_cand" "$remote_ref" "${extra[@]}"
 }
 
 usage() {

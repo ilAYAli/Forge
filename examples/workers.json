@@ -11,13 +11,13 @@
       "host": "worker-mac",
       "profile": "macos-arm64",
       "python": "/opt/homebrew/bin/python3",
-      "slots": 8
+      "slots": 4
     },
     {
       "host": "worker-mac-2",
       "profile": "macos-arm64",
       "python": "/opt/homebrew/bin/python3",
-      "slots": 10
+      "slots": 5
     },
     {
       "host": "localhost",
