@@ -398,7 +398,20 @@ def workers_from_payload(payload: dict[str, Any], *, label: str) -> list[dict[st
         raise SystemExit(f"{label}: no enabled workers")
     return workers
 
-def merge_worker_payloads(base_payload: dict[str, Any], update_payload: dict[str, Any]) -> dict[str, Any]:
+def worker_record_slots(worker: dict[str, Any]) -> int:
+    return int(worker.get("slots", 1))
+
+def set_worker_record_slots(worker: dict[str, Any], slots: int) -> dict[str, Any]:
+    record = dict(worker)
+    if slots <= 0:
+        record["slots"] = 0
+    elif slots == 1:
+        record.pop("slots", None)
+    else:
+        record["slots"] = slots
+    return record
+
+def add_worker_payload_slots(base_payload: dict[str, Any], add_payload: dict[str, Any]) -> dict[str, Any]:
     merged: list[dict[str, Any]] = []
     positions: dict[str, int] = {}
     for worker in worker_records_from_payload(base_payload, label="base workers", allow_empty=True):
@@ -408,10 +421,15 @@ def merge_worker_payloads(base_payload: dict[str, Any], update_payload: dict[str
         else:
             positions[host] = len(merged)
             merged.append(worker)
-    for worker in worker_records_from_payload(update_payload, label="updated workers", allow_empty=True):
+    for worker in worker_records_from_payload(add_payload, label="added workers", allow_empty=True):
+        add_slots = worker_record_slots(worker)
+        if add_slots <= 0:
+            continue
         host = worker_host(worker)
         if host in positions:
-            merged[positions[host]] = worker
+            index = positions[host]
+            total_slots = worker_record_slots(merged[index]) + add_slots
+            merged[index] = set_worker_record_slots(worker, total_slots)
         else:
             positions[host] = len(merged)
             merged.append(worker)
@@ -2385,7 +2403,7 @@ def cmd_worker_add(args: argparse.Namespace) -> int:
         )
         manifest = load_manifest(manifest_path)
         add_payload = workers_payload_for_manifest(add_payload, manifest)
-        merged_payload = merge_worker_payloads(read_json(workers_path), add_payload)
+        merged_payload = add_worker_payload_slots(read_json(workers_path), add_payload)
         hosts = worker_hosts_from_payload(add_payload)
         clear_worker_drains(manifest, hosts, run_name=run_name)
         resume_args = argparse.Namespace(

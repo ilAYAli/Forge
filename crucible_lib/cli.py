@@ -141,9 +141,9 @@ class CrucibleArgumentParser(argparse.ArgumentParser):
 
 def add_worker_add_options(parser: argparse.ArgumentParser, *, worker_positional: bool) -> None:
     if worker_positional:
-        parser.add_argument("worker", help="Inline worker spec, e.g. worker-a or worker-a:5.")
+        parser.add_argument("worker", help="Inline worker spec; worker-a:5 adds five slots.")
     else:
-        parser.add_argument("--worker", required=True, help="Inline worker spec, e.g. worker-a or worker-a:5.")
+        parser.add_argument("--worker", required=True, help="Inline worker spec; worker-a:5 adds five slots.")
     parser.add_argument("run", nargs="?", help="Run name or run directory. Omit to use the single active run.")
     parser.add_argument("--jobs", type=int, default=4, help="Maximum workers to prepare concurrently.")
     parser.add_argument("--task-attempts", type=int, default=2, help="Total attempts per task before final failure.")

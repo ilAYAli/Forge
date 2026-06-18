@@ -3460,7 +3460,7 @@ except SystemExit as exc:
                             "path_map": {
                                 "/home/petter/code/cpp/chess": "/Users/pwahlman/code/cpp/chess",
                             },
-                            "slots": 10,
+                            "slots": 14,
                         },
                     ],
                 },
@@ -3469,6 +3469,57 @@ except SystemExit as exc:
             self.assertIsNone(add_args.worker_snapshot_payload)
             self.assertTrue(add_args.preserve_workers_snapshot)
             self.assertTrue(add_args.launch_only)
+
+    def test_worker_add_adds_slots_instead_of_replacing_existing_count(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runs = Path(tmp) / "runs"
+            run = self.write_retry_run(runs, "active", failed=None)
+            cache = Path(tmp) / "cache"
+            crucible.write_json(run / "workers.json", {
+                "schema": "crucible.workers.v1",
+                "workers": [{
+                    "host": "pwa-mbp",
+                    "profile": "mac",
+                    "local": True,
+                    "cache_dir": str(cache),
+                    "slots": 4,
+                }],
+            })
+
+            with (
+                self.patch_runs_dir(runs),
+                mock.patch("crucible_lib.workers.cmd_run_job", return_value=0) as run_job,
+            ):
+                rc = crucible.cmd_worker_add(self.worker_add_args(run="active", worker="pwa-mbp:2"))
+
+            self.assertEqual(0, rc)
+            add_args = run_job.call_args.args[0]
+            self.assertEqual(
+                {
+                    "schema": "crucible.workers.v1",
+                    "workers": [{
+                        "host": "pwa-mbp",
+                        "profile": "mac",
+                        "local": True,
+                        "cache_dir": str(cache),
+                        "slots": 2,
+                    }],
+                },
+                add_args.launch_workers_payload,
+            )
+            self.assertEqual(
+                {
+                    "schema": "crucible.workers.v1",
+                    "workers": [{
+                        "host": "pwa-mbp",
+                        "profile": "mac",
+                        "local": True,
+                        "cache_dir": str(cache),
+                        "slots": 6,
+                    }],
+                },
+                add_args.worker_snapshot_commit_payload,
+            )
 
     def test_worker_add_does_not_repair_profile_from_prefix_path_map(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

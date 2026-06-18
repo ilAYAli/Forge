@@ -189,13 +189,14 @@ crucible add --worker worker-c:4 my-run
 crucible worker add worker-c:4 my-run
 ```
 
-`add --worker` starts the selected worker slots against the materialized run. It
-uses the same inline worker syntax as `start`, inheriting defaults from the
-selected run's materialized `workers.json`. It clears an existing drain marker
-for that worker, merges the worker into the run's `workers.json`, and validates
-setup before tasks can be claimed. Existing workers are not restarted. Omit the
-run name only when exactly one active run exists. `worker add` is the explicit
-subcommand form.
+`add --worker` starts additional worker slots against the materialized run.
+`worker-c:4` adds four slots; it does not set the host's total slot count to
+four. It uses the same inline worker syntax as `start`, inheriting defaults from
+the selected run's materialized `workers.json`. It clears an existing drain
+marker for that worker, adds the worker slots to the run's `workers.json`, and
+validates setup before tasks can be claimed. Existing workers are not restarted.
+Omit the run name only when exactly one active run exists. `worker add` is the
+explicit subcommand form.
 
 Drain a worker from a run:
 
