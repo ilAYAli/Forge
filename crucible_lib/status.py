@@ -782,6 +782,7 @@ def fallback_progress_data(
         "unit": unit,
         "rate": rate,
         "eta_estimate": True,
+        "fallback_estimate": True,
     }
     full_eta = progress_eta_seconds(0, total, rate)
     if full_eta is not None and isinstance(elapsed_s, (int, float)) and elapsed_s > 0:
@@ -830,6 +831,8 @@ def progress_text(data: dict[str, Any]) -> str:
             parts.append(f"{key}={value}")
     if isinstance(done, int) and isinstance(total, int) and total > 0 and done >= total:
         parts.append("finalizing")
+        return ", ".join(parts)
+    if data.get("fallback_estimate") and done == 0:
         return ", ".join(parts)
     eta = progress_data_eta_text(data, done, total)
     if eta:
@@ -2616,6 +2619,8 @@ def active_status_sort_key(row: dict[str, Any]) -> tuple[int, float, tuple[bool,
         return (0, 0.0, status_value_key(row["index"]))
     data = row.get("progress_data")
     if isinstance(data, dict):
+        if data.get("fallback_estimate"):
+            return (3, 0.0, status_value_key(row["index"]))
         done = data.get("done")
         total = data.get("total")
         eta = progress_data_eta_seconds(data, done, total)

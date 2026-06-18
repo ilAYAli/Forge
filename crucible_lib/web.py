@@ -510,6 +510,18 @@ _HTML = r"""<!DOCTYPE html>
       const selection = window.getSelection && window.getSelection();
       return !!(selection && !selection.isCollapsed && String(selection).trim());
     }
+    let selectionRefreshDeferredAt = null;
+    function shouldDeferRefreshForSelection() {
+      if (!hasTextSelection()) {
+        selectionRefreshDeferredAt = null;
+        return false;
+      }
+      const now = Date.now();
+      if (selectionRefreshDeferredAt == null) selectionRefreshDeferredAt = now;
+      if (now - selectionRefreshDeferredAt < 15000) return true;
+      selectionRefreshDeferredAt = null;
+      return false;
+    }
 
     function makeSection(run, section, titleHtml, titleCls, detailHtml, defaultOpen) {
       const id = sid(run, section);
@@ -605,8 +617,9 @@ _HTML = r"""<!DOCTYPE html>
       if (col === 'shard' || col === 'task') return String(t.index);
       if (col === 'progress') return esc(taskProgressText(t));
       if (col === 'output') return esc(pd?.output!=null ? String(pd.output) : '');
-      if (col === 'rate') return esc(fmtRate(pd?.rate));
+      if (col === 'rate') return pd?.fallback_estimate ? '' : esc(fmtRate(pd?.rate));
       if (col === 'eta') {
+        if (pd?.fallback_estimate) return '';
         const etaSec = remainingEtaS(pd);
         const prefix = pd?.eta_estimate ? '~' : '';
         return etaSec!=null ? esc(prefix + fmtEta(etaSec)) : '';
@@ -627,8 +640,8 @@ _HTML = r"""<!DOCTYPE html>
       if (col === 'shard' || col === 'task') return String(t.index);
       if (col === 'progress') return pd?.done ?? '';
       if (col === 'output') return pd?.output ?? '';
-      if (col === 'rate') return pd?.rate ?? '';
-      if (col === 'eta') return remainingEtaS(pd) ?? 1e9;
+      if (col === 'rate') return pd?.fallback_estimate ? '' : pd?.rate ?? '';
+      if (col === 'eta') return pd?.fallback_estimate ? 1e9 : remainingEtaS(pd) ?? 1e9;
       return '';
     }
 
@@ -673,7 +686,7 @@ _HTML = r"""<!DOCTYPE html>
       ).join('') + '</tr></thead>';
       const tbody = '<tbody>' + tasks.map(t => {
         const pd = t.progress_data;
-        const etaSec  = remainingEtaS(pd);
+        const etaSec  = pd?.fallback_estimate ? null : remainingEtaS(pd);
         const etaAttr = etaSec!=null
           ? ` data-etas="${etaSec}"${pd?.eta_estimate?' data-eta-estimate="1"':''}`
           : '';
@@ -1217,7 +1230,7 @@ _HTML = r"""<!DOCTYPE html>
             return a.run<b.run?-1:a.run>b.run?1:0;
           });
 
-        if (hasTextSelection()) return;
+        if (shouldDeferRefreshForSelection()) return;
         saveState();
         const el = document.getElementById('runs');
         const parts = [];

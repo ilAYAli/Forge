@@ -523,10 +523,14 @@ except SystemExit as exc:
         self.assertIn("(pd.total - pd.done) / pd.rate", web._HTML)
         self.assertIn("function hasTextSelection", web._HTML)
         self.assertIn("if (hasTextSelection()) return;", web._HTML)
+        self.assertIn("function shouldDeferRefreshForSelection", web._HTML)
+        self.assertIn("selectionRefreshDeferredAt", web._HTML)
+        self.assertIn("if (shouldDeferRefreshForSelection()) return;", web._HTML)
         self.assertIn("pd?.eta_estimate ? '~' : ''", web._HTML)
+        self.assertIn("pd?.fallback_estimate ? '' : esc(fmtRate(pd?.rate))", web._HTML)
+        self.assertIn("if (pd?.fallback_estimate) return '';", web._HTML)
         self.assertIn("data-eta-estimate", web._HTML)
         self.assertIn("return r.toFixed(4) + '/s'", web._HTML)
-        self.assertIn("fmtRate(pd?.rate)", web._HTML)
         self.assertIn("function graphDomain", web._HTML)
         self.assertIn("function graphDisplayPoints", web._HTML)
         self.assertIn("function graphYDomain", web._HTML)
@@ -788,7 +792,8 @@ except SystemExit as exc:
         self.assertIsNotNone(data)
         assert data is not None
         self.assertTrue(data["eta_estimate"])
-        self.assertEqual("games=0/2, eta~=3s", data["text"])
+        self.assertTrue(data["fallback_estimate"])
+        self.assertEqual("games=0/2", data["text"])
 
     def test_web_status_api_returns_cached_payload_while_refreshing(self) -> None:
         import crucible_lib.web as web
@@ -7549,7 +7554,7 @@ except SystemExit as exc:
                 self.assertIn("  tasks=1/2 games=1000/2000 eta=1m39s", text)
                 self.assertIn("  active: 1", text)
                 self.assertNotIn("  active: 1 games=1000/2000", text)
-                self.assertIn("worker-a shard=1 [games=0/1000, eta~=1m39s]", text)
+                self.assertIn("worker-a shard=1 [games=0/1000]", text)
 
     def test_status_labels_overdue_fallback_eta_as_unknown(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -7623,7 +7628,7 @@ except SystemExit as exc:
                 self.assertIn("  tasks=1/2 games=1000/2000 eta=unknown", text)
                 self.assertIn("  active: 1", text)
                 self.assertNotIn("  active: 1 games=1000/2000", text)
-                self.assertIn("worker-a shard=1 [games=0/1000, eta~=unknown]", text)
+                self.assertIn("worker-a shard=1 [games=0/1000]", text)
 
     def test_status_ignores_undeclared_domain_progress(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
