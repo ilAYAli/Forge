@@ -2270,7 +2270,7 @@ def cmd_run_job(args: argparse.Namespace) -> int:
         preserve_workers_snapshot=bool(getattr(args, "preserve_workers_snapshot", False)),
         worker_snapshot_commit_payload=getattr(args, "worker_snapshot_commit_payload", None),
         launch_workers_payload=getattr(args, "launch_workers_payload", None),
-        launch_only=bool(getattr(args, "launch_only", False) or not should_wait),
+        launch_only=True,
         manifest=args.manifest,
         jobs=args.jobs,
         run=args.run,

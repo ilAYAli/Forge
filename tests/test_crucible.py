@@ -3016,7 +3016,7 @@ except SystemExit as exc:
                     ))
 
             self.assertEqual(0, rc)
-            self.assertFalse(captured["deploy"].launch_only)
+            self.assertTrue(captured["deploy"].launch_only)
             wait.assert_called_once()
             verify.assert_called_once()
             self.assertIn("start: ok; status: crucible status wait-default --verbose", stdout.getvalue())
