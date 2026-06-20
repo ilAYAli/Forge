@@ -1827,6 +1827,22 @@ SPRT_PROGRESS_RE = re.compile(
     re.IGNORECASE,
 )
 
+FASTCHESS_ELO_RE = re.compile(
+    r"Elo\s+difference:\s+(?P<elo>[+-]?(?:\d+(?:\.\d+)?|inf|nan))\s+\+/-\s+"
+    r"(?P<err>[+-]?(?:\d+(?:\.\d+)?|inf|nan)),\s+"
+    r"LOS:\s+(?P<los>[+-]?(?:\d+(?:\.\d+)?|inf|nan))\s*%,\s+"
+    r"DrawRatio:\s+(?P<draw>[+-]?(?:\d+(?:\.\d+)?|inf|nan))\s*%",
+    re.IGNORECASE,
+)
+
+FASTCHESS_SPRT_RE = re.compile(
+    r"SPRT:\s+llr\s+(?P<llr>[+-]?\d+(?:\.\d+)?)\s+"
+    r"\((?P<llr_pct>[+-]?\d+(?:\.\d+)?)%\),\s+"
+    r"lbound\s+(?P<lbound>[+-]?(?:\d+(?:\.\d+)?|inf|nan)),\s+"
+    r"ubound\s+(?P<ubound>[+-]?(?:\d+(?:\.\d+)?|inf|nan))",
+    re.IGNORECASE,
+)
+
 SPRT_PROGRESS_FIELD_KEYS = {"elo", "ci", "llr", "los", "draw"}
 
 def sprt_progress_line_fields(line: str) -> dict[str, str]:
@@ -1843,6 +1859,24 @@ def sprt_progress_line_fields(line: str) -> dict[str, str]:
         "llr": f"{llr}/{llr_bound} ({llr_pct}%)",
         "los": values["los"].strip(),
         "draw": values["draw"].strip(),
+    }
+
+def fastchess_progress_fields(text: str) -> dict[str, str]:
+    elo_match = FASTCHESS_ELO_RE.search(text)
+    sprt_match = FASTCHESS_SPRT_RE.search(text)
+    if not elo_match or not sprt_match:
+        return {}
+    elo_vals = elo_match.groupdict()
+    sprt_vals = sprt_match.groupdict()
+    llr = sprt_vals["llr"].strip()
+    ubound = sprt_vals["ubound"].strip()
+    llr_pct = sprt_vals["llr_pct"].strip()
+    return {
+        "elo": elo_vals["elo"].strip(),
+        "ci": elo_vals["err"].strip(),
+        "llr": f"{llr}/{ubound} ({llr_pct}%)",
+        "los": elo_vals["los"].strip(),
+        "draw": elo_vals["draw"].strip(),
     }
 
 def sprt_progress_line_data(line: str, config: dict[str, Any], *, eta_epoch: float) -> dict[str, Any] | None:
@@ -2340,6 +2374,8 @@ def task_log_progress_data(manifest: dict[str, Any], task: dict[str, Any]) -> di
             fields = progress_match_fields(match, config)
             for key, value in sprt_progress_line_fields(line).items():
                 fields.setdefault(key, value)
+            for key, value in fastchess_progress_fields(text).items():
+                fields.setdefault(key, value)
             if fields:
                 data["fields"] = fields
             return normalize_progress_data(data)
@@ -2349,6 +2385,23 @@ def task_log_progress_data(manifest: dict[str, Any], task: dict[str, Any]) -> di
             data = sprt_progress_line_data(line, config, eta_epoch=eta_epoch)
             if data is not None:
                 return data
+        fc_fields = fastchess_progress_fields(text)
+        if fc_fields:
+            score_match = re.search(r"Score\s+of\s+\w+\s+vs\s+\w+:.*?\[\d+\.\d+\]\s+(?P<done>\d+)", text)
+            if score_match:
+                done = parse_int(score_match.group("done"))
+                if done is not None:
+                    data = {
+                        "done": done,
+                        "unit": str(config.get("unit") or "games"),
+                        "kind": "metadata",
+                        "eta_epoch": eta_epoch,
+                        "fields": fc_fields,
+                    }
+                    total_value = config.get("total")
+                    if total_value is not None:
+                        data["total"] = total_value if isinstance(total_value, int) else parse_int(str(total_value))
+                    return normalize_progress_data(data)
 
     progress_re = re.compile(r"\[\s*\d+/\d+\s+(\d+)\s*/\s*(\d+)\]")
     for line in reversed(text.splitlines()):
