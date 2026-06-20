@@ -1827,6 +1827,22 @@ SPRT_PROGRESS_RE = re.compile(
     re.IGNORECASE,
 )
 
+SPRT_NEW_FORMAT_ELO_RE = re.compile(
+    r"Elo\s+difference:\s+(?P<elo>[+-]?(?:\d+(?:\.\d+)?|inf|nan))\s+\+/-\s+"
+    r"(?P<err>[+-]?(?:\d+(?:\.\d+)?|inf|nan)),\s+"
+    r"LOS:\s+(?P<los>[+-]?(?:\d+(?:\.\d+)?|inf|nan))\s*%,\s+"
+    r"DrawRatio:\s+(?P<draw>[+-]?(?:\d+(?:\.\d+)?|inf|nan))\s*%",
+    re.IGNORECASE,
+)
+
+SPRT_NEW_FORMAT_LLR_RE = re.compile(
+    r"SPRT:\s+llr\s+(?P<llr>[+-]?\d+(?:\.\d+)?)\s+"
+    r"\(\s*(?P<llr_pct>[+-]?\d+(?:\.\d+)?)%\),\s+"
+    r"lbound\s+(?P<lbound>[+-]?(?:\d+(?:\.\d+)?|inf|nan)),\s+"
+    r"ubound\s+(?P<ubound>[+-]?(?:\d+(?:\.\d+)?|inf|nan))",
+    re.IGNORECASE,
+)
+
 SPRT_PROGRESS_FIELD_KEYS = {"elo", "ci", "llr", "los", "draw"}
 
 def sprt_progress_line_fields(line: str) -> dict[str, str]:
@@ -1863,6 +1879,47 @@ def sprt_progress_line_data(line: str, config: dict[str, Any], *, eta_epoch: flo
     }
     if total is not None:
         data["total"] = total
+    return normalize_progress_data(data)
+
+def sprt_new_format_fields(text: str) -> dict[str, str]:
+    elo_match = SPRT_NEW_FORMAT_ELO_RE.search(text)
+    llr_match = SPRT_NEW_FORMAT_LLR_RE.search(text)
+    if not elo_match or not llr_match:
+        return {}
+    elo_values = elo_match.groupdict()
+    llr_values = llr_match.groupdict()
+    llr = llr_values["llr"].strip()
+    llr_bound = llr_values["ubound"].strip()
+    llr_pct = llr_values["llr_pct"].strip()
+    return {
+        "elo": elo_values["elo"].strip(),
+        "ci": elo_values["err"].strip(),
+        "llr": f"{llr}/{llr_bound} ({llr_pct}%)",
+        "los": elo_values["los"].strip(),
+        "draw": elo_values["draw"].strip(),
+    }
+
+def sprt_new_format_data(text: str, config: dict[str, Any], *, eta_epoch: float) -> dict[str, Any] | None:
+    score_match = re.search(r"Score\s+of\s+\w+\s+vs\s+\w+:.*?\[[\d.]+\]\s+(?P<done>\d+)", text)
+    if not score_match:
+        return None
+    fields = sprt_new_format_fields(text)
+    if not fields:
+        return None
+    done = parse_int(score_match.group("done"))
+    if done is None:
+        return None
+    data: dict[str, Any] = {
+        "done": done,
+        "unit": str(config.get("unit") or "games"),
+        "output_unit": str(config.get("output_unit") or "output"),
+        "kind": "metadata",
+        "eta_epoch": eta_epoch,
+        "fields": fields,
+    }
+    total_value = config.get("total")
+    if total_value is not None:
+        data["total"] = total_value if isinstance(total_value, int) else parse_int(str(total_value))
     return normalize_progress_data(data)
 
 def progress_field_float(fields: dict[str, str], *names: str) -> float | None:
@@ -2349,6 +2406,9 @@ def task_log_progress_data(manifest: dict[str, Any], task: dict[str, Any]) -> di
             data = sprt_progress_line_data(line, config, eta_epoch=eta_epoch)
             if data is not None:
                 return data
+        data = sprt_new_format_data(text, config, eta_epoch=eta_epoch)
+        if data is not None:
+            return data
 
     progress_re = re.compile(r"\[\s*\d+/\d+\s+(\d+)\s*/\s*(\d+)\]")
     for line in reversed(text.splitlines()):
