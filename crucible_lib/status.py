@@ -1615,6 +1615,8 @@ def run_summary_for(run: str | Path, *, lease_seconds: int) -> dict[str, Any]:
     return summary
 
 def cmd_stop(args: argparse.Namespace) -> int:
+    from .workers import kill_run_workers
+
     coordinator_runs = configured_coordinator_runs()
     if coordinator_runs and status_can_delegate(args.run):
         return run_state_control_on_coordinator("stop", args, coordinator_runs)
@@ -1646,8 +1648,11 @@ def cmd_stop(args: argparse.Namespace) -> int:
             launch_path.unlink()
             cleared.append("launch")
         released = release_active_claims(manifest, lease_seconds=args.lease_seconds)
+        killed = kill_run_workers(path.parent)
         stopped += 1
         message = f"stop requested: {path.parent.name} released={len(released)}"
+        if killed:
+            message += f" killed={killed}"
         if cleared:
             message += f" cleared={','.join(cleared)}"
         print(message)

@@ -974,6 +974,33 @@ def cleanup_detached_shell_command(pid_file: str) -> str:
         "fi"
     )
 
+def kill_run_workers(run_dir: Path, *, timeout: float = 15.0) -> int:
+    workers_path = run_dir / RUN_WORKERS_NAME
+    if not workers_path.exists():
+        return 0
+    workers = load_workers(workers_path)
+    run_name = run_dir.name
+    host_scripts: dict[str, list[str]] = {}
+    for index, worker in enumerate(workers):
+        if is_local_worker(worker):
+            continue
+        host = str(worker["host"])
+        pid_file, _ = worker_launch_files(run_name, index, worker)
+        host_scripts.setdefault(host, []).append(cleanup_detached_shell_command(pid_file))
+
+    killed = 0
+    for host, scripts in host_scripts.items():
+        script = "; ".join(scripts)
+        command = ["ssh", *SSH_OPTS, host, managed_remote_script(script)]
+        try:
+            result = subprocess.run(command, capture_output=True, text=True, timeout=timeout)
+            if result.returncode == 0:
+                killed += len(scripts)
+        except (subprocess.TimeoutExpired, OSError):
+            pass
+    return killed
+
+
 def start_wait_monitor(
     *,
     run_dir: Path,
