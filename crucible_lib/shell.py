@@ -82,6 +82,7 @@ def cmd_sh(args: argparse.Namespace) -> int:
     jobs = max(1, int(args.jobs))
     tracker = ProcessTracker()
     failed = 0
+    print_lock = threading.Lock()
 
     labels = [shell_worker_label(worker) for worker in workers]
     print(f"sh: running on {len(workers)} host(s): {', '.join(labels)}", flush=True)
@@ -94,7 +95,8 @@ def cmd_sh(args: argparse.Namespace) -> int:
             for future in concurrent.futures.as_completed(futures):
                 label = futures[future]
                 result = future.result()
-                print_shell_result(label, result)
+                with print_lock:
+                    print_shell_result(label, result)
                 if result.returncode != 0:
                     failed += 1
     except KeyboardInterrupt:
