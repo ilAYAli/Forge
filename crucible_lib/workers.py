@@ -435,6 +435,57 @@ def add_worker_payload_slots(base_payload: dict[str, Any], add_payload: dict[str
             merged.append(worker)
     return workers_payload_from_records(merged)
 
+def worker_set_record_from_arg(value: str, *, inline_defaults_path: str | Path | None = None) -> dict[str, Any]:
+    if "," in value:
+        raise SystemExit("worker set accepts a single worker spec")
+    host, profile, slots = parse_inline_worker_spec(value)
+    if slots is None:
+        raise SystemExit(f"{value}: worker set requires an explicit slot count")
+    defaults = default_inline_worker_records(inline_defaults_path)
+    base = dict(defaults.get(host, {}))
+    record = base if base else {
+        "host": host,
+        "profile": host,
+        "local": host in ("localhost", "127.0.0.1"),
+    }
+    record["host"] = host
+    if profile is not None:
+        record["profile"] = profile
+    elif not record.get("profile"):
+        record["profile"] = host
+    if "local" not in record:
+        record["local"] = host in ("localhost", "127.0.0.1")
+    return set_worker_record_slots(record, slots)
+
+def worker_slots_for_host(payload: dict[str, Any], host: str) -> int:
+    slots = 0
+    for worker in worker_records_from_payload(payload, label="workers", allow_empty=True):
+        if worker_host(worker) == host:
+            slots = worker_record_slots(worker)
+    return slots
+
+def set_worker_payload_slots(base_payload: dict[str, Any], set_worker: dict[str, Any]) -> dict[str, Any]:
+    host = worker_host(set_worker)
+    desired_slots = worker_record_slots(set_worker)
+    records: list[dict[str, Any]] = []
+    replaced = False
+    for worker in worker_records_from_payload(base_payload, label="base workers", allow_empty=True):
+        if worker_host(worker) != host:
+            records.append(worker)
+            continue
+        if desired_slots > 0 and not replaced:
+            records.append(set_worker_record_slots(set_worker, desired_slots))
+            replaced = True
+    if desired_slots > 0 and not replaced:
+        records.append(set_worker_record_slots(set_worker, desired_slots))
+    return workers_payload_from_records(records)
+
+def worker_inline_arg_for_slots(worker: dict[str, Any], slots: int) -> str:
+    host = worker_host(worker)
+    profile = str(worker.get("profile") or host).strip()
+    prefix = host if profile == host else f"{host}={profile}"
+    return f"{prefix}:{slots}"
+
 def remove_worker_from_payload(payload: dict[str, Any], host: str) -> tuple[dict[str, Any], int]:
     removed = 0
     records: list[dict[str, Any]] = []
@@ -2175,7 +2226,7 @@ def worker_control_command_args(action: str, args: argparse.Namespace) -> list[s
     command = ["worker", action, str(args.worker)]
     if args.run is not None:
         command.append(str(args.run))
-    if action == "add":
+    if action in ("add", "set"):
         if bool(getattr(args, "wait", False)):
             command.append("--wait")
         if getattr(args, "verify", None) is True:
@@ -2420,7 +2471,13 @@ def worker_hosts_from_inline(value: str) -> list[str]:
     hosts = {str(worker.get("host") or "").strip() for worker in workers}
     return sorted(host for host in hosts if host)
 
-def clear_worker_drains(manifest: dict[str, Any], hosts: list[str], *, run_name: str) -> int:
+def clear_worker_drains(
+    manifest: dict[str, Any],
+    hosts: list[str],
+    *,
+    run_name: str,
+    label: str = "worker add",
+) -> int:
     cleared = 0
     for host in hosts:
         marker = worker_drain_path(manifest, host)
@@ -2428,7 +2485,7 @@ def clear_worker_drains(manifest: dict[str, Any], hosts: list[str], *, run_name:
             continue
         marker.unlink()
         cleared += 1
-        print(f"worker add: cleared drain for {run_name} {host}")
+        print(f"{label}: cleared drain for {run_name} {host}")
     return cleared
 
 def cmd_worker_add(args: argparse.Namespace) -> int:
@@ -2480,6 +2537,90 @@ def cmd_worker_add(args: argparse.Namespace) -> int:
             command_label="worker add",
         )
         failed += 1 if cmd_run_job(resume_args) else 0
+    return 1 if failed else 0
+
+def cmd_worker_set(args: argparse.Namespace) -> int:
+    coordinator_runs = configured_coordinator_runs()
+    if coordinator_runs and status_can_delegate(args.run):
+        return run_worker_control_on_coordinator("set", args, coordinator_runs)
+    targets = worker_run_paths(args.run, lease_seconds=args.lease_seconds)
+    failed = 0
+    for run_name, manifest_path, workers_path in targets:
+        set_worker = worker_set_record_from_arg(
+            str(args.worker),
+            inline_defaults_path=workers_path,
+        )
+        host = worker_host(set_worker)
+        desired_slots = worker_record_slots(set_worker)
+        current_payload = read_json(workers_path)
+        current_slots = worker_slots_for_host(current_payload, host)
+        next_payload = set_worker_payload_slots(current_payload, set_worker)
+        delta = desired_slots - current_slots
+
+        if delta > 0:
+            manifest = load_manifest(manifest_path)
+            launch_worker = set_worker_record_slots(set_worker, delta)
+            launch_payload = workers_payload_from_records([launch_worker])
+            launch_workers = worker_inline_arg_for_slots(set_worker, delta)
+            clear_worker_drains(manifest, [host], run_name=run_name, label="worker set")
+            resume_args = argparse.Namespace(
+                manifest=str(manifest_path),
+                workers=launch_workers,
+                worker_defaults=str(workers_path),
+                worker_snapshot_payload=None,
+                preserve_workers_snapshot=True,
+                worker_snapshot_commit_payload=next_payload,
+                launch_workers_payload=launch_payload,
+                launch_only=True,
+                jobs=args.jobs,
+                run=run_name,
+                resume=True,
+                replace=False,
+                retry_failed=False,
+                task_attempts=getattr(args, "task_attempts", 2),
+                coordinator_host=args.coordinator_host,
+                remote_timeout_seconds=args.remote_timeout_seconds,
+                wait=args.wait,
+                lease_seconds=args.lease_seconds,
+                interval_seconds=args.interval_seconds,
+                timeout_seconds=args.timeout_seconds,
+                fail_on_fail=args.fail_on_fail,
+                verify=args.verify,
+                merge=args.merge,
+                merge_force=args.merge_force,
+                newline_between=args.newline_between,
+                notify_command=args.notify_command,
+                no_color=args.no_color,
+                verbose=args.verbose,
+                command_label="worker set",
+            )
+            failed += 1 if cmd_run_job(resume_args) else 0
+            continue
+
+        write_json(workers_path, next_payload)
+        if delta == 0:
+            print(f"worker set: {run_name} {host} slots={desired_slots} unchanged")
+            continue
+
+        manifest = load_manifest(manifest_path)
+        release_count = 0 if desired_slots <= 0 else -delta
+        released = release_worker_claims(
+            manifest,
+            worker=host,
+            count=release_count,
+            lease_seconds=args.lease_seconds,
+        )
+        if desired_slots <= 0:
+            drain_dir(manifest).mkdir(parents=True, exist_ok=True)
+            write_json(worker_drain_path(manifest, host), {
+                "schema": SCHEMA,
+                "run": run_name,
+                "worker": host,
+                "requested_at": now(),
+                "requested_epoch": epoch(),
+                "host": socket.gethostname(),
+            })
+        print(f"worker set: {run_name} {host} slots={current_slots}->{desired_slots} released={len(released)}")
     return 1 if failed else 0
 
 def cmd_resume(args: argparse.Namespace) -> int:

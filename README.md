@@ -189,6 +189,7 @@ Add worker slots to an incomplete run:
 crucible add --worker worker-c:4
 crucible add --worker worker-c:4 my-run
 crucible worker add worker-c:4 my-run
+crucible worker set worker-c:6 my-run
 ```
 
 `add --worker` starts additional worker slots against the materialized run.
@@ -199,6 +200,11 @@ marker for that worker, adds the worker slots to the run's `workers.json`, and
 validates setup before tasks can be claimed. Existing workers are not restarted.
 Omit the run name only when exactly one active run exists. `worker add` is the
 explicit subcommand form.
+
+Use `worker set` when you want the argument to be the desired total slot count.
+If `worker-c` already has four slots, `crucible worker set worker-c:6 my-run`
+starts two additional slots and records six total slots in the run's
+`workers.json`.
 
 Drain a worker from a run:
 

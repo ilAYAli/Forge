@@ -139,11 +139,18 @@ class CrucibleArgumentParser(argparse.ArgumentParser):
         )
 
 
-def add_worker_add_options(parser: argparse.ArgumentParser, *, worker_positional: bool) -> None:
+def add_worker_add_options(
+    parser: argparse.ArgumentParser,
+    *,
+    worker_positional: bool,
+    set_total: bool = False,
+) -> None:
+    verb = "sets the total slot count to" if set_total else "adds"
+    help_text = f"Inline worker spec; worker-a:5 {verb} five slots."
     if worker_positional:
-        parser.add_argument("worker", help="Inline worker spec; worker-a:5 adds five slots.")
+        parser.add_argument("worker", help=help_text)
     else:
-        parser.add_argument("--worker", required=True, help="Inline worker spec; worker-a:5 adds five slots.")
+        parser.add_argument("--worker", required=True, help=help_text)
     parser.add_argument("run", nargs="?", help="Run name or run directory. Omit to use the single active run.")
     parser.add_argument("--jobs", type=int, default=4, help="Maximum workers to prepare concurrently.")
     parser.add_argument("--task-attempts", type=int, default=2, help="Total attempts per task before final failure.")
@@ -567,6 +574,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     add_worker_add_options(worker_add, worker_positional=True)
     worker_add.set_defaults(func=cmd_worker_add)
+
+    worker_set = worker_sub.add_parser(
+        "set",
+        help="Set total worker slots for a materialized run.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    add_worker_add_options(worker_set, worker_positional=True, set_total=True)
+    worker_set.set_defaults(func=cmd_worker_set)
 
     worker_del = worker_sub.add_parser(
         "del",
