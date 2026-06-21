@@ -58,21 +58,21 @@ def indent_lines(text: str, *, prefix: str = "  ") -> list[str]:
     return [prefix + line for line in text.rstrip("\n").splitlines()]
 
 
-def print_shell_result(label: str, result: subprocess.CompletedProcess[str]) -> None:
+def format_shell_result(label: str, result: subprocess.CompletedProcess[str]) -> str:
     status = "OK" if result.returncode == 0 else f"FAILED rc={result.returncode}"
-    print(f"{label}: {status}", flush=True)
+    lines = [f"{label}: {status}"]
     stdout = result.stdout or ""
     stderr = result.stderr or ""
     if stdout and stderr:
-        print("  stdout:")
-        print("\n".join(indent_lines(stdout, prefix="    ")))
-        print("  stderr:")
-        print("\n".join(indent_lines(stderr, prefix="    ")))
-        return
-    output = stdout or stderr
-    if not output:
-        return
-    print("\n".join(indent_lines(output)), flush=True)
+        lines.append("  stdout:")
+        lines.extend(indent_lines(stdout, prefix="    "))
+        lines.append("  stderr:")
+        lines.extend(indent_lines(stderr, prefix="    "))
+    else:
+        output = stdout or stderr
+        if output:
+            lines.extend(indent_lines(output))
+    return "\n".join(lines) + "\n"
 
 
 def cmd_sh(args: argparse.Namespace) -> int:
@@ -96,7 +96,8 @@ def cmd_sh(args: argparse.Namespace) -> int:
                 label = futures[future]
                 result = future.result()
                 with print_lock:
-                    print_shell_result(label, result)
+                    sys.stdout.write(format_shell_result(label, result))
+                    sys.stdout.flush()
                 if result.returncode != 0:
                     failed += 1
     except KeyboardInterrupt:
