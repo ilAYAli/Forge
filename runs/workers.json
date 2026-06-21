@@ -17,6 +17,11 @@
       "profile": "pwa-mbp",
       "python": "/opt/homebrew/bin/python3",
       "slots": 4
+    },
+    {
+      "host": "pwa-wsl",
+      "profile": "linux",
+      "slots": 4
     }
   ]
 }
