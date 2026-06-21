@@ -7394,7 +7394,7 @@ except SystemExit as exc:
         }
         self.assertEqual("progress=rows=200/400, eta=10s", crucible.summary_progress(summary))
 
-    def test_summary_eta_uses_aggregate_rate_not_noisy_slowest_task(self) -> None:
+    def test_summary_eta_respects_slowest_active_task(self) -> None:
         summary = {
             "active": [
                 {
@@ -7423,7 +7423,7 @@ except SystemExit as exc:
             "progress_done": {"rows": 100},
             "progress_totals": {"rows": 400},
         }
-        self.assertEqual("progress=rows=200/400, eta=10s", crucible.summary_progress(summary))
+        self.assertEqual("progress=rows=200/400, eta=30s", crucible.summary_progress(summary))
 
     def test_summary_eta_counts_claimed_work_without_claimed_rate(self) -> None:
         summary = {
@@ -7680,6 +7680,68 @@ except SystemExit as exc:
                 self.assertNotIn("  active: 1 games=1500/2000", text)
                 self.assertIn("worker-a shard=1 [games=500/1000, eta=1m40s]", text)
 
+    def test_status_prefers_active_heartbeat_progress_over_stale_log(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            state = root / "state"
+            logs = root / "logs"
+            claims = root / "claims"
+            state.mkdir()
+            logs.mkdir()
+            manifest = {
+                "schema": "crucible.task.v1",
+                "name": "sprt",
+                "work_dir": str(root),
+                "state_dir": str(state),
+                "log_dir": str(logs),
+                "claim_dir": str(claims),
+                "tasks": [{
+                    "id": "sprt_0049",
+                    "index": 49,
+                    "command": "true",
+                    "outputs": [],
+                    "progress": {
+                        "unit": "games",
+                        "total": 40,
+                        "log_regex": r"\[\s*\d+/\d+\s+(?P<done>\d+)\s*/\s*(?P<total>\d+)\]",
+                    },
+                }],
+            }
+            task = manifest["tasks"][0]
+            crucible.write_json(
+                crucible.task_running_path(manifest, task),
+                {"task": "sprt_0049", "worker": "pwa-5090", "started_epoch": 1000.0},
+            )
+            claim_payload = {
+                "task": "sprt_0049",
+                "claim_id": "claim-49",
+                "worker": "pwa-5090",
+                "claimed_epoch": 1000.0,
+                "heartbeat_epoch": 1100.0,
+                "lease_seconds": 600,
+            }
+            crucible.task_claim_dir(manifest, task).mkdir(parents=True)
+            crucible.write_json(crucible.task_claim_path(manifest, task), claim_payload)
+            crucible.write_json(
+                crucible.task_heartbeat_path(manifest, task),
+                {
+                    **claim_payload,
+                    "progress_data": {
+                        "kind": "metadata",
+                        "done": 28,
+                        "total": 40,
+                        "unit": "games",
+                        "rate": 0.2,
+                    },
+                },
+            )
+            (logs / "sprt_0049.log").write_text("[1/1 2/40]\n", encoding="utf-8")
+
+            with mock.patch("crucible_lib.tasks.epoch", return_value=1100.0):
+                summary = crucible.status_summary(manifest, lease_seconds=600)
+
+            self.assertEqual("games=28/40, eta=1m00s", summary["active"][0]["progress"])
+
     def test_status_uses_completed_rate_when_running_task_has_no_progress_yet(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -7749,7 +7811,7 @@ except SystemExit as exc:
                 )
                 self.assertEqual(0, rc)
                 text = stdout.getvalue()
-                self.assertIn("  tasks=1/2 games=1000/2000 eta=1m39s", text)
+                self.assertIn("  tasks=1/2 games=1000/2000 eta=1m40s", text)
                 self.assertIn("  active: 1", text)
                 self.assertNotIn("  active: 1 games=1000/2000", text)
                 self.assertIn("worker-a shard=1 [games=0/1000]", text)
