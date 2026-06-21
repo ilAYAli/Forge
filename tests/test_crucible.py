@@ -4828,17 +4828,40 @@ except SystemExit as exc:
                 "state_dir": str(root / "wait-fail" / "state"),
                 "log_dir": str(root / "wait-fail" / "logs"),
                 "claim_dir": str(root / "wait-fail" / "claims"),
-                "tasks": [{
-                    "id": "task_0",
-                    "index": 0,
-                    "command": "false",
-                    "outputs": [str(out)],
-                }],
+                "tasks": [
+                    {
+                        "id": "task_0",
+                        "index": 0,
+                        "command": "false",
+                        "outputs": [str(out)],
+                    },
+                    {
+                        "id": "task_1",
+                        "index": 1,
+                        "command": "sleep 60",
+                        "outputs": [],
+                    },
+                ],
             })
             loaded = crucible.load_manifest(manifest)
             crucible.write_json(crucible.task_fail_path(loaded, loaded["tasks"][0]), {
                 "worker": {"host": "worker-a"},
                 "rc": 1,
+            })
+            running_task = loaded["tasks"][1]
+            claim_payload = {
+                "task": "task_1",
+                "claim_id": "claim-1",
+                "worker": "worker-b",
+                "claimed_epoch": crucible.epoch(),
+                "heartbeat_epoch": crucible.epoch(),
+                "lease_seconds": 600,
+            }
+            crucible.write_json(crucible.task_claim_path(loaded, running_task), claim_payload)
+            crucible.write_json(crucible.task_heartbeat_path(loaded, running_task), claim_payload)
+            crucible.write_json(crucible.task_running_path(loaded, running_task), {
+                "task": "task_1",
+                "worker": "worker-b",
             })
             payloads: list[dict[str, object]] = []
 
@@ -4856,12 +4879,19 @@ except SystemExit as exc:
                 fail_on_fail=True,
                 notify_command="notify-me",
             )
-            with mock.patch("crucible_lib.status.run_notify_command", capture_notify):
+            with (
+                mock.patch("crucible_lib.status.run_notify_command", capture_notify),
+                mock.patch("crucible_lib.workers.kill_run_workers", return_value=2) as kill_workers,
+            ):
                 stdout = io.StringIO()
                 with contextlib.redirect_stdout(stdout):
                     rc = crucible.cmd_wait(args)
 
             self.assertEqual(1, rc)
+            kill_workers.assert_called_once_with(manifest.parent)
+            self.assertTrue(crucible.stop_request_path(loaded).exists())
+            self.assertFalse(crucible.task_claim_dir(loaded, running_task).exists())
+            self.assertFalse(crucible.task_running_path(loaded, running_task).exists())
             self.assertEqual(1, len(payloads))
             payload = payloads[0]
             self.assertEqual("run_fail", payload["event"])
@@ -4869,6 +4899,8 @@ except SystemExit as exc:
             self.assertEqual("failed", payload["state"])
             self.assertEqual(1, payload["rc"])
             self.assertEqual(1, payload["counts"]["fail"])
+            self.assertEqual(1, payload["counts"]["pending"])
+            self.assertEqual(0, payload["active_count"])
             summary = json.loads((manifest.parent / "summary.json").read_text(encoding="utf-8"))
             self.assertEqual("run_fail", summary["event"])
             self.assertEqual("failed", summary["state"])
