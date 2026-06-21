@@ -82,7 +82,7 @@ def cmd_sh(args: argparse.Namespace) -> int:
     jobs = max(1, int(args.jobs))
     tracker = ProcessTracker()
     failed = 0
-    results: list[tuple[str, subprocess.CompletedProcess[str]]] = []
+    stdout_fd = sys.stdout.fileno()
 
     labels = [shell_worker_label(worker) for worker in workers]
     print(f"sh: running on {len(workers)} host(s): {', '.join(labels)}", flush=True)
@@ -95,16 +95,12 @@ def cmd_sh(args: argparse.Namespace) -> int:
             for future in concurrent.futures.as_completed(futures):
                 label = futures[future]
                 result = future.result()
-                results.append((label, result))
+                os.write(stdout_fd, format_shell_result(label, result).encode())
                 if result.returncode != 0:
                     failed += 1
     except KeyboardInterrupt:
         tracker.terminate_all()
         raise
-
-    for label, result in results:
-        sys.stdout.write(format_shell_result(label, result))
-    sys.stdout.flush()
 
     if failed:
         print(f"sh: failed on {failed}/{len(workers)} host(s)", file=sys.stderr)
