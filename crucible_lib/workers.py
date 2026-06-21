@@ -1791,16 +1791,25 @@ def cmd_deploy(args: argparse.Namespace) -> int:
                             error=True,
                         )
                     else:
-                        startup_failed = True
-                        status(
-                            colorize(
-                                "deploy: workers did not become active; stopping launched workers",
-                                "red",
-                                enabled=color_enabled,
-                            ),
-                            error=True,
-                        )
-                        cleanup_failed_launch(launch_results, "workers did not become active after launch")
+                        if bool(getattr(args, "resume", False)):
+                            status(
+                                colorize(
+                                    "deploy: workers launched but not yet active (resume; not aborting)",
+                                    "yellow",
+                                    enabled=color_enabled,
+                                ),
+                            )
+                        else:
+                            startup_failed = True
+                            status(
+                                colorize(
+                                    "deploy: workers did not become active; stopping launched workers",
+                                    "red",
+                                    enabled=color_enabled,
+                                ),
+                                error=True,
+                            )
+                            cleanup_failed_launch(launch_results, "workers did not become active after launch")
             else:
                 task_message = (
                     "deploy: setup complete; starting tasks"
