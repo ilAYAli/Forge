@@ -584,6 +584,7 @@ except SystemExit as exc:
         self.assertIn("function attrEsc", web._HTML)
         self.assertIn("{queued:0,current:1,failed:2,stopped:3,done:4,empty:5}", web._HTML)
         self.assertIn("failCount > 0 && activeCount === 0", web._HTML)
+        self.assertIn("runCmd('${runArg}','retry',this)", web._HTML)
         self.assertIn("runCmd('${runArg}','del',this)", web._HTML)
         self.assertIn(".act.del", web._HTML)
         self.assertIn("function runStoppedEarly", web._HTML)
@@ -3299,6 +3300,47 @@ except SystemExit as exc:
             self.assertEqual(str(alternate_workers), retry_args.workers)
             self.assertTrue(retry_args.resume)
             self.assertTrue(retry_args.retry_failed)
+
+    def test_retry_clears_stop_and_queue_before_restart(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runs = Path(tmp) / "runs"
+            run = self.write_retry_run(runs, "failed-a", failed=True)
+            manifest = crucible.load_manifest(run / "manifest.json")
+            crucible.write_json(crucible.stop_request_path(manifest), {
+                "schema": "crucible.task.v1",
+                "run": "failed-a",
+            })
+            crucible.write_json(crucible.queue_request_path(manifest), {
+                "schema": "crucible.task.v1",
+                "run": "failed-a",
+            })
+
+            with (
+                self.patch_runs_dir(runs),
+                mock.patch("crucible_lib.workers.cmd_run_job", return_value=0) as run_job,
+            ):
+                stdout = io.StringIO()
+                with contextlib.redirect_stdout(stdout):
+                    rc = crucible.cmd_retry(self.retry_args(run="failed-a"))
+
+            self.assertEqual(0, rc)
+            self.assertFalse(crucible.stop_request_path(manifest).exists())
+            self.assertFalse(crucible.queue_request_path(manifest).exists())
+            output = stdout.getvalue()
+            self.assertIn("retry: cleared stop request for failed-a", output)
+            self.assertIn("retry: cleared queue request for failed-a", output)
+            retry_args = run_job.call_args.args[0]
+            self.assertTrue(retry_args.retry_failed)
+            self.assertEqual("retry", retry_args.command_label)
+
+    def test_queued_retry_command_stays_retry(self) -> None:
+        args = self.retry_args(run="failed-a")
+        args.retry_failed = True
+
+        command = crucible.queue_resume_command(args, "failed-a")
+
+        self.assertEqual("retry", Path(command[2]).name if "/" in command[2] else command[2])
+        self.assertEqual("failed-a", command[3])
 
     def test_retry_named_run_delegates_to_coordinator(self) -> None:
         remote_result = subprocess.CompletedProcess(
