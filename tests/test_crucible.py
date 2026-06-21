@@ -2191,6 +2191,28 @@ except SystemExit as exc:
         self.assertEqual(8, manifest["template"]["parameters"]["shards"])
         self.assertEqual(8, len(manifest["tasks"]))
 
+    def test_sprt_command_auto_shards_can_use_short_game_shards(self) -> None:
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            rc = crucible.cmd_template_run(argparse.Namespace(
+                template="sprt",
+                template_args=[
+                    "--dry-run",
+                    "--workers", "pwa-5090:7,pwa-mbp0:5,pwa-mbp:4",
+                    "--candidate", "~/assets/engines/enyo_91ede5f",
+                    "--games", "400",
+                ],
+            ))
+        manifest = json.loads(stdout.getvalue())
+        totals = [task["progress"]["total"] for task in manifest["tasks"]]
+
+        self.assertEqual(0, rc)
+        self.assertEqual(128, manifest["template"]["parameters"]["shards"])
+        self.assertEqual(128, len(manifest["tasks"]))
+        self.assertEqual(400, sum(totals))
+        self.assertEqual(2, min(totals))
+        self.assertEqual(4, max(totals))
+
     def test_run_template_uses_default_workers(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
