@@ -906,6 +906,7 @@ def deploy_work_command(
     manifest: dict[str, Any],
     coordinator: str,
     retry_failed: bool = False,
+    task_attempts: int = 0,
 ) -> str:
     runner = worker_cache_file(worker, "crucible.py")
     manifest_path = worker_cache_file(worker, "manifest.json")
@@ -922,6 +923,8 @@ def deploy_work_command(
     ]
     if retry_failed:
         command.append("--retry-failed")
+    if task_attempts > 0:
+        command.extend(["--task-attempts", str(task_attempts)])
     return shell_join(command)
 
 def launch_file_stem(run_name: str, index: int, worker: dict[str, Any]) -> str:
@@ -1560,6 +1563,7 @@ def cmd_deploy(args: argparse.Namespace) -> int:
                 force_remote=force_remote_coordinator,
             ),
             retry_failed=bool(getattr(args, "retry_failed", False)),
+            task_attempts=int(getattr(args, "task_attempts", 0)),
         )
         result = run_worker_shell(worker, script, timeout=remote_timeout, tracker=tracker)
         if result.returncode == 0:
@@ -1584,6 +1588,7 @@ def cmd_deploy(args: argparse.Namespace) -> int:
                 force_remote=force_remote_coordinator,
             ),
             retry_failed=bool(getattr(args, "retry_failed", False)),
+            task_attempts=int(getattr(args, "task_attempts", 0)),
         )
         result = run_worker_shell(
             worker,
