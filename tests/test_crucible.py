@@ -10147,6 +10147,80 @@ except SystemExit as exc:
             self.assertIn("start_new_session=True", launch_scripts[0])
             self.assertIn("--worker worker-b", launch_scripts[0])
 
+    def test_deploy_resume_launch_only_does_not_kill_existing_workers(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            runs = root / "runs"
+            run_dir = runs / "resume-launch"
+            run_dir.mkdir(parents=True)
+            manifest = {
+                "schema": "crucible.task.v1",
+                "name": "resume-launch",
+                "work_dir": str(root),
+                "state_dir": str(run_dir / "state"),
+                "log_dir": str(run_dir / "logs"),
+                "claim_dir": str(run_dir / "claims"),
+                "requirements": {"python_min": "3.11", "git_min": "2.38"},
+                "tasks": [{"id": "task_0000", "index": 0, "command": "true", "outputs": []}],
+            }
+            crucible.write_json(run_dir / "manifest.json", manifest)
+            crucible.write_json(run_dir / "workers.json", {
+                "schema": "crucible.workers.v1",
+                "workers": [
+                    {"host": "worker-a", "profile": "worker-a", "local": True, "cache_dir": str(root / "cache-a")},
+                    {"host": "worker-b", "profile": "worker-b", "local": True, "cache_dir": str(root / "cache-b")},
+                ],
+            })
+            launch_payload = {
+                "schema": "crucible.workers.v1",
+                "workers": [
+                    {"host": "worker-b", "profile": "worker-b", "local": True, "cache_dir": str(root / "cache-b")},
+                ],
+            }
+
+            def fake_run(self, command, **kwargs):
+                if " work " in command[-1]:
+                    loaded = crucible.load_manifest(run_dir / "manifest.json")
+                    task = loaded["tasks"][0]
+                    crucible.write_json(crucible.task_running_path(loaded, task), {
+                        "task": task["id"],
+                        "index": task["index"],
+                        "worker": "worker-b",
+                        "state": "running",
+                    })
+                return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+            args = argparse.Namespace(
+                manifest=str(run_dir / "manifest.json"),
+                workers="worker-b",
+                worker_snapshot_payload=None,
+                preserve_workers_snapshot=True,
+                worker_snapshot_commit_payload=None,
+                launch_workers_payload=launch_payload,
+                jobs=1,
+                run="resume-launch",
+                resume=True,
+                replace=False,
+                launch_only=True,
+                remote_timeout_seconds=1800.0,
+                no_color=True,
+                verbose=False,
+            )
+            with (
+                self.patch_runs_dir(runs),
+                mock.patch("crucible.ProcessTracker.run", fake_run),
+                mock.patch("crucible_lib.workers.kill_run_workers") as kill_workers,
+            ):
+                stdout = io.StringIO()
+                with contextlib.redirect_stdout(stdout):
+                    rc = crucible.cmd_deploy(args)
+
+            self.assertEqual(0, rc)
+            kill_workers.assert_not_called()
+            output = stdout.getvalue()
+            self.assertIn("deploy: workers active", output)
+            self.assertIn("deploy: launch complete", output)
+
     def test_deploy_launch_only_accepts_post_launch_progress(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

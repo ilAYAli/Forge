@@ -1865,7 +1865,8 @@ def cmd_deploy(args: argparse.Namespace) -> int:
             executor.shutdown(wait=True)
             executor = concurrent.futures.ThreadPoolExecutor(max_workers=max(1, len(ready_worker_items)))
             if bool(getattr(args, "launch_only", False)):
-                kill_run_workers(run_dir)
+                if not bool(getattr(args, "resume", False)):
+                    kill_run_workers(run_dir)
                 launch_message = (
                     "deploy: setup complete; launching workers"
                     if setup_failed == 0
