@@ -2519,7 +2519,7 @@ def status_summary(manifest: dict[str, Any], *, lease_seconds: int) -> dict[str,
             progress_totals[unit] = progress_totals.get(unit, 0) + total
             if state == "done":
                 progress_done[unit] = progress_done.get(unit, 0) + total
-        progress_data = task_log_progress_data(manifest, task) if state == "done" else None
+        progress_data = task_log_progress_data(manifest, task) if state in {"done", "fail"} else None
         if state in {"running", "claimed", "stale"}:
             progress_data = task_heartbeat_progress_data(manifest, task)
             if progress_data is None and state in {"running", "stale"}:
@@ -2527,6 +2527,11 @@ def status_summary(manifest: dict[str, Any], *, lease_seconds: int) -> dict[str,
         running_payload = task_running_payload(manifest, task) if state in {"running", "claimed", "stale"} else None
         if isinstance(progress_config, dict):
             progress_data = infer_progress_rate(progress_data, running_payload)
+        if progress_data is not None and config_progress is not None and state == "fail":
+            unit, task_total = config_progress
+            observed = progress_data.get("done")
+            if isinstance(observed, int) and observed > 0:
+                progress_done[unit] = progress_done.get(unit, 0) + min(observed, task_total)
         if progress_data is None and config_progress is not None and state in {"running", "claimed", "stale"}:
             unit, total = config_progress
             progress_data = fallback_progress_data(
