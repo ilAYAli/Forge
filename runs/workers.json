@@ -21,7 +21,7 @@
     {
       "host": "pwa-wsl",
       "profile": "linux",
-      "slots": 4
+      "slots": 8
     }
   ]
 }
