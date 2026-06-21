@@ -8013,6 +8013,59 @@ except SystemExit as exc:
 
             self.assertEqual("games=28/40, eta=1m00s", summary["active"][0]["progress"])
 
+    def test_status_counts_failed_task_log_progress_as_observed_work(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            state = root / "state"
+            logs = root / "logs"
+            state.mkdir()
+            logs.mkdir()
+            manifest = {
+                "schema": "crucible.task.v1",
+                "name": "sprt",
+                "work_dir": str(root),
+                "state_dir": str(state),
+                "log_dir": str(logs),
+                "tasks": [
+                    {
+                        "id": "sprt_0000",
+                        "index": 0,
+                        "command": "true",
+                        "outputs": [],
+                        "progress": {
+                            "unit": "games",
+                            "total": 64,
+                            "log_regex": r"\[\s*(?P<done>\d+)\s*/\s*(?P<total>\d+)\]",
+                        },
+                    },
+                    {
+                        "id": "sprt_0001",
+                        "index": 1,
+                        "command": "true",
+                        "outputs": [],
+                        "progress": {
+                            "unit": "games",
+                            "total": 64,
+                            "log_regex": r"\[\s*(?P<done>\d+)\s*/\s*(?P<total>\d+)\]",
+                        },
+                    },
+                ],
+            }
+            (state / "sprt_0000.fail.json").write_text(
+                json.dumps({"task": "sprt_0000", "host": "worker"}),
+                encoding="utf-8",
+            )
+            (logs / "sprt_0000.log").write_text("[20/64]\n", encoding="utf-8")
+
+            summary = crucible.status_summary(manifest, lease_seconds=600)
+
+            self.assertEqual({"done": 0, "fail": 1, "running": 0, "claimed": 0, "stale": 0, "pending": 1}, summary["counts"])
+            self.assertEqual({"games": 20}, summary["progress_done"])
+            self.assertEqual("progress=games=20/128", crucible.summary_progress(summary))
+            failed_row = next(row for row in summary["rows"] if row["id"] == "sprt_0000")
+            self.assertEqual("fail", failed_row["state"])
+            self.assertEqual("games=20/64", failed_row["progress"])
+
     def test_status_uses_completed_rate_when_running_task_has_no_progress_yet(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
