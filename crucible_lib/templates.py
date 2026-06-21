@@ -8,7 +8,6 @@ from .manifest import *
 
 
 TEMPLATE_SCHEMA = "crucible.template.v1"
-SPRT_AUTO_SHARDS_PER_SLOT = 8
 SPRT_AUTO_TARGET_GAMES_PER_SHARD = 20
 
 
@@ -620,14 +619,9 @@ def sprt_worker_slot_count(payload: dict[str, Any]) -> int:
     return total
 
 
-def auto_sprt_shards(params: dict[str, Any], worker_payload: dict[str, Any]) -> int:
+def auto_sprt_shards(params: dict[str, Any], _worker_payload: dict[str, Any]) -> int:
     games = as_int(params.get("games"), label="sprt.games")
-    slots = sprt_worker_slot_count(worker_payload)
-    if slots <= 0:
-        return 1
-    max_by_slots = slots * SPRT_AUTO_SHARDS_PER_SLOT
-    min_by_shard_size = (games + SPRT_AUTO_TARGET_GAMES_PER_SHARD - 1) // SPRT_AUTO_TARGET_GAMES_PER_SHARD
-    return max(1, min(games, max(max_by_slots, min_by_shard_size)))
+    return max(1, games // SPRT_AUTO_TARGET_GAMES_PER_SHARD)
 
 
 def cmd_template_run(args: argparse.Namespace) -> int:
