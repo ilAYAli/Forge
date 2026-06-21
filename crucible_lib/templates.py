@@ -8,7 +8,7 @@ from .manifest import *
 
 
 TEMPLATE_SCHEMA = "crucible.template.v1"
-SPRT_AUTO_TARGET_GAMES_PER_SHARD = 20
+SPRT_AUTO_TARGET_GAMES_PER_SHARD = 50
 
 
 class MissingFormat:
