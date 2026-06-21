@@ -2352,15 +2352,14 @@ def normalize_progress_data(raw: Any) -> dict[str, Any] | None:
     data["text"] = progress_text(data)
     return data
 
-def task_log_progress_data(manifest: dict[str, Any], task: dict[str, Any]) -> dict[str, Any] | None:
-    path = task_log_path(manifest, task)
-    try:
-        text = log_tail(path)
-        eta_epoch = path.stat().st_mtime
-    except OSError:
-        return None
+def task_progress_candidate_paths(manifest: dict[str, Any], task: dict[str, Any]) -> list[Path]:
+    paths = [task_log_path(manifest, task)]
+    for output in task_outputs(task):
+        if output not in paths:
+            paths.append(output)
+    return paths
 
-    config = task.get("progress")
+def parse_task_progress_text(text: str, config: Any, *, eta_epoch: float) -> dict[str, Any] | None:
     if isinstance(config, dict) and config.get("log_regex"):
         try:
             progress_re = re.compile(str(config["log_regex"]))
@@ -2431,6 +2430,19 @@ def task_log_progress_data(manifest: dict[str, Any], task: dict[str, Any]) -> di
             done = int(match.group(1))
             total = int(match.group(2))
             return normalize_progress_data({"kind": "subtask", "done": done, "total": total, "eta_epoch": eta_epoch})
+    return None
+
+def task_log_progress_data(manifest: dict[str, Any], task: dict[str, Any]) -> dict[str, Any] | None:
+    config = task.get("progress")
+    for path in task_progress_candidate_paths(manifest, task):
+        try:
+            text = log_tail(path)
+            eta_epoch = path.stat().st_mtime
+        except OSError:
+            continue
+        data = parse_task_progress_text(text, config, eta_epoch=eta_epoch)
+        if data is not None:
+            return data
     return None
 
 def task_heartbeat_progress_data(manifest: dict[str, Any], task: dict[str, Any]) -> dict[str, Any] | None:
@@ -2519,7 +2531,7 @@ def status_summary(manifest: dict[str, Any], *, lease_seconds: int) -> dict[str,
             progress_totals[unit] = progress_totals.get(unit, 0) + total
             if state == "done":
                 progress_done[unit] = progress_done.get(unit, 0) + total
-        progress_data = task_log_progress_data(manifest, task) if state in {"done", "fail"} else None
+        progress_data = task_log_progress_data(manifest, task) if state in {"done", "fail", "pending"} else None
         if state in {"running", "claimed", "stale"}:
             progress_data = task_heartbeat_progress_data(manifest, task)
             if progress_data is None and state in {"running", "stale"}:
@@ -2527,7 +2539,7 @@ def status_summary(manifest: dict[str, Any], *, lease_seconds: int) -> dict[str,
         running_payload = task_running_payload(manifest, task) if state in {"running", "claimed", "stale"} else None
         if isinstance(progress_config, dict):
             progress_data = infer_progress_rate(progress_data, running_payload)
-        if progress_data is not None and config_progress is not None and state == "fail":
+        if progress_data is not None and config_progress is not None and state in {"fail", "pending"}:
             unit, task_total = config_progress
             observed = progress_data.get("done")
             if isinstance(observed, int) and observed > 0:
