@@ -75,6 +75,24 @@ def format_shell_result(label: str, result: subprocess.CompletedProcess[str]) ->
     return "\n".join(lines) + "\n"
 
 
+def shell_stream_text(stream: Any, text: str) -> str:
+    is_tty = False
+    isatty = getattr(stream, "isatty", None)
+    if callable(isatty):
+        try:
+            is_tty = bool(isatty())
+        except OSError:
+            is_tty = False
+    if not is_tty:
+        return text
+    return text.replace("\r\n", "\n").replace("\r", "\n").replace("\n", "\r\n")
+
+
+def write_shell_stream(stream: Any, text: str) -> None:
+    stream.write(shell_stream_text(stream, text))
+    stream.flush()
+
+
 def cmd_sh(args: argparse.Namespace) -> int:
     workers_payload = one_slot_per_host_payload(args.workers)
     workers = worker_records_from_payload(workers_payload, label="sh workers")
@@ -84,7 +102,10 @@ def cmd_sh(args: argparse.Namespace) -> int:
     failed = 0
 
     labels = [shell_worker_label(worker) for worker in workers]
-    print(f"sh: running on {len(workers)} host(s): {', '.join(labels)}", flush=True)
+    write_shell_stream(
+        sys.stdout,
+        f"sh: running on {len(workers)} host(s): {', '.join(labels)}\n",
+    )
     try:
         with concurrent.futures.ThreadPoolExecutor(max_workers=min(jobs, len(workers))) as executor:
             futures = {
@@ -94,8 +115,7 @@ def cmd_sh(args: argparse.Namespace) -> int:
             for future in concurrent.futures.as_completed(futures):
                 label = futures[future]
                 result = future.result()
-                sys.stdout.write(format_shell_result(label, result))
-                sys.stdout.flush()
+                write_shell_stream(sys.stdout, format_shell_result(label, result))
                 if result.returncode != 0:
                     failed += 1
     except KeyboardInterrupt:
@@ -103,7 +123,7 @@ def cmd_sh(args: argparse.Namespace) -> int:
         raise
 
     if failed:
-        print(f"sh: failed on {failed}/{len(workers)} host(s)", file=sys.stderr)
+        write_shell_stream(sys.stderr, f"sh: failed on {failed}/{len(workers)} host(s)\n")
         return 1
-    print("sh: ok")
+    write_shell_stream(sys.stdout, "sh: ok\n")
     return 0

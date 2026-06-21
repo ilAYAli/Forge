@@ -2562,6 +2562,24 @@ except SystemExit as exc:
         self.assertIn("  boom", output)
         self.assertIn("sh: failed on 1/2 host(s)", stderr.getvalue())
 
+    def test_shell_stream_text_uses_crlf_for_tty_output(self) -> None:
+        class TtyStream(io.StringIO):
+            def isatty(self) -> bool:
+                return True
+
+        self.assertEqual(
+            "a\r\nb\r\n",
+            crucible.shell_stream_text(TtyStream(), "a\nb\n"),
+        )
+        self.assertEqual(
+            "a\r\nb\r\n",
+            crucible.shell_stream_text(TtyStream(), "a\r\nb\r"),
+        )
+        self.assertEqual(
+            "a\nb\n",
+            crucible.shell_stream_text(io.StringIO(), "a\nb\n"),
+        )
+
     def test_terminal_color_enabled_detects_watch_parent(self) -> None:
         calls = iter([
             "111 sh\n",
