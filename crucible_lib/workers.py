@@ -1028,6 +1028,23 @@ def cleanup_detached_shell_command(pid_file: str) -> str:
         "fi"
     )
 
+def cleanup_run_pid_files_command(cache_dir: str, run_name: str) -> str:
+    quoted_cache = shlex.quote(cache_dir)
+    quoted_run = shlex.quote(run_name)
+    return (
+        f"cache_dir={quoted_cache}; "
+        f"for pid_file in \"$cache_dir\"/{quoted_run}-*.pid; do "
+        "test -e \"$pid_file\" || continue; "
+        "pid=$(sed -n '1p' \"$pid_file\" 2>/dev/null || true); "
+        "case \"$pid\" in ''|*[!0-9]*) rm -f \"$pid_file\"; continue;; esac; "
+        "printf '%s\\n' \"$pid_file\"; "
+        "kill -TERM -\"$pid\" 2>/dev/null || kill -TERM \"$pid\" 2>/dev/null || true; "
+        "sleep 1; "
+        "kill -KILL -\"$pid\" 2>/dev/null || kill -KILL \"$pid\" 2>/dev/null || true; "
+        "rm -f \"$pid_file\"; "
+        "done"
+    )
+
 def kill_run_workers(run_dir: Path, *, timeout: float = 15.0) -> int:
     workers_path = run_dir / RUN_WORKERS_NAME
     if not workers_path.exists():
@@ -1035,12 +1052,17 @@ def kill_run_workers(run_dir: Path, *, timeout: float = 15.0) -> int:
     workers = load_workers(workers_path)
     run_name = run_dir.name
     host_scripts: dict[str, list[str]] = {}
-    for index, worker in enumerate(workers):
+    seen: set[tuple[str, str]] = set()
+    for worker in workers:
         if is_local_worker(worker):
             continue
         host = str(worker["host"])
-        pid_file, _ = worker_launch_files(run_name, index, worker)
-        host_scripts.setdefault(host, []).append(cleanup_detached_shell_command(pid_file))
+        cache_dir = worker_cache_dir(worker)
+        key = (host, cache_dir)
+        if key in seen:
+            continue
+        seen.add(key)
+        host_scripts.setdefault(host, []).append(cleanup_run_pid_files_command(cache_dir, run_name))
 
     killed = 0
     for host, scripts in host_scripts.items():
@@ -1049,7 +1071,7 @@ def kill_run_workers(run_dir: Path, *, timeout: float = 15.0) -> int:
         try:
             result = subprocess.run(command, capture_output=True, text=True, timeout=timeout)
             if result.returncode == 0:
-                killed += len(scripts)
+                killed += len([line for line in result.stdout.splitlines() if line.strip()])
         except (subprocess.TimeoutExpired, OSError):
             pass
     return killed

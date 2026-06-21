@@ -10418,6 +10418,48 @@ except SystemExit as exc:
             scripts = [command[-1] for command in commands if command[0] == "sh"]
             self.assertTrue(any("kill -TERM" in script for script in scripts))
 
+    def test_kill_run_workers_cleans_slot_pid_glob(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run = root / "runs" / "slot-stop"
+            run.mkdir(parents=True)
+            cache = root / "cache"
+            crucible.write_json(run / "workers.json", {
+                "schema": "crucible.workers.v1",
+                "workers": [
+                    {
+                        "host": "worker-a",
+                        "profile": "worker-a",
+                        "local": False,
+                        "cache_dir": str(cache),
+                        "slots": 3,
+                    },
+                ],
+            })
+            commands = []
+
+            def fake_run(command, **kwargs):
+                commands.append(command)
+                return subprocess.CompletedProcess(
+                    command,
+                    0,
+                    stdout="\n".join([
+                        str(cache / "slot-stop-0-worker-a_1.pid"),
+                        str(cache / "slot-stop-1-worker-a_2.pid"),
+                        str(cache / "slot-stop-2-worker-a_3.pid"),
+                    ]) + "\n",
+                    stderr="",
+                )
+
+            with mock.patch("crucible_lib.workers.subprocess.run", fake_run):
+                killed = crucible.kill_run_workers(run)
+
+            self.assertEqual(3, killed)
+            self.assertEqual(1, len(commands))
+            script = commands[0][-1]
+            self.assertIn("slot-stop-*.pid", script)
+            self.assertIn("kill -TERM", script)
+
     def test_deploy_launch_only_starts_wait_monitor_for_notifications(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
