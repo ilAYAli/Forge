@@ -1166,7 +1166,8 @@ def active_or_queued_blockers(run_name: str, *, lease_seconds: int) -> list[dict
     )
 
 def queue_resume_command(args: argparse.Namespace, run_name: str) -> list[str]:
-    command = [sys.executable, str(script_path()), "resume", run_name]
+    command_name = "retry" if bool(getattr(args, "retry_failed", False)) else "resume"
+    command = [sys.executable, str(script_path()), command_name, run_name]
     if int(getattr(args, "jobs", 4)) != 4:
         command.extend(["--jobs", str(args.jobs)])
     if int(getattr(args, "task_attempts", 2)) != 2:
@@ -1199,6 +1200,16 @@ def queue_resume_command(args: argparse.Namespace, run_name: str) -> list[str]:
     if bool(getattr(args, "verbose", False)):
         command.append("--verbose")
     return command
+
+def clear_restart_requests(manifest: dict[str, Any], run_name: str, *, label: str) -> None:
+    stop_path = stop_request_path(manifest)
+    if stop_path.exists():
+        stop_path.unlink()
+        print(f"{label}: cleared stop request for {run_name}")
+    queue_path = queue_request_path(manifest)
+    if queue_path.exists():
+        queue_path.unlink()
+        print(f"{label}: cleared queue request for {run_name}")
 
 def queue_monitor_path(run_dir: Path) -> Path:
     return run_dir / QUEUE_MONITOR_NAME
@@ -2653,14 +2664,7 @@ def cmd_resume(args: argparse.Namespace) -> int:
     failed = 0
     for run_name, manifest_path, workers_path in targets:
         manifest = load_manifest(manifest_path)
-        stop_path = stop_request_path(manifest)
-        if stop_path.exists():
-            stop_path.unlink()
-            print(f"resume: cleared stop request for {run_name}")
-        queue_path = queue_request_path(manifest)
-        if queue_path.exists():
-            queue_path.unlink()
-            print(f"resume: cleared queue request for {run_name}")
+        clear_restart_requests(manifest, run_name, label="resume")
         resume_args = argparse.Namespace(
             manifest=str(manifest_path),
             workers=str(args.workers) if args.workers else str(workers_path),
@@ -2740,6 +2744,8 @@ def cmd_retry(args: argparse.Namespace) -> int:
     for index, (run_name, manifest_path, workers_path) in enumerate(targets):
         if len(targets) > 1:
             print(f"retry: {run_name} ({index + 1}/{len(targets)})")
+        manifest = load_manifest(manifest_path)
+        clear_restart_requests(manifest, run_name, label="retry")
         retry_args = argparse.Namespace(
             manifest=str(manifest_path),
             workers=str(args.workers) if args.workers else str(workers_path),
