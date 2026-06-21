@@ -1038,6 +1038,28 @@ except SystemExit as exc:
             self.assertEqual(["fast-sprt"], [run["run"] for run in payload["runs"]])
             self.assertEqual("done", payload["runs"][0]["state"])
 
+    def test_web_remember_does_not_clear_deleted_tombstone(self) -> None:
+        import crucible_lib.web as web
+
+        with tempfile.TemporaryDirectory() as tmp:
+            runs = Path(tmp) / "runs"
+            done_payload = {
+                "run": "deleted-sprt",
+                "state": "done",
+                "tasks": 1,
+                "counts": {"done": 1, "fail": 0, "running": 0, "claimed": 0, "stale": 0, "pending": 0},
+            }
+
+            with self.patch_runs_dir(runs), mock.patch("crucible_lib.web.runs_dir", return_value=runs):
+                web._write_web_state({"deleted_runs": ["deleted-sprt"]})
+                web.remember_web_run("deleted-sprt")
+                web.remember_web_run_payload(done_payload)
+                state = web._read_web_state()
+
+            self.assertEqual(["deleted-sprt"], state["deleted_runs"])
+            self.assertEqual({}, state.get("seen_runs", {}))
+            self.assertEqual({}, state.get("lingering_runs", {}))
+
     def test_web_remembered_completion_normalizes_ok_state(self) -> None:
         import crucible_lib.web as web
 
@@ -1136,6 +1158,7 @@ except SystemExit as exc:
             }
             crucible.write_json(coordinator / ".web-state.json", {
                 "hidden_runs": ["hidden-done"],
+                "deleted_runs": ["deleted-done"],
                 "seen_runs": {"remote-done": {"source": "remember"}},
                 "lingering_runs": {"remote-done": done_payload},
             })
@@ -1152,6 +1175,7 @@ except SystemExit as exc:
             self.assertEqual(done_payload, payload["remote_lingering_runs"]["remote-done"])
             self.assertEqual({"source": "remember"}, payload["remote_seen_runs"]["remote-done"])
             self.assertEqual(["hidden-done"], payload["remote_hidden_runs"])
+            self.assertEqual(["deleted-done"], payload["remote_deleted_runs"])
 
     def test_web_ignores_unseen_coordinator_lingering_run(self) -> None:
         import crucible_lib.web as web
@@ -1329,15 +1353,17 @@ except SystemExit as exc:
             with self.patch_runs_dir(local_runs), mock.patch("crucible_lib.web.runs_dir", return_value=local_runs):
                 web._write_web_state({
                     "seen_runs": {"deleted-done": {"coordinator": str(coordinator), "last_seen": 1.0, "source": "status"}},
+                    "deleted_runs": ["deleted-done"],
                 })
-                with mock.patch("crucible_lib.web._collect_named_run_payload", return_value=None) as named:
+                with mock.patch("crucible_lib.web._collect_named_run_payload", return_value=stale_payload) as named:
                     merged = web._merge_lingering_runs(copy.deepcopy(empty_payload))
                     state = web._read_web_state()
 
-            named.assert_called_once_with("deleted-done", str(coordinator))
+            named.assert_not_called()
             self.assertEqual([], merged["runs"])
             self.assertEqual({}, state["lingering_runs"])
             self.assertEqual({}, state["seen_runs"])
+            self.assertEqual(["deleted-done"], state["deleted_runs"])
 
     def test_web_imports_verified_coordinator_lingering_run_after_local_state_reset(self) -> None:
         import crucible_lib.web as web
@@ -1591,17 +1617,48 @@ except SystemExit as exc:
                 "collapsed_failures_count": 0,
                 "coordinator": str(coordinator),
                 "remote_lingering_runs": {"remote-done": done_payload},
+                "remote_seen_runs": {"remote-done": {"source": "remember"}},
             }
 
             with self.patch_runs_dir(local_runs), mock.patch("crucible_lib.web.runs_dir", return_value=local_runs):
                 web._delete_web_run("remote-done")
-                with mock.patch("crucible_lib.web._collect_named_run_payload") as named:
+                with mock.patch("crucible_lib.web._collect_named_run_payload", return_value=done_payload) as named:
                     payload = web._merge_lingering_runs(copy.deepcopy(empty_payload))
                     state = web._read_web_state()
 
             named.assert_not_called()
             self.assertEqual([], payload["runs"])
             self.assertEqual([], state["hidden_runs"])
+            self.assertEqual(["remote-done"], state["deleted_runs"])
+            self.assertEqual({}, state["seen_runs"])
+            self.assertEqual({}, state["lingering_runs"])
+
+    def test_web_delete_tombstone_filters_visible_status_run(self) -> None:
+        import crucible_lib.web as web
+
+        with tempfile.TemporaryDirectory() as tmp:
+            runs = Path(tmp) / "runs"
+            status_payload = {
+                "runs": [
+                    {
+                        "run": "remote-done",
+                        "state": "done",
+                        "tasks": 1,
+                        "counts": {"done": 1, "fail": 0, "running": 0, "claimed": 0, "stale": 0, "pending": 0},
+                    },
+                ],
+                "collapsed_failures": [],
+                "collapsed_failures_count": 0,
+                "coordinator": "pwa-5090:/runs",
+            }
+
+            with self.patch_runs_dir(runs), mock.patch("crucible_lib.web.runs_dir", return_value=runs):
+                web._write_web_state({"deleted_runs": ["remote-done"]})
+                payload = web._merge_lingering_runs(copy.deepcopy(status_payload))
+                state = web._read_web_state()
+
+            self.assertEqual([], payload["runs"])
+            self.assertEqual(["remote-done"], state["deleted_runs"])
             self.assertEqual({}, state["seen_runs"])
             self.assertEqual({}, state["lingering_runs"])
 
@@ -1624,6 +1681,7 @@ except SystemExit as exc:
             self.assertEqual({}, state["seen_runs"])
             self.assertEqual({}, state["lingering_runs"])
             self.assertEqual(["other-run"], state["hidden_runs"])
+            self.assertEqual(["dead-run"], state["deleted_runs"])
             self.assertEqual(["other-run"], state["command_checked_runs"])
 
     def test_web_delete_allows_completed_runs(self) -> None:
@@ -8278,6 +8336,7 @@ except SystemExit as exc:
             self.assertEqual(0, rc)
             self.assertFalse(run_dir.exists())
             self.assertEqual([], state["hidden_runs"])
+            self.assertEqual(["finished"], state["deleted_runs"])
             self.assertEqual({}, state["lingering_runs"])
 
     def test_delete_named_run_delegates_to_coordinator(self) -> None:
@@ -8312,6 +8371,7 @@ except SystemExit as exc:
         self.assertEqual({}, state["seen_runs"])
         self.assertEqual({}, state["lingering_runs"])
         self.assertEqual([], state["hidden_runs"])
+        self.assertEqual(["queued"], state["deleted_runs"])
         self.assertEqual([], state["command_checked_runs"])
         command = run_mock.call_args.args[0]
         self.assertEqual("ssh", command[0])

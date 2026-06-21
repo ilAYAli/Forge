@@ -1386,6 +1386,9 @@ def _attach_coordinator_web_state(data: dict[str, Any], coordinator_runs: str) -
     remote_hidden_runs = web_state.get("hidden_runs")
     if isinstance(remote_hidden_runs, list):
         data["remote_hidden_runs"] = remote_hidden_runs
+    remote_deleted_runs = web_state.get("deleted_runs")
+    if isinstance(remote_deleted_runs, list):
+        data["remote_deleted_runs"] = remote_deleted_runs
 
 def _write_web_state(state: dict[str, Any]) -> None:
     path = _web_state_path()
@@ -1467,6 +1470,9 @@ def _payload_local_manifest_missing(payload: dict[str, Any], coordinator_runs: s
 def remember_web_run(run: str, *, coordinator_runs: str | None = None) -> None:
     with _WEB_STATE_LOCK:
         state = _read_web_state()
+        deleted = set(_state_list(state, "deleted_runs"))
+        if run in deleted:
+            return
         hidden = set(_state_list(state, "hidden_runs"))
         hidden.discard(run)
         _state_dict(state, "seen_runs")[run] = {
@@ -1475,6 +1481,7 @@ def remember_web_run(run: str, *, coordinator_runs: str | None = None) -> None:
             "source": "remember",
         }
         state["hidden_runs"] = sorted(hidden)
+        state["deleted_runs"] = sorted(deleted)
         _write_web_state(state)
     _invalidate_status_cache()
 
@@ -1487,6 +1494,9 @@ def remember_web_run_payload(payload: dict[str, Any], *, coordinator_runs: str |
     payload = _normalize_web_run_payload(payload)
     with _WEB_STATE_LOCK:
         state = _read_web_state()
+        deleted = set(_state_list(state, "deleted_runs"))
+        if run in deleted:
+            return
         hidden = set(_state_list(state, "hidden_runs"))
         hidden.discard(run)
         _state_dict(state, "seen_runs")[run] = {
@@ -1497,6 +1507,7 @@ def remember_web_run_payload(payload: dict[str, Any], *, coordinator_runs: str |
         if _run_payload_done(payload):
             _state_dict(state, "lingering_runs")[run] = payload
         state["hidden_runs"] = sorted(hidden)
+        state["deleted_runs"] = sorted(deleted)
         _write_web_state(state)
     _invalidate_status_cache()
 
@@ -1561,6 +1572,7 @@ def _merge_lingering_runs(payload: dict[str, Any]) -> dict[str, Any]:
         return payload
     remote_lingering_runs = payload.pop("remote_lingering_runs", {})
     remote_hidden_runs = payload.pop("remote_hidden_runs", [])
+    remote_deleted_runs = payload.pop("remote_deleted_runs", [])
     remote_seen_runs = payload.pop("remote_seen_runs", {})
     remote_coordinator_runs = payload.pop("remote_coordinator", None)
     coordinator_runs = payload.get("coordinator")
@@ -1571,11 +1583,24 @@ def _merge_lingering_runs(payload: dict[str, Any]) -> dict[str, Any]:
         seen = _state_dict(state, "seen_runs")
         linger = _state_dict(state, "lingering_runs")
         hidden = set(_state_list(state, "hidden_runs"))
+        deleted = set(_state_list(state, "deleted_runs"))
         command_checked = set(_state_list(state, "command_checked_runs"))
         refreshed_done = set()
         missing_named_runs = set()
         if isinstance(remote_hidden_runs, list):
             hidden.update(str(item) for item in remote_hidden_runs)
+        if isinstance(remote_deleted_runs, list):
+            deleted.update(str(item) for item in remote_deleted_runs)
+        hidden.difference_update(deleted)
+        runs = [
+            item
+            for item in runs
+            if not (
+                isinstance(item, dict)
+                and item.get("run") is not None
+                and str(item["run"]) in deleted
+            )
+        ]
         visible_names = {
             str(item.get("run"))
             for item in runs
@@ -1586,6 +1611,11 @@ def _merge_lingering_runs(payload: dict[str, Any]) -> dict[str, Any]:
             if not isinstance(item, dict) or item.get("run") is None:
                 continue
             name = str(item["run"])
+            if name in deleted:
+                seen.pop(name, None)
+                linger.pop(name, None)
+                command_checked.discard(name)
+                continue
             if _run_payload_done(item):
                 if name not in hidden:
                     linger[name] = _normalize_web_run_payload(item)
@@ -1596,6 +1626,11 @@ def _merge_lingering_runs(payload: dict[str, Any]) -> dict[str, Any]:
                 linger.pop(name, None)
 
         for name, info in list(seen.items()):
+            if name in deleted:
+                seen.pop(name, None)
+                linger.pop(name, None)
+                command_checked.discard(name)
+                continue
             if name in visible_names or name in hidden or name in linger:
                 continue
             if isinstance(info, dict):
@@ -1627,6 +1662,8 @@ def _merge_lingering_runs(payload: dict[str, Any]) -> dict[str, Any]:
         if isinstance(remote_lingering_runs, dict):
             for name, item in remote_lingering_runs.items():
                 name = str(name)
+                if name in deleted:
+                    continue
                 if name in hidden or name in visible_names or name in linger or not isinstance(item, dict):
                     continue
                 if name in missing_named_runs:
@@ -1657,6 +1694,11 @@ def _merge_lingering_runs(payload: dict[str, Any]) -> dict[str, Any]:
                 seen[name] = {"coordinator": remote_coordinator, "last_seen": time.time(), "source": "status"}
 
         for name, item in list(linger.items()):
+            if name in deleted:
+                linger.pop(name, None)
+                seen.pop(name, None)
+                command_checked.discard(name)
+                continue
             item_seen = seen.get(name)
             if isinstance(item_seen, dict):
                 item_coordinator_raw = item_seen.get("coordinator")
@@ -1709,6 +1751,7 @@ def _merge_lingering_runs(payload: dict[str, Any]) -> dict[str, Any]:
                 runs.append(_normalize_web_run_payload(item))
 
         state["hidden_runs"] = sorted(hidden)
+        state["deleted_runs"] = sorted(deleted)
         state["command_checked_runs"] = sorted(name for name in command_checked if name in linger and name not in hidden)
         _write_web_state(state)
     payload["runs"] = runs
@@ -1865,8 +1908,10 @@ def _forget_web_run(run: str) -> None:
         _state_dict(state, "seen_runs").pop(run, None)
         _state_dict(state, "lingering_runs").pop(run, None)
         hidden = [name for name in _state_list(state, "hidden_runs") if name != run]
+        deleted = [name for name in _state_list(state, "deleted_runs") if name != run]
         command_checked = [name for name in _state_list(state, "command_checked_runs") if name != run]
         state["hidden_runs"] = hidden
+        state["deleted_runs"] = deleted
         state["command_checked_runs"] = command_checked
         _write_web_state(state)
     _invalidate_status_cache()
@@ -1877,8 +1922,11 @@ def _delete_web_run(run: str) -> None:
         _state_dict(state, "seen_runs").pop(run, None)
         _state_dict(state, "lingering_runs").pop(run, None)
         hidden = [name for name in _state_list(state, "hidden_runs") if name != run]
+        deleted = set(_state_list(state, "deleted_runs"))
+        deleted.add(run)
         command_checked = [name for name in _state_list(state, "command_checked_runs") if name != run]
         state["hidden_runs"] = hidden
+        state["deleted_runs"] = sorted(deleted)
         state["command_checked_runs"] = command_checked
         _write_web_state(state)
     _invalidate_status_cache()
