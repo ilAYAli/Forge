@@ -1003,6 +1003,8 @@ def worker_group_name(worker: str) -> str:
 def active_worker_metrics(summary: dict[str, Any]) -> dict[str, dict[str, Any]]:
     workers: dict[str, dict[str, Any]] = {}
     for row in summary["active"]:
+        if row.get("state") == "stale":
+            continue
         worker = worker_group_name(str(row.get("worker") or "unknown"))
         output_metric = summary.get("worker_outputs", {}).get(worker, {})
         rate_metric = summary.get("worker_rates", {}).get(worker, 0.0)
@@ -2580,10 +2582,10 @@ def status_summary(manifest: dict[str, Any], *, lease_seconds: int) -> dict[str,
                 worker_rates[key] = worker_rates.get(key, 0.0) + output_rate
         rows.append(row)
 
-        if state in {"done", "fail"}:
+        if state in {"done", "fail", "stale"}:
             key = worker or "unknown"
             groups[state].setdefault(key, []).append(index)
-        elif state in {"running", "claimed", "stale"}:
+        if state in {"running", "claimed", "stale"}:
             active.append(row)
         elif state == "pending":
             pending.append(index)
@@ -2718,13 +2720,11 @@ def print_status_details(
     show_empty = show_diagnostics
     if show_done:
         print_status_group("done", summary["groups"]["done"], color_enabled=color_enabled, show_empty=show_empty, indent=indent)
-    if summary["active"]:
-        section_fields = active_section_fields(summary)
-        section_fields = color_status_fields(section_fields, summary=summary, color_enabled=color_enabled)
-        suffix = f" {' '.join(section_fields)}" if section_fields else ""
-        active_title = color_count_line("active", len(summary["active"]), "yellow", color_enabled=color_enabled)
-        print(f"{indent}{active_title}{suffix}")
-        for row in sorted(summary["active"], key=active_status_sort_key):
+    active_rows = [row for row in summary["active"] if row.get("state") != "stale"]
+    stale_rows = [row for row in summary["active"] if row.get("state") == "stale"]
+
+    def print_active_rows(rows: list[dict[str, Any]]) -> None:
+        for row in sorted(rows, key=active_status_sort_key):
             state_name = str(row.get("state") or "")
             progress = (
                 f" [{color_progress_text(str(row['progress']), color_enabled=color_enabled)}]"
@@ -2739,8 +2739,19 @@ def print_status_details(
                 else ""
             )
             print(f"{indent}  {worker}{state}{label} shard={row['index']}{progress}")
+
+    if active_rows:
+        section_fields = active_section_fields(summary)
+        section_fields = color_status_fields(section_fields, summary=summary, color_enabled=color_enabled)
+        suffix = f" {' '.join(section_fields)}" if section_fields else ""
+        active_title = color_count_line("active", len(active_rows), "yellow", color_enabled=color_enabled)
+        print(f"{indent}{active_title}{suffix}")
+        print_active_rows(active_rows)
     elif show_empty:
         print(f"{indent}{color_count_line('active', 0, 'yellow', color_enabled=color_enabled)}")
+    if stale_rows:
+        print(f"{indent}{color_count_line('stale', len(stale_rows), 'red', color_enabled=color_enabled)}")
+        print_active_rows(stale_rows)
     print_pending_status(summary, color_enabled=color_enabled, show_empty=show_empty, indent=indent)
     print_status_group("fail", summary["groups"]["fail"], color_enabled=color_enabled, show_empty=show_empty, indent=indent)
     if show_diagnostics and summary.get("diagnostics"):

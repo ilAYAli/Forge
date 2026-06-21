@@ -5220,6 +5220,119 @@ except SystemExit as exc:
             self.assertIn("new shard=0", status.stdout)
             self.assertIn("fail: 0", status.stdout)
 
+    def test_newer_fail_marker_wins_over_old_running_marker(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest = {
+                "schema": "crucible.task.v1",
+                "name": "masked-fail",
+                "work_dir": str(root),
+                "state_dir": str(root / "state"),
+                "log_dir": str(root / "logs"),
+                "claim_dir": str(root / "claims"),
+                "tasks": [{"id": "task_0", "index": 0, "command": "true", "outputs": []}],
+            }
+            task = manifest["tasks"][0]
+            run = root / "runs" / "masked-fail"
+            run.mkdir(parents=True)
+            crucible.write_json(run / "manifest.json", manifest)
+            claim_payload = {
+                "schema": "crucible.task.v1",
+                "task": "task_0",
+                "index": 0,
+                "claim_id": "claim",
+                "worker": "worker-a",
+                "claimed_epoch": crucible.epoch(),
+                "heartbeat_epoch": crucible.epoch(),
+                "lease_seconds": 600,
+                "attempt": 1,
+            }
+            running_payload = {
+                "schema": "crucible.task.v1",
+                "task": "task_0",
+                "index": 0,
+                "worker": "worker-a",
+                "attempt": 1,
+            }
+            fail_payload = {
+                "schema": "crucible.task.v1",
+                "task": "task_0",
+                "index": 0,
+                "worker": "worker-a",
+                "rc": 143,
+                "attempt": 1,
+            }
+            crucible.task_claim_dir(manifest, task).mkdir(parents=True)
+            crucible.write_json(crucible.task_claim_path(manifest, task), claim_payload)
+            crucible.write_json(crucible.task_heartbeat_path(manifest, task), claim_payload)
+            crucible.write_json(crucible.task_running_path(manifest, task), running_payload)
+            crucible.write_json(crucible.task_fail_path(manifest, task), fail_payload)
+
+            status = self.run_cli("status", str(run), "--verbose")
+
+            self.assertEqual(1, status.returncode)
+            self.assertIn("tasks=0/1 fail=1", status.stdout)
+            self.assertNotIn("active: 1", status.stdout)
+            self.assertIn("fail: 1", status.stdout)
+            self.assertIn("worker-a [1]: 0", status.stdout)
+
+    def test_verbose_status_splits_stale_rows_from_active_count(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest = {
+                "schema": "crucible.task.v1",
+                "name": "stale-active",
+                "work_dir": str(root),
+                "state_dir": str(root / "state"),
+                "log_dir": str(root / "logs"),
+                "claim_dir": str(root / "claims"),
+                "tasks": [
+                    {"id": "task_0", "index": 0, "command": "true", "outputs": []},
+                    {"id": "task_1", "index": 1, "command": "true", "outputs": []},
+                    {"id": "task_2", "index": 2, "command": "true", "outputs": []},
+                ],
+            }
+            run = root / "runs" / "stale-active"
+            run.mkdir(parents=True)
+            crucible.write_json(run / "manifest.json", manifest)
+            current = crucible.epoch()
+            old = current - 1000.0
+            for index, task in enumerate(manifest["tasks"]):
+                worker = "worker-live" if index == 0 else "worker-stale"
+                timestamp = current if index == 0 else old
+                claim_payload = {
+                    "schema": "crucible.task.v1",
+                    "task": task["id"],
+                    "index": index,
+                    "claim_id": f"claim-{index}",
+                    "worker": worker,
+                    "claimed_epoch": timestamp,
+                    "heartbeat_epoch": timestamp,
+                    "lease_seconds": 600,
+                    "attempt": 1,
+                }
+                crucible.task_claim_dir(manifest, task).mkdir(parents=True)
+                crucible.write_json(crucible.task_claim_path(manifest, task), claim_payload)
+                crucible.write_json(crucible.task_heartbeat_path(manifest, task), claim_payload)
+                crucible.write_json(crucible.task_running_path(manifest, task), {
+                    "schema": "crucible.task.v1",
+                    "task": task["id"],
+                    "index": index,
+                    "worker": worker,
+                    "attempt": 1,
+                })
+
+            status = self.run_cli("status", str(run), "--verbose")
+
+            self.assertEqual(0, status.returncode)
+            self.assertIn("tasks=0/3 stale=2", status.stdout)
+            self.assertIn("active: 1", status.stdout)
+            self.assertNotIn("active: 3", status.stdout)
+            self.assertIn("worker-live shard=0", status.stdout)
+            self.assertIn("stale: 2", status.stdout)
+            self.assertIn("worker-stale [stale] shard=1", status.stdout)
+            self.assertIn("worker-stale [stale] shard=2", status.stdout)
+
     def test_malformed_claim_is_claimed_until_stale(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
