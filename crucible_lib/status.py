@@ -570,14 +570,14 @@ def run_attention_sort_key(summary: dict[str, Any]) -> tuple[Any, ...]:
     return (5, 0, str(summary["run"]))
 
 def run_state(summary: dict[str, Any]) -> str:
-    if run_failed(summary):
-        return "failed"
     if run_queue_stalled(summary):
         return "stalled"
     if run_queued(summary):
         return "queued"
     if run_current(summary):
         return "current"
+    if run_failed(summary):
+        return "failed"
     if run_done(summary):
         return "done"
     if run_stopped(summary):

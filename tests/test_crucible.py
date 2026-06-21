@@ -5333,6 +5333,30 @@ except SystemExit as exc:
             self.assertIn("worker-stale [stale] shard=1", status.stdout)
             self.assertIn("worker-stale [stale] shard=2", status.stdout)
 
+    def test_failed_active_run_state_is_current(self) -> None:
+        summary = {
+            "tasks": 3,
+            "counts": {
+                "done": 0,
+                "fail": 1,
+                "running": 1,
+                "claimed": 0,
+                "stale": 1,
+                "pending": 0,
+            },
+        }
+        self.assertEqual("current", crucible.run_state(summary))
+
+        summary["counts"] = {
+            "done": 0,
+            "fail": 1,
+            "running": 0,
+            "claimed": 0,
+            "stale": 0,
+            "pending": 0,
+        }
+        self.assertEqual("failed", crucible.run_state(summary))
+
     def test_malformed_claim_is_claimed_until_stale(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
