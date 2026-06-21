@@ -2149,7 +2149,7 @@ except SystemExit as exc:
             "--games", "256",
         ], template_args)
 
-    def test_sprt_command_auto_sizes_shards_from_workers(self) -> None:
+    def test_sprt_command_auto_sizes_shards_by_target_games(self) -> None:
         stdout = io.StringIO()
         with contextlib.redirect_stdout(stdout):
             rc = crucible.cmd_template_run(argparse.Namespace(
@@ -2166,12 +2166,12 @@ except SystemExit as exc:
 
         self.assertEqual(0, rc)
         self.assertEqual("quick smoke", manifest["comment"])
-        self.assertEqual(120, manifest["template"]["parameters"]["shards"])
-        self.assertEqual(120, len(manifest["tasks"]))
+        self.assertEqual(12, manifest["template"]["parameters"]["shards"])
+        self.assertEqual(12, len(manifest["tasks"]))
         totals = [task["progress"]["total"] for task in manifest["tasks"]]
         self.assertEqual(256, sum(totals))
-        self.assertEqual(8, totals.count(4))
-        self.assertEqual(112, totals.count(2))
+        self.assertEqual(20, min(totals))
+        self.assertEqual(22, max(totals))
 
     def test_sprt_command_preserves_explicit_shards(self) -> None:
         stdout = io.StringIO()
@@ -2192,7 +2192,7 @@ except SystemExit as exc:
         self.assertEqual(8, manifest["template"]["parameters"]["shards"])
         self.assertEqual(8, len(manifest["tasks"]))
 
-    def test_sprt_command_auto_shards_can_use_short_game_shards(self) -> None:
+    def test_sprt_command_auto_shards_avoid_short_game_shards(self) -> None:
         stdout = io.StringIO()
         with contextlib.redirect_stdout(stdout):
             rc = crucible.cmd_template_run(argparse.Namespace(
@@ -2208,11 +2208,11 @@ except SystemExit as exc:
         totals = [task["progress"]["total"] for task in manifest["tasks"]]
 
         self.assertEqual(0, rc)
-        self.assertEqual(128, manifest["template"]["parameters"]["shards"])
-        self.assertEqual(128, len(manifest["tasks"]))
+        self.assertEqual(20, manifest["template"]["parameters"]["shards"])
+        self.assertEqual(20, len(manifest["tasks"]))
         self.assertEqual(400, sum(totals))
-        self.assertEqual(2, min(totals))
-        self.assertEqual(4, max(totals))
+        self.assertEqual(20, min(totals))
+        self.assertEqual(20, max(totals))
 
     def test_sprt_command_auto_shards_large_runs_by_target_games(self) -> None:
         stdout = io.StringIO()
