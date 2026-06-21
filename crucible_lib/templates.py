@@ -9,6 +9,7 @@ from .manifest import *
 
 TEMPLATE_SCHEMA = "crucible.template.v1"
 SPRT_AUTO_SHARDS_PER_SLOT = 8
+SPRT_AUTO_TARGET_GAMES_PER_SHARD = 20
 
 
 class MissingFormat:
@@ -625,7 +626,8 @@ def auto_sprt_shards(params: dict[str, Any], worker_payload: dict[str, Any]) -> 
     if slots <= 0:
         return 1
     max_by_slots = slots * SPRT_AUTO_SHARDS_PER_SLOT
-    return max(1, min(games, max_by_slots))
+    min_by_shard_size = (games + SPRT_AUTO_TARGET_GAMES_PER_SHARD - 1) // SPRT_AUTO_TARGET_GAMES_PER_SHARD
+    return max(1, min(games, max(max_by_slots, min_by_shard_size)))
 
 
 def cmd_template_run(args: argparse.Namespace) -> int:
