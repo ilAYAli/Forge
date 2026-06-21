@@ -1615,9 +1615,40 @@ def run_summary_for(run: str | Path, *, lease_seconds: int) -> dict[str, Any]:
     annotate_run_ordering(summary, manifest_path=path, manifest=manifest)
     return summary
 
-def cmd_stop(args: argparse.Namespace) -> int:
+def request_stop_for_run(
+    manifest_path: Path,
+    manifest: dict[str, Any],
+    *,
+    lease_seconds: int,
+) -> dict[str, Any]:
     from .workers import kill_run_workers
 
+    payload = {
+        "schema": SCHEMA,
+        "run": manifest_path.parent.name,
+        "requested_at": now(),
+        "requested_epoch": epoch(),
+        "host": socket.gethostname(),
+    }
+    write_json(stop_request_path(manifest), payload)
+    cleared: list[str] = []
+    queue_path = queue_request_path(manifest)
+    if queue_path.exists():
+        queue_path.unlink()
+        cleared.append("queue")
+    launch_path = launch_request_path(manifest)
+    if launch_path.exists():
+        launch_path.unlink()
+        cleared.append("launch")
+    released = release_active_claims(manifest, lease_seconds=lease_seconds)
+    killed = kill_run_workers(manifest_path.parent)
+    return {
+        "cleared": cleared,
+        "killed": killed,
+        "released": released,
+    }
+
+def cmd_stop(args: argparse.Namespace) -> int:
     coordinator_runs = configured_coordinator_runs()
     if coordinator_runs and status_can_delegate(args.run):
         return run_state_control_on_coordinator("stop", args, coordinator_runs)
@@ -1631,31 +1662,13 @@ def cmd_stop(args: argparse.Namespace) -> int:
     stopped = 0
     for path in targets:
         manifest = load_manifest(path)
-        payload = {
-            "schema": SCHEMA,
-            "run": path.parent.name,
-            "requested_at": now(),
-            "requested_epoch": epoch(),
-            "host": socket.gethostname(),
-        }
-        write_json(stop_request_path(manifest), payload)
-        cleared: list[str] = []
-        queue_path = queue_request_path(manifest)
-        if queue_path.exists():
-            queue_path.unlink()
-            cleared.append("queue")
-        launch_path = launch_request_path(manifest)
-        if launch_path.exists():
-            launch_path.unlink()
-            cleared.append("launch")
-        released = release_active_claims(manifest, lease_seconds=args.lease_seconds)
-        killed = kill_run_workers(path.parent)
+        stop_result = request_stop_for_run(path, manifest, lease_seconds=args.lease_seconds)
         stopped += 1
-        message = f"stop requested: {path.parent.name} released={len(released)}"
-        if killed:
-            message += f" killed={killed}"
-        if cleared:
-            message += f" cleared={','.join(cleared)}"
+        message = f"stop requested: {path.parent.name} released={len(stop_result['released'])}"
+        if stop_result["killed"]:
+            message += f" killed={stop_result['killed']}"
+        if stop_result["cleared"]:
+            message += f" cleared={','.join(stop_result['cleared'])}"
         print(message)
     if stopped == 0:
         print("no current runs to stop")
@@ -2809,6 +2822,7 @@ def cmd_wait(args: argparse.Namespace) -> int:
             last_line = line
 
         if counts["fail"] and args.fail_on_fail:
+            request_stop_for_run(manifest_path, manifest, lease_seconds=args.lease_seconds)
             return finish("run_fail", "failed", 1, manifest)
         if counts["done"] == total:
             return finish("run_done", "ok", 0, manifest)
