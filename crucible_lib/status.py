@@ -855,17 +855,18 @@ def summary_progress(summary: dict[str, Any]) -> str:
 
     def append_aggregate_eta(done: Any, total: Any, rate: Any, active_etas: list[tuple[float, bool]]) -> None:
         aggregate_eta = progress_eta_seconds(done, total, rate)
+        max_active_eta = max(active_etas, key=lambda item: item[0]) if active_etas else None
         if aggregate_eta is not None:
             unknown_when_elapsed = False
-            if waiting_count == 0 and len(active_etas) == 1:
-                active_eta, active_unknown_when_elapsed = active_etas[0]
-                if active_eta < aggregate_eta:
+            if max_active_eta is not None:
+                active_eta, active_unknown_when_elapsed = max_active_eta
+                if active_eta > aggregate_eta:
                     aggregate_eta = active_eta
                     unknown_when_elapsed = active_unknown_when_elapsed
             etas.append(eta_field(aggregate_eta, unknown_when_elapsed=unknown_when_elapsed))
-        elif active_etas:
-            max_active_eta, active_unknown_when_elapsed = max(active_etas, key=lambda item: item[0])
-            etas.append(eta_field(max_active_eta, unknown_when_elapsed=active_unknown_when_elapsed))
+        elif max_active_eta is not None:
+            active_eta, active_unknown_when_elapsed = max_active_eta
+            etas.append(eta_field(active_eta, unknown_when_elapsed=active_unknown_when_elapsed))
 
     for row in summary["active"]:
         if row.get("state", "running") != "running":
@@ -2503,9 +2504,11 @@ def status_summary(manifest: dict[str, Any], *, lease_seconds: int) -> dict[str,
             progress_totals[unit] = progress_totals.get(unit, 0) + total
             if state == "done":
                 progress_done[unit] = progress_done.get(unit, 0) + total
-        progress_data = task_log_progress_data(manifest, task) if state in {"done", "running"} else None
-        if progress_data is None and state in {"running", "claimed", "stale"}:
+        progress_data = task_log_progress_data(manifest, task) if state == "done" else None
+        if state in {"running", "claimed", "stale"}:
             progress_data = task_heartbeat_progress_data(manifest, task)
+            if progress_data is None and state in {"running", "stale"}:
+                progress_data = task_log_progress_data(manifest, task)
         running_payload = task_running_payload(manifest, task) if state in {"running", "claimed", "stale"} else None
         if isinstance(progress_config, dict):
             progress_data = infer_progress_rate(progress_data, running_payload)
