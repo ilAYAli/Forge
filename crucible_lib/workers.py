@@ -1211,6 +1211,29 @@ def clear_restart_requests(manifest: dict[str, Any], run_name: str, *, label: st
         queue_path.unlink()
         print(f"{label}: cleared queue request for {run_name}")
 
+def archive_failed_tasks_for_retry(manifest: dict[str, Any], run_name: str) -> list[str]:
+    failed_tasks: list[str] = []
+    archive_root = state_dir(manifest) / "retry-failures"
+    archive_dir = archive_root / str(int(epoch() * 1000))
+    suffix = 1
+    while archive_dir.exists():
+        suffix += 1
+        archive_dir = archive_root / f"{int(epoch() * 1000)}-{suffix}"
+    for task in sorted(manifest.get("tasks") or [], key=lambda item: int(item.get("index", 0))):
+        if not isinstance(task, dict):
+            continue
+        fail_path = task_fail_path(manifest, task)
+        if not fail_path.exists():
+            continue
+        archive_dir.mkdir(parents=True, exist_ok=True)
+        fail_path.replace(archive_dir / fail_path.name)
+        task_running_path(manifest, task).unlink(missing_ok=True)
+        shutil.rmtree(task_claim_dir(manifest, task), ignore_errors=True)
+        failed_tasks.append(str(task.get("id") or fail_path.stem))
+    if failed_tasks:
+        print(f"retry: archived {len(failed_tasks)} failed task marker(s) for {run_name}")
+    return failed_tasks
+
 def queue_monitor_path(run_dir: Path) -> Path:
     return run_dir / QUEUE_MONITOR_NAME
 
@@ -2746,6 +2769,7 @@ def cmd_retry(args: argparse.Namespace) -> int:
             print(f"retry: {run_name} ({index + 1}/{len(targets)})")
         manifest = load_manifest(manifest_path)
         clear_restart_requests(manifest, run_name, label="retry")
+        archive_failed_tasks_for_retry(manifest, run_name)
         retry_args = argparse.Namespace(
             manifest=str(manifest_path),
             workers=str(args.workers) if args.workers else str(workers_path),

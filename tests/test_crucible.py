@@ -3306,6 +3306,8 @@ except SystemExit as exc:
             runs = Path(tmp) / "runs"
             run = self.write_retry_run(runs, "failed-a", failed=True)
             manifest = crucible.load_manifest(run / "manifest.json")
+            task = manifest["tasks"][0]
+            fail_path = crucible.task_fail_path(manifest, task)
             crucible.write_json(crucible.stop_request_path(manifest), {
                 "schema": "crucible.task.v1",
                 "run": "failed-a",
@@ -3326,9 +3328,13 @@ except SystemExit as exc:
             self.assertEqual(0, rc)
             self.assertFalse(crucible.stop_request_path(manifest).exists())
             self.assertFalse(crucible.queue_request_path(manifest).exists())
+            self.assertFalse(fail_path.exists())
+            archived = list((crucible.state_dir(manifest) / "retry-failures").glob("*/task_0.fail.json"))
+            self.assertEqual(1, len(archived))
             output = stdout.getvalue()
             self.assertIn("retry: cleared stop request for failed-a", output)
             self.assertIn("retry: cleared queue request for failed-a", output)
+            self.assertIn("retry: archived 1 failed task marker(s) for failed-a", output)
             retry_args = run_job.call_args.args[0]
             self.assertTrue(retry_args.retry_failed)
             self.assertEqual("retry", retry_args.command_label)
