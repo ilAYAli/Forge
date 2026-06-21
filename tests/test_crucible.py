@@ -2166,12 +2166,12 @@ except SystemExit as exc:
 
         self.assertEqual(0, rc)
         self.assertEqual("quick smoke", manifest["comment"])
-        self.assertEqual(12, manifest["template"]["parameters"]["shards"])
-        self.assertEqual(12, len(manifest["tasks"]))
+        self.assertEqual(5, manifest["template"]["parameters"]["shards"])
+        self.assertEqual(5, len(manifest["tasks"]))
         totals = [task["progress"]["total"] for task in manifest["tasks"]]
         self.assertEqual(256, sum(totals))
-        self.assertEqual(20, min(totals))
-        self.assertEqual(22, max(totals))
+        self.assertEqual(50, min(totals))
+        self.assertEqual(52, max(totals))
 
     def test_sprt_command_preserves_explicit_shards(self) -> None:
         stdout = io.StringIO()
@@ -2208,11 +2208,11 @@ except SystemExit as exc:
         totals = [task["progress"]["total"] for task in manifest["tasks"]]
 
         self.assertEqual(0, rc)
-        self.assertEqual(20, manifest["template"]["parameters"]["shards"])
-        self.assertEqual(20, len(manifest["tasks"]))
+        self.assertEqual(8, manifest["template"]["parameters"]["shards"])
+        self.assertEqual(8, len(manifest["tasks"]))
         self.assertEqual(400, sum(totals))
-        self.assertEqual(20, min(totals))
-        self.assertEqual(20, max(totals))
+        self.assertEqual(50, min(totals))
+        self.assertEqual(50, max(totals))
 
     def test_sprt_command_auto_shards_large_runs_by_target_games(self) -> None:
         stdout = io.StringIO()
@@ -2230,11 +2230,11 @@ except SystemExit as exc:
         totals = [task["progress"]["total"] for task in manifest["tasks"]]
 
         self.assertEqual(0, rc)
-        self.assertEqual(400, manifest["template"]["parameters"]["shards"])
-        self.assertEqual(400, len(manifest["tasks"]))
+        self.assertEqual(160, manifest["template"]["parameters"]["shards"])
+        self.assertEqual(160, len(manifest["tasks"]))
         self.assertEqual(8000, sum(totals))
-        self.assertEqual(20, min(totals))
-        self.assertEqual(20, max(totals))
+        self.assertEqual(50, min(totals))
+        self.assertEqual(50, max(totals))
 
     def test_run_template_uses_default_workers(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
