@@ -162,9 +162,40 @@ def task_running_state(manifest: dict[str, Any], task: dict[str, Any], *, lease_
         return "stale"
     return "running"
 
+def payload_attempt(payload: dict[str, Any] | None) -> int | None:
+    if not isinstance(payload, dict) or "attempt" not in payload:
+        return None
+    try:
+        return max(1, int(payload["attempt"]))
+    except (TypeError, ValueError):
+        return None
+
+def fail_supersedes_running(manifest: dict[str, Any], task: dict[str, Any]) -> bool:
+    fail = task_fail_path(manifest, task)
+    running = task_running_path(manifest, task)
+    if not fail.exists():
+        return False
+    if not running.exists():
+        return True
+
+    fail_payload = read_state_json(fail)
+    running_payload = read_state_json(running)
+    fail_attempt = payload_attempt(fail_payload)
+    running_attempt = payload_attempt(running_payload)
+    if fail_attempt is not None and running_attempt is not None:
+        return fail_attempt >= running_attempt
+    if fail_attempt is not None and running_attempt is None:
+        claim_payload = read_state_json(task_claim_path(manifest, task))
+        claim_attempt = payload_attempt(claim_payload)
+        if claim_attempt is not None and claim_attempt > fail_attempt:
+            return False
+    return path_epoch(fail) > path_epoch(running)
+
 def task_state(manifest: dict[str, Any], task: dict[str, Any], *, lease_seconds: int = 600) -> str:
     if task_complete(manifest, task):
         return "done"
+    if fail_supersedes_running(manifest, task):
+        return "fail"
     running_state = task_running_state(manifest, task, lease_seconds=lease_seconds)
     if running_state:
         return running_state
@@ -246,6 +277,7 @@ def run_task(
             "command": command,
             "pid": os.getpid(),
             "child_pid": proc.pid,
+            "attempt": max(1, int(attempt)),
         }
         try:
             running["child_pgid"] = os.getpgid(proc.pid)
@@ -491,6 +523,7 @@ def update_claim_heartbeat(
             "claim_id": claim_id,
             "started_at": payload["heartbeat_at"],
             "started_epoch": payload["heartbeat_epoch"],
+            "attempt": task_attempt_from_payload(payload),
         }
         write_json(task_running_path(manifest, task), running_payload)
 
