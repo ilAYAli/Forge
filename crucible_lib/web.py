@@ -74,8 +74,9 @@ _HTML = r"""<!DOCTYPE html>
     .badge.stopped { background: rgba(200,142,74,.16); color: var(--warn); }
     .badge.empty   { background: rgba(118,118,128,.12); color: var(--dim); }
     /* summary line below the run name — always visible */
-    .run-summary { display: flex; align-items: center; gap: 12px; margin-top: 4px;
-                   padding-left: 18px; font-size: 13px; flex-wrap: wrap; cursor: text; }
+    .run-summary,
+    .run-meta { display: flex; align-items: center; gap: 12px; margin-top: 4px;
+                padding-left: 18px; font-size: 13px; flex-wrap: wrap; cursor: text; }
     .run-desc  { color: var(--dim); }
     .run-comment { color: var(--warn); }
     .run-state { font-weight: 700; }
@@ -1037,6 +1038,11 @@ _HTML = r"""<!DOCTYPE html>
       if (state === 'stopped' && activeCount === 0) actions.push(`<button class="act del" onclick="event.stopPropagation();runCmd('${runArg}','del',this)">del</button>`);
 
       // header — always visible
+      const meta = descText || commentText ? `
+        <div class="run-meta">
+          ${descText ? `<span class="run-desc">${esc(descText)}</span>` : ''}
+          ${commentText ? `<span class="run-comment">${esc(commentText)}</span>` : ''}
+        </div>` : '';
       const hdr = `
         <div class="run-hdr-top">
           <span class="arrow${bodyOpen?' open':''}" onclick="event.stopPropagation();toggleId('${rId}')">&#9654;</span>
@@ -1046,12 +1052,11 @@ _HTML = r"""<!DOCTYPE html>
           <span class="badge ${state}">${stateLabel}</span>
         </div>
         <div class="run-summary">
-          ${descText ? `<span class="run-desc">${esc(descText)}</span>` : ''}
-          ${commentText ? `<span class="run-comment">${esc(commentText)}</span>` : ''}
           ${stateField}
           <span class="run-fields">${nonEtaFields.map(renderField).join(' &nbsp;')}</span>
           ${eta ? `<span class="run-eta" data-etas="${parseEtaStr(eta)??''}">${esc(eta)}</span>` : ''}
-        </div>`;
+        </div>
+        ${meta}`;
 
       // body sections (no description here — it's in the header now)
       const sections = [];
