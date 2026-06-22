@@ -4,11 +4,15 @@ import copy
 import re
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import Any
 
 from .core import *
 from .status import configured_coordinator_runs
 from .tasks import parse_coordinator, shell_join
+
+_ASSETS_DIR = Path(__file__).resolve().parent.parent / "assets"
+_FAVICON_PATH = _ASSETS_DIR / "crucible.jpg"
 
 
 _HTML = r"""<!DOCTYPE html>
@@ -17,6 +21,8 @@ _HTML = r"""<!DOCTYPE html>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Crucible Status</title>
+  <link rel="icon" type="image/jpeg" href="/favicon.jpg">
+  <link rel="apple-touch-icon" href="/favicon.jpg">
   <style>
     :root {
       --bg: #0e0e10; --bg2: #16161a; --bg3: #1e1e24;
@@ -1273,6 +1279,12 @@ _HTML = r"""<!DOCTYPE html>
 
 _HTML_BYTES = _HTML.encode()
 
+def _favicon_bytes() -> bytes | None:
+    try:
+        return _FAVICON_PATH.read_bytes()
+    except OSError:
+        return None
+
 _STATUS_CACHE_SECONDS = 3.0
 _STATUS_CACHE_LOCK = threading.Lock()
 _STATUS_CACHE: dict[str, Any] | None = None
@@ -2110,6 +2122,13 @@ class _Handler(BaseHTTPRequestHandler):
         path = self.path.split("?", 1)[0]
         if path in ("/", "/index.html"):
             self._respond(200, "text/html; charset=utf-8", _HTML_BYTES)
+        elif path == "/favicon.jpg":
+            body = _favicon_bytes()
+            if body is None:
+                self.send_response(404)
+                self.end_headers()
+            else:
+                self._respond(200, "image/jpeg", body)
         elif path == "/api/status":
             try:
                 body = _api_status()
