@@ -503,6 +503,8 @@ except SystemExit as exc:
     def test_web_renders_progress_fields(self) -> None:
         import crucible_lib.web as web
 
+        self.assertIn('<link rel="icon" type="image/jpeg" href="/favicon.jpg">', web._HTML)
+        self.assertIn('<link rel="apple-touch-icon" href="/favicon.jpg">', web._HTML)
         self.assertIn("FIELD_TASK_COLS", web._HTML)
         self.assertIn("firstProgressField(t.progress_data", web._HTML)
         self.assertIn("{name: 'llr'", web._HTML)
@@ -588,6 +590,12 @@ except SystemExit as exc:
         self.assertIn("runCmd('${runArg}','del',this)", web._HTML)
         self.assertIn(".act.del", web._HTML)
         self.assertIn("function runStoppedEarly", web._HTML)
+
+    def test_web_favicon_asset_is_available(self) -> None:
+        import crucible_lib.web as web
+
+        self.assertTrue(web._FAVICON_PATH.is_file())
+        self.assertGreater(len(web._favicon_bytes() or b""), 0)
         self.assertIn(".run.stopped-early", web._HTML)
         self.assertIn("stopped</span>", web._HTML)
         self.assertIn("state === 'done' ? 'completed'", web._HTML)
