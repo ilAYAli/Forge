@@ -12,7 +12,7 @@ from .status import configured_coordinator_runs
 from .tasks import parse_coordinator, shell_join
 
 _ASSETS_DIR = Path(__file__).resolve().parent.parent / "assets"
-_FAVICON_PATH = _ASSETS_DIR / "crucible.svg"
+_FAVICON_PATH = _ASSETS_DIR / "crucible.png"
 
 
 _HTML = r"""<!DOCTYPE html>
