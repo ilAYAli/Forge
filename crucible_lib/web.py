@@ -227,6 +227,14 @@ _HTML = r"""<!DOCTYPE html>
       return f ? f.slice(4) : null;
     }
 
+    function runDescriptionText(description, hasComment) {
+      if (hasComment) return '';
+      return String(description || '')
+        .replace(/^desc=/, '')
+        .replace(/^Run\s+/, '')
+        .trim();
+    }
+
     function eloClass(value) {
       const n = parseFloat(String(value).replace(/%$/, ''));
       if (Number.isNaN(n) || n === 0) return ' elo-neu';
@@ -1018,8 +1026,8 @@ _HTML = r"""<!DOCTYPE html>
       const bodyOpen = resolveOpen(rId, isCurrent);
 
       const nonEtaFields = (display.fields||[]).filter(f=>!f.startsWith('eta='));
-      const descText = display.description || '';
       const commentText = display.comment || '';
+      const descText = runDescriptionText(display.description, Boolean(commentText));
       const runDate = runDatePrefix(r);
       const stoppedEarly = runStoppedEarly(r, pending, fail, display);
       const stateField = stoppedEarly ? '<span class="run-state stopped-early">stopped</span>' : '';
@@ -1051,12 +1059,12 @@ _HTML = r"""<!DOCTYPE html>
           <div class="run-actions">${actions.join('')}</div>
           <span class="badge ${state}">${stateLabel}</span>
         </div>
+        ${meta}
         <div class="run-summary">
           ${stateField}
           <span class="run-fields">${nonEtaFields.map(renderField).join(' &nbsp;')}</span>
           ${eta ? `<span class="run-eta" data-etas="${parseEtaStr(eta)??''}">${esc(eta)}</span>` : ''}
-        </div>
-        ${meta}`;
+        </div>`;
 
       // body sections (no description here — it's in the header now)
       const sections = [];

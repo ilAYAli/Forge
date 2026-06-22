@@ -574,6 +574,8 @@ except SystemExit as exc:
         self.assertIn("commandDisplayBlock(c.command)", web._HTML)
         self.assertIn("function commandDisplayText", web._HTML)
         self.assertIn("const commentText = display.comment || ''", web._HTML)
+        self.assertIn("function runDescriptionText", web._HTML)
+        self.assertIn("const descText = runDescriptionText(display.description, Boolean(commentText))", web._HTML)
         self.assertIn("run-comment", web._HTML)
         self.assertIn(".replace(/\\s+/g, ' ')", web._HTML)
         self.assertIn("white-space: pre-wrap", web._HTML)
