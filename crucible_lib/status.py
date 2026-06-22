@@ -1378,7 +1378,7 @@ def run_comment_field(summary: dict[str, Any]) -> str:
         return ""
     comment = str(metadata.get("comment") or "").strip()
     if comment:
-        return f"comment={comment}"
+        return '"' + comment.replace("\\", "\\\\").replace('"', '\\"') + '"'
     return ""
 
 def summary_progress_fields(summary: dict[str, Any]) -> list[str]:
