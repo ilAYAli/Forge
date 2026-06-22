@@ -1278,6 +1278,7 @@ def run_queue_launcher(payload: dict[str, Any]) -> int:
     command = [str(item) for item in payload["command"]]
     lease_seconds = int(payload.get("lease_seconds") or 600)
     poll_seconds = max(0.5, float(payload.get("poll_seconds") or QUEUE_LAUNCHER_POLL_SECONDS))
+    fail_if_unqueued = bool(payload.get("fail_if_unqueued"))
     if payload.get("runs_dir"):
         os.environ[RUNS_DIR_ENV] = str(payload["runs_dir"])
     os.environ[COORDINATOR_RUNS_ENV] = ""
@@ -1291,7 +1292,7 @@ def run_queue_launcher(payload: dict[str, Any]) -> int:
             return 1
         if not run_queue_requested(target):
             print(f"queue: {run_name} is no longer queued", flush=True)
-            return 0
+            return 1 if fail_if_unqueued else 0
         blockers = queue_blockers_for_run(run_name, summaries)
         blocker_names = [str(summary.get("run") or "") for summary in blockers]
         if not blockers:
@@ -1308,19 +1309,51 @@ def run_queue_launcher(payload: dict[str, Any]) -> int:
     print(f"queue: launching {run_name}: {shell_join(command)}", flush=True)
     return subprocess.run(command, check=False).returncode
 
+def queue_launcher_payload(
+    *,
+    run_dir: Path,
+    command: list[str],
+    lease_seconds: int,
+    fail_if_unqueued: bool = False,
+) -> dict[str, Any]:
+    return {
+        "run": run_dir.name,
+        "runs_dir": str(runs_dir()),
+        "command": command,
+        "lease_seconds": lease_seconds,
+        "poll_seconds": QUEUE_LAUNCHER_POLL_SECONDS,
+        "fail_if_unqueued": fail_if_unqueued,
+    }
+
+def run_queue_launcher_foreground(*, run_dir: Path, command: list[str], lease_seconds: int) -> int:
+    old_runs_dir = os.environ.get(RUNS_DIR_ENV)
+    old_coordinator_runs = os.environ.get(COORDINATOR_RUNS_ENV)
+    try:
+        return run_queue_launcher(
+            queue_launcher_payload(
+                run_dir=run_dir,
+                command=command,
+                lease_seconds=lease_seconds,
+                fail_if_unqueued=True,
+            )
+        )
+    finally:
+        if old_runs_dir is None:
+            os.environ.pop(RUNS_DIR_ENV, None)
+        else:
+            os.environ[RUNS_DIR_ENV] = old_runs_dir
+        if old_coordinator_runs is None:
+            os.environ.pop(COORDINATOR_RUNS_ENV, None)
+        else:
+            os.environ[COORDINATOR_RUNS_ENV] = old_coordinator_runs
+
 def start_queue_monitor(
     *,
     run_dir: Path,
     command: list[str],
     lease_seconds: int,
 ) -> int:
-    payload = {
-        "run": run_dir.name,
-        "runs_dir": str(runs_dir()),
-        "command": command,
-        "lease_seconds": lease_seconds,
-        "poll_seconds": QUEUE_LAUNCHER_POLL_SECONDS,
-    }
+    payload = queue_launcher_payload(run_dir=run_dir, command=command, lease_seconds=lease_seconds)
     log = (run_dir / "queue.log").open("ab", buffering=0)
     env = os.environ.copy()
     env[RUNS_DIR_ENV] = str(runs_dir())
@@ -2402,13 +2435,21 @@ def cmd_run_job(args: argparse.Namespace) -> int:
                 command=command,
                 blockers=blockers,
             )
+            blocker_names = ", ".join(str(summary.get("run") or "") for summary in blockers)
+            print(f"{label}: queued {run_name}; waiting for {blocker_names}")
+            if should_wait:
+                print(f"{label}: waiting for queued run to finish")
+                print(f"{label}: status: crucible status {run_name} --verbose")
+                return run_queue_launcher_foreground(
+                    run_dir=queued_run_dir,
+                    command=command,
+                    lease_seconds=int(args.lease_seconds),
+                )
             monitor_pid = start_queue_monitor(
                 run_dir=queued_run_dir,
                 command=command,
                 lease_seconds=int(args.lease_seconds),
             )
-            blocker_names = ", ".join(str(summary.get("run") or "") for summary in blockers)
-            print(f"{label}: queued {run_name}; waiting for {blocker_names}")
             print(f"{label}: queue monitor pid={monitor_pid}")
             print(f"{label}: status: crucible status {run_name} --verbose")
             return 0
@@ -2685,6 +2726,7 @@ def cmd_resume(args: argparse.Namespace) -> int:
     if coordinator_runs and status_can_delegate(args.run):
         return run_control_on_coordinator("resume", args, coordinator_runs)
     targets = resume_run_paths(args.run, lease_seconds=args.lease_seconds)
+    should_wait = bool(args.wait or args.merge or args.verify is True)
     failed = 0
     for run_name, manifest_path, workers_path in targets:
         manifest = load_manifest(manifest_path)
@@ -2731,13 +2773,23 @@ def cmd_resume(args: argparse.Namespace) -> int:
                 command=command,
                 blockers=blockers,
             )
+            blocker_names = ", ".join(str(summary.get("run") or "") for summary in blockers)
+            print(f"resume: queued {run_name}; waiting for {blocker_names}")
+            if should_wait:
+                print(f"resume: waiting for queued run to finish")
+                print(f"resume: status: crucible status {run_name} --verbose")
+                rc = run_queue_launcher_foreground(
+                    run_dir=manifest_path.parent,
+                    command=command,
+                    lease_seconds=int(args.lease_seconds),
+                )
+                failed += 1 if rc else 0
+                continue
             monitor_pid = start_queue_monitor(
                 run_dir=manifest_path.parent,
                 command=command,
                 lease_seconds=int(args.lease_seconds),
             )
-            blocker_names = ", ".join(str(summary.get("run") or "") for summary in blockers)
-            print(f"resume: queued {run_name}; waiting for {blocker_names}")
             print(f"resume: queue monitor pid={monitor_pid}")
             print(f"resume: status: crucible status {run_name} --verbose")
             continue

@@ -2979,6 +2979,97 @@ except SystemExit as exc:
             payload = json.loads((runs / ".web-state.json").read_text(encoding="utf-8"))
             self.assertIn("queued-new", payload["seen_runs"])
 
+    def test_start_verify_waits_for_queued_run(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            runs = root / "runs"
+            active_run = self.write_retry_run(runs, "active", failed=None)
+            active_manifest = crucible.load_manifest(active_run / "manifest.json")
+            crucible.claim_task(
+                active_manifest,
+                worker="worker-a",
+                profile=None,
+                lease_seconds=600,
+                retry_failed=False,
+            )
+            manifest = root / "template.json"
+            manifest.write_text(
+                json.dumps({
+                    "schema": "crucible.task.v1",
+                    "name": "queued-verify",
+                    "work_dir": str(root),
+                    "tasks": [{"id": "task_0000", "index": 0, "command": "true", "outputs": []}],
+                }),
+                encoding="utf-8",
+            )
+
+            with (
+                self.patch_runs_dir(runs),
+                mock.patch("crucible_lib.workers.start_queue_monitor") as queue_monitor,
+                mock.patch("crucible_lib.workers.run_queue_launcher_foreground", return_value=23) as queue_launcher,
+            ):
+                stdout = io.StringIO()
+                with contextlib.redirect_stdout(stdout):
+                    rc = crucible.cmd_run_job(argparse.Namespace(
+                        manifest=str(manifest),
+                        workers="worker-b",
+                        jobs=1,
+                        run=None,
+                        resume=False,
+                        replace=False,
+                        retry_failed=False,
+                        task_attempts=2,
+                        coordinator_host=None,
+                        remote_timeout_seconds=1800.0,
+                        wait=False,
+                        lease_seconds=600,
+                        interval_seconds=30.0,
+                        timeout_seconds=0.0,
+                        fail_on_fail=True,
+                        verify=True,
+                        merge=None,
+                        merge_force=False,
+                        newline_between=False,
+                        notify_command=None,
+                        no_color=True,
+                        verbose=False,
+                        command_label="start",
+                    ))
+
+            self.assertEqual(23, rc)
+            queue_monitor.assert_not_called()
+            queue_launcher.assert_called_once()
+            command = queue_launcher.call_args.kwargs["command"]
+            self.assertIn("resume", command)
+            self.assertIn("--verify", command)
+            queued_manifest = crucible.load_manifest(runs / "queued-verify" / "manifest.json")
+            self.assertTrue(crucible.queue_request_path(queued_manifest).exists())
+            output = stdout.getvalue()
+            self.assertIn("start: queued queued-verify; waiting for active", output)
+            self.assertIn("start: waiting for queued run to finish", output)
+            self.assertNotIn("start: queue monitor pid=", output)
+
+    def test_queue_launcher_can_fail_when_queue_marker_is_cleared(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runs = Path(tmp) / "runs"
+            self.write_retry_run(runs, "cleared", failed=None)
+            payload = {
+                "run": "cleared",
+                "runs_dir": str(runs),
+                "command": ["true"],
+                "lease_seconds": 600,
+                "poll_seconds": 0.5,
+                "fail_if_unqueued": True,
+            }
+
+            with self.patch_runs_dir(runs):
+                stdout = io.StringIO()
+                with contextlib.redirect_stdout(stdout):
+                    rc = crucible.run_queue_launcher(payload)
+
+        self.assertEqual(1, rc)
+        self.assertIn("queue: cleared is no longer queued", stdout.getvalue())
+
     def test_deploy_resume_queues_when_another_run_is_active(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             runs = Path(tmp) / "runs"
@@ -3454,6 +3545,44 @@ except SystemExit as exc:
             self.assertIn("resume: cleared stop request for paused", output)
             self.assertIn("resume: queued paused; waiting for active", output)
             self.assertIn("resume: queue monitor pid=4244", output)
+
+    def test_resume_verify_waits_for_queued_run(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runs = Path(tmp) / "runs"
+            active_run = self.write_retry_run(runs, "active", failed=None)
+            active_manifest = crucible.load_manifest(active_run / "manifest.json")
+            crucible.claim_task(
+                active_manifest,
+                worker="worker-a",
+                profile=None,
+                lease_seconds=600,
+                retry_failed=False,
+            )
+            paused_run = self.write_retry_run(runs, "paused", failed=None)
+
+            args = self.retry_args(run="paused")
+            args.verify = True
+            with (
+                self.patch_runs_dir(runs),
+                mock.patch("crucible_lib.workers.cmd_run_job", return_value=0) as run_job,
+                mock.patch("crucible_lib.workers.start_queue_monitor") as queue_monitor,
+                mock.patch("crucible_lib.workers.run_queue_launcher_foreground", return_value=5) as queue_launcher,
+            ):
+                stdout = io.StringIO()
+                with contextlib.redirect_stdout(stdout):
+                    rc = crucible.cmd_resume(args)
+
+            self.assertEqual(1, rc)
+            run_job.assert_not_called()
+            queue_monitor.assert_not_called()
+            queue_launcher.assert_called_once()
+            command = queue_launcher.call_args.kwargs["command"]
+            self.assertIn("resume", command)
+            self.assertIn("--verify", command)
+            output = stdout.getvalue()
+            self.assertIn("resume: queued paused; waiting for active", output)
+            self.assertIn("resume: waiting for queued run to finish", output)
+            self.assertNotIn("resume: queue monitor pid=", output)
 
     def test_resume_named_run_delegates_to_coordinator(self) -> None:
         remote_result = subprocess.CompletedProcess(
