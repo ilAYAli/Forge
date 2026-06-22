@@ -1999,21 +1999,19 @@ def cmd_deploy(args: argparse.Namespace) -> int:
         status(colorize("deploy: tasks complete", "green", enabled=color_enabled) if failed == 0 else colorize("deploy: tasks failed", "red", enabled=color_enabled))
     notify_command = getattr(args, "notify_command", None) or default_notify_command()
     completion_deferred_to_wait = False
-    if (
-        failed == 0
-        and has_tasks
-        and bool(getattr(args, "launch_only", False))
-        and bool(getattr(args, "start_wait_monitor", False))
-    ):
-        monitor_pid = start_wait_monitor(
-            run_dir=run_dir,
-            manifest_path=manifest_path,
-            args=args,
-            notify_command=notify_command,
-        )
-        if monitor_pid:
+    if failed == 0 and has_tasks and bool(getattr(args, "launch_only", False)):
+        if bool(getattr(args, "start_wait_monitor", False)):
+            monitor_pid = start_wait_monitor(
+                run_dir=run_dir,
+                manifest_path=manifest_path,
+                args=args,
+                notify_command=notify_command,
+            )
+            if monitor_pid:
+                completion_deferred_to_wait = True
+                status(colorize(f"deploy: wait monitor pid={monitor_pid}", "green", enabled=color_enabled))
+        elif bool(getattr(args, "defer_completion_notify", False)):
             completion_deferred_to_wait = True
-            status(colorize(f"deploy: wait monitor pid={monitor_pid}", "green", enabled=color_enabled))
     if notify_command and not completion_deferred_to_wait:
         run_notify_command(
             notify_command,
@@ -2477,7 +2475,8 @@ def cmd_run_job(args: argparse.Namespace) -> int:
         interval_seconds=args.interval_seconds,
         timeout_seconds=args.timeout_seconds,
         fail_on_fail=args.fail_on_fail,
-        start_wait_monitor=True,
+        start_wait_monitor=not should_wait,
+        defer_completion_notify=should_wait,
         no_color=args.no_color,
         verbose=args.verbose,
     )
