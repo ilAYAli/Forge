@@ -24,10 +24,7 @@ watch 'crucible status --verbose'
 crucible update
 ```
 
-Use `crucible start --help`, `crucible add --help`, `crucible del --help`,
-`crucible stop --help`, `crucible resume --help`, `crucible retry --help`,
-`crucible worker --help`, and `crucible status --help` for normal workflow
-options.
+Use `crucible <command> --help` for full options.
 
 ## One-Shot Shell Commands
 
@@ -37,9 +34,8 @@ Run the same shell command once on each selected host:
 crucible sh "cd ~/code/cpp/chess/enyo; git switch main; git pull; cmake --build build && ./scripts/deploy.sh --candidate"
 ```
 
-`sh` uses the default worker pool unless `--workers` is supplied, but caps each
-host to one worker slot. It waits for completion, prints grouped output for each
-host, and does not create Crucible run history.
+`sh` waits, prints grouped output per host, and does not create run history.
+Each host gets one slot unless `--workers` says otherwise.
 
 ```sh
 crucible sh --workers pwa-5090,pwa-mbp0,pwa-mbp "hostname; git --version"
@@ -47,47 +43,26 @@ crucible sh --workers pwa-5090,pwa-mbp0,pwa-mbp "hostname; git --version"
 
 ## Start Work
 
-Start a manifest on a short inline worker list:
-
 ```sh
 crucible start manifest.json --workers worker-a,worker-b:4
-```
-
-Start with a workers file when workers need defaults for profiles, custom
-Python paths, local execution, cache directories, disabled entries, or slots:
-
-```sh
 crucible start manifest.json --workers workers.json --run my-run --wait
-```
-
-`start` creates `runs/<run>/`, writes `manifest.json` and `workers.json` there,
-syncs the runner and declared inputs to workers, verifies prerequisites, starts
-worker loops, verifies declared outputs, and optionally waits or merges output.
-It returns non-zero on setup, task, wait, verification, or merge failure.
-If some workers fail setup but at least one slot is ready, task launch continues
-on the ready slots and reports the skipped setup failures.
-If another run is already using workers, `start` materializes the new run as
-queued, shows it in status and web, and starts it when older active or queued
-runs clear.
-
-Useful options:
-
-```sh
 crucible start manifest.json --workers worker-a,worker-b:4 --run my-run
-crucible start manifest.json --workers workers.json --wait
 crucible start manifest.json --workers workers.json --merge merged.txt
 crucible start manifest.json --workers workers.json --replace
 ```
 
+`start` materializes `runs/<run>/manifest.json` and `workers.json`, syncs inputs,
+checks prerequisites, launches workers, and optionally waits/merges. If another
+run is active, the new run is queued and shown in status/web.
+
 ## Templates
 
-`run` expands a named template into a normal Crucible manifest, then starts it.
-Templates are loaded from `.crucible/templates`, `~/.config/crucible/templates`,
-and the built-in `templates/` directory.
+Templates expand to normal manifests and then start.
 
 ```sh
 crucible template list
 crucible template show sprt
+
 crucible sprt --candidate ~/assets/engines/enyo_9696dac --games 1000
 crucible sprt --candidate ~/assets/engines/enyo_9696dac --games 1000 \
   --comment "quick smoke"
@@ -98,31 +73,19 @@ crucible sprt --candidate ~/assets/engines/enyo_9696dac --games 1000 \
 crucible sprt --candidate ~/assets/engines/enyo_9696dac --games 1000 \
   --candidate-uci nnue_file=~/code/cpp/chess/enyo/net/candidate.nn \
   --reference-uci nnue_file=~/code/cpp/chess/enyo/net/reference.nn
-crucible sprt --workers pwa-mbp:4 -- --candidate ~/assets/engines/enyo_9696dac --games 1000
 ```
 
-`crucible sprt ...` is shorthand for `crucible run sprt ...`.
-Crucible consumes only run orchestration flags such as `--workers`, `--jobs`,
-`--wait`, `--notify-command`, and `--comment`; SPRT flags can be passed
-directly, with `--` available as an optional separator when a flag name
-conflicts. Template defaults such as `--reference`, `--book`, `--tc`,
-`--threads`, and `--concurrency` are added to the underlying `sprt` command
-when they are not supplied.
+Notes:
 
-`sprt` derives the Enyo candidate commit from the executable name
-(`enyo_9696dac` -> `9696dac`). Before games start, the materialized manifest
-syncs declared Git requirements, checks out pinned commits, builds and installs
-the candidate/tooling, probes the engines, and syncs the opening book input.
-Use `--candidate-uci` and `--reference-uci` for net-vs-net runs where both
-sides use the same engine binary but different NNUE files. These flags are
-repeatable and are passed through to the underlying `sprt` command.
-
-For `crucible sprt`, inline worker counts are worker slots. `pwa-mbp:4`
-launches 4 SPRT shards on `pwa-mbp`. Use `:0` to disable a host.
-`--concurrency` and `--threads` are passed to `sprt` and affect the engine work
-inside each shard; they do not change the number of Crucible worker slots.
-If `--shards` is omitted, Crucible chooses 8 shards per worker slot,
-capped by the number of games. Pass `--shards N` to override it.
+- `crucible sprt ...` is shorthand for `crucible run sprt ...`.
+- Crucible consumes orchestration flags: `--workers`, `--jobs`, `--wait`,
+  `--notify-command`, `--comment`.
+- SPRT flags are passed through. Use `--` only if a flag name conflicts.
+- Missing SPRT flags come from template defaults.
+- `pwa-mbp:4` means 4 Crucible worker slots on `pwa-mbp`.
+- `--concurrency` and `--threads` affect SPRT/engine work inside each shard.
+- Without `--shards`, Crucible chooses 8 shards per worker slot, capped by
+  `--games`.
 
 Default workers can be configured in `~/.config/crucible/config.yml`:
 
@@ -136,9 +99,6 @@ template_dirs:
 
 ## Status
 
-`status` without a run name shows active and explicitly queued runs. Failed
-inactive runs are collapsed near the top so they do not hide active work.
-
 ```sh
 crucible status
 crucible status --verbose
@@ -147,9 +107,8 @@ crucible status --failed
 crucible status --done
 ```
 
-Default status keeps active task rows visible. `--verbose` adds pending and
-failed task sections, diagnostics, and more detail. `--show-done` adds completed
-task breakdowns by worker.
+Default status shows active and queued runs. `--verbose` adds pending, failed,
+diagnostics, and more detail.
 
 If a worker should read status from the coordinator by default, put a
 coordinator pointer in `runs/coordinator`:
@@ -164,24 +123,14 @@ overrides `runs/coordinator`.
 
 ## Stop And Resume
 
-Stop a run:
-
 ```sh
 crucible stop my-run
-```
-
-`stop` writes a stop marker and releases active task claims for incomplete
-tasks. The stop marker prevents new claims until the run is resumed.
-
-Resume a stopped or incomplete run:
-
-```sh
 crucible resume my-run
 ```
 
-`resume` clears the stop marker and restarts incomplete non-failed work using
-the run's materialized `manifest.json` and `workers.json`. Omit the run name
-only when exactly one incomplete run exists. Use `retry` for failed tasks.
+`stop` prevents new claims and releases incomplete active claims.
+`resume` restarts incomplete non-failed work from the materialized run.
+Use `retry` for failed tasks.
 
 Add worker slots to an incomplete run:
 
@@ -192,19 +141,9 @@ crucible worker add worker-c:4 my-run
 crucible worker set worker-c:6 my-run
 ```
 
-`add --worker` starts additional worker slots against the materialized run.
-`worker-c:4` adds four slots; it does not set the host's total slot count to
-four. It uses the same inline worker syntax as `start`, inheriting defaults from
-the selected run's materialized `workers.json`. It clears an existing drain
-marker for that worker, adds the worker slots to the run's `workers.json`, and
-validates setup before tasks can be claimed. Existing workers are not restarted.
-Omit the run name only when exactly one active run exists. `worker add` is the
-explicit subcommand form.
-
-Use `worker set` when you want the argument to be the desired total slot count.
-If `worker-c` already has four slots, `crucible worker set worker-c:6 my-run`
-starts two additional slots and records six total slots in the run's
-`workers.json`.
+`add --worker worker-c:4` adds 4 new slots. It does not set the host total to 4.
+Use `worker set worker-c:6` to set the desired total slot count. Existing
+workers keep running.
 
 Drain a worker from a run:
 
@@ -214,39 +153,20 @@ crucible del --worker worker-c my-run
 crucible worker del worker-c my-run
 ```
 
-`del --worker` prevents that worker from claiming new tasks and releases its
-reserved claims. Running tasks are not killed. Use `--keep-claims` if you only
-want to prevent future claims. It also removes that host from the run's
-`workers.json`. Without `--worker`, `del` keeps its existing run-deletion
-behavior. Omit the run name only when exactly one active run exists.
-`worker del` is the explicit subcommand form.
+`del --worker` drains the host: no new claims, reserved claims released, running
+tasks left alone. Add `--keep-claims` to keep already reserved claims. Without
+`--worker`, `del` deletes a run.
 
 ## Retry Failed Work
 
-Retry every failed incomplete run:
-
 ```sh
 crucible retry
-```
-
-Retry one run:
-
-```sh
 crucible retry my-run
-```
-
-Retry with a different worker pool:
-
-```sh
 crucible retry my-run --workers worker-c,worker-d:4
 crucible retry my-run --workers alternate-workers.json
 ```
 
-`retry` resumes the materialized `runs/<run>/manifest.json`, lets workers claim
-tasks with `.fail.json`, and skips tasks with valid `.done.json` and declared
-outputs. Omit the run name to retry all failed incomplete runs under `runs/`.
-Add `--wait` only when you want the command to stay attached and fail if the
-retried work still ends incomplete or failed.
+`retry` requeues failed tasks and skips valid completed outputs.
 
 If a dead worker left live claims behind, release that worker before retrying:
 
@@ -256,11 +176,8 @@ crucible release --manifest runs/my-run/manifest.json --worker worker-name
 
 ## Workers
 
-Inline workers are comma-separated. If `runs/workers.json` or
-`./workers.json` contains that host, the inline entry inherits the file's
-profile, Python path, local flag, cache directory, and slot default. If no
-default worker record exists for that host, an inline entry without `:N` uses
-8 slots.
+Inline workers are comma-separated. `:N` sets slots for that invocation. `:0`
+omits a host.
 
 ```sh
 crucible start manifest.json --workers worker-a,worker-b
@@ -268,10 +185,6 @@ crucible start manifest.json --workers worker-a:8,worker-b:4
 crucible start manifest.json --workers worker-a=linux:8,worker-b=mac:4
 crucible start manifest.json --workers worker-a:0,worker-b
 ```
-
-Use `:N` to override the slot count for that invocation. Use `:0` to omit a
-worker without rewriting the workers file. Negative and non-integer slot counts
-are invalid.
 
 Workers files as JSON:
 
@@ -298,11 +211,8 @@ Workers files as JSON:
 }
 ```
 
-A string worker uses the same value as host and profile. Object workers support
-`host`, `profile`, `python`, `local`, `cache_dir`, `slots`, and `enabled`.
-`slots` starts multiple worker loops on the same host; use it only when the
-task does not already saturate the machine. Set `enabled` to `false`, or set
-`slots` to `0`, to omit a worker from the expanded pool.
+Object workers support `host`, `profile`, `python`, `local`, `cache_dir`,
+`slots`, and `enabled`. Inline entries inherit matching worker-file defaults.
 
 ## Manifests
 
