@@ -234,7 +234,7 @@ class CrucibleTests(unittest.TestCase):
         payload = crucible.run_status_payload(summary)
 
         self.assertEqual("quick smoke", payload["comment"])
-        self.assertEqual("comment=quick smoke", payload["display"]["comment"])
+        self.assertEqual('"quick smoke"', payload["display"]["comment"])
         self.assertEqual([
             {
                 "label": "crucible sprt",
@@ -2782,7 +2782,7 @@ except SystemExit as exc:
             self.assertEqual(0, status.returncode)
             self.assertIn("tasks=3/3", status.stdout)
             self.assertIn("run=test\n  desc=native check", status.stdout)
-            self.assertIn("  comment=quick smoke", status.stdout)
+            self.assertIn('  "quick smoke"', status.stdout)
             self.assertNotIn("kind=", status.stdout)
             self.assertTrue(any(line.startswith("  tasks=3/3") for line in status.stdout.splitlines()))
 
@@ -6947,7 +6947,7 @@ except SystemExit as exc:
             blue = crucible.STATUS_BLUE_SGR
             self.assertIn(f"run=\033[{blue}mcolor\033[0m", text)
             self.assertIn("desc=Run description", text)
-            self.assertIn("comment=quick smoke", text)
+            self.assertIn('"quick smoke"', text)
             self.assertNotIn("desc=\033[", text)
             self.assertIn("tasks=\033[33m0/1", text)
             self.assertIn("pending: \033[33m1", text)
