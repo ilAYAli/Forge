@@ -15,67 +15,13 @@ fi
 rendered=$(
     CRUCIBLE_EVENT_JSON="$payload" python3 - <<'PY'
 import json
-import math
 import os
-import re
-from pathlib import Path
+
 
 event = json.loads(os.environ["CRUCIBLE_EVENT_JSON"])
 counts = event.get("counts") or {}
 workers = event.get("worker_results") or []
 failed = [item for item in workers if not item.get("ok")]
-score_re = re.compile(
-    r"Score of candidate vs reference:\s+"
-    r"(?P<wins>\d+)\s+-\s+(?P<losses>\d+)\s+-\s+(?P<draws>\d+)"
-    r"\s+\[[^\]]+\]\s+(?P<games>\d+)"
-)
-
-
-def sprt_aggregate(run_dir):
-    if not run_dir:
-        return None
-    wins = losses = draws = games = 0
-    for log in sorted((Path(run_dir) / "outputs").glob("*/sprt.log")):
-        try:
-            text = log.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            continue
-        matches = list(score_re.finditer(text))
-        if not matches:
-            continue
-        match = matches[-1]
-        wins += int(match.group("wins"))
-        losses += int(match.group("losses"))
-        draws += int(match.group("draws"))
-        games += int(match.group("games"))
-    if games <= 0:
-        return None
-    score = (wins + 0.5 * draws) / games
-    bounded = min(max(score, 1e-6), 1.0 - 1e-6)
-    elo = -400.0 * math.log10(1.0 / bounded - 1.0)
-    values = [1.0] * wins + [0.0] * losses + [0.5] * draws
-    if games > 1:
-        variance = sum((value - score) ** 2 for value in values) / (games - 1)
-        stderr = math.sqrt(variance / games)
-        derivative = 400.0 / (math.log(10.0) * bounded * (1.0 - bounded))
-        ci95 = 1.96 * derivative * stderr
-        los = 100.0 * 0.5 * (
-            1.0 + math.erf(((score - 0.5) / stderr) / math.sqrt(2.0))
-        ) if stderr > 0.0 else (100.0 if score > 0.5 else 0.0 if score < 0.5 else 50.0)
-    else:
-        ci95 = float("nan")
-        los = 50.0
-    return {
-        "wins": wins,
-        "losses": losses,
-        "draws": draws,
-        "games": games,
-        "score": score,
-        "elo": elo,
-        "ci95": ci95,
-        "los": los,
-        "draw_ratio": 100.0 * draws / games,
-    }
 
 title = "Crucible"
 kind = event.get("kind")
@@ -89,49 +35,37 @@ elif state == "stopped":
 else:
     title += " failed"
 
-sprt = sprt_aggregate(str(event.get("run_dir", ""))) if kind == "sprt" else None
+display = event.get("display") if isinstance(event.get("display"), dict) else {}
+comment = str(event.get("comment") or "").strip()
+if not comment:
+    raw_comment = str(display.get("comment") or "").strip()
+    if len(raw_comment) >= 2 and raw_comment[0] == raw_comment[-1] == '"':
+        raw_comment = raw_comment[1:-1]
+    comment = raw_comment
 
-lines = ["<output>", title]
-lines.append(f"  • Run: {event.get('run', '')}")
-if event.get("description"):
-    lines.append(f"  • Description: {event['description']}")
-lines.append(f"  • State: {event.get('state', '')}")
-if sprt:
-    lines.append(
-        "  • Score: "
-        f"{sprt['wins']} - {sprt['losses']} - {sprt['draws']} "
-        f"[{sprt['score']:.4f}] {sprt['games']} games"
-    )
-    lines.append(
-        "  • Elo: "
-        f"{sprt['elo']:.2f} +/- {sprt['ci95']:.2f}, "
-        f"LOS: {sprt['los']:.1f}%, DrawRatio: {sprt['draw_ratio']:.1f}%"
-    )
-lines.append(f"  • Tasks: {counts.get('done', 0)}/{event.get('tasks', 0)} done")
-lines.append(
-    "  • Active: "
-    f"running={counts.get('running', 0)} "
-    f"claimed={counts.get('claimed', 0)} "
-    f"pending={counts.get('pending', 0)} "
-    f"fail={counts.get('fail', 0)} "
-    f"stale={counts.get('stale', 0)}"
-)
-lines.append(f"  • Workers: {sum(1 for item in workers if item.get('ok'))}/{len(workers)} ok")
+status_line = str(event.get("status_line") or "").strip()
+if not status_line:
+    progress_fields = event.get("progress_fields")
+    fields = [f"tasks={counts.get('done', 0)}/{event.get('tasks', 0)}"]
+    if isinstance(progress_fields, list):
+        fields.extend(str(field) for field in progress_fields if str(field).strip())
+    status_line = " ".join(fields)
+
+lines = ["<output>", title, f"  • Run: {event.get('run', '')}"]
+if comment:
+    lines.append(f"  • Comment: {comment}")
+if status_line:
+    lines.append(f"  • {status_line}")
 if failed:
     summary = ", ".join(
         f"{item.get('host', 'worker')}:{item.get('stage', '')}:rc={item.get('rc', '')}"
         for item in failed[:6]
     )
     lines.append(f"  • Failed workers: {summary}")
-lines.append(f"  • Run dir: {event.get('run_dir', '')}")
-elapsed = event.get("elapsed_seconds")
-if isinstance(elapsed, (int, float)):
-    lines.append(f"  • Elapsed: {elapsed:.1f}s")
 lines.append("</output>")
 print("\n".join(lines))
 PY
 )
-
 wake_message=$(
     CRUCIBLE_EVENT_JSON="$payload" python3 - <<'PY'
 import json
