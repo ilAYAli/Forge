@@ -833,9 +833,21 @@ _HTML = r"""<!DOCTYPE html>
     function sparkPath(name, points, extras = [], w = 180, h = 132) {
       if (!points || points.length < 2) return '';
       const scale = graphScale(name, points, extras, w, h);
-      return points.map((p, i) =>
-        `${i ? 'L' : 'M'}${scale.x(p.x).toFixed(1)},${scale.y(p.y).toFixed(1)}`
-      ).join(' ');
+      const scaled = points.map(p => ({x: scale.x(p.x), y: scale.y(p.y)}));
+      const clampX = (value, a, b) => Math.max(Math.min(a, b), Math.min(Math.max(a, b), value));
+      let path = `M${scaled[0].x.toFixed(1)},${scaled[0].y.toFixed(1)}`;
+      for (let i = 0; i < scaled.length - 1; i++) {
+        const p0 = scaled[Math.max(0, i - 1)];
+        const p1 = scaled[i];
+        const p2 = scaled[i + 1];
+        const p3 = scaled[Math.min(scaled.length - 1, i + 2)];
+        const c1x = clampX(p1.x + (p2.x - p0.x) / 6, p1.x, p2.x);
+        const c1y = p1.y + (p2.y - p0.y) / 6;
+        const c2x = clampX(p2.x - (p3.x - p1.x) / 6, p1.x, p2.x);
+        const c2y = p2.y - (p3.y - p1.y) / 6;
+        path += ` C${c1x.toFixed(1)},${c1y.toFixed(1)} ${c2x.toFixed(1)},${c2y.toFixed(1)} ${p2.x.toFixed(1)},${p2.y.toFixed(1)}`;
+      }
+      return path;
     }
 
     function setGraphReadout(el) {

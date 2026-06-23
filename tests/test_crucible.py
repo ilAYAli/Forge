@@ -546,6 +546,8 @@ except SystemExit as exc:
         self.assertIn("function graphHoverZones", web._HTML)
         self.assertIn("function setGraphReadout", web._HTML)
         self.assertIn("function clearGraphReadout", web._HTML)
+        self.assertIn("const clampX", web._HTML)
+        self.assertIn("path += ` C${c1x.toFixed(1)}", web._HTML)
         self.assertIn("function llrBoundFromRun", web._HTML)
         self.assertIn("function signedGraphSeries", web._HTML)
         self.assertIn(".graph-zero", web._HTML)
