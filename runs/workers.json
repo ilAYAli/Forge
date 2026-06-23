@@ -7,16 +7,16 @@
       "slots": 7
     },
     {
-      "host": "pwa-mbp0",
-      "profile": "pwa-mbp0",
+      "host": "pwa-mbp",
+      "profile": "pwa-mbp",
       "python": "/opt/homebrew/bin/python3",
       "slots": 5
     },
     {
-      "host": "pwa-mbp",
-      "profile": "pwa-mbp",
+      "host": "pwa-mbp0",
+      "profile": "pwa-mbp0",
       "python": "/opt/homebrew/bin/python3",
-      "slots": 4
+      "slots": 5
     },
     {
       "host": "pwa-wsl",
