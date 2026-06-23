@@ -153,8 +153,8 @@ _HTML = r"""<!DOCTYPE html>
                  align-items: center; color: var(--dim); font-size: 11px; }
     .graph-row svg { width: 100%; height: 132px; display: block; }
     .graph-line { fill: none; stroke-width: 1.1; vector-effect: non-scaling-stroke; }
-    .graph-zero { stroke: var(--text); stroke-width: 1.1; opacity: .78;
-                  vector-effect: non-scaling-stroke; }
+    .graph-zero { stroke: var(--text); stroke-width: 1; stroke-dasharray: 1 4;
+                  stroke-linecap: round; opacity: .55; vector-effect: non-scaling-stroke; }
     .graph-bound { stroke: var(--red); stroke-width: .5; stroke-dasharray: 4 7;
                    opacity: .24; vector-effect: non-scaling-stroke; }
     .graph-hit { fill: transparent; pointer-events: all; }
@@ -823,9 +823,9 @@ _HTML = r"""<!DOCTYPE html>
       const bound = Number(options.llrBound);
       if (!Number.isFinite(bound) || bound <= 0) return '';
       const values = points.map(p => p.y);
-      const extras = [-bound, bound];
-      return extras.map(v => {
-        const y = graphY(name, values, v, extras, h);
+      const [minY, maxY] = graphYDomain(name, values, []);
+      return [-bound, bound].filter(v => v >= minY && v <= maxY).map(v => {
+        const y = graphY(name, values, v, [], h);
         return `<line class="graph-bound" x1="0" y1="${y.toFixed(1)}" x2="${w}" y2="${y.toFixed(1)}"></line>`;
       }).join('');
     }
@@ -927,12 +927,10 @@ _HTML = r"""<!DOCTYPE html>
         .filter(s => s.points.length >= 2);
       if (!series.length) return '';
       const rows = series.map(s => {
-        const bound = graphSeriesName(s.name) === 'llr' ? Number(options.llrBound) : null;
-        const extras = Number.isFinite(bound) && bound > 0 ? [-bound, bound] : [];
-        const path = sparkPath(s.name, s.points, extras);
-        const zero = zeroLine(s.name, s.points, extras);
+        const path = sparkPath(s.name, s.points);
+        const zero = zeroLine(s.name, s.points);
         const bounds = graphBoundLines(s.name, s.points, options);
-        const hover = graphHoverZones(s.name, s.points, extras, graph?.x_unit || 'x');
+        const hover = graphHoverZones(s.name, s.points, [], graph?.x_unit || 'x');
         const last = s.points[s.points.length - 1]?.y;
         const lastX = s.points[s.points.length - 1]?.x;
         const lastValue = fmtGraphValue(s.name, last);
