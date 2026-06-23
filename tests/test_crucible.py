@@ -548,17 +548,50 @@ except SystemExit as exc:
         self.assertIn("return r.toFixed(4) + '/s'", web._HTML)
         self.assertIn("function graphDomain", web._HTML)
         self.assertIn("function graphDisplayPoints", web._HTML)
+        self.assertIn("function graphXTotal", web._HTML)
         self.assertIn("function graphYDomain", web._HTML)
+        self.assertIn("function graphYExtras", web._HTML)
         self.assertIn("function zeroLine", web._HTML)
         self.assertIn("function graphBoundLines", web._HTML)
+        self.assertIn("function graphHoverZones", web._HTML)
+        self.assertIn("function setGraphPointReadout", web._HTML)
+        self.assertIn("function setGraphReadoutText", web._HTML)
+        self.assertIn("function clearGraphReadout", web._HTML)
+        self.assertIn("function graphDataPoints", web._HTML)
+        self.assertIn("const [minY, maxY] = graphYDomain(name, values, extras)", web._HTML)
+        self.assertIn("const yExtras = graphYExtras(s.name, options, s.points)", web._HTML)
+        self.assertIn("const path = sparkPath(s.name, s.points, yExtras, 180, 132, xTotal)", web._HTML)
+        self.assertIn("const zero = zeroLine(s.name, s.points, yExtras)", web._HTML)
+        self.assertIn("graphHoverZones(s.name, s.points, yExtras", web._HTML)
+        self.assertIn("const minX = useTotal ? 0 : dataMinX", web._HTML)
+        self.assertIn("const clampX", web._HTML)
+        self.assertIn("const clampY = clampX", web._HTML)
+        self.assertIn("const c1y = clampY", web._HTML)
+        self.assertIn("path += ` C${c1x.toFixed(1)}", web._HTML)
         self.assertIn("function llrBoundFromRun", web._HTML)
         self.assertIn("function signedGraphSeries", web._HTML)
         self.assertIn(".graph-zero", web._HTML)
         self.assertIn(".graph-bound", web._HTML)
+        self.assertIn(".graph-crosshair", web._HTML)
+        self.assertIn(".graph-crosshair-readout", web._HTML)
+        self.assertIn(".graph-value", web._HTML)
+        self.assertIn("grid-template-columns: 42px minmax(120px, 1fr) 160px", web._HTML)
+        self.assertIn("font-variant-numeric: tabular-nums", web._HTML)
+        self.assertIn("const text = `${name}=${fmtGraphValue(name, best.y)} @ ${fmtGraphNumber(best.x)} ${xUnit}`", web._HTML)
+        self.assertIn("label.textContent = text", web._HTML)
+        self.assertIn("label.style.left = `${left}px`", web._HTML)
+        self.assertIn(".graph-live-hover:hover .graph-crosshair", web._HTML)
+        self.assertIn(".graph-plot:hover .graph-crosshair-readout", web._HTML)
         self.assertNotIn("points.slice(-48)", web._HTML)
         self.assertIn('x2="${w}"', web._HTML)
-        self.assertIn("stroke-dasharray: 3 5", web._HTML)
+        self.assertIn("stroke-dasharray: 1 4", web._HTML)
+        self.assertIn("stroke-linecap: round", web._HTML)
+        self.assertIn("const visible = Math.min(bound, Math.max(bound * 0.33, observed * 1.25))", web._HTML)
+        self.assertIn("data-points=\"${payload}\"", web._HTML)
+        self.assertIn("onmousemove=\"setGraphPointReadout(this,event)\"", web._HTML)
+        self.assertNotIn("stroke-dasharray: 2 3", web._HTML)
         self.assertNotIn(".graph-dot", web._HTML)
+        self.assertNotIn(".graph-crosshair-point", web._HTML)
         self.assertNotIn("function endpointDot", web._HTML)
         self.assertIn(".sort((a, b) => a.x - b.x)", web._HTML)
         self.assertIn("viewBox=\"0 0 180 132\"", web._HTML)
@@ -5160,9 +5193,10 @@ except SystemExit as exc:
             )
 
             graph = payload["progress_graph"]
+            self.assertEqual(4, graph["x_total"])
             series = {item["name"]: item["points"] for item in graph["series"]}
-            self.assertEqual([{"x": 2.0, "y": 0.1}, {"x": 4.0, "y": 0.0}], series["llr"])
-            self.assertAlmostEqual(10.0, series["elo"][0]["y"], places=1)
+            self.assertEqual([{"x": 0.0, "y": 0.0}, {"x": 4.0, "y": 0.0}], series["llr"])
+            self.assertAlmostEqual(0.0, series["elo"][0]["y"], places=1)
             self.assertAlmostEqual(0.0, series["elo"][1]["y"], places=1)
             self.assertEqual([{"label": "sprt", "count": 2, "command": "true"}], payload["commands"])
 
@@ -7421,6 +7455,7 @@ except SystemExit as exc:
 
             graph = summary["active"][0]["progress_graph"]
             self.assertEqual("rows", graph["x_unit"])
+            self.assertEqual(100, graph["x_total"])
             series = {item["name"]: item["points"] for item in graph["series"]}
             self.assertEqual([{"x": 10.0, "y": 1.5}, {"x": 20.0, "y": 1.25}], series["loss"])
             self.assertEqual([{"x": 10.0, "y": 0.001}, {"x": 20.0, "y": 0.0005}], series["lr"])
@@ -7476,10 +7511,156 @@ except SystemExit as exc:
 
             graph = summary["progress_graph"]
             self.assertIsNotNone(graph)
+            self.assertEqual(4, graph["x_total"])
             series = {item["name"]: item["points"] for item in graph["series"]}
-            self.assertEqual([{"x": 2.0, "y": 0.01}, {"x": 4.0, "y": -0.01}], series["llr"])
-            self.assertAlmostEqual(10.0, series["elo"][0]["y"], places=1)
+            self.assertEqual([{"x": 0.0, "y": 0.0}, {"x": 4.0, "y": -0.01}], series["llr"])
+            self.assertAlmostEqual(0.0, series["elo"][0]["y"], places=1)
             self.assertAlmostEqual(-5.0, series["elo"][1]["y"], places=1)
+
+    def test_status_sprt_run_graph_uses_processed_game_positions(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run = root / "sprt-run"
+            state = run / "state"
+            logs = run / "logs"
+            state.mkdir(parents=True)
+            logs.mkdir(parents=True)
+            tasks = []
+            for index in range(3):
+                tasks.append({
+                    "id": f"task_{index}",
+                    "index": index,
+                    "command": "true",
+                    "outputs": [],
+                    "progress": {
+                        "unit": "games",
+                        "total": 2,
+                        "log_regex": (
+                            r"\[\s*(?P<done>\d+)\/(?P<total>\d+)\].*?"
+                            r"Elo\s+(?P<elo>[-+]?\d+(?:\.\d+)?|[-+]?inf).*?"
+                            r"\+/-\s+(?P<ci>\d+(?:\.\d+)?).*?"
+                            r"LOS\s+(?P<los>\d+(?:\.\d+)?)%.*?"
+                            r"draw\s+(?P<draw>\d+(?:\.\d+)?)%"
+                        ),
+                    },
+                })
+            manifest = {
+                "schema": "crucible.task.v1",
+                "name": "sprt-run",
+                "kind": "sprt",
+                "work_dir": str(run),
+                "state_dir": str(state),
+                "log_dir": str(logs),
+                "tasks": tasks,
+            }
+            for index, (elo, llr) in ((1, ("20.0", "0.10")), (2, ("-20.0", "-0.10"))):
+                task_id = f"task_{index}"
+                (state / f"{task_id}.done.json").write_text(
+                    json.dumps({"task": task_id, "host": "worker"}),
+                    encoding="utf-8",
+                )
+                (logs / f"{task_id}.log").write_text(
+                    f"[2/2] Elo  {elo} +/-  80.0 | LLR {llr}/2.94 (  3%) | LOS 50.0% | draw   0.0%\n",
+                    encoding="utf-8",
+                )
+
+            summary = crucible.status_summary(manifest, lease_seconds=600)
+
+            graph = summary["progress_graph"]
+            self.assertIsNotNone(graph)
+            self.assertEqual(6, graph["x_total"])
+            series = {item["name"]: item["points"] for item in graph["series"]}
+            self.assertEqual([0.0, 4.0], [point["x"] for point in series["llr"]])
+            self.assertEqual([0.0, 4.0], [point["x"] for point in series["elo"]])
+
+    def test_status_run_graph_history_keeps_old_samples(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run = root / "sprt-run"
+            state = run / "state"
+            logs = run / "logs"
+            state.mkdir(parents=True)
+            logs.mkdir(parents=True)
+            tasks = []
+            for index in range(2):
+                tasks.append({
+                    "id": f"task_{index}",
+                    "index": index,
+                    "command": "true",
+                    "outputs": [],
+                    "progress": {
+                        "unit": "games",
+                        "total": 2,
+                        "log_regex": (
+                            r"\[\s*(?P<done>\d+)\/(?P<total>\d+)\].*?"
+                            r"Elo\s+(?P<elo>[-+]?\d+(?:\.\d+)?|[-+]?inf).*?"
+                            r"\+/-\s+(?P<ci>\d+(?:\.\d+)?).*?"
+                            r"LOS\s+(?P<los>\d+(?:\.\d+)?)%.*?"
+                            r"draw\s+(?P<draw>\d+(?:\.\d+)?)%"
+                        ),
+                    },
+                })
+            manifest = {
+                "schema": "crucible.task.v1",
+                "name": "sprt-run",
+                "kind": "sprt",
+                "work_dir": str(run),
+                "state_dir": str(state),
+                "log_dir": str(logs),
+                "tasks": tasks,
+            }
+            (state / "task_0.done.json").write_text(
+                json.dumps({"task": "task_0", "host": "worker"}),
+                encoding="utf-8",
+            )
+            (logs / "task_0.log").write_text(
+                "[2/2] Elo  -50.0 +/-  80.0 | LLR -0.20/2.94 ( -7%) | LOS 40.0% | draw   0.0%\n",
+                encoding="utf-8",
+            )
+
+            first = crucible.status_summary(manifest, lease_seconds=600)
+            first_series = {item["name"]: item["points"] for item in first["progress_graph"]["series"]}
+            self.assertEqual([{"x": 0.0, "y": 0.0}, {"x": 2.0, "y": -0.2}], first_series["llr"])
+
+            (logs / "task_0.log").write_text(
+                "[2/2] Elo  200.0 +/-  80.0 | LLR 0.40/2.94 ( 14%) | LOS 90.0% | draw   0.0%\n",
+                encoding="utf-8",
+            )
+            (state / "task_1.done.json").write_text(
+                json.dumps({"task": "task_1", "host": "worker"}),
+                encoding="utf-8",
+            )
+            (logs / "task_1.log").write_text(
+                "[2/2] Elo  10.0 +/-  80.0 | LLR 0.10/2.94 (  3%) | LOS 55.0% | draw   0.0%\n",
+                encoding="utf-8",
+            )
+
+            second = crucible.status_summary(manifest, lease_seconds=600)
+            series = {item["name"]: item["points"] for item in second["progress_graph"]["series"]}
+            self.assertEqual(
+                [{"x": 0.0, "y": 0.0}, {"x": 2.0, "y": -0.2}, {"x": 4.0, "y": 0.5}],
+                series["llr"],
+            )
+
+            third = crucible.status_summary(manifest, lease_seconds=600)
+            series = {item["name"]: item["points"] for item in third["progress_graph"]["series"]}
+            self.assertEqual([0.0, 2.0, 4.0], [point["x"] for point in series["llr"]])
+            self.assertEqual(2, len((state / "progress-history.jsonl").read_text(encoding="utf-8").splitlines()))
+
+    def test_sprt_run_graph_delays_volatile_early_elo_for_large_runs(self) -> None:
+        points = crucible.sprt_aggregate_graph_points(
+            [
+                {"x": 26.0, "done": 26, "fields": {"elo": "-70.0", "llr": "-0.05/2.20"}},
+                {"x": 52.0, "done": 26, "fields": {"elo": "0.0", "llr": "0.00/2.20"}},
+                {"x": 78.0, "done": 26, "fields": {"elo": "30.0", "llr": "0.03/2.20"}},
+                {"x": 104.0, "done": 26, "fields": {"elo": "50.0", "llr": "0.05/2.20"}},
+            ],
+            {"elo": "elo", "llr": "llr"},
+            x_total=3000,
+        )
+
+        self.assertEqual([0.0, 26.0, 52.0, 78.0, 104.0], [point["x"] for point in points["llr"]])
+        self.assertEqual([0.0, 104.0], [point["x"] for point in points["elo"]])
 
     def test_status_sprt_header_shows_aggregated_elo(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

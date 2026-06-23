@@ -10,6 +10,8 @@ from .tasks import *
 
 
 QUEUE_MONITOR_NAME = "queue-monitor.json"
+PROGRESS_HISTORY_NAME = "progress-history.jsonl"
+SIGNED_PROGRESS_SERIES = {"elo", "llr"}
 
 
 def cmd_status(args: argparse.Namespace) -> int:
@@ -2059,10 +2061,14 @@ def task_log_progress_graph(manifest: dict[str, Any], task: dict[str, Any]) -> d
     ]
     if not series:
         return None
-    return {
+    result = {
         "x_unit": str(config.get("unit") or ""),
         "series": series,
     }
+    if total := parse_int(config.get("total")):
+        if total > 0:
+            result["x_total"] = total
+    return result
 
 def task_progress_graph_point_specs(manifest: dict[str, Any], task: dict[str, Any]) -> list[dict[str, str]]:
     config = task.get("progress")
@@ -2123,7 +2129,12 @@ def run_progress_graph_from_rows(
         if sprt_x is not None and isinstance(done, int) and done > 0:
             sprt_rows.append({"x": sprt_x, "done": done, "fields": fields})
 
-    for name, points in sprt_aggregate_graph_points(sprt_rows, sprt_series_names).items():
+    x_total = progress_unit_totals.get(x_unit) if x_unit else None
+    for name, points in sprt_aggregate_graph_points(
+        sprt_rows,
+        sprt_series_names,
+        x_total=x_total if isinstance(x_total, int) else None,
+    ).items():
         points_by_name[name] = points
 
     series = []
@@ -2133,10 +2144,13 @@ def run_progress_graph_from_rows(
             series.append({"name": name, "points": points})
     if not series:
         return None
-    return {
+    result = {
         "x_unit": x_unit,
         "series": series,
     }
+    if isinstance(x_total, int) and x_total > 0:
+        result["x_total"] = x_total
+    return result
 
 def elo_score_rate(elo: float) -> float:
     return 1.0 / (1.0 + math.pow(10.0, -elo / 400.0))
@@ -2145,19 +2159,39 @@ def score_rate_elo(score_rate: float) -> float:
     bounded = min(1.0 - 1e-12, max(1e-12, score_rate))
     return 400.0 * math.log10(bounded / (1.0 - bounded))
 
+def sprt_elo_graph_min_games(x_total: int | None) -> int:
+    if not isinstance(x_total, int) or x_total <= 100:
+        return 2
+    return min(100, max(20, int(x_total * 0.05)))
+
 def sprt_aggregate_graph_points(
     rows: list[dict[str, Any]],
     series_names: dict[str, str],
+    *,
+    x_total: int | None = None,
 ) -> dict[str, list[dict[str, float]]]:
     if not rows or not series_names:
         return {}
-    points: dict[str, list[dict[str, float]]] = {name: [] for name in series_names}
+    points: dict[str, list[dict[str, float]]] = {
+        name: ([{"x": 0.0, "y": 0.0}] if field_name in {"elo", "llr"} else [])
+        for name, field_name in series_names.items()
+    }
     weighted_score = 0.0
     weight_total = 0
     cumulative_done = 0
+    elo_min_games = sprt_elo_graph_min_games(x_total)
     llr_total = 0.0
     llr_seen = False
-    for row in sorted(rows, key=lambda item: float(item["x"])):
+    def row_x(row: dict[str, Any]) -> float:
+        try:
+            return float(row["x"])
+        except (KeyError, TypeError, ValueError):
+            return math.inf
+
+    for row in sorted(rows, key=row_x):
+        x = row_x(row)
+        if not math.isfinite(x):
+            continue
         done = row.get("done")
         fields = row.get("fields")
         if not isinstance(done, int) or done <= 0 or not isinstance(fields, dict):
@@ -2173,11 +2207,185 @@ def sprt_aggregate_graph_points(
             llr_total += llr
             llr_seen = True
         for name, field_name in series_names.items():
-            if field_name == "elo" and weight_total > 0:
+            if field_name == "elo" and weight_total >= elo_min_games:
                 points[name].append({"x": x, "y": score_rate_elo(weighted_score / weight_total)})
             elif field_name == "llr" and llr_seen:
                 points[name].append({"x": x, "y": llr_total})
     return {name: values for name, values in points.items() if values}
+
+def progress_history_path(manifest: dict[str, Any]) -> Path:
+    return state_dir(manifest) / PROGRESS_HISTORY_NAME
+
+def progress_history_entry(raw: Any) -> dict[str, Any] | None:
+    if not isinstance(raw, dict):
+        return None
+    x = parse_float(raw.get("x"))
+    if x is None or x < 0:
+        return None
+    raw_series = raw.get("series")
+    if not isinstance(raw_series, dict):
+        return None
+    series: dict[str, float] = {}
+    for key, value in raw_series.items():
+        name = str(key).strip()
+        y = parse_float(value)
+        if name and y is not None:
+            series[name] = y
+    if not series:
+        return None
+    entry: dict[str, Any] = {
+        "epoch": parse_float(raw.get("epoch")) or 0.0,
+        "x": float(x),
+        "series": series,
+    }
+    x_unit = str(raw.get("x_unit") or "").strip()
+    if x_unit:
+        entry["x_unit"] = x_unit
+    x_total = parse_int(raw.get("x_total"))
+    if x_total is not None and x_total > 0:
+        entry["x_total"] = x_total
+    return entry
+
+def load_progress_history(manifest: dict[str, Any]) -> list[dict[str, Any]]:
+    path = progress_history_path(manifest)
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+    entries: list[dict[str, Any]] = []
+    for line in lines:
+        if not line.strip():
+            continue
+        try:
+            raw = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        entry = progress_history_entry(raw)
+        if entry is not None:
+            entries.append(entry)
+    entries.sort(key=lambda entry: (float(entry["x"]), float(entry.get("epoch") or 0.0)))
+    return entries
+
+def progress_graph_snapshot(graph: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(graph, dict):
+        return None
+    raw_series = graph.get("series")
+    if not isinstance(raw_series, list):
+        return None
+    values: dict[str, float] = {}
+    x_values: list[float] = []
+    for item in raw_series:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "").strip()
+        points = item.get("points")
+        if not name or not isinstance(points, list):
+            continue
+        best: dict[str, float] | None = None
+        for point in points:
+            if not isinstance(point, dict):
+                continue
+            x = parse_float(point.get("x"))
+            y = parse_float(point.get("y"))
+            if x is None or y is None:
+                continue
+            if best is None or x > best["x"]:
+                best = {"x": float(x), "y": float(y)}
+        if best is None or best["x"] <= 0:
+            continue
+        values[name] = best["y"]
+        x_values.append(best["x"])
+    if not values or not x_values:
+        return None
+    snapshot: dict[str, Any] = {
+        "epoch": time.time(),
+        "x": max(x_values),
+        "series": values,
+    }
+    x_unit = str(graph.get("x_unit") or "").strip()
+    if x_unit:
+        snapshot["x_unit"] = x_unit
+    x_total = parse_int(graph.get("x_total"))
+    if x_total is not None and x_total > 0:
+        snapshot["x_total"] = x_total
+    return snapshot
+
+def append_progress_history(
+    manifest: dict[str, Any],
+    snapshot: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    history = load_progress_history(manifest)
+    if snapshot is None:
+        return history
+    entry = progress_history_entry(snapshot)
+    if entry is None:
+        return history
+    last_x = max((float(item["x"]) for item in history), default=-1.0)
+    if float(entry["x"]) <= last_x:
+        return history
+    path = progress_history_path(manifest)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as file:
+            file.write(json.dumps(entry, sort_keys=True, separators=(",", ":")) + "\n")
+    except OSError:
+        return history
+    history.append(entry)
+    return history
+
+def progress_graph_from_history(
+    history: list[dict[str, Any]],
+    fallback_graph: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    points_by_name: dict[str, list[dict[str, float]]] = {}
+    x_unit = ""
+    x_total: int | None = None
+    for entry in history:
+        x = parse_float(entry.get("x"))
+        if x is None:
+            continue
+        if not x_unit:
+            x_unit = str(entry.get("x_unit") or "").strip()
+        entry_x_total = parse_int(entry.get("x_total"))
+        if entry_x_total is not None and entry_x_total > 0:
+            x_total = entry_x_total
+        series = entry.get("series")
+        if not isinstance(series, dict):
+            continue
+        for name, value in series.items():
+            y = parse_float(value)
+            if y is None:
+                continue
+            points_by_name.setdefault(str(name), []).append({"x": float(x), "y": y})
+    if not x_unit and isinstance(fallback_graph, dict):
+        x_unit = str(fallback_graph.get("x_unit") or "").strip()
+    if x_total is None and isinstance(fallback_graph, dict):
+        parsed_total = parse_int(fallback_graph.get("x_total"))
+        if parsed_total is not None and parsed_total > 0:
+            x_total = parsed_total
+    series: list[dict[str, Any]] = []
+    for name, raw_points in points_by_name.items():
+        by_x: dict[float, dict[str, float]] = {}
+        for point in raw_points:
+            by_x[float(point["x"])] = point
+        points = [by_x[x] for x in sorted(by_x)]
+        if name.lower() in SIGNED_PROGRESS_SERIES and (not points or points[0]["x"] > 0.0):
+            points = [{"x": 0.0, "y": 0.0}, *points]
+        if len(points) >= 2:
+            series.append({"name": name, "points": points})
+    if not series:
+        return None
+    result: dict[str, Any] = {"x_unit": x_unit, "series": series}
+    if x_total is not None and x_total > 0:
+        result["x_total"] = x_total
+    return result
+
+def run_progress_history_graph(
+    manifest: dict[str, Any],
+    current_graph: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    history = append_progress_history(manifest, progress_graph_snapshot(current_graph))
+    return progress_graph_from_history(history, current_graph)
 
 def sprt_summary_rows(summary: dict[str, Any]) -> list[dict[str, Any]]:
     rows = summary.get("rows")
@@ -2619,12 +2827,13 @@ def status_summary(manifest: dict[str, Any], *, lease_seconds: int) -> dict[str,
             pending.append(index)
             pending_groups.setdefault(row["label"], []).append(index)
 
-    progress_graph = run_progress_graph_from_rows(
+    current_progress_graph = run_progress_graph_from_rows(
         manifest,
         rows,
         progress_task_offsets,
         progress_unit_totals,
     )
+    progress_graph = run_progress_history_graph(manifest, current_progress_graph)
 
     return {
         "tasks": len(manifest["tasks"]),

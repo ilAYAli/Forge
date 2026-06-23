@@ -149,14 +149,30 @@ _HTML = r"""<!DOCTYPE html>
                   display: grid; gap: 10px; }
     .graph-title { color: var(--dim); font-size: 11px; margin-bottom: 3px;
                    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .graph-row { display: grid; grid-template-columns: 42px 1fr 58px; gap: 8px;
+    .graph-row { display: grid; grid-template-columns: 42px minmax(120px, 1fr) 160px; gap: 8px;
                  align-items: center; color: var(--dim); font-size: 11px; }
-    .graph-row svg { width: 100%; height: 132px; display: block; }
+    .graph-plot { position: relative; height: 132px; min-width: 120px; }
+    .graph-plot svg { width: 100%; height: 100%; display: block; }
     .graph-line { fill: none; stroke-width: 1.1; vector-effect: non-scaling-stroke; }
-    .graph-zero { stroke: var(--text); stroke-width: .8; stroke-dasharray: 3 5;
-                  opacity: .42; vector-effect: non-scaling-stroke; }
+    .graph-zero { stroke: var(--text); stroke-width: 1; stroke-dasharray: 1 4;
+                  stroke-linecap: round; opacity: .55; vector-effect: non-scaling-stroke; }
     .graph-bound { stroke: var(--red); stroke-width: .5; stroke-dasharray: 4 7;
                    opacity: .24; vector-effect: non-scaling-stroke; }
+    .graph-hit { fill: transparent; pointer-events: all; }
+    .graph-crosshair { opacity: 0; pointer-events: none; transition: opacity .08s linear; }
+    .graph-live-hover:hover .graph-crosshair { opacity: 1; }
+    .graph-crosshair-line { stroke: var(--text); stroke-width: .55;
+                            opacity: .62; vector-effect: non-scaling-stroke; }
+    .graph-crosshair-readout {
+      position: absolute; left: 0; top: 2px; transform: translateX(-50%);
+      opacity: 0; pointer-events: none; z-index: 1;
+      padding: 1px 4px; border: 1px solid var(--border); border-radius: 3px;
+      background: var(--bg2); color: var(--text); font-size: 10px;
+      line-height: 1.25; white-space: nowrap; font-variant-numeric: tabular-nums;
+    }
+    .graph-plot:hover .graph-crosshair-readout { opacity: .95; }
+    .graph-value { color: var(--dim); white-space: nowrap; font-variant-numeric: tabular-nums; }
+    .graph-value.hover { color: var(--text); }
 
     /* pending / fail groups */
     .group-row { font-size: 13px; color: var(--dim); padding: 2px 0; }
@@ -765,10 +781,7 @@ _HTML = r"""<!DOCTYPE html>
     }
 
     function graphDisplayPoints(name, points) {
-      const key = graphSeriesName(name);
-      if (key !== 'elo' || points.length < 6) return points;
-      const filtered = points.filter(p => p.x >= 20);
-      return filtered.length >= 3 ? filtered : points;
+      return points;
     }
 
     function graphYDomain(name, values, extras = []) {
@@ -781,11 +794,29 @@ _HTML = r"""<!DOCTYPE html>
       return graphDomain(all, false);
     }
 
-    function graphScale(name, points, extras = [], w = 180, h = 132) {
+    function graphYExtras(name, options = {}, points = []) {
+      if (graphSeriesName(name) !== 'llr') return [];
+      const bound = Number(options.llrBound);
+      if (!Number.isFinite(bound) || bound <= 0) return [];
+      const observed = Math.max(0, ...points.map(p => Math.abs(Number(p?.y))).filter(Number.isFinite));
+      const visible = Math.min(bound, Math.max(bound * 0.33, observed * 1.25));
+      return [-visible, visible];
+    }
+
+    function graphXTotal(graph) {
+      const total = Number(graph?.x_total);
+      return Number.isFinite(total) && total > 0 ? total : null;
+    }
+
+    function graphScale(name, points, extras = [], w = 180, h = 132, xTotal = null) {
       const pad = 4;
       const xs = points.map(p => p.x);
       const ys = points.map(p => p.y);
-      const minX = Math.min(...xs), maxX = Math.max(...xs);
+      const dataMinX = Math.min(...xs), dataMaxX = Math.max(...xs);
+      const total = Number(xTotal);
+      const useTotal = Number.isFinite(total) && total > 0;
+      const minX = useTotal ? 0 : dataMinX;
+      const maxX = useTotal ? Math.max(total, dataMaxX) : dataMaxX;
       const [minY, maxY] = graphYDomain(name, ys, extras);
       return {
         x: maxX === minX
@@ -816,19 +847,125 @@ _HTML = r"""<!DOCTYPE html>
       const bound = Number(options.llrBound);
       if (!Number.isFinite(bound) || bound <= 0) return '';
       const values = points.map(p => p.y);
-      const extras = [-bound, bound];
-      return extras.map(v => {
+      const extras = graphYExtras(name, options, points);
+      const [minY, maxY] = graphYDomain(name, values, extras);
+      return [-bound, bound].filter(v => v >= minY && v <= maxY).map(v => {
         const y = graphY(name, values, v, extras, h);
         return `<line class="graph-bound" x1="0" y1="${y.toFixed(1)}" x2="${w}" y2="${y.toFixed(1)}"></line>`;
       }).join('');
     }
 
-    function sparkPath(name, points, extras = [], w = 180, h = 132) {
+    function sparkPath(name, points, extras = [], w = 180, h = 132, xTotal = null) {
       if (!points || points.length < 2) return '';
-      const scale = graphScale(name, points, extras, w, h);
-      return points.map((p, i) =>
-        `${i ? 'L' : 'M'}${scale.x(p.x).toFixed(1)},${scale.y(p.y).toFixed(1)}`
-      ).join(' ');
+      const scale = graphScale(name, points, extras, w, h, xTotal);
+      const scaled = points.map(p => ({x: scale.x(p.x), y: scale.y(p.y)}));
+      const clampX = (value, a, b) => Math.max(Math.min(a, b), Math.min(Math.max(a, b), value));
+      const clampY = clampX;
+      let path = `M${scaled[0].x.toFixed(1)},${scaled[0].y.toFixed(1)}`;
+      for (let i = 0; i < scaled.length - 1; i++) {
+        const p0 = scaled[Math.max(0, i - 1)];
+        const p1 = scaled[i];
+        const p2 = scaled[i + 1];
+        const p3 = scaled[Math.min(scaled.length - 1, i + 2)];
+        const c1x = clampX(p1.x + (p2.x - p0.x) / 6, p1.x, p2.x);
+        const c1y = clampY(p1.y + (p2.y - p0.y) / 6, p1.y, p2.y);
+        const c2x = clampX(p2.x - (p3.x - p1.x) / 6, p1.x, p2.x);
+        const c2y = clampY(p2.y - (p3.y - p1.y) / 6, p1.y, p2.y);
+        path += ` C${c1x.toFixed(1)},${c1y.toFixed(1)} ${c2x.toFixed(1)},${c2y.toFixed(1)} ${p2.x.toFixed(1)},${p2.y.toFixed(1)}`;
+      }
+      return path;
+    }
+
+    function setGraphReadoutText(el, text) {
+      const row = el.closest('.graph-row');
+      const value = row?.querySelector?.('.graph-value');
+      if (!value) return;
+      value.textContent = text || value.dataset.default || value.textContent;
+      value.classList.add('hover');
+    }
+
+    function clearGraphReadout(el) {
+      const row = el.closest('.graph-row');
+      const value = row?.querySelector?.('.graph-value');
+      if (!value) return;
+      value.textContent = value.dataset.default || value.textContent;
+      value.classList.remove('hover');
+      const label = el.closest('.graph-plot')?.querySelector?.('.graph-crosshair-readout');
+      if (label) label.textContent = '';
+    }
+
+    function graphDataPoints(el, name) {
+      try {
+        return JSON.parse(el.getAttribute(name) || '[]')
+          .map(p => ({x: Number(p.x), y: Number(p.y)}))
+          .filter(p => Number.isFinite(p.x) && Number.isFinite(p.y));
+      } catch {
+        return [];
+      }
+    }
+
+    function setGraphPointReadout(el, event) {
+      const points = graphDataPoints(el, 'data-points');
+      if (!points.length) return;
+      const extras = graphDataPoints(el, 'data-extras').map(p => p.y);
+      const name = el.getAttribute('data-graph-name') || '';
+      const xUnit = el.getAttribute('data-x-unit') || 'x';
+      const xTotalValue = Number(el.getAttribute('data-x-total'));
+      const xTotal = Number.isFinite(xTotalValue) && xTotalValue > 0 ? xTotalValue : null;
+      const svg = el.closest('svg');
+      const box = svg?.getBoundingClientRect?.();
+      if (!box || box.width <= 0) return;
+      const viewX = Math.max(0, Math.min(180, ((event.clientX - box.left) / box.width) * 180));
+      const scale = graphScale(name, points, extras, 180, 132, xTotal);
+      let best = points[0], bestDist = Infinity;
+      for (const point of points) {
+        const distance = Math.abs(scale.x(point.x) - viewX);
+        if (distance < bestDist) {
+          best = point;
+          bestDist = distance;
+        }
+      }
+      const x = scale.x(best.x);
+      const y = scale.y(best.y);
+      const text = `${name}=${fmtGraphValue(name, best.y)} @ ${fmtGraphNumber(best.x)} ${xUnit}`;
+      const vLine = svg.querySelector('.graph-crosshair-v');
+      const hLine = svg.querySelector('.graph-crosshair-h');
+      if (vLine) {
+        vLine.setAttribute('x1', x.toFixed(1));
+        vLine.setAttribute('x2', x.toFixed(1));
+      }
+      if (hLine) {
+        hLine.setAttribute('x1', Math.max(0, x - 8).toFixed(1));
+        hLine.setAttribute('x2', Math.min(180, x + 8).toFixed(1));
+        hLine.setAttribute('y1', y.toFixed(1));
+        hLine.setAttribute('y2', y.toFixed(1));
+      }
+      const plot = el.closest('.graph-plot');
+      const label = plot?.querySelector?.('.graph-crosshair-readout');
+      if (label) {
+        label.textContent = text;
+        const px = x / 180 * box.width;
+        const py = y / 132 * box.height;
+        const width = label.getBoundingClientRect?.().width || 0;
+        const left = Math.max(width / 2 + 2, Math.min(box.width - width / 2 - 2, px));
+        const top = Math.max(2, Math.min(box.height - 16, py - 18));
+        label.style.left = `${left}px`;
+        label.style.top = `${top}px`;
+      }
+      setGraphReadoutText(el, text);
+    }
+
+    function graphHoverZones(name, points, extras = [], xUnit = 'x', w = 180, h = 132, xTotal = null) {
+      if (!points || points.length < 2) return '';
+      const payload = attrEsc(JSON.stringify(points));
+      const extraPayload = attrEsc(JSON.stringify(extras.map(y => ({x: 0, y}))));
+      const total = Number(xTotal);
+      const totalAttr = Number.isFinite(total) && total > 0 ? String(total) : '';
+      return `<g class="graph-crosshair">`
+        + `<line class="graph-crosshair-line graph-crosshair-v" x1="0" y1="0" x2="0" y2="${h}"></line>`
+        + `<line class="graph-crosshair-line graph-crosshair-h" x1="0" y1="0" x2="0" y2="0"></line>`
+        + `</g>`
+        + `<rect class="graph-hit" x="0" y="0" width="${w}" height="${h}" data-graph-name="${attrEsc(name)}" data-x-unit="${attrEsc(xUnit)}" data-x-total="${attrEsc(totalAttr)}" data-points="${payload}" data-extras="${extraPayload}" onmouseenter="setGraphPointReadout(this,event)" onmousemove="setGraphPointReadout(this,event)" onmouseleave="clearGraphReadout(this)"></rect>`;
     }
 
     function fmtGraphValue(name, value) {
@@ -868,25 +1005,31 @@ _HTML = r"""<!DOCTYPE html>
         }))
         .filter(s => s.points.length >= 2);
       if (!series.length) return '';
+      const xTotal = graphXTotal(graph);
       const rows = series.map(s => {
-        const bound = graphSeriesName(s.name) === 'llr' ? Number(options.llrBound) : null;
-        const extras = Number.isFinite(bound) && bound > 0 ? [-bound, bound] : [];
-        const path = sparkPath(s.name, s.points, extras);
-        const zero = zeroLine(s.name, s.points, extras);
+        const yExtras = graphYExtras(s.name, options, s.points);
+        const path = sparkPath(s.name, s.points, yExtras, 180, 132, xTotal);
+        const zero = zeroLine(s.name, s.points, yExtras);
         const bounds = graphBoundLines(s.name, s.points, options);
+        const hover = graphHoverZones(s.name, s.points, yExtras, graph?.x_unit || 'x', 180, 132, xTotal);
         const last = s.points[s.points.length - 1]?.y;
         const lastX = s.points[s.points.length - 1]?.x;
+        const lastValue = fmtGraphValue(s.name, last);
         const unit = graph?.x_unit ? ` ${graph.x_unit}` : '';
-        const tooltip = `${s.name}: ${fmtGraphValue(s.name, last)} at${unit} ${fmtGraphNumber(lastX)}`;
+        const tooltip = `${s.name}: ${lastValue} at${unit} ${fmtGraphNumber(lastX)}`;
         return `<div class="graph-row">`
           + `<span>${esc(s.name)}</span>`
-          + `<svg viewBox="0 0 180 132" preserveAspectRatio="none" aria-label="${esc(tooltip)}">`
+          + `<span class="graph-plot">`
+          + `<svg class="graph-live-hover" viewBox="0 0 180 132" preserveAspectRatio="none" aria-label="${esc(tooltip)}">`
           + `<title>${esc(tooltip)}</title>`
           + bounds
           + zero
           + `<path class="graph-line" d="${esc(path)}" style="stroke:${esc(s.color)}"></path>`
+          + hover
           + `</svg>`
-          + `<span>${esc(fmtGraphValue(s.name, last))}</span>`
+          + `<span class="graph-crosshair-readout"></span>`
+          + `</span>`
+          + `<span class="graph-value" data-default="${attrEsc(lastValue)}">${esc(lastValue)}</span>`
           + `</div>`;
       }).join('');
       const unit = graph?.x_unit ? ` · x: ${graph.x_unit}` : '';
