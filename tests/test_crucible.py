@@ -75,6 +75,14 @@ class CrucibleTests(unittest.TestCase):
             text = (ROOT / rel_path).read_text(encoding="utf-8")
             self.assertNotIn("strict=", text, rel_path)
 
+    def test_status_numeric_parsers_accept_manifest_numbers(self) -> None:
+        self.assertEqual(100, crucible.parse_int(100))
+        self.assertEqual(100, crucible.parse_int(100.0))
+        self.assertIsNone(crucible.parse_int(100.5))
+        self.assertEqual(100.5, crucible.parse_float(100.5))
+        self.assertIsNone(crucible.parse_int(True))
+        self.assertIsNone(crucible.parse_float(False))
+
     def test_event_ntfy_dry_run_handles_failed_sprt_event(self) -> None:
         payload = {
             "event": "deploy_fail",
