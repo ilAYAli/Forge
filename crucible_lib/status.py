@@ -2116,7 +2116,12 @@ def run_progress_graph_from_rows(
         if sprt_x is not None and isinstance(done, int) and done > 0:
             sprt_rows.append({"x": sprt_x, "done": done, "fields": fields})
 
-    for name, points in sprt_aggregate_graph_points(sprt_rows, sprt_series_names).items():
+    x_total = progress_unit_totals.get(x_unit) if x_unit else None
+    for name, points in sprt_aggregate_graph_points(
+        sprt_rows,
+        sprt_series_names,
+        x_total=x_total if isinstance(x_total, int) else None,
+    ).items():
         points_by_name[name] = points
 
     series = []
@@ -2130,7 +2135,6 @@ def run_progress_graph_from_rows(
         "x_unit": x_unit,
         "series": series,
     }
-    x_total = progress_unit_totals.get(x_unit) if x_unit else None
     if isinstance(x_total, int) and x_total > 0:
         result["x_total"] = x_total
     return result
@@ -2142,9 +2146,16 @@ def score_rate_elo(score_rate: float) -> float:
     bounded = min(1.0 - 1e-12, max(1e-12, score_rate))
     return 400.0 * math.log10(bounded / (1.0 - bounded))
 
+def sprt_elo_graph_min_games(x_total: int | None) -> int:
+    if not isinstance(x_total, int) or x_total <= 100:
+        return 2
+    return min(100, max(20, int(x_total * 0.05)))
+
 def sprt_aggregate_graph_points(
     rows: list[dict[str, Any]],
     series_names: dict[str, str],
+    *,
+    x_total: int | None = None,
 ) -> dict[str, list[dict[str, float]]]:
     if not rows or not series_names:
         return {}
@@ -2154,6 +2165,8 @@ def sprt_aggregate_graph_points(
     }
     weighted_score = 0.0
     weight_total = 0
+    cumulative_done = 0
+    elo_min_games = sprt_elo_graph_min_games(x_total)
     llr_total = 0.0
     llr_seen = False
     def row_x(row: dict[str, Any]) -> float:
@@ -2170,6 +2183,8 @@ def sprt_aggregate_graph_points(
         fields = row.get("fields")
         if not isinstance(done, int) or done <= 0 or not isinstance(fields, dict):
             continue
+        cumulative_done += done
+        x = float(cumulative_done)
         elo = progress_field_float(fields, "elo", "elo~", "Elo")
         if elo is not None:
             weighted_score += elo_score_rate(elo) * done
@@ -2179,7 +2194,7 @@ def sprt_aggregate_graph_points(
             llr_total += llr
             llr_seen = True
         for name, field_name in series_names.items():
-            if field_name == "elo" and weight_total > 0:
+            if field_name == "elo" and weight_total >= elo_min_games:
                 points[name].append({"x": x, "y": score_rate_elo(weighted_score / weight_total)})
             elif field_name == "llr" and llr_seen:
                 points[name].append({"x": x, "y": llr_total})

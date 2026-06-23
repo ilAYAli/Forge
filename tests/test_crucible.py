@@ -7448,7 +7448,7 @@ except SystemExit as exc:
             self.assertAlmostEqual(10.0, series["elo"][1]["y"], places=1)
             self.assertAlmostEqual(-5.0, series["elo"][2]["y"], places=1)
 
-    def test_status_sprt_run_graph_preserves_global_game_positions(self) -> None:
+    def test_status_sprt_run_graph_uses_processed_game_positions(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             run = root / "sprt-run"
@@ -7501,8 +7501,23 @@ except SystemExit as exc:
             self.assertIsNotNone(graph)
             self.assertEqual(6, graph["x_total"])
             series = {item["name"]: item["points"] for item in graph["series"]}
-            self.assertEqual([0.0, 4.0, 6.0], [point["x"] for point in series["llr"]])
-            self.assertEqual([0.0, 4.0, 6.0], [point["x"] for point in series["elo"]])
+            self.assertEqual([0.0, 2.0, 4.0], [point["x"] for point in series["llr"]])
+            self.assertEqual([0.0, 2.0, 4.0], [point["x"] for point in series["elo"]])
+
+    def test_sprt_run_graph_delays_volatile_early_elo_for_large_runs(self) -> None:
+        points = crucible.sprt_aggregate_graph_points(
+            [
+                {"x": 26.0, "done": 26, "fields": {"elo": "-70.0", "llr": "-0.05/2.20"}},
+                {"x": 52.0, "done": 26, "fields": {"elo": "0.0", "llr": "0.00/2.20"}},
+                {"x": 78.0, "done": 26, "fields": {"elo": "30.0", "llr": "0.03/2.20"}},
+                {"x": 104.0, "done": 26, "fields": {"elo": "50.0", "llr": "0.05/2.20"}},
+            ],
+            {"elo": "elo", "llr": "llr"},
+            x_total=3000,
+        )
+
+        self.assertEqual([0.0, 26.0, 52.0, 78.0, 104.0], [point["x"] for point in points["llr"]])
+        self.assertEqual([0.0, 104.0], [point["x"] for point in points["elo"]])
 
     def test_status_sprt_header_shows_aggregated_elo(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
