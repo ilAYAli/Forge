@@ -151,7 +151,8 @@ _HTML = r"""<!DOCTYPE html>
                    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .graph-row { display: grid; grid-template-columns: 42px minmax(120px, 1fr) 160px; gap: 8px;
                  align-items: center; color: var(--dim); font-size: 11px; }
-    .graph-row svg { width: 100%; height: 132px; display: block; }
+    .graph-plot { position: relative; height: 132px; min-width: 120px; }
+    .graph-plot svg { width: 100%; height: 100%; display: block; }
     .graph-line { fill: none; stroke-width: 1.1; vector-effect: non-scaling-stroke; }
     .graph-zero { stroke: var(--text); stroke-width: 1; stroke-dasharray: 1 4;
                   stroke-linecap: round; opacity: .55; vector-effect: non-scaling-stroke; }
@@ -162,6 +163,14 @@ _HTML = r"""<!DOCTYPE html>
     .graph-live-hover:hover .graph-crosshair { opacity: 1; }
     .graph-crosshair-line { stroke: var(--text); stroke-width: .55;
                             opacity: .62; vector-effect: non-scaling-stroke; }
+    .graph-crosshair-readout {
+      position: absolute; left: 0; top: 2px; transform: translateX(-50%);
+      opacity: 0; pointer-events: none; z-index: 1;
+      padding: 1px 4px; border: 1px solid var(--border); border-radius: 3px;
+      background: var(--bg2); color: var(--text); font-size: 10px;
+      line-height: 1.25; white-space: nowrap; font-variant-numeric: tabular-nums;
+    }
+    .graph-plot:hover .graph-crosshair-readout { opacity: .95; }
     .graph-value { color: var(--dim); white-space: nowrap; font-variant-numeric: tabular-nums; }
     .graph-value.hover { color: var(--text); }
 
@@ -881,6 +890,8 @@ _HTML = r"""<!DOCTYPE html>
       if (!value) return;
       value.textContent = value.dataset.default || value.textContent;
       value.classList.remove('hover');
+      const label = el.closest('.graph-plot')?.querySelector?.('.graph-crosshair-readout');
+      if (label) label.textContent = '';
     }
 
     function graphDataPoints(el, name) {
@@ -916,6 +927,7 @@ _HTML = r"""<!DOCTYPE html>
       }
       const x = scale.x(best.x);
       const y = scale.y(best.y);
+      const text = `${name}=${fmtGraphValue(name, best.y)} @ ${fmtGraphNumber(best.x)} ${xUnit}`;
       const vLine = svg.querySelector('.graph-crosshair-v');
       const hLine = svg.querySelector('.graph-crosshair-h');
       if (vLine) {
@@ -928,7 +940,19 @@ _HTML = r"""<!DOCTYPE html>
         hLine.setAttribute('y1', y.toFixed(1));
         hLine.setAttribute('y2', y.toFixed(1));
       }
-      setGraphReadoutText(el, `${name}=${fmtGraphValue(name, best.y)} @ ${fmtGraphNumber(best.x)} ${xUnit}`);
+      const plot = el.closest('.graph-plot');
+      const label = plot?.querySelector?.('.graph-crosshair-readout');
+      if (label) {
+        label.textContent = text;
+        const px = x / 180 * box.width;
+        const py = y / 132 * box.height;
+        const width = label.getBoundingClientRect?.().width || 0;
+        const left = Math.max(width / 2 + 2, Math.min(box.width - width / 2 - 2, px));
+        const top = Math.max(2, Math.min(box.height - 16, py - 18));
+        label.style.left = `${left}px`;
+        label.style.top = `${top}px`;
+      }
+      setGraphReadoutText(el, text);
     }
 
     function graphHoverZones(name, points, extras = [], xUnit = 'x', w = 180, h = 132, xTotal = null) {
@@ -995,6 +1019,7 @@ _HTML = r"""<!DOCTYPE html>
         const tooltip = `${s.name}: ${lastValue} at${unit} ${fmtGraphNumber(lastX)}`;
         return `<div class="graph-row">`
           + `<span>${esc(s.name)}</span>`
+          + `<span class="graph-plot">`
           + `<svg class="graph-live-hover" viewBox="0 0 180 132" preserveAspectRatio="none" aria-label="${esc(tooltip)}">`
           + `<title>${esc(tooltip)}</title>`
           + bounds
@@ -1002,6 +1027,8 @@ _HTML = r"""<!DOCTYPE html>
           + `<path class="graph-line" d="${esc(path)}" style="stroke:${esc(s.color)}"></path>`
           + hover
           + `</svg>`
+          + `<span class="graph-crosshair-readout"></span>`
+          + `</span>`
           + `<span class="graph-value" data-default="${attrEsc(lastValue)}">${esc(lastValue)}</span>`
           + `</div>`;
       }).join('');
