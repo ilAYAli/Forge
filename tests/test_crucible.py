@@ -555,6 +555,7 @@ except SystemExit as exc:
         self.assertIn("function confidenceBandPath", web._HTML)
         self.assertIn("function graphAxisHtml", web._HTML)
         self.assertIn("function toggleGraphLlr", web._HTML)
+        self.assertIn("band.unshift({x: points[0].x, lo: points[0].y, hi: points[0].y})", web._HTML)
         self.assertIn("function zeroLine", web._HTML)
         self.assertIn("function graphBoundLines", web._HTML)
         self.assertIn("function graphHoverZones", web._HTML)

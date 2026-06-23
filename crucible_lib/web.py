@@ -834,11 +834,15 @@ _HTML = r"""<!DOCTYPE html>
     function graphConfidenceBandPoints(name, points, ciPoints) {
       if (graphSeriesName(name) !== 'elo' || !ciPoints || !ciPoints.length) return [];
       const ciByX = new Map(ciPoints.map(p => [String(p.x), p.y]));
-      return points.map(p => {
+      const band = points.map(p => {
         const ci = Number(ciByX.get(String(p.x)));
         if (!Number.isFinite(ci) || ci < 0) return null;
         return {x: p.x, lo: p.y - ci, hi: p.y + ci};
       }).filter(Boolean);
+      if (band.length && points.length && band[0].x > points[0].x) {
+        band.unshift({x: points[0].x, lo: points[0].y, hi: points[0].y});
+      }
+      return band;
     }
 
     function graphBandYValues(band) {
