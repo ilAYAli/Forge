@@ -153,10 +153,17 @@ _HTML = r"""<!DOCTYPE html>
                  align-items: center; color: var(--dim); font-size: 11px; }
     .graph-row svg { width: 100%; height: 132px; display: block; }
     .graph-line { fill: none; stroke-width: 1.1; vector-effect: non-scaling-stroke; }
-    .graph-zero { stroke: var(--text); stroke-width: .8; stroke-dasharray: 3 5;
-                  opacity: .42; vector-effect: non-scaling-stroke; }
+    .graph-zero { stroke: var(--text); stroke-width: 1.1; opacity: .78;
+                  vector-effect: non-scaling-stroke; }
     .graph-bound { stroke: var(--red); stroke-width: .5; stroke-dasharray: 4 7;
                    opacity: .24; vector-effect: non-scaling-stroke; }
+    .graph-hit { fill: transparent; pointer-events: all; }
+    .graph-crosshair { opacity: 0; pointer-events: none; transition: opacity .08s linear; }
+    .graph-hover-zone:hover .graph-crosshair { opacity: 1; }
+    .graph-crosshair-line { stroke: var(--text); stroke-width: .55; stroke-dasharray: 2 3;
+                            opacity: .62; vector-effect: non-scaling-stroke; }
+    .graph-value { color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .graph-value.hover { color: var(--text); }
 
     /* pending / fail groups */
     .group-row { font-size: 13px; color: var(--dim); padding: 2px 0; }
@@ -831,6 +838,45 @@ _HTML = r"""<!DOCTYPE html>
       ).join(' ');
     }
 
+    function setGraphReadout(el) {
+      const row = el.closest('.graph-row');
+      const value = row?.querySelector?.('.graph-value');
+      if (!value) return;
+      value.textContent = el.getAttribute('data-readout') || value.dataset.default || value.textContent;
+      value.classList.add('hover');
+    }
+
+    function clearGraphReadout(el) {
+      const row = el.closest('.graph-row');
+      const value = row?.querySelector?.('.graph-value');
+      if (!value) return;
+      value.textContent = value.dataset.default || value.textContent;
+      value.classList.remove('hover');
+    }
+
+    function graphHoverZones(name, points, extras = [], xUnit = 'x', w = 180, h = 132) {
+      if (!points || points.length < 2) return '';
+      const scale = graphScale(name, points, extras, w, h);
+      const scaled = points.map(p => ({
+        x: scale.x(p.x),
+        y: scale.y(p.y),
+        rawX: p.x,
+        rawY: p.y,
+      }));
+      return scaled.map((p, i) => {
+        const left = i === 0 ? 0 : (scaled[i - 1].x + p.x) / 2;
+        const right = i + 1 === scaled.length ? w : (p.x + scaled[i + 1].x) / 2;
+        const label = `${xUnit}=${fmtGraphNumber(p.rawX)} ${name}=${fmtGraphValue(name, p.rawY)}`;
+        return `<g class="graph-hover-zone">`
+          + `<rect class="graph-hit" x="${left.toFixed(1)}" y="0" width="${Math.max(1, right - left).toFixed(1)}" height="${h}" data-readout="${attrEsc(label)}" onmouseenter="setGraphReadout(this)" onmousemove="setGraphReadout(this)" onmouseleave="clearGraphReadout(this)"></rect>`
+          + `<g class="graph-crosshair">`
+          + `<line class="graph-crosshair-line" x1="${p.x.toFixed(1)}" y1="0" x2="${p.x.toFixed(1)}" y2="${h}"></line>`
+          + `<line class="graph-crosshair-line" x1="0" y1="${p.y.toFixed(1)}" x2="${w}" y2="${p.y.toFixed(1)}"></line>`
+          + `</g>`
+          + `</g>`;
+      }).join('');
+    }
+
     function fmtGraphValue(name, value) {
       const text = fmtGraphNumber(value);
       if (!text || !signedGraphSeries(name)) return text;
@@ -874,10 +920,12 @@ _HTML = r"""<!DOCTYPE html>
         const path = sparkPath(s.name, s.points, extras);
         const zero = zeroLine(s.name, s.points, extras);
         const bounds = graphBoundLines(s.name, s.points, options);
+        const hover = graphHoverZones(s.name, s.points, extras, graph?.x_unit || 'x');
         const last = s.points[s.points.length - 1]?.y;
         const lastX = s.points[s.points.length - 1]?.x;
+        const lastValue = fmtGraphValue(s.name, last);
         const unit = graph?.x_unit ? ` ${graph.x_unit}` : '';
-        const tooltip = `${s.name}: ${fmtGraphValue(s.name, last)} at${unit} ${fmtGraphNumber(lastX)}`;
+        const tooltip = `${s.name}: ${lastValue} at${unit} ${fmtGraphNumber(lastX)}`;
         return `<div class="graph-row">`
           + `<span>${esc(s.name)}</span>`
           + `<svg viewBox="0 0 180 132" preserveAspectRatio="none" aria-label="${esc(tooltip)}">`
@@ -885,8 +933,9 @@ _HTML = r"""<!DOCTYPE html>
           + bounds
           + zero
           + `<path class="graph-line" d="${esc(path)}" style="stroke:${esc(s.color)}"></path>`
+          + hover
           + `</svg>`
-          + `<span>${esc(fmtGraphValue(s.name, last))}</span>`
+          + `<span class="graph-value" data-default="${attrEsc(lastValue)}">${esc(lastValue)}</span>`
           + `</div>`;
       }).join('');
       const unit = graph?.x_unit ? ` · x: ${graph.x_unit}` : '';
