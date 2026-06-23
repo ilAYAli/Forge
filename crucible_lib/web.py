@@ -785,6 +785,12 @@ _HTML = r"""<!DOCTYPE html>
       return graphDomain(all, false);
     }
 
+    function graphYExtras(name, options = {}) {
+      if (graphSeriesName(name) !== 'llr') return [];
+      const bound = Number(options.llrBound);
+      return Number.isFinite(bound) && bound > 0 ? [-bound, bound] : [];
+    }
+
     function graphXTotal(graph) {
       const total = Number(graph?.x_total);
       return Number.isFinite(total) && total > 0 ? total : null;
@@ -829,9 +835,10 @@ _HTML = r"""<!DOCTYPE html>
       const bound = Number(options.llrBound);
       if (!Number.isFinite(bound) || bound <= 0) return '';
       const values = points.map(p => p.y);
-      const [minY, maxY] = graphYDomain(name, values, []);
+      const extras = graphYExtras(name, options);
+      const [minY, maxY] = graphYDomain(name, values, extras);
       return [-bound, bound].filter(v => v >= minY && v <= maxY).map(v => {
-        const y = graphY(name, values, v, [], h);
+        const y = graphY(name, values, v, extras, h);
         return `<line class="graph-bound" x1="0" y1="${y.toFixed(1)}" x2="${w}" y2="${y.toFixed(1)}"></line>`;
       }).join('');
     }
@@ -885,7 +892,7 @@ _HTML = r"""<!DOCTYPE html>
       return scaled.map((p, i) => {
         const left = i === 0 ? 0 : (scaled[i - 1].x + p.x) / 2;
         const right = i + 1 === scaled.length ? w : (p.x + scaled[i + 1].x) / 2;
-        const label = `${fmtGraphNumber(p.rawX)} ${xUnit} · ${name} ${fmtGraphValue(name, p.rawY)}`;
+        const label = `${name}=${fmtGraphValue(name, p.rawY)} @ ${fmtGraphNumber(p.rawX)} ${xUnit}`;
         const tickLeft = Math.max(0, p.x - 8);
         const tickRight = Math.min(w, p.x + 8);
         return `<g class="graph-hover-zone">`
@@ -937,10 +944,11 @@ _HTML = r"""<!DOCTYPE html>
       if (!series.length) return '';
       const xTotal = graphXTotal(graph);
       const rows = series.map(s => {
-        const path = sparkPath(s.name, s.points, [], 180, 132, xTotal);
-        const zero = zeroLine(s.name, s.points);
+        const yExtras = graphYExtras(s.name, options);
+        const path = sparkPath(s.name, s.points, yExtras, 180, 132, xTotal);
+        const zero = zeroLine(s.name, s.points, yExtras);
         const bounds = graphBoundLines(s.name, s.points, options);
-        const hover = graphHoverZones(s.name, s.points, [], graph?.x_unit || 'x', 180, 132, xTotal);
+        const hover = graphHoverZones(s.name, s.points, yExtras, graph?.x_unit || 'x', 180, 132, xTotal);
         const last = s.points[s.points.length - 1]?.y;
         const lastX = s.points[s.points.length - 1]?.x;
         const lastValue = fmtGraphValue(s.name, last);
