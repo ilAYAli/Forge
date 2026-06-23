@@ -334,6 +334,31 @@ _HTML = r"""<!DOCTYPE html>
       return numericField(r?.completed_epoch, 0);
     }
 
+    function parseTimestampEpoch(value) {
+      const text = String(value || '').trim();
+      if (!text) return null;
+      const parsed = Date.parse(text);
+      if (Number.isFinite(parsed)) return parsed / 1000;
+      return null;
+    }
+
+    function runNameEpoch(r) {
+      const m = String(r?.run || '').match(/(?:^|-)(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(\d{2})?(?:$|-)/);
+      if (!m) return null;
+      return Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]), Number(m[4]), Number(m[5]), Number(m[6] || 0)) / 1000;
+    }
+
+    function runSortEpoch(r) {
+      const created = parseTimestampEpoch(r?.created_at);
+      if (created !== null) return created;
+      const named = runNameEpoch(r);
+      if (named !== null) return named;
+      const queued = queuedEpoch(r);
+      if (queued > 0) return queued;
+      const completed = completedEpoch(r);
+      return completed > 0 ? completed : 0;
+    }
+
     let soundEnabled = localStorage.getItem('crucible.sound') === '1';
     let graphLlrVisible = localStorage.getItem('crucible.graph.llr') === '1';
     let audioCtx = null;
@@ -1490,20 +1515,10 @@ _HTML = r"""<!DOCTYPE html>
           .filter(r => !hiddenRunNames.has(String(r.run || '')))
           .slice()
           .sort((a,b) => {
+            const ea=runSortEpoch(a), eb=runSortEpoch(b);
+            if (ea!==eb) return eb-ea;
             const dp = statePri(a)-statePri(b);
             if (dp) return dp;
-            if (a.state==='queued') {
-              const qa=queuedEpoch(a), qb=queuedEpoch(b);
-              if (qa!==qb) return qa-qb;
-            }
-            if (a.state==='current') {
-              const ea=runEtaS(a)??1e9, eb=runEtaS(b)??1e9;
-              if (ea!==eb) return ea-eb;
-            }
-            if (a.state==='done') {
-              const ca=completedEpoch(a), cb=completedEpoch(b);
-              if (ca!==cb) return cb-ca;
-            }
             return a.run<b.run?-1:a.run>b.run?1:0;
           });
 
