@@ -1085,7 +1085,7 @@ _HTML = r"""<!DOCTYPE html>
       document.querySelectorAll('.task-graph').forEach(el => el.classList.toggle('show-llr', graphLlrVisible));
       document.querySelectorAll('.graph-toggle[data-graph="llr"]').forEach(el => {
         el.classList.toggle('on', graphLlrVisible);
-        el.textContent = graphLlrVisible ? 'llr on' : 'llr';
+        el.textContent = graphLlrVisible ? 'LLR' : 'llr';
       });
     }
 
@@ -1143,7 +1143,7 @@ _HTML = r"""<!DOCTYPE html>
       const rows = series.map(s => graphRowHtml(s, options, graph, xTotal, ciSeries)).join('');
       const unit = graph?.x_unit ? ` · x: ${graph.x_unit}` : '';
       const llrToggle = llrSeries && llrSeries !== primary
-        ? `<button class="graph-toggle${graphLlrVisible ? ' on' : ''}" data-graph="llr" type="button" onclick="toggleGraphLlr(this)">${graphLlrVisible ? 'llr on' : 'llr'}</button>`
+        ? `<button class="graph-toggle${graphLlrVisible ? ' on' : ''}" data-graph="llr" type="button" onclick="toggleGraphLlr(this)">${graphLlrVisible ? 'LLR' : 'llr'}</button>`
         : '';
       return `<div class="task-graph${graphLlrVisible ? ' show-llr' : ''}">`
         + `<div class="graph-title"><span class="graph-title-main">${esc(title + unit)}</span><span class="graph-tools">${llrToggle}</span></div>`

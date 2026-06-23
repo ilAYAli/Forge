@@ -608,7 +608,7 @@ except SystemExit as exc:
         self.assertIn("localStorage.getItem('crucible.graph.llr')", web._HTML)
         self.assertIn("localStorage.setItem('crucible.graph.llr'", web._HTML)
         self.assertIn("graph-toggle", web._HTML)
-        self.assertIn("llr on", web._HTML)
+        self.assertIn("LLR", web._HTML)
         self.assertNotIn("function renderTaskGraphs", web._HTML)
         self.assertIn("function graphCard", web._HTML)
         self.assertIn("graph?.series", web._HTML)
