@@ -540,6 +540,7 @@ except SystemExit as exc:
         self.assertIn("return r.toFixed(4) + '/s'", web._HTML)
         self.assertIn("function graphDomain", web._HTML)
         self.assertIn("function graphDisplayPoints", web._HTML)
+        self.assertIn("function graphXTotal", web._HTML)
         self.assertIn("function graphYDomain", web._HTML)
         self.assertIn("function zeroLine", web._HTML)
         self.assertIn("function graphBoundLines", web._HTML)
@@ -547,8 +548,11 @@ except SystemExit as exc:
         self.assertIn("function setGraphReadout", web._HTML)
         self.assertIn("function clearGraphReadout", web._HTML)
         self.assertIn("const [minY, maxY] = graphYDomain(name, values, [])", web._HTML)
-        self.assertIn("const path = sparkPath(s.name, s.points)", web._HTML)
+        self.assertIn("const path = sparkPath(s.name, s.points, [], 180, 132, xTotal)", web._HTML)
+        self.assertIn("const minX = useTotal ? 0 : dataMinX", web._HTML)
         self.assertIn("const clampX", web._HTML)
+        self.assertIn("const clampY = clampX", web._HTML)
+        self.assertIn("const c1y = clampY", web._HTML)
         self.assertIn("path += ` C${c1x.toFixed(1)}", web._HTML)
         self.assertIn("function llrBoundFromRun", web._HTML)
         self.assertIn("function signedGraphSeries", web._HTML)
@@ -5118,6 +5122,7 @@ except SystemExit as exc:
             )
 
             graph = payload["progress_graph"]
+            self.assertEqual(4, graph["x_total"])
             series = {item["name"]: item["points"] for item in graph["series"]}
             self.assertEqual([{"x": 2.0, "y": 0.1}, {"x": 4.0, "y": 0.0}], series["llr"])
             self.assertAlmostEqual(10.0, series["elo"][0]["y"], places=1)
@@ -7379,6 +7384,7 @@ except SystemExit as exc:
 
             graph = summary["active"][0]["progress_graph"]
             self.assertEqual("rows", graph["x_unit"])
+            self.assertEqual(100, graph["x_total"])
             series = {item["name"]: item["points"] for item in graph["series"]}
             self.assertEqual([{"x": 10.0, "y": 1.5}, {"x": 20.0, "y": 1.25}], series["loss"])
             self.assertEqual([{"x": 10.0, "y": 0.001}, {"x": 20.0, "y": 0.0005}], series["lr"])
@@ -7434,6 +7440,7 @@ except SystemExit as exc:
 
             graph = summary["progress_graph"]
             self.assertIsNotNone(graph)
+            self.assertEqual(4, graph["x_total"])
             series = {item["name"]: item["points"] for item in graph["series"]}
             self.assertEqual([{"x": 2.0, "y": 0.01}, {"x": 4.0, "y": -0.01}], series["llr"])
             self.assertAlmostEqual(10.0, series["elo"][0]["y"], places=1)

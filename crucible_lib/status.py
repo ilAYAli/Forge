@@ -2048,10 +2048,14 @@ def task_log_progress_graph(manifest: dict[str, Any], task: dict[str, Any]) -> d
     ]
     if not series:
         return None
-    return {
+    result = {
         "x_unit": str(config.get("unit") or ""),
         "series": series,
     }
+    if total := parse_int(config.get("total")):
+        if total > 0:
+            result["x_total"] = total
+    return result
 
 def task_progress_graph_point_specs(manifest: dict[str, Any], task: dict[str, Any]) -> list[dict[str, str]]:
     config = task.get("progress")
@@ -2122,10 +2126,14 @@ def run_progress_graph_from_rows(
             series.append({"name": name, "points": points})
     if not series:
         return None
-    return {
+    result = {
         "x_unit": x_unit,
         "series": series,
     }
+    x_total = progress_unit_totals.get(x_unit) if x_unit else None
+    if isinstance(x_total, int) and x_total > 0:
+        result["x_total"] = x_total
+    return result
 
 def elo_score_rate(elo: float) -> float:
     return 1.0 / (1.0 + math.pow(10.0, -elo / 400.0))

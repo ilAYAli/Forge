@@ -788,11 +788,20 @@ _HTML = r"""<!DOCTYPE html>
       return graphDomain(all, false);
     }
 
-    function graphScale(name, points, extras = [], w = 180, h = 132) {
+    function graphXTotal(graph) {
+      const total = Number(graph?.x_total);
+      return Number.isFinite(total) && total > 0 ? total : null;
+    }
+
+    function graphScale(name, points, extras = [], w = 180, h = 132, xTotal = null) {
       const pad = 4;
       const xs = points.map(p => p.x);
       const ys = points.map(p => p.y);
-      const minX = Math.min(...xs), maxX = Math.max(...xs);
+      const dataMinX = Math.min(...xs), dataMaxX = Math.max(...xs);
+      const total = Number(xTotal);
+      const useTotal = Number.isFinite(total) && total > 0;
+      const minX = useTotal ? 0 : dataMinX;
+      const maxX = useTotal ? Math.max(total, dataMaxX) : dataMaxX;
       const [minY, maxY] = graphYDomain(name, ys, extras);
       return {
         x: maxX === minX
@@ -830,11 +839,12 @@ _HTML = r"""<!DOCTYPE html>
       }).join('');
     }
 
-    function sparkPath(name, points, extras = [], w = 180, h = 132) {
+    function sparkPath(name, points, extras = [], w = 180, h = 132, xTotal = null) {
       if (!points || points.length < 2) return '';
-      const scale = graphScale(name, points, extras, w, h);
+      const scale = graphScale(name, points, extras, w, h, xTotal);
       const scaled = points.map(p => ({x: scale.x(p.x), y: scale.y(p.y)}));
       const clampX = (value, a, b) => Math.max(Math.min(a, b), Math.min(Math.max(a, b), value));
+      const clampY = clampX;
       let path = `M${scaled[0].x.toFixed(1)},${scaled[0].y.toFixed(1)}`;
       for (let i = 0; i < scaled.length - 1; i++) {
         const p0 = scaled[Math.max(0, i - 1)];
@@ -842,9 +852,9 @@ _HTML = r"""<!DOCTYPE html>
         const p2 = scaled[i + 1];
         const p3 = scaled[Math.min(scaled.length - 1, i + 2)];
         const c1x = clampX(p1.x + (p2.x - p0.x) / 6, p1.x, p2.x);
-        const c1y = p1.y + (p2.y - p0.y) / 6;
+        const c1y = clampY(p1.y + (p2.y - p0.y) / 6, p1.y, p2.y);
         const c2x = clampX(p2.x - (p3.x - p1.x) / 6, p1.x, p2.x);
-        const c2y = p2.y - (p3.y - p1.y) / 6;
+        const c2y = clampY(p2.y - (p3.y - p1.y) / 6, p1.y, p2.y);
         path += ` C${c1x.toFixed(1)},${c1y.toFixed(1)} ${c2x.toFixed(1)},${c2y.toFixed(1)} ${p2.x.toFixed(1)},${p2.y.toFixed(1)}`;
       }
       return path;
@@ -866,9 +876,9 @@ _HTML = r"""<!DOCTYPE html>
       value.classList.remove('hover');
     }
 
-    function graphHoverZones(name, points, extras = [], xUnit = 'x', w = 180, h = 132) {
+    function graphHoverZones(name, points, extras = [], xUnit = 'x', w = 180, h = 132, xTotal = null) {
       if (!points || points.length < 2) return '';
-      const scale = graphScale(name, points, extras, w, h);
+      const scale = graphScale(name, points, extras, w, h, xTotal);
       const scaled = points.map(p => ({
         x: scale.x(p.x),
         y: scale.y(p.y),
@@ -928,11 +938,12 @@ _HTML = r"""<!DOCTYPE html>
         }))
         .filter(s => s.points.length >= 2);
       if (!series.length) return '';
+      const xTotal = graphXTotal(graph);
       const rows = series.map(s => {
-        const path = sparkPath(s.name, s.points);
+        const path = sparkPath(s.name, s.points, [], 180, 132, xTotal);
         const zero = zeroLine(s.name, s.points);
         const bounds = graphBoundLines(s.name, s.points, options);
-        const hover = graphHoverZones(s.name, s.points, [], graph?.x_unit || 'x');
+        const hover = graphHoverZones(s.name, s.points, [], graph?.x_unit || 'x', 180, 132, xTotal);
         const last = s.points[s.points.length - 1]?.y;
         const lastX = s.points[s.points.length - 1]?.x;
         const lastValue = fmtGraphValue(s.name, last);
