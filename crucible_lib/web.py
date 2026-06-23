@@ -160,7 +160,7 @@ _HTML = r"""<!DOCTYPE html>
     .graph-hit { fill: transparent; pointer-events: all; }
     .graph-crosshair { opacity: 0; pointer-events: none; transition: opacity .08s linear; }
     .graph-hover-zone:hover .graph-crosshair { opacity: 1; }
-    .graph-crosshair-line { stroke: var(--text); stroke-width: .55; stroke-dasharray: 2 3;
+    .graph-crosshair-line { stroke: var(--text); stroke-width: .55;
                             opacity: .62; vector-effect: non-scaling-stroke; }
     .graph-value { color: var(--dim); white-space: nowrap; font-variant-numeric: tabular-nums; }
     .graph-value.hover { color: var(--text); }
@@ -879,11 +879,13 @@ _HTML = r"""<!DOCTYPE html>
         const left = i === 0 ? 0 : (scaled[i - 1].x + p.x) / 2;
         const right = i + 1 === scaled.length ? w : (p.x + scaled[i + 1].x) / 2;
         const label = `${fmtGraphNumber(p.rawX)} ${xUnit} · ${name} ${fmtGraphValue(name, p.rawY)}`;
+        const tickLeft = Math.max(0, p.x - 8);
+        const tickRight = Math.min(w, p.x + 8);
         return `<g class="graph-hover-zone">`
           + `<rect class="graph-hit" x="${left.toFixed(1)}" y="0" width="${Math.max(1, right - left).toFixed(1)}" height="${h}" data-readout="${attrEsc(label)}" onmouseenter="setGraphReadout(this)" onmousemove="setGraphReadout(this)" onmouseleave="clearGraphReadout(this)"></rect>`
           + `<g class="graph-crosshair">`
           + `<line class="graph-crosshair-line" x1="${p.x.toFixed(1)}" y1="0" x2="${p.x.toFixed(1)}" y2="${h}"></line>`
-          + `<line class="graph-crosshair-line" x1="0" y1="${p.y.toFixed(1)}" x2="${w}" y2="${p.y.toFixed(1)}"></line>`
+          + `<line class="graph-crosshair-line" x1="${tickLeft.toFixed(1)}" y1="${p.y.toFixed(1)}" x2="${tickRight.toFixed(1)}" y2="${p.y.toFixed(1)}"></line>`
           + `</g>`
           + `</g>`;
       }).join('');
