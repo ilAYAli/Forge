@@ -159,7 +159,7 @@ _HTML = r"""<!DOCTYPE html>
                    opacity: .24; vector-effect: non-scaling-stroke; }
     .graph-hit { fill: transparent; pointer-events: all; }
     .graph-crosshair { opacity: 0; pointer-events: none; transition: opacity .08s linear; }
-    .graph-hover-zone:hover .graph-crosshair { opacity: 1; }
+    .graph-live-hover:hover .graph-crosshair { opacity: 1; }
     .graph-crosshair-line { stroke: var(--text); stroke-width: .55;
                             opacity: .62; vector-effect: non-scaling-stroke; }
     .graph-value { color: var(--dim); white-space: nowrap; font-variant-numeric: tabular-nums; }
@@ -785,10 +785,13 @@ _HTML = r"""<!DOCTYPE html>
       return graphDomain(all, false);
     }
 
-    function graphYExtras(name, options = {}) {
+    function graphYExtras(name, options = {}, points = []) {
       if (graphSeriesName(name) !== 'llr') return [];
       const bound = Number(options.llrBound);
-      return Number.isFinite(bound) && bound > 0 ? [-bound, bound] : [];
+      if (!Number.isFinite(bound) || bound <= 0) return [];
+      const observed = Math.max(0, ...points.map(p => Math.abs(Number(p?.y))).filter(Number.isFinite));
+      const visible = Math.min(bound, Math.max(bound * 0.33, observed * 1.25));
+      return [-visible, visible];
     }
 
     function graphXTotal(graph) {
@@ -835,7 +838,7 @@ _HTML = r"""<!DOCTYPE html>
       const bound = Number(options.llrBound);
       if (!Number.isFinite(bound) || bound <= 0) return '';
       const values = points.map(p => p.y);
-      const extras = graphYExtras(name, options);
+      const extras = graphYExtras(name, options, points);
       const [minY, maxY] = graphYDomain(name, values, extras);
       return [-bound, bound].filter(v => v >= minY && v <= maxY).map(v => {
         const y = graphY(name, values, v, extras, h);
@@ -864,11 +867,11 @@ _HTML = r"""<!DOCTYPE html>
       return path;
     }
 
-    function setGraphReadout(el) {
+    function setGraphReadoutText(el, text) {
       const row = el.closest('.graph-row');
       const value = row?.querySelector?.('.graph-value');
       if (!value) return;
-      value.textContent = el.getAttribute('data-readout') || value.dataset.default || value.textContent;
+      value.textContent = text || value.dataset.default || value.textContent;
       value.classList.add('hover');
     }
 
@@ -880,29 +883,65 @@ _HTML = r"""<!DOCTYPE html>
       value.classList.remove('hover');
     }
 
+    function graphDataPoints(el, name) {
+      try {
+        return JSON.parse(el.getAttribute(name) || '[]')
+          .map(p => ({x: Number(p.x), y: Number(p.y)}))
+          .filter(p => Number.isFinite(p.x) && Number.isFinite(p.y));
+      } catch {
+        return [];
+      }
+    }
+
+    function setGraphPointReadout(el, event) {
+      const points = graphDataPoints(el, 'data-points');
+      if (!points.length) return;
+      const extras = graphDataPoints(el, 'data-extras').map(p => p.y);
+      const name = el.getAttribute('data-graph-name') || '';
+      const xUnit = el.getAttribute('data-x-unit') || 'x';
+      const xTotalValue = Number(el.getAttribute('data-x-total'));
+      const xTotal = Number.isFinite(xTotalValue) && xTotalValue > 0 ? xTotalValue : null;
+      const svg = el.closest('svg');
+      const box = svg?.getBoundingClientRect?.();
+      if (!box || box.width <= 0) return;
+      const viewX = Math.max(0, Math.min(180, ((event.clientX - box.left) / box.width) * 180));
+      const scale = graphScale(name, points, extras, 180, 132, xTotal);
+      let best = points[0], bestDist = Infinity;
+      for (const point of points) {
+        const distance = Math.abs(scale.x(point.x) - viewX);
+        if (distance < bestDist) {
+          best = point;
+          bestDist = distance;
+        }
+      }
+      const x = scale.x(best.x);
+      const y = scale.y(best.y);
+      const vLine = svg.querySelector('.graph-crosshair-v');
+      const hLine = svg.querySelector('.graph-crosshair-h');
+      if (vLine) {
+        vLine.setAttribute('x1', x.toFixed(1));
+        vLine.setAttribute('x2', x.toFixed(1));
+      }
+      if (hLine) {
+        hLine.setAttribute('x1', Math.max(0, x - 8).toFixed(1));
+        hLine.setAttribute('x2', Math.min(180, x + 8).toFixed(1));
+        hLine.setAttribute('y1', y.toFixed(1));
+        hLine.setAttribute('y2', y.toFixed(1));
+      }
+      setGraphReadoutText(el, `${name}=${fmtGraphValue(name, best.y)} @ ${fmtGraphNumber(best.x)} ${xUnit}`);
+    }
+
     function graphHoverZones(name, points, extras = [], xUnit = 'x', w = 180, h = 132, xTotal = null) {
       if (!points || points.length < 2) return '';
-      const scale = graphScale(name, points, extras, w, h, xTotal);
-      const scaled = points.map(p => ({
-        x: scale.x(p.x),
-        y: scale.y(p.y),
-        rawX: p.x,
-        rawY: p.y,
-      }));
-      return scaled.map((p, i) => {
-        const left = i === 0 ? 0 : (scaled[i - 1].x + p.x) / 2;
-        const right = i + 1 === scaled.length ? w : (p.x + scaled[i + 1].x) / 2;
-        const label = `${name}=${fmtGraphValue(name, p.rawY)} @ ${fmtGraphNumber(p.rawX)} ${xUnit}`;
-        const tickLeft = Math.max(0, p.x - 8);
-        const tickRight = Math.min(w, p.x + 8);
-        return `<g class="graph-hover-zone">`
-          + `<rect class="graph-hit" x="${left.toFixed(1)}" y="0" width="${Math.max(1, right - left).toFixed(1)}" height="${h}" data-readout="${attrEsc(label)}" onmouseenter="setGraphReadout(this)" onmousemove="setGraphReadout(this)" onmouseleave="clearGraphReadout(this)"></rect>`
-          + `<g class="graph-crosshair">`
-          + `<line class="graph-crosshair-line" x1="${p.x.toFixed(1)}" y1="0" x2="${p.x.toFixed(1)}" y2="${h}"></line>`
-          + `<line class="graph-crosshair-line" x1="${tickLeft.toFixed(1)}" y1="${p.y.toFixed(1)}" x2="${tickRight.toFixed(1)}" y2="${p.y.toFixed(1)}"></line>`
-          + `</g>`
-          + `</g>`;
-      }).join('');
+      const payload = attrEsc(JSON.stringify(points));
+      const extraPayload = attrEsc(JSON.stringify(extras.map(y => ({x: 0, y}))));
+      const total = Number(xTotal);
+      const totalAttr = Number.isFinite(total) && total > 0 ? String(total) : '';
+      return `<g class="graph-crosshair">`
+        + `<line class="graph-crosshair-line graph-crosshair-v" x1="0" y1="0" x2="0" y2="${h}"></line>`
+        + `<line class="graph-crosshair-line graph-crosshair-h" x1="0" y1="0" x2="0" y2="0"></line>`
+        + `</g>`
+        + `<rect class="graph-hit" x="0" y="0" width="${w}" height="${h}" data-graph-name="${attrEsc(name)}" data-x-unit="${attrEsc(xUnit)}" data-x-total="${attrEsc(totalAttr)}" data-points="${payload}" data-extras="${extraPayload}" onmouseenter="setGraphPointReadout(this,event)" onmousemove="setGraphPointReadout(this,event)" onmouseleave="clearGraphReadout(this)"></rect>`;
     }
 
     function fmtGraphValue(name, value) {
@@ -944,7 +983,7 @@ _HTML = r"""<!DOCTYPE html>
       if (!series.length) return '';
       const xTotal = graphXTotal(graph);
       const rows = series.map(s => {
-        const yExtras = graphYExtras(s.name, options);
+        const yExtras = graphYExtras(s.name, options, s.points);
         const path = sparkPath(s.name, s.points, yExtras, 180, 132, xTotal);
         const zero = zeroLine(s.name, s.points, yExtras);
         const bounds = graphBoundLines(s.name, s.points, options);
@@ -956,7 +995,7 @@ _HTML = r"""<!DOCTYPE html>
         const tooltip = `${s.name}: ${lastValue} at${unit} ${fmtGraphNumber(lastX)}`;
         return `<div class="graph-row">`
           + `<span>${esc(s.name)}</span>`
-          + `<svg viewBox="0 0 180 132" preserveAspectRatio="none" aria-label="${esc(tooltip)}">`
+          + `<svg class="graph-live-hover" viewBox="0 0 180 132" preserveAspectRatio="none" aria-label="${esc(tooltip)}">`
           + `<title>${esc(tooltip)}</title>`
           + bounds
           + zero
