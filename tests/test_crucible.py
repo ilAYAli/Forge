@@ -3381,33 +3381,30 @@ except SystemExit as exc:
             self.assertIn("start: deploy failed", result.stderr)
             self.assertFalse(merged.exists())
 
-    def test_retry_without_run_retries_all_failed_incomplete_runs(self) -> None:
+    def test_retry_without_run_requeues_failed_tasks_without_launching_workers(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             runs = Path(tmp) / "runs"
-            self.write_retry_run(runs, "failed-a", failed=True)
-            self.write_retry_run(runs, "failed-b", failed=True)
+            run_a = self.write_retry_run(runs, "failed-a", failed=True)
+            run_b = self.write_retry_run(runs, "failed-b", failed=True)
             self.write_retry_run(runs, "done-run", failed=False)
 
             with (
                 self.patch_runs_dir(runs),
-                mock.patch("crucible_lib.workers.cmd_run_job", return_value=0) as run_job,
+                mock.patch("crucible_lib.workers.cmd_run_job") as run_job,
             ):
                 stdout = io.StringIO()
                 with contextlib.redirect_stdout(stdout):
                     rc = crucible.cmd_retry(self.retry_args())
 
             self.assertEqual(0, rc)
-            calls = [call.args[0] for call in run_job.call_args_list]
-            self.assertEqual(["failed-a", "failed-b"], [args.run for args in calls])
-            self.assertTrue(all(args.resume for args in calls))
-            self.assertTrue(all(args.retry_failed for args in calls))
-            self.assertTrue(all(args.command_label == "retry" for args in calls))
-            self.assertEqual(
-                [str(runs / "failed-a" / "workers.json"), str(runs / "failed-b" / "workers.json")],
-                [args.workers for args in calls],
-            )
-            self.assertIn("retry: failed-a (1/2)", stdout.getvalue())
-            self.assertIn("retry: failed-b (2/2)", stdout.getvalue())
+            run_job.assert_not_called()
+            self.assertFalse((run_a / "state" / "task_0.fail.json").exists())
+            self.assertFalse((run_b / "state" / "task_0.fail.json").exists())
+            output = stdout.getvalue()
+            self.assertIn("retry: failed-a (1/2)", output)
+            self.assertIn("retry: failed-b (2/2)", output)
+            self.assertIn("retry: failed-a requeued=1; no workers launched", output)
+            self.assertIn("retry: failed-b requeued=1; no workers launched", output)
 
     def test_retry_can_use_alternate_workers_for_named_run(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -3451,13 +3448,14 @@ except SystemExit as exc:
 
             with (
                 self.patch_runs_dir(runs),
-                mock.patch("crucible_lib.workers.cmd_run_job", return_value=0) as run_job,
+                mock.patch("crucible_lib.workers.cmd_run_job") as run_job,
             ):
                 stdout = io.StringIO()
                 with contextlib.redirect_stdout(stdout):
                     rc = crucible.cmd_retry(self.retry_args(run="failed-a"))
 
             self.assertEqual(0, rc)
+            run_job.assert_not_called()
             self.assertFalse(crucible.stop_request_path(manifest).exists())
             self.assertFalse(crucible.queue_request_path(manifest).exists())
             self.assertFalse(fail_path.exists())
@@ -3467,9 +3465,34 @@ except SystemExit as exc:
             self.assertIn("retry: cleared stop request for failed-a", output)
             self.assertIn("retry: cleared queue request for failed-a", output)
             self.assertIn("retry: archived 1 failed task marker(s) for failed-a", output)
-            retry_args = run_job.call_args.args[0]
-            self.assertTrue(retry_args.retry_failed)
-            self.assertEqual("retry", retry_args.command_label)
+            self.assertIn("retry: failed-a requeued=1; no workers launched", output)
+
+    def test_retry_with_workers_refuses_to_double_launch_active_run(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runs = Path(tmp) / "runs"
+            run = self.write_retry_run(runs, "failed-a", failed=True)
+            manifest = crucible.load_manifest(run / "manifest.json")
+            active_task = {"id": "task_1", "index": 1, "command": "true", "outputs": []}
+            manifest["tasks"].append(active_task)
+            crucible.write_json(run / "manifest.json", manifest)
+            crucible.claim_task(
+                manifest,
+                worker="worker-a",
+                profile=None,
+                lease_seconds=600,
+                retry_failed=False,
+            )
+
+            with (
+                self.patch_runs_dir(runs),
+                mock.patch("crucible_lib.workers.cmd_run_job") as run_job,
+                self.assertRaises(SystemExit) as raised,
+            ):
+                crucible.cmd_retry(self.retry_args(run="failed-a", workers="worker-b:2"))
+
+            run_job.assert_not_called()
+            self.assertTrue((run / "state" / "task_0.fail.json").exists())
+            self.assertIn("already has 1 active/claimed/stale task", str(raised.exception))
 
     def test_queued_retry_command_stays_retry(self) -> None:
         args = self.retry_args(run="failed-a")
@@ -3544,6 +3567,36 @@ except SystemExit as exc:
             self.assertTrue(resume_args.resume)
             self.assertFalse(resume_args.retry_failed)
             self.assertEqual("resume", resume_args.command_label)
+
+    def test_resume_does_not_launch_workers_for_already_active_run(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runs = Path(tmp) / "runs"
+            run = self.write_retry_run(runs, "active", failed=None)
+            manifest = crucible.load_manifest(run / "manifest.json")
+            crucible.claim_task(
+                manifest,
+                worker="worker-a",
+                profile=None,
+                lease_seconds=600,
+                retry_failed=False,
+            )
+            crucible.write_json(crucible.stop_request_path(manifest), {
+                "schema": "crucible.task.v1",
+                "run": "active",
+            })
+
+            with (
+                self.patch_runs_dir(runs),
+                mock.patch("crucible_lib.workers.cmd_run_job") as run_job,
+            ):
+                stdout = io.StringIO()
+                with contextlib.redirect_stdout(stdout):
+                    rc = crucible.cmd_resume(self.retry_args(run="active"))
+
+            self.assertEqual(0, rc)
+            run_job.assert_not_called()
+            self.assertFalse(crucible.stop_request_path(manifest).exists())
+            self.assertIn("resume: active already active (1 task(s)); no workers launched", stdout.getvalue())
 
     def test_resume_queues_stopped_run_when_another_run_is_active(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
