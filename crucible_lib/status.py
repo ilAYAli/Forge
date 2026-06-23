@@ -1821,19 +1821,30 @@ def log_tail(path: Path, *, max_bytes: int = 8192) -> str:
         file.seek(max(0, size - max_bytes))
         return file.read().decode("utf-8", errors="replace")
 
-def parse_int(value: str | None) -> int | None:
+def parse_int(value: object) -> int | None:
     if value is None:
         return None
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value) if math.isfinite(value) and value.is_integer() else None
     try:
-        return int(value.replace("_", "").replace(",", ""))
+        return int(str(value).replace("_", "").replace(",", ""))
     except ValueError:
         return None
 
-def parse_float(value: str | None) -> float | None:
+def parse_float(value: object) -> float | None:
     if value is None:
         return None
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        result = float(value)
+        return result if math.isfinite(result) else None
     try:
-        return float(value.replace("_", "").replace(",", ""))
+        return float(str(value).replace("_", "").replace(",", ""))
     except ValueError:
         return None
 
