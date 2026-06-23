@@ -772,10 +772,7 @@ _HTML = r"""<!DOCTYPE html>
     }
 
     function graphDisplayPoints(name, points) {
-      const key = graphSeriesName(name);
-      if (key !== 'elo' || points.length < 6) return points;
-      const filtered = points.filter(p => p.x >= 20);
-      return filtered.length >= 3 ? filtered : points;
+      return points;
     }
 
     function graphYDomain(name, values, extras = []) {

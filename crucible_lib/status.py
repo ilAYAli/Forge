@@ -2148,19 +2148,28 @@ def sprt_aggregate_graph_points(
 ) -> dict[str, list[dict[str, float]]]:
     if not rows or not series_names:
         return {}
-    points: dict[str, list[dict[str, float]]] = {name: [] for name in series_names}
+    points: dict[str, list[dict[str, float]]] = {
+        name: ([{"x": 0.0, "y": 0.0}] if field_name in {"elo", "llr"} else [])
+        for name, field_name in series_names.items()
+    }
     weighted_score = 0.0
     weight_total = 0
-    cumulative_done = 0
     llr_total = 0.0
     llr_seen = False
-    for row in sorted(rows, key=lambda item: float(item["x"])):
+    def row_x(row: dict[str, Any]) -> float:
+        try:
+            return float(row["x"])
+        except (KeyError, TypeError, ValueError):
+            return math.inf
+
+    for row in sorted(rows, key=row_x):
+        x = row_x(row)
+        if not math.isfinite(x):
+            continue
         done = row.get("done")
         fields = row.get("fields")
         if not isinstance(done, int) or done <= 0 or not isinstance(fields, dict):
             continue
-        cumulative_done += done
-        x = float(cumulative_done)
         elo = progress_field_float(fields, "elo", "elo~", "Elo")
         if elo is not None:
             weighted_score += elo_score_rate(elo) * done

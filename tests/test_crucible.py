@@ -5124,9 +5124,10 @@ except SystemExit as exc:
             graph = payload["progress_graph"]
             self.assertEqual(4, graph["x_total"])
             series = {item["name"]: item["points"] for item in graph["series"]}
-            self.assertEqual([{"x": 2.0, "y": 0.1}, {"x": 4.0, "y": 0.0}], series["llr"])
-            self.assertAlmostEqual(10.0, series["elo"][0]["y"], places=1)
-            self.assertAlmostEqual(0.0, series["elo"][1]["y"], places=1)
+            self.assertEqual([{"x": 0.0, "y": 0.0}, {"x": 2.0, "y": 0.1}, {"x": 4.0, "y": 0.0}], series["llr"])
+            self.assertAlmostEqual(0.0, series["elo"][0]["y"], places=1)
+            self.assertAlmostEqual(10.0, series["elo"][1]["y"], places=1)
+            self.assertAlmostEqual(0.0, series["elo"][2]["y"], places=1)
             self.assertEqual([{"label": "sprt", "count": 2, "command": "true"}], payload["commands"])
 
     def test_wait_sends_fail_notification_payload(self) -> None:
@@ -7442,9 +7443,66 @@ except SystemExit as exc:
             self.assertIsNotNone(graph)
             self.assertEqual(4, graph["x_total"])
             series = {item["name"]: item["points"] for item in graph["series"]}
-            self.assertEqual([{"x": 2.0, "y": 0.01}, {"x": 4.0, "y": -0.01}], series["llr"])
-            self.assertAlmostEqual(10.0, series["elo"][0]["y"], places=1)
-            self.assertAlmostEqual(-5.0, series["elo"][1]["y"], places=1)
+            self.assertEqual([{"x": 0.0, "y": 0.0}, {"x": 2.0, "y": 0.01}, {"x": 4.0, "y": -0.01}], series["llr"])
+            self.assertAlmostEqual(0.0, series["elo"][0]["y"], places=1)
+            self.assertAlmostEqual(10.0, series["elo"][1]["y"], places=1)
+            self.assertAlmostEqual(-5.0, series["elo"][2]["y"], places=1)
+
+    def test_status_sprt_run_graph_preserves_global_game_positions(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run = root / "sprt-run"
+            state = run / "state"
+            logs = run / "logs"
+            state.mkdir(parents=True)
+            logs.mkdir(parents=True)
+            tasks = []
+            for index in range(3):
+                tasks.append({
+                    "id": f"task_{index}",
+                    "index": index,
+                    "command": "true",
+                    "outputs": [],
+                    "progress": {
+                        "unit": "games",
+                        "total": 2,
+                        "log_regex": (
+                            r"\[\s*(?P<done>\d+)\/(?P<total>\d+)\].*?"
+                            r"Elo\s+(?P<elo>[-+]?\d+(?:\.\d+)?|[-+]?inf).*?"
+                            r"\+/-\s+(?P<ci>\d+(?:\.\d+)?).*?"
+                            r"LOS\s+(?P<los>\d+(?:\.\d+)?)%.*?"
+                            r"draw\s+(?P<draw>\d+(?:\.\d+)?)%"
+                        ),
+                    },
+                })
+            manifest = {
+                "schema": "crucible.task.v1",
+                "name": "sprt-run",
+                "kind": "sprt",
+                "work_dir": str(run),
+                "state_dir": str(state),
+                "log_dir": str(logs),
+                "tasks": tasks,
+            }
+            for index, (elo, llr) in ((1, ("20.0", "0.10")), (2, ("-20.0", "-0.10"))):
+                task_id = f"task_{index}"
+                (state / f"{task_id}.done.json").write_text(
+                    json.dumps({"task": task_id, "host": "worker"}),
+                    encoding="utf-8",
+                )
+                (logs / f"{task_id}.log").write_text(
+                    f"[2/2] Elo  {elo} +/-  80.0 | LLR {llr}/2.94 (  3%) | LOS 50.0% | draw   0.0%\n",
+                    encoding="utf-8",
+                )
+
+            summary = crucible.status_summary(manifest, lease_seconds=600)
+
+            graph = summary["progress_graph"]
+            self.assertIsNotNone(graph)
+            self.assertEqual(6, graph["x_total"])
+            series = {item["name"]: item["points"] for item in graph["series"]}
+            self.assertEqual([0.0, 4.0, 6.0], [point["x"] for point in series["llr"]])
+            self.assertEqual([0.0, 4.0, 6.0], [point["x"] for point in series["elo"]])
 
     def test_status_sprt_header_shows_aggregated_elo(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
