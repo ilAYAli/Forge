@@ -161,6 +161,11 @@
           "name": "elo",
           "field": "elo",
           "x": "done"
+        },
+        {
+          "name": "ci",
+          "field": "ci",
+          "x": "done"
         }
       ]
     }

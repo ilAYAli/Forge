@@ -1970,6 +1970,7 @@ def progress_series_specs(config: dict[str, Any], *, kind: str | None = None) ->
             return [
                 {"name": "llr", "field": "llr", "x": "done"},
                 {"name": "elo", "field": "elo", "x": "done"},
+                {"name": "ci", "field": "ci", "x": "done"},
             ]
         return []
     specs: list[dict[str, str]] = []
@@ -2120,7 +2121,7 @@ def run_progress_graph_from_rows(
             if x is None or y is None:
                 continue
             field_name = str(spec["field"]).lower()
-            if is_sprt and field_name in {"elo", "llr"}:
+            if is_sprt and field_name in {"elo", "llr", "ci"}:
                 sprt_series_names.setdefault(spec["name"], field_name)
                 sprt_x = x if sprt_x is None else sprt_x
                 continue
@@ -2140,7 +2141,7 @@ def run_progress_graph_from_rows(
     series = []
     for name, points in points_by_name.items():
         points.sort(key=lambda point: point["x"])
-        if len(points) >= 2:
+        if len(points) >= 2 or (name.lower() == "ci" and points):
             series.append({"name": name, "points": points})
     if not series:
         return None
@@ -2178,6 +2179,8 @@ def sprt_aggregate_graph_points(
     }
     weighted_score = 0.0
     weight_total = 0
+    weighted_ci_squares = 0.0
+    ci_weight_total = 0
     cumulative_done = 0
     elo_min_games = sprt_elo_graph_min_games(x_total)
     llr_total = 0.0
@@ -2202,6 +2205,10 @@ def sprt_aggregate_graph_points(
         if elo is not None:
             weighted_score += elo_score_rate(elo) * done
             weight_total += done
+        ci = progress_field_float(fields, "ci", "err", "error", "+/-", "elo_ci")
+        if ci is not None and ci >= 0:
+            weighted_ci_squares += (ci * done) ** 2
+            ci_weight_total += done
         llr, _bound = progress_field_llr(fields)
         if math.isfinite(llr):
             llr_total += llr
@@ -2211,6 +2218,8 @@ def sprt_aggregate_graph_points(
                 points[name].append({"x": x, "y": score_rate_elo(weighted_score / weight_total)})
             elif field_name == "llr" and llr_seen:
                 points[name].append({"x": x, "y": llr_total})
+            elif field_name == "ci" and ci_weight_total > 0:
+                points[name].append({"x": x, "y": math.sqrt(weighted_ci_squares) / ci_weight_total})
     return {name: values for name, values in points.items() if values}
 
 def progress_history_path(manifest: dict[str, Any]) -> Path:
