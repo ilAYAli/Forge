@@ -149,7 +149,7 @@ _HTML = r"""<!DOCTYPE html>
                   display: grid; gap: 10px; }
     .graph-title { color: var(--dim); font-size: 11px; margin-bottom: 3px;
                    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .graph-row { display: grid; grid-template-columns: 42px 1fr 58px; gap: 8px;
+    .graph-row { display: grid; grid-template-columns: 42px minmax(120px, 1fr) 160px; gap: 8px;
                  align-items: center; color: var(--dim); font-size: 11px; }
     .graph-row svg { width: 100%; height: 132px; display: block; }
     .graph-line { fill: none; stroke-width: 1.1; vector-effect: non-scaling-stroke; }
@@ -162,7 +162,7 @@ _HTML = r"""<!DOCTYPE html>
     .graph-hover-zone:hover .graph-crosshair { opacity: 1; }
     .graph-crosshair-line { stroke: var(--text); stroke-width: .55; stroke-dasharray: 2 3;
                             opacity: .62; vector-effect: non-scaling-stroke; }
-    .graph-value { color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .graph-value { color: var(--dim); white-space: nowrap; font-variant-numeric: tabular-nums; }
     .graph-value.hover { color: var(--text); }
 
     /* pending / fail groups */
@@ -866,7 +866,7 @@ _HTML = r"""<!DOCTYPE html>
       return scaled.map((p, i) => {
         const left = i === 0 ? 0 : (scaled[i - 1].x + p.x) / 2;
         const right = i + 1 === scaled.length ? w : (p.x + scaled[i + 1].x) / 2;
-        const label = `${xUnit}=${fmtGraphNumber(p.rawX)} ${name}=${fmtGraphValue(name, p.rawY)}`;
+        const label = `${fmtGraphNumber(p.rawX)} ${xUnit} · ${name} ${fmtGraphValue(name, p.rawY)}`;
         return `<g class="graph-hover-zone">`
           + `<rect class="graph-hit" x="${left.toFixed(1)}" y="0" width="${Math.max(1, right - left).toFixed(1)}" height="${h}" data-readout="${attrEsc(label)}" onmouseenter="setGraphReadout(this)" onmousemove="setGraphReadout(this)" onmouseleave="clearGraphReadout(this)"></rect>`
           + `<g class="graph-crosshair">`
