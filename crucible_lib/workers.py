@@ -2563,6 +2563,13 @@ def worker_run_paths(run: str | None, *, lease_seconds: int) -> list[tuple[str, 
     run_name = single_active_local_run_name(lease_seconds=lease_seconds)
     return [materialized_run_paths(run_dir_for_name(run_name), label=run_name)]
 
+def run_active_task_count(manifest: dict[str, Any], *, lease_seconds: int) -> int:
+    summary = status_summary(manifest, lease_seconds=lease_seconds)
+    try:
+        return int(summary.get("active_count") or 0)
+    except (TypeError, ValueError):
+        return 0
+
 def worker_hosts_from_inline(value: str) -> list[str]:
     workers = load_workers_arg(value, default_ok=False)
     hosts = {str(worker.get("host") or "").strip() for worker in workers}
@@ -2730,6 +2737,15 @@ def cmd_resume(args: argparse.Namespace) -> int:
     for run_name, manifest_path, workers_path in targets:
         manifest = load_manifest(manifest_path)
         clear_restart_requests(manifest, run_name, label="resume")
+        active_count = run_active_task_count(manifest, lease_seconds=int(args.lease_seconds))
+        if active_count > 0:
+            if args.workers:
+                raise SystemExit(
+                    f"resume: {run_name} already has {active_count} active/claimed/stale task(s); "
+                    "use add --worker to add capacity"
+                )
+            print(f"resume: {run_name} already active ({active_count} task(s)); no workers launched")
+            continue
         resume_args = argparse.Namespace(
             manifest=str(manifest_path),
             workers=str(args.workers) if args.workers else str(workers_path),
@@ -2821,10 +2837,19 @@ def cmd_retry(args: argparse.Namespace) -> int:
             print(f"retry: {run_name} ({index + 1}/{len(targets)})")
         manifest = load_manifest(manifest_path)
         clear_restart_requests(manifest, run_name, label="retry")
-        archive_failed_tasks_for_retry(manifest, run_name)
+        active_count = run_active_task_count(manifest, lease_seconds=int(args.lease_seconds))
+        if active_count > 0 and args.workers:
+            raise SystemExit(
+                f"retry: {run_name} already has {active_count} active/claimed/stale task(s); "
+                "retry without --workers to requeue failures, or use add --worker to add capacity"
+            )
+        archived = archive_failed_tasks_for_retry(manifest, run_name)
+        if not args.workers:
+            print(f"retry: {run_name} requeued={len(archived)}; no workers launched")
+            continue
         retry_args = argparse.Namespace(
             manifest=str(manifest_path),
-            workers=str(args.workers) if args.workers else str(workers_path),
+            workers=str(args.workers),
             jobs=args.jobs,
             run=run_name,
             resume=True,

@@ -29,7 +29,7 @@ WORKERS_ARG_HELP_RUN_DEFAULT = (
     WORKERS_ARG_HELP + " Defaults to the run's workers.json."
 )
 WORKERS_ARG_HELP_RETRY_DEFAULT = (
-    WORKERS_ARG_HELP + " Defaults to each run's workers.json."
+    WORKERS_ARG_HELP + " If omitted, retry only requeues failed tasks and does not launch workers."
 )
 
 
