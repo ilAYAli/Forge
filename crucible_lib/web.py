@@ -836,7 +836,7 @@ _HTML = r"""<!DOCTYPE html>
       const ciByX = new Map(ciPoints.map(p => [String(p.x), p.y]));
       const band = points.map(p => {
         const ci = Number(ciByX.get(String(p.x)));
-        if (!Number.isFinite(ci) || ci < 0) return null;
+        if (!Number.isFinite(ci) || ci <= 0) return null;
         return {x: p.x, lo: p.y - ci, hi: p.y + ci};
       }).filter(Boolean);
       if (band.length && points.length && band[0].x > points[0].x) {
