@@ -2738,14 +2738,11 @@ def cmd_resume(args: argparse.Namespace) -> int:
         manifest = load_manifest(manifest_path)
         clear_restart_requests(manifest, run_name, label="resume")
         active_count = run_active_task_count(manifest, lease_seconds=int(args.lease_seconds))
-        if active_count > 0:
-            if args.workers:
-                raise SystemExit(
-                    f"resume: {run_name} already has {active_count} active/claimed/stale task(s); "
-                    "use add --worker to add capacity"
-                )
-            print(f"resume: {run_name} already active ({active_count} task(s)); no workers launched")
-            continue
+        if active_count > 0 and args.workers:
+            raise SystemExit(
+                f"resume: {run_name} already has {active_count} active/claimed/stale task(s); "
+                "use add --worker to add capacity"
+            )
         resume_args = argparse.Namespace(
             manifest=str(manifest_path),
             workers=str(args.workers) if args.workers else str(workers_path),
