@@ -84,14 +84,14 @@ def cmd_status(args: argparse.Namespace) -> int:
     annotate_run_ordering(summary, manifest_path=manifest_path, manifest=manifest)
     if args.json:
         print(json.dumps(run_status_payload(summary), sort_keys=True))
-        return 0 if summary["counts"]["fail"] == 0 else 1
+        return 1 if run_failed(summary) else 0
     print_compact_status(
         summary,
         color_enabled=color_enabled,
         show_done=args.show_done,
         show_diagnostics=args.verbose,
     )
-    return 0 if summary["counts"]["fail"] == 0 else 1
+    return 1 if run_failed(summary) else 0
 
 def status_can_delegate(run: str | None) -> bool:
     if run is None:
@@ -298,7 +298,7 @@ def print_delegated_status_payload(args: argparse.Namespace, payload: Any, *, ru
             show_done=args.show_done,
             show_diagnostics=args.verbose,
         )
-        return 0 if summary["counts"]["fail"] == 0 else 1
+        return 1 if run_failed(summary) else 0
     raise SystemExit("coordinator returned unexpected status JSON")
 
 def run_manifest_paths() -> list[Path]:
@@ -483,14 +483,18 @@ def run_done(summary: dict[str, Any]) -> bool:
     )
 
 def run_failed(summary: dict[str, Any]) -> bool:
-    return summary["counts"]["fail"] > 0
+    return summary["counts"]["fail"] > 0 or run_launch_stale(summary)
 
 def run_started(summary: dict[str, Any]) -> bool:
     counts = summary["counts"]
     return counts["done"] + counts["fail"] + counts["running"] + counts["claimed"] + counts["stale"] > 0
 
 def run_launching(summary: dict[str, Any]) -> bool:
-    return isinstance(summary.get("launch"), dict)
+    if summary.get("launch_state") == "launching":
+        return True
+    if summary.get("launch_state") == "stale":
+        return False
+    return isinstance(summary.get("launch"), dict) and not run_launch_stale(summary)
 
 def run_queued(summary: dict[str, Any]) -> bool:
     return run_queue_requested(summary)
@@ -507,9 +511,50 @@ def run_stopped(summary: dict[str, Any]) -> bool:
 def run_stopped_incomplete(summary: dict[str, Any]) -> bool:
     return run_stopped(summary) and not run_done(summary)
 
+def launch_request_started_epoch(payload: dict[str, Any]) -> float | None:
+    for key in ("started_epoch", "requested_epoch"):
+        value = parse_timestamp_epoch(payload.get(key))
+        if value is not None:
+            return value
+    return parse_timestamp_epoch(payload.get("requested_at"))
+
+def launch_request_lease_seconds(payload: dict[str, Any]) -> int:
+    try:
+        value = int(payload.get("lease_seconds") or LAUNCH_REQUEST_LEASE_SECONDS)
+    except (TypeError, ValueError):
+        return LAUNCH_REQUEST_LEASE_SECONDS
+    return max(1, value)
+
+def launch_request_pid(payload: dict[str, Any]) -> int | None:
+    try:
+        value = int(payload.get("pid") or 0)
+    except (TypeError, ValueError):
+        return None
+    return value if value > 0 else None
+
+def launch_request_stale(payload: Any) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    pid = launch_request_pid(payload)
+    if pid is not None:
+        return not process_is_alive(pid)
+    started_epoch = launch_request_started_epoch(payload)
+    if started_epoch is None:
+        return True
+    return epoch() - started_epoch > launch_request_lease_seconds(payload)
+
+def run_launch_stale(summary: dict[str, Any]) -> bool:
+    if summary.get("launch_state") == "stale":
+        return True
+    if summary.get("launch_state") == "launching":
+        return False
+    return launch_request_stale(summary.get("launch"))
+
 def run_current(summary: dict[str, Any]) -> bool:
     counts = summary["counts"]
     active = counts["running"] + counts["claimed"] + counts["stale"]
+    if run_launch_stale(summary):
+        return False
     if run_stopped(summary) and active == 0 and not run_launching(summary):
         return False
     return run_launching(summary) or active > 0 or (counts["pending"] > 0 and run_started(summary))
@@ -522,6 +567,7 @@ def run_attention(summary: dict[str, Any]) -> bool:
     return (
         run_active_count(summary) > 0
         or run_launching(summary)
+        or run_launch_stale(summary)
         or summary["counts"]["fail"] > 0
         or run_queue_requested(summary)
         or run_stopped_incomplete(summary)
@@ -565,7 +611,7 @@ def run_attention_sort_key(summary: dict[str, Any]) -> tuple[Any, ...]:
         return (1, *run_queued_sort_key(summary))
     if active > 0 or run_launching(summary):
         return (2, -active, str(summary["run"]))
-    if fail > 0:
+    if fail > 0 or run_launch_stale(summary):
         return (3, -fail, str(summary["run"]))
     if run_stopped_incomplete(summary):
         return (4, 0, str(summary["run"]))
@@ -591,6 +637,8 @@ def run_state_fields(summary: dict[str, Any]) -> list[str]:
         return ["state=stalled"]
     if run_queued(summary):
         return ["state=queued"]
+    if run_launch_stale(summary):
+        return ["state=launch-stale"]
     return []
 
 def filtered_run_summaries(
@@ -1537,7 +1585,7 @@ def print_run_status(
             "collapsed_failures_count": len(collapsed_failures),
         }
         print(json.dumps(payload, sort_keys=True))
-        return 0 if all(item["counts"]["fail"] == 0 for item in filtered) else 1
+        return 0 if all(not run_failed(item) for item in filtered) else 1
     if not filtered:
         labels = {
             None: "active",
@@ -1605,7 +1653,7 @@ def print_run_status(
                 show_diagnostics=True,
                 indent="  ",
             )
-    return 0 if all(item["counts"]["fail"] == 0 for item in filtered) else 1
+    return 0 if all(not run_failed(item) for item in filtered) else 1
 
 def load_run_manifest(run: str | Path) -> tuple[Path, dict[str, Any]]:
     path = run_manifest_path(run)
@@ -2848,6 +2896,9 @@ def status_summary(manifest: dict[str, Any], *, lease_seconds: int) -> dict[str,
     queue_payload = read_state_json(queue_request_path(manifest))
     launch_payload = read_state_json(launch_request_path(manifest))
     stop_payload = read_state_json(stop_request_path(manifest))
+    launch_state = "stale" if launch_request_stale(launch_payload) else "launching" if isinstance(launch_payload, dict) else None
+    if launch_state == "stale":
+        record_state_diagnostic(launch_request_path(manifest), "launch request is stale; no launcher is alive")
     counts = {"done": 0, "fail": 0, "running": 0, "claimed": 0, "stale": 0, "pending": 0}
     rows: list[dict[str, Any]] = []
     groups: dict[str, dict[str, list[int | str]]] = {
@@ -3017,6 +3068,7 @@ def status_summary(manifest: dict[str, Any], *, lease_seconds: int) -> dict[str,
         "worker_rates": worker_rates,
         "queue": queue_payload,
         "launch": launch_payload,
+        "launch_state": launch_state,
         "stop": stop_payload,
         "progress_graph": progress_graph,
         "diagnostics": state_diagnostics(),
@@ -3263,6 +3315,9 @@ def cmd_wait(args: argparse.Namespace) -> int:
         if counts["done"] == total:
             return finish("run_done", "ok", 0, manifest)
         active = counts["running"] + counts["claimed"] + counts["stale"]
+        if run_launch_stale(summary) and active == 0 and counts["pending"] > 0:
+            print("launch failed: no active workers and launch request is stale", file=sys.stderr)
+            return finish("run_launch_failed", "failed", 1, manifest)
         if stop_requested(manifest) and active == 0:
             return finish("run_stopped", "stopped", 130, manifest)
         if deadline is not None and time.monotonic() >= deadline:

@@ -3602,6 +3602,30 @@ except SystemExit as exc:
             self.assertFalse(resume_args.retry_failed)
             self.assertEqual("resume", resume_args.command_label)
 
+    def test_resume_clears_stale_launch_and_restarts_incomplete_run(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runs = Path(tmp) / "runs"
+            run = self.write_retry_run(runs, "launch-stale", failed=None)
+            manifest = crucible.load_manifest(run / "manifest.json")
+            crucible.write_json(crucible.launch_request_path(manifest), {
+                "schema": "crucible.task.v1",
+                "run": "launch-stale",
+                "requested_epoch": 1000.0,
+            })
+
+            with (
+                self.patch_runs_dir(runs),
+                mock.patch("crucible_lib.workers.cmd_run_job", return_value=0) as run_job,
+            ):
+                stdout = io.StringIO()
+                with contextlib.redirect_stdout(stdout):
+                    rc = crucible.cmd_resume(self.retry_args(run="launch-stale"))
+
+            self.assertEqual(0, rc)
+            self.assertFalse(crucible.launch_request_path(manifest).exists())
+            self.assertIn("resume: cleared launch request for launch-stale", stdout.getvalue())
+            run_job.assert_called_once()
+
     def test_resume_does_not_launch_workers_for_already_active_run(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             runs = Path(tmp) / "runs"
@@ -5158,6 +5182,50 @@ except SystemExit as exc:
             self.assertEqual("", done.stderr)
             self.assertEqual(0, done.returncode)
             self.assertIn("tasks=2/2", done.stdout)
+
+    def test_wait_fails_on_stale_launch_without_workers(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run = root / "launch-stale"
+            manifest_path = run / "manifest.json"
+            manifest = {
+                "schema": "crucible.task.v1",
+                "name": "launch-stale",
+                "work_dir": str(root),
+                "state_dir": str(run / "state"),
+                "log_dir": str(run / "logs"),
+                "claim_dir": str(run / "claims"),
+                "tasks": [{"id": "task_0000", "index": 0, "command": "true", "outputs": []}],
+            }
+            crucible.write_json(manifest_path, manifest)
+            crucible.write_json(crucible.launch_request_path(manifest), {
+                "schema": "crucible.task.v1",
+                "run": "launch-stale",
+                "requested_epoch": 1000.0,
+                "lease_seconds": 10,
+            })
+            args = argparse.Namespace(
+                manifest=str(manifest_path),
+                profile=None,
+                lease_seconds=600,
+                interval_seconds=0.01,
+                timeout_seconds=1.0,
+                fail_on_fail=True,
+                notify_command=None,
+            )
+
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            with mock.patch("crucible_lib.status.epoch", return_value=2000.0):
+                with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                    rc = crucible.cmd_wait(args)
+
+            self.assertEqual(1, rc)
+            self.assertIn("tasks=0/1", stdout.getvalue())
+            self.assertIn("launch failed", stderr.getvalue())
+            payload = json.loads((run / "summary.json").read_text(encoding="utf-8"))
+            self.assertEqual("run_launch_failed", payload["event"])
+            self.assertEqual("failed", payload["state"])
 
     def test_wait_sends_done_notification_payload(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -6872,6 +6940,38 @@ except SystemExit as exc:
         self.assertEqual("stalled", payload["runs"][0]["state"])
         self.assertEqual("dead", payload["runs"][0]["queue_monitor_state"])
         self.assertIn("queue monitor dead", payload["runs"][0]["diagnostics"])
+
+    def test_status_reports_stale_launch_as_failed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run = root / "runs" / "launch-stale"
+            manifest = {
+                "schema": "crucible.task.v1",
+                "name": "launch-stale",
+                "work_dir": str(run),
+                "state_dir": str(run / "state"),
+                "claim_dir": str(run / "claims"),
+                "tasks": [{"id": "task_0", "index": 0, "command": "true", "outputs": []}],
+            }
+            crucible.write_json(run / "manifest.json", manifest)
+            crucible.write_json(crucible.launch_request_path(manifest), {
+                "schema": "crucible.task.v1",
+                "run": "launch-stale",
+                "requested_epoch": 1.0,
+                "lease_seconds": 1,
+            })
+            env = {"CRUCIBLE_COORDINATOR_RUNS": "", "CRUCIBLE_RUNS_DIR": str(root / "runs")}
+
+            status = self.run_cli("status", "launch-stale", "--verbose", cwd=root, env=env)
+            failed_status = self.run_cli("status", "--failed", "--json", cwd=root, env=env)
+
+        self.assertEqual(1, status.returncode)
+        self.assertIn("state=launch-stale", status.stdout)
+        self.assertIn("launch request is stale", status.stdout)
+        payload = json.loads(failed_status.stdout)
+        self.assertEqual(1, failed_status.returncode)
+        self.assertEqual("failed", payload["runs"][0]["state"])
+        self.assertEqual("stale", payload["runs"][0]["launch_state"])
 
     def test_status_sorts_queued_runs_fifo(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -1210,6 +1210,10 @@ def clear_restart_requests(manifest: dict[str, Any], run_name: str, *, label: st
     if queue_path.exists():
         queue_path.unlink()
         print(f"{label}: cleared queue request for {run_name}")
+    launch_path = launch_request_path(manifest)
+    if launch_path.exists():
+        launch_path.unlink()
+        print(f"{label}: cleared launch request for {run_name}")
 
 def archive_failed_tasks_for_retry(manifest: dict[str, Any], run_name: str) -> list[str]:
     failed_tasks: list[str] = []
@@ -1264,6 +1268,8 @@ def write_launch_request(*, run_dir: Path, manifest: dict[str, Any], reason: str
         "reason": reason,
         "requested_at": now(),
         "requested_epoch": epoch(),
+        "pid": os.getpid(),
+        "lease_seconds": LAUNCH_REQUEST_LEASE_SECONDS,
         "host": socket.gethostname(),
     }
     state_dir(manifest).mkdir(parents=True, exist_ok=True)
@@ -1975,6 +1981,10 @@ def cmd_deploy(args: argparse.Namespace) -> int:
         if launch_marker_written:
             clear_launch_request(manifest)
         return 130
+    except BaseException:
+        if launch_marker_written:
+            clear_launch_request(manifest)
+        raise
     finally:
         if executor is not None:
             executor.shutdown(wait=not interrupted, cancel_futures=interrupted)
