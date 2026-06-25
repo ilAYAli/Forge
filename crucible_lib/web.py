@@ -151,26 +151,18 @@ _HTML = r"""<!DOCTYPE html>
                    display: flex; align-items: center; justify-content: space-between;
                    gap: 12px; white-space: nowrap; overflow: hidden; }
     .graph-title-main { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-    .graph-tools { display: flex; gap: 5px; flex-shrink: 0; }
-    .graph-toggle { background: none; border: 1px solid var(--border); border-radius: 4px;
-                    color: var(--dim); font-family: var(--font); font-size: 10px;
-                    line-height: 1.2; padding: 1px 6px; cursor: pointer; }
-    .graph-toggle.on { color: var(--yel); border-color: rgba(212,168,34,.45); }
     .graph-row { display: grid; grid-template-columns: 52px minmax(240px, 1fr) 104px; gap: 8px;
                  align-items: stretch; color: var(--dim); font-size: 11px; }
     .graph-row.with-right-axis { grid-template-columns: 52px minmax(240px, 1fr) 42px 104px; }
     .graph-axis { display: flex; flex-direction: column; justify-content: space-between;
                   align-items: flex-end; padding: 4px 0 3px; font-variant-numeric: tabular-nums; }
-    .graph-axis.right { display: none; align-items: flex-start; color: var(--yel); opacity: .82; }
-    .task-graph.show-llr .graph-axis.right { display: flex; }
+    .graph-axis.right { align-items: flex-start; color: var(--yel); opacity: .82; }
     .graph-axis .zero { color: var(--text); opacity: .55; }
     .graph-plot { position: relative; height: 220px; min-width: 240px; }
     .graph-plot svg { width: 100%; height: 100%; display: block; }
     .graph-band { fill: var(--blu); opacity: .13; stroke: none; }
     .graph-line { fill: none; stroke-width: 1.45; vector-effect: non-scaling-stroke; }
-    .graph-line.llr-overlay { display: none; stroke-width: 1; opacity: .82;
-                              stroke-dasharray: 5 5; }
-    .task-graph.show-llr .graph-line.llr-overlay { display: block; }
+    .graph-line.llr-overlay { stroke-width: 1.15; opacity: .82; }
     .graph-grid { stroke: var(--border); stroke-width: .7; opacity: .5;
                   vector-effect: non-scaling-stroke; }
     .graph-zero { stroke: var(--text); stroke-width: .9; stroke-dasharray: 2 6;
@@ -362,7 +354,6 @@ _HTML = r"""<!DOCTYPE html>
     }
 
     let soundEnabled = localStorage.getItem('crucible.sound') === '1';
-    let graphLlrVisible = localStorage.getItem('crucible.graph.llr') === '1';
     let audioCtx = null;
     let activeJobKeys = null;
     const hiddenRunNames = new Set();
@@ -1135,16 +1126,6 @@ _HTML = r"""<!DOCTYPE html>
       return null;
     }
 
-    function toggleGraphLlr(btn) {
-      graphLlrVisible = !graphLlrVisible;
-      localStorage.setItem('crucible.graph.llr', graphLlrVisible ? '1' : '0');
-      document.querySelectorAll('.task-graph').forEach(el => el.classList.toggle('show-llr', graphLlrVisible));
-      document.querySelectorAll('.graph-toggle[data-graph="llr"]').forEach(el => {
-        el.classList.toggle('on', graphLlrVisible);
-        el.textContent = graphLlrVisible ? 'LLR' : 'llr';
-      });
-    }
-
     function graphRowHtml(s, options, graph, xTotal, ciSeries, overlaySeries = null) {
       const h = GRAPH_H;
       const band = graphConfidenceBandPoints(s.name, s.points, ciSeries?.points || []);
@@ -1208,11 +1189,8 @@ _HTML = r"""<!DOCTYPE html>
       const overlay = llrSeries && llrSeries !== primary ? llrSeries : null;
       const rows = graphRowHtml(primary, options, graph, xTotal, ciSeries, overlay);
       const unit = graph?.x_unit ? ` · x: ${graph.x_unit}` : '';
-      const llrToggle = overlay
-        ? `<button class="graph-toggle${graphLlrVisible ? ' on' : ''}" data-graph="llr" type="button" onclick="toggleGraphLlr(this)">${graphLlrVisible ? 'LLR' : 'llr'}</button>`
-        : '';
-      return `<div class="task-graph${graphLlrVisible ? ' show-llr' : ''}">`
-        + `<div class="graph-title"><span class="graph-title-main">${esc(title + unit)}</span><span class="graph-tools">${llrToggle}</span></div>`
+      return `<div class="task-graph">`
+        + `<div class="graph-title"><span class="graph-title-main">${esc(title + unit)}</span></div>`
         + rows
         + `</div>`;
     }
