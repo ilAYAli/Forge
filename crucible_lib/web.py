@@ -54,13 +54,18 @@ _HTML = r"""<!DOCTYPE html>
     .run.failed  { border-color: #3d2424; }
     .run.stopped-early { border-color: rgba(200,142,74,.65); }
     .run.done    { border-color: var(--border); opacity: .65; }
+    .run.expanded { box-shadow: inset 0 0 0 1px rgba(90,158,207,.16); }
 
     /* run header — always visible */
     .run-hdr { user-select: text; background: #1b1b21; padding: 8px 12px;
                cursor: pointer; border-bottom: 1px solid #2b2b32; }
     .run-hdr:hover { background: #22222a; }
+    .run.expanded .run-hdr { background: #202027; border-bottom-color: #34343d; }
+    .run.expanded .run-hdr:hover { background: #272730; }
     .run.stopped-early .run-hdr { background: rgba(200,142,74,.12); }
     .run.stopped-early .run-hdr:hover { background: rgba(200,142,74,.17); }
+    .run.stopped-early.expanded .run-hdr { background: rgba(200,142,74,.17); }
+    .run.stopped-early.expanded .run-hdr:hover { background: rgba(200,142,74,.22); }
     .run-hdr-top { display: flex; align-items: center; gap: 8px; }
     .arrow { color: var(--dim); cursor: pointer; font-size: 10px; flex-shrink: 0; transition: transform .15s; user-select: none; }
     .arrow.open { transform: rotate(90deg); }
@@ -97,9 +102,11 @@ _HTML = r"""<!DOCTYPE html>
 
     /* body — collapsible */
     .run-body { display: none; background: #101014; }
+    .run.expanded .run-body { background: #111117; }
     .run-body.open { display: block; }
     .run-tree { margin-left: 24px; padding: 7px 12px 9px 16px;
                 border-left: 1px solid #2b2b32; }
+    .run.expanded .run-tree { border-left-color: #3a3a44; }
 
     /* sections */
     .section { position: relative; padding: 5px 0 6px; }
@@ -560,7 +567,11 @@ _HTML = r"""<!DOCTYPE html>
       const el = document.getElementById(id);
       if (!el) return;
       const nowOpen = !el.classList.contains('open');
-      el.classList.toggle('open');
+      el.classList.toggle('open', nowOpen);
+      if (el.classList.contains('run-body')) {
+        const run = el.closest('.run');
+        if (run) run.classList.toggle('expanded', nowOpen);
+      }
       openState[id] = nowOpen;
       const hdr = el.previousElementSibling;
       if (hdr) { const a = hdr.querySelector('.arrow'); if (a) a.classList.toggle('open', nowOpen); }
@@ -1414,7 +1425,7 @@ _HTML = r"""<!DOCTYPE html>
         ));
       }
 
-      return `<div class="run ${state}${stoppedEarly?' stopped-early':''}">
+      return `<div class="run ${state}${stoppedEarly?' stopped-early':''}${bodyOpen?' expanded':''}">
         <div class="run-hdr" onclick="toggleRunHeader(event,'${rId}')">${hdr}</div>
         <div class="pbar-wrap"><div class="pbar-fill" style="width:${pct}%"></div></div>
         <div class="run-body${bodyOpen?' open':''}" id="${rId}"><div class="run-tree">${sections.join('')}</div></div>
