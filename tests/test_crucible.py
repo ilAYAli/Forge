@@ -5069,6 +5069,48 @@ except SystemExit as exc:
             log = crucible.task_log_path(manifest, task).read_text(encoding="utf-8")
             self.assertIn("terminate signal", log)
 
+    def test_run_task_soft_cancel_writes_done_without_outputs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest = {
+                "schema": "crucible.task.v1",
+                "name": "soft-cancel",
+                "work_dir": str(root),
+                "state_dir": str(root / "state"),
+                "log_dir": str(root / "logs"),
+                "tasks": [
+                    {
+                        "id": "task_0000",
+                        "index": 0,
+                        "command": "sleep 60",
+                        "outputs": [str(root / "missing.txt")],
+                    }
+                ],
+            }
+            task = manifest["tasks"][0]
+            cancel = threading.Event()
+
+            def cancel_soon() -> None:
+                cancel.wait(0.1)
+                cancel.set()
+
+            thread = threading.Thread(target=cancel_soon)
+            thread.start()
+            try:
+                rc = crucible.run_task(manifest, task, force=False, cancel_event=cancel)
+            finally:
+                cancel.set()
+                thread.join(timeout=1)
+
+            self.assertEqual(0, rc)
+            self.assertTrue(crucible.task_done_path(manifest, task).exists())
+            self.assertFalse(crucible.task_fail_path(manifest, task).exists())
+            self.assertTrue(crucible.task_complete(manifest, task))
+            payload = json.loads(crucible.task_done_path(manifest, task).read_text(encoding="utf-8"))
+            self.assertTrue(payload["soft_cancel"])
+            self.assertTrue(payload["skipped"])
+            self.assertEqual([], payload["outputs"])
+
     def test_wait_reports_timeout_until_tasks_are_done(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -5223,6 +5265,71 @@ except SystemExit as exc:
             self.assertAlmostEqual(0.0, series["elo"][0]["y"], places=1)
             self.assertAlmostEqual(0.0, series["elo"][1]["y"], places=1)
             self.assertEqual([{"label": "sprt", "count": 2, "command": "true"}], payload["commands"])
+
+    def test_wait_completes_sprt_when_aggregate_h1_is_reached(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run = root / "sprt-h1"
+            manifest_path = run / "manifest.json"
+            state = run / "state"
+            logs = run / "logs"
+            state.mkdir(parents=True)
+            logs.mkdir()
+            tasks = []
+            for index in range(3):
+                tasks.append({
+                    "id": f"task_{index}",
+                    "index": index,
+                    "command": "true",
+                    "outputs": [],
+                    "progress": {"unit": "games", "total": 10},
+                })
+            manifest_payload = {
+                "schema": "crucible.task.v1",
+                "name": "sprt-h1",
+                "kind": "sprt",
+                "work_dir": str(run),
+                "state_dir": str(state),
+                "log_dir": str(logs),
+                "claim_dir": str(run / "claims"),
+                "tasks": tasks,
+            }
+            crucible.write_json(manifest_path, manifest_payload)
+            for index, llr in enumerate((1.2, 1.1)):
+                task_id = f"task_{index}"
+                crucible.write_json(state / f"{task_id}.done.json", {"task": task_id, "host": "worker"})
+                (logs / f"{task_id}.log").write_text(
+                    f"[10/10] Elo  300.0 +/-  50.0 | LLR {llr:.1f}/2.20 (  50%) | LOS 99.0% | draw   1.0%\n",
+                    encoding="utf-8",
+                )
+
+            args = argparse.Namespace(
+                manifest=str(manifest_path),
+                profile=None,
+                lease_seconds=600,
+                interval_seconds=0.01,
+                timeout_seconds=1.0,
+                fail_on_fail=True,
+                notify_command=None,
+            )
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout):
+                rc = crucible.cmd_wait(args)
+
+            self.assertEqual(0, rc)
+            self.assertIn("aggregate H1 reached", stdout.getvalue())
+            summary = json.loads((run / "summary.json").read_text(encoding="utf-8"))
+            self.assertEqual("run_done", summary["event"])
+            self.assertEqual("ok", summary["state"])
+            self.assertEqual({"done": 3, "fail": 0, "running": 0, "claimed": 0, "stale": 0, "pending": 0}, summary["counts"])
+            self.assertIn("games=30/30", summary["status_line"])
+            stop = json.loads((state / "stop.json").read_text(encoding="utf-8"))
+            self.assertEqual("aggregate_sprt_decision", stop["reason"])
+            self.assertEqual("H1", stop["decision"]["side"])
+            skipped = json.loads((state / "task_2.done.json").read_text(encoding="utf-8"))
+            self.assertTrue(skipped["soft_cancel"])
+            self.assertEqual("aggregate_sprt_decision", skipped["skip_reason"])
+            self.assertEqual("H1", skipped["decision"]["side"])
 
     def test_wait_sends_fail_notification_payload(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

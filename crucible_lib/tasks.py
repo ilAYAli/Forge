@@ -22,6 +22,9 @@ def task_claim_path(manifest: dict[str, Any], task: dict[str, Any]) -> Path:
 def task_heartbeat_path(manifest: dict[str, Any], task: dict[str, Any]) -> Path:
     return task_claim_dir(manifest, task) / "heartbeat.json"
 
+def task_cancel_path(manifest: dict[str, Any], task: dict[str, Any]) -> Path:
+    return state_dir(manifest) / f"{task['id']}.cancel.json"
+
 def task_stale_lock_dir(manifest: dict[str, Any], task: dict[str, Any]) -> Path:
     return claim_dir(manifest) / f".{task['id']}.stale.lock"
 
@@ -103,9 +106,17 @@ def format_command(manifest: dict[str, Any], task: dict[str, Any]) -> str:
     return command.format(**values)
 
 def task_complete(manifest: dict[str, Any], task: dict[str, Any]) -> bool:
-    if not task_done_path(manifest, task).exists():
+    done = task_done_path(manifest, task)
+    if not done.exists():
         return False
+    payload = read_state_json(done)
+    if isinstance(payload, dict) and payload.get("soft_cancel"):
+        return True
     return all(path.exists() for path in task_outputs(task))
+
+def task_cancel_payload(manifest: dict[str, Any], task: dict[str, Any]) -> dict[str, Any] | None:
+    payload = read_state_json(task_cancel_path(manifest, task))
+    return payload if isinstance(payload, dict) else None
 
 def task_attempt_from_payload(payload: dict[str, Any] | None) -> int:
     if not isinstance(payload, dict):
@@ -241,6 +252,7 @@ def run_task(
     force: bool,
     attempt: int = 1,
     max_attempts: int = 0,
+    cancel_event: threading.Event | None = None,
 ) -> int:
     if task_complete(manifest, task) and not force:
         print(f"skip {task['id']}: already complete")
@@ -259,6 +271,21 @@ def run_task(
     log_path = task_log_path(manifest, task)
     start = time.monotonic()
     started_at = now()
+    soft_cancel: dict[str, Any] | None = None
+
+    def current_cancel_payload() -> dict[str, Any] | None:
+        payload = task_cancel_payload(manifest, task)
+        if payload is not None:
+            return payload
+        if cancel_event is not None and cancel_event.is_set():
+            return {
+                "schema": SCHEMA,
+                "task": task["id"],
+                "reason": "soft_cancel",
+                "requested_at": now(),
+            }
+        return None
+
     with log_path.open("w", encoding="utf-8") as log:
         log.write(f"{started_at} start {task['id']}: {command}\n")
         log.flush()
@@ -298,7 +325,30 @@ def run_task(
 
         timeout = bounded_timeout(task.get("timeout_s", manifest.get("timeout_s")))
         try:
-            rc = proc.wait(timeout=timeout) if timeout else proc.wait()
+            if cancel_event is None:
+                rc = proc.wait(timeout=timeout) if timeout else proc.wait()
+            else:
+                deadline = time.monotonic() + timeout if timeout else None
+                while True:
+                    if cancel_payload := current_cancel_payload():
+                        soft_cancel = cancel_payload
+                        terminate_process_group(proc, log, "soft cancel")
+                        rc = 0
+                        break
+                    if deadline is not None:
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0:
+                            terminate_process_group(proc, log, "timeout")
+                            rc = 124
+                            break
+                        wait_timeout = min(0.5, remaining)
+                    else:
+                        wait_timeout = 0.5
+                    try:
+                        rc = proc.wait(timeout=wait_timeout)
+                        break
+                    except subprocess.TimeoutExpired:
+                        continue
         except TaskSignalInterrupt as exc:
             terminate_process_group(proc, log, f"signal {exc.signum}")
             rc = 128 + exc.signum
@@ -334,7 +384,12 @@ def run_task(
     }
     if max_attempts > 0:
         payload["max_attempts"] = max_attempts
-    if rc == 0 and all(path.exists() for path in task_outputs(task)):
+    if soft_cancel is not None:
+        payload["soft_cancel"] = True
+        payload["skipped"] = True
+        payload["skip_reason"] = str(soft_cancel.get("reason") or "soft_cancel")
+        payload["cancel"] = soft_cancel
+    if rc == 0 and (soft_cancel is not None or all(path.exists() for path in task_outputs(task))):
         write_json(task_done_path(manifest, task), payload)
     else:
         write_json(task_fail_path(manifest, task), payload)
@@ -853,8 +908,8 @@ def heartbeat_on_coordinator(
     claim_id: str | None,
     progress_data: dict[str, Any] | None = None,
     running: bool = False,
-) -> None:
-    command = ["heartbeat", "--manifest", "{manifest}", "--task", task_id, "--worker", worker]
+) -> dict[str, Any]:
+    command = ["heartbeat", "--manifest", "{manifest}", "--task", task_id, "--worker", worker, "--json"]
     if claim_id:
         command.extend(["--claim-id", claim_id])
     if running:
@@ -870,6 +925,11 @@ def heartbeat_on_coordinator(
     )
     if result.returncode != 0:
         raise RuntimeError(result.stderr.strip() or result.stdout.strip() or "coordinator heartbeat failed")
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return {}
+    return payload if isinstance(payload, dict) else {}
 
 def heartbeat_interval_seconds(lease_seconds: int) -> float:
     lease_interval = (
@@ -892,19 +952,24 @@ def heartbeat_loop(
     local_task: dict[str, Any],
     lease_seconds: int,
     stop: threading.Event,
+    cancel: threading.Event,
 ) -> None:
     from .status import task_log_progress_data
 
     interval = heartbeat_interval_seconds(lease_seconds)
     while not stop.is_set():
         try:
-            heartbeat_on_coordinator(
+            response = heartbeat_on_coordinator(
                 coordinator,
                 task_id,
                 worker,
                 claim_id,
                 task_log_progress_data(local_manifest, local_task),
             )
+            cancel_payload = response.get("cancel") if isinstance(response, dict) else None
+            if isinstance(cancel_payload, dict):
+                write_json(task_cancel_path(local_manifest, local_task), cancel_payload)
+                cancel.set()
         except Exception as exc:
             print(f"{task_id}: heartbeat failed: {exc}", file=sys.stderr)
         stop.wait(interval)
@@ -954,6 +1019,7 @@ def cmd_work(args: argparse.Namespace) -> int:
         coordinator_task = find_task(coordinator_manifest, task_id=task_id, index=None)
         local_task = find_task(local_manifest, task_id=task_id, index=None)
         stop_heartbeat = threading.Event()
+        cancel_task = threading.Event()
         heartbeat = threading.Thread(
             target=heartbeat_loop,
             kwargs={
@@ -965,6 +1031,7 @@ def cmd_work(args: argparse.Namespace) -> int:
                 "local_task": local_task,
                 "lease_seconds": args.lease_seconds,
                 "stop": stop_heartbeat,
+                "cancel": cancel_task,
             },
             daemon=True,
         )
@@ -972,19 +1039,24 @@ def cmd_work(args: argparse.Namespace) -> int:
         sync_failed = False
         error_rc = 1
         try:
-            heartbeat_on_coordinator(
+            response = heartbeat_on_coordinator(
                 args.coordinator,
                 task_id,
                 args.worker,
                 claim_id,
                 running=True,
             )
+            cancel_payload = response.get("cancel") if isinstance(response, dict) else None
+            if isinstance(cancel_payload, dict):
+                write_json(task_cancel_path(local_manifest, local_task), cancel_payload)
+                cancel_task.set()
             rc = run_task(
                 local_manifest,
                 local_task,
                 force=args.force,
                 attempt=attempt,
                 max_attempts=task_attempts,
+                cancel_event=cancel_task,
             )
             sync_task_result(
                 coordinator=args.coordinator,
@@ -1078,5 +1150,9 @@ def cmd_heartbeat(args: argparse.Namespace) -> int:
         progress_data=progress_data,
         running=bool(args.running),
     )
-    print(task["id"])
+    cancel_payload = task_cancel_payload(manifest, task)
+    if getattr(args, "json", False):
+        print(json.dumps({"task": task["id"], "cancel": cancel_payload}, sort_keys=True))
+    else:
+        print(task["id"])
     return 0

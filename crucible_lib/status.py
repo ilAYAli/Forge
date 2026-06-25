@@ -862,7 +862,10 @@ def summary_progress(summary: dict[str, Any]) -> str:
             unknown_when_elapsed = False
             if max_active_eta is not None:
                 active_eta, active_unknown_when_elapsed = max_active_eta
-                if active_eta > aggregate_eta:
+                if active_unknown_when_elapsed and active_eta <= 0:
+                    aggregate_eta = 0.0
+                    unknown_when_elapsed = True
+                elif active_eta > aggregate_eta:
                     aggregate_eta = active_eta
                     unknown_when_elapsed = active_unknown_when_elapsed
             etas.append(eta_field(aggregate_eta, unknown_when_elapsed=unknown_when_elapsed))
@@ -1652,6 +1655,104 @@ def request_stop_for_run(
         "released": released,
     }
 
+def soft_cancel_done_payload(
+    *,
+    manifest_path: Path,
+    manifest: dict[str, Any],
+    task: dict[str, Any],
+    decision: dict[str, Any],
+) -> dict[str, Any]:
+    finished_at = now()
+    try:
+        command = format_command(manifest, task)
+    except SystemExit:
+        command = str(task.get("command") or "")
+    return {
+        "schema": SCHEMA,
+        "task": task["id"],
+        "index": task.get("index"),
+        "host": socket.gethostname(),
+        "platform": platform.platform(),
+        "started_at": finished_at,
+        "finished_at": finished_at,
+        "elapsed_s": 0.0,
+        "command": command,
+        "rc": 0,
+        "log": str(task_log_path(manifest, task)),
+        "manifest_sha256": manifest_checksum(manifest),
+        "outputs": [],
+        "soft_cancel": True,
+        "skipped": True,
+        "skip_reason": "aggregate_sprt_decision",
+        "decision": decision,
+        "run": manifest_path.parent.name,
+    }
+
+def finalize_sprt_aggregate_decision(
+    manifest_path: Path,
+    manifest: dict[str, Any],
+    decision: dict[str, Any],
+    *,
+    lease_seconds: int,
+) -> dict[str, Any]:
+    state_dir(manifest).mkdir(parents=True, exist_ok=True)
+    stop_payload = {
+        "schema": SCHEMA,
+        "run": manifest_path.parent.name,
+        "requested_at": now(),
+        "requested_epoch": epoch(),
+        "host": socket.gethostname(),
+        "reason": "aggregate_sprt_decision",
+        "soft_cancel_tasks": True,
+        "decision": decision,
+    }
+    changed = False
+    existing_stop = read_state_json(stop_request_path(manifest))
+    if not isinstance(existing_stop, dict) or existing_stop.get("reason") != "aggregate_sprt_decision":
+        write_json(stop_request_path(manifest), stop_payload)
+        changed = True
+    for path in (queue_request_path(manifest), launch_request_path(manifest)):
+        if path.exists():
+            path.unlink()
+            changed = True
+
+    skipped = 0
+    cancelled = 0
+    for task in manifest["tasks"]:
+        state = task_state(manifest, task, lease_seconds=lease_seconds)
+        if state in {"done", "fail"}:
+            continue
+        cancel_payload = {
+            **stop_payload,
+            "task": task["id"],
+            "index": task.get("index"),
+        }
+        if state in {"running", "claimed"}:
+            cancel_path = task_cancel_path(manifest, task)
+            if not cancel_path.exists():
+                write_json(cancel_path, cancel_payload)
+                changed = True
+                cancelled += 1
+            continue
+        payload = soft_cancel_done_payload(
+            manifest_path=manifest_path,
+            manifest=manifest,
+            task=task,
+            decision=decision,
+        )
+        write_json(task_done_path(manifest, task), payload)
+        task_fail_path(manifest, task).unlink(missing_ok=True)
+        task_cancel_path(manifest, task).unlink(missing_ok=True)
+        release_claim(manifest, task)
+        skipped += 1
+        changed = True
+    return {
+        "changed": changed,
+        "skipped": skipped,
+        "cancelled": cancelled,
+        "decision": decision,
+    }
+
 def cmd_stop(args: argparse.Namespace) -> int:
     coordinator_runs = configured_coordinator_runs()
     if coordinator_runs and status_can_delegate(args.run):
@@ -2415,9 +2516,9 @@ def summary_is_sprt(summary: dict[str, Any]) -> bool:
             return True
     return False
 
-def sprt_aggregate_fields(summary: dict[str, Any]) -> list[str]:
+def sprt_aggregate_stats(summary: dict[str, Any]) -> dict[str, Any]:
     if not summary_is_sprt(summary):
-        return []
+        return {}
 
     weighted_score = 0.0
     weighted_los = 0.0
@@ -2471,17 +2572,73 @@ def sprt_aggregate_fields(summary: dict[str, Any]) -> list[str]:
             draw_weight_total += done
 
     if weight_total <= 0:
+        return {}
+    return {
+        "weighted_score": weighted_score,
+        "weighted_los": weighted_los,
+        "weighted_draw": weighted_draw,
+        "weighted_ci_squares": weighted_ci_squares,
+        "weight_total": weight_total,
+        "los_weight_total": los_weight_total,
+        "draw_weight_total": draw_weight_total,
+        "ci_weight_total": ci_weight_total,
+        "llr_total": llr_total,
+        "llr_count": llr_count,
+        "llr_bound": llr_bound,
+        "llr_mixed_bound": llr_mixed_bound,
+    }
+
+def sprt_aggregate_fields(summary: dict[str, Any]) -> list[str]:
+    stats = sprt_aggregate_stats(summary)
+    if not stats:
         return []
-    fields = [f"elo={score_rate_elo(weighted_score / weight_total):+.1f}"]
+    weight_total = int(stats["weight_total"])
+    fields = [f"elo={score_rate_elo(float(stats['weighted_score']) / weight_total):+.1f}"]
+    ci_weight_total = int(stats["ci_weight_total"])
     if ci_weight_total > 0:
-        fields.append(f"ci={math.sqrt(weighted_ci_squares) / ci_weight_total:.1f}")
-    if llr_count > 0:
-        fields.append(format_llr_field(llr_total, llr_bound, llr_mixed_bound))
+        fields.append(f"ci={math.sqrt(float(stats['weighted_ci_squares'])) / ci_weight_total:.1f}")
+    if int(stats["llr_count"]) > 0:
+        fields.append(format_llr_field(
+            float(stats["llr_total"]),
+            stats.get("llr_bound") if isinstance(stats.get("llr_bound"), (int, float)) else None,
+            bool(stats.get("llr_mixed_bound")),
+        ))
+    los_weight_total = int(stats["los_weight_total"])
     if los_weight_total > 0:
-        fields.append(f"los={weighted_los / los_weight_total:.1f}%")
+        fields.append(f"los={float(stats['weighted_los']) / los_weight_total:.1f}%")
+    draw_weight_total = int(stats["draw_weight_total"])
     if draw_weight_total > 0:
-        fields.append(f"draw={weighted_draw / draw_weight_total:.1f}%")
+        fields.append(f"draw={float(stats['weighted_draw']) / draw_weight_total:.1f}%")
     return fields
+
+def sprt_aggregate_decision(summary: dict[str, Any]) -> dict[str, Any] | None:
+    stats = sprt_aggregate_stats(summary)
+    if not stats or int(stats.get("llr_count") or 0) <= 0:
+        return None
+    if bool(stats.get("llr_mixed_bound")):
+        return None
+    bound = stats.get("llr_bound")
+    if not isinstance(bound, (int, float)) or not math.isfinite(float(bound)) or float(bound) <= 0.0:
+        return None
+    llr = float(stats["llr_total"])
+    bound = abs(float(bound))
+    if llr >= bound:
+        side = "H1"
+        result = "accepted"
+    elif llr <= -bound:
+        side = "H0"
+        result = "rejected"
+    else:
+        return None
+    return {
+        "reason": "aggregate_sprt_bound",
+        "side": side,
+        "result": result,
+        "llr": llr,
+        "bound": bound,
+        "percent": llr / bound * 100.0,
+        "games": int(stats["weight_total"]),
+    }
 
 PROGRESS_RESERVED_FIELDS = {"done", "total", "output", "rate"}
 
@@ -3067,7 +3224,9 @@ def cmd_wait(args: argparse.Namespace) -> int:
 
     while True:
         manifest = apply_profile(load_manifest(manifest_path), args.profile)
-        counts = task_counts(manifest, lease_seconds=args.lease_seconds)
+        summary = status_summary(manifest, lease_seconds=args.lease_seconds)
+        summary["metadata"] = manifest_metadata(manifest)
+        counts = summary["counts"]
         total = len(manifest["tasks"])
         line = (
             f"tasks={counts['done']}/{total} running={counts['running']} "
@@ -3081,6 +3240,26 @@ def cmd_wait(args: argparse.Namespace) -> int:
         if counts["fail"] and args.fail_on_fail:
             request_stop_for_run(manifest_path, manifest, lease_seconds=args.lease_seconds)
             return finish("run_fail", "failed", 1, manifest)
+        decision = sprt_aggregate_decision(summary)
+        if decision is not None:
+            result = finalize_sprt_aggregate_decision(
+                manifest_path,
+                manifest,
+                decision,
+                lease_seconds=args.lease_seconds,
+            )
+            if result["changed"]:
+                side = decision["side"]
+                llr = float(decision["llr"])
+                bound = float(decision["bound"])
+                print(
+                    f"sprt: aggregate {side} reached llr={llr:.2f}/{bound:.2f}; "
+                    f"skipped={result['skipped']} cancel={result['cancelled']}",
+                    flush=True,
+                )
+            summary = status_summary(manifest, lease_seconds=args.lease_seconds)
+            summary["metadata"] = manifest_metadata(manifest)
+            counts = summary["counts"]
         if counts["done"] == total:
             return finish("run_done", "ok", 0, manifest)
         active = counts["running"] + counts["claimed"] + counts["stale"]
@@ -3220,6 +3399,8 @@ def verify_manifest(manifest: dict[str, Any], *, verify_requirements: bool = Tru
             failures.append(f"{task['id']}: {task_state(manifest, task)}")
             continue
         done = read_json(task_done_path(manifest, task))
+        if done.get("soft_cancel"):
+            continue
         done_manifest_sha = str(done.get("manifest_sha256") or "")
         if done_manifest_sha and done_manifest_sha != expected_manifest_sha:
             failures.append(f"{task['id']}: manifest checksum mismatch")

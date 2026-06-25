@@ -421,6 +421,7 @@ def build_parser() -> argparse.ArgumentParser:
     heartbeat.add_argument("--claim-id", help="Expected claim id.")
     heartbeat.add_argument("--progress-json", help="Optional JSON progress object to store with the heartbeat.")
     heartbeat.add_argument("--running", action="store_true", help="Mark the task as running on the coordinator.")
+    heartbeat.add_argument("--json", action="store_true", help="Print heartbeat state as JSON.")
     heartbeat.set_defaults(func=cmd_heartbeat)
 
     work = sub.add_parser(

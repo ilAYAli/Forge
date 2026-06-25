@@ -2497,7 +2497,9 @@ def cmd_run_job(args: argparse.Namespace) -> int:
             notify_command=args.notify_command,
         )
         rc = run_command_stage(label, "wait", cmd_wait, wait_args)
+        print("deploy: tasks complete" if rc == 0 else "deploy: tasks failed")
         if rc:
+            print(f"{label}: deploy failed rc={rc}", file=sys.stderr)
             if not ephemeral:
                 print(f"{label}: inspect with: crucible status {run_name} --verbose", file=sys.stderr)
             return rc
@@ -2743,6 +2745,9 @@ def cmd_resume(args: argparse.Namespace) -> int:
                 f"resume: {run_name} already has {active_count} active/claimed/stale task(s); "
                 "use add --worker to add capacity"
             )
+        if active_count > 0:
+            print(f"resume: {run_name} already active ({active_count} task(s)); no workers launched")
+            continue
         resume_args = argparse.Namespace(
             manifest=str(manifest_path),
             workers=str(args.workers) if args.workers else str(workers_path),
