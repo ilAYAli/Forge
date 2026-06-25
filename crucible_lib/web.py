@@ -868,9 +868,12 @@ _HTML = r"""<!DOCTYPE html>
     function graphConfidenceBandPoints(name, points, ciPoints) {
       if (graphSeriesName(name) !== 'elo' || !ciPoints || !ciPoints.length) return [];
       const ciByX = new Map(ciPoints.map(p => [String(p.x), p.y]));
+      const ciValues = ciPoints.map(p => Number(p.y)).filter(v => Number.isFinite(v) && v > 0);
+      const latestCi = ciValues.length ? ciValues[ciValues.length - 1] : null;
+      const maxCi = Number.isFinite(latestCi) && latestCi > 0 ? Math.max(50, latestCi * 2.5) : Infinity;
       const band = points.map(p => {
         const ci = Number(ciByX.get(String(p.x)));
-        if (!Number.isFinite(ci) || ci <= 0) return null;
+        if (!Number.isFinite(ci) || ci <= 0 || ci > maxCi) return null;
         return {x: p.x, lo: p.y - ci, hi: p.y + ci};
       }).filter(Boolean);
       if (band.length && points.length && band[0].x > points[0].x) {

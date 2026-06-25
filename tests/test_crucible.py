@@ -556,7 +556,8 @@ except SystemExit as exc:
         self.assertIn("function graphAxisHtml", web._HTML)
         self.assertNotIn("function toggleGraphLlr", web._HTML)
         self.assertIn("band.unshift({x: points[0].x, lo: points[0].y, hi: points[0].y})", web._HTML)
-        self.assertIn("ci <= 0", web._HTML)
+        self.assertIn("ci <= 0 || ci > maxCi", web._HTML)
+        self.assertIn("latestCi * 2.5", web._HTML)
         self.assertIn("function zeroLine", web._HTML)
         self.assertIn("function graphBoundLines", web._HTML)
         self.assertIn("function graphHoverZones", web._HTML)
@@ -655,6 +656,87 @@ except SystemExit as exc:
         self.assertIn("runCmd('${runArg}','del',this)", web._HTML)
         self.assertIn(".act.del", web._HTML)
         self.assertIn("function runStoppedEarly", web._HTML)
+
+    def test_web_graph_ci_outliers_do_not_flatten_elo_scale(self) -> None:
+        import crucible_lib.web as web
+
+        probe = r"""
+function graphSeriesName(name) {
+  return String(name || '').toLowerCase();
+}
+function signedGraphSeries(name) {
+  return ['elo', 'llr'].includes(String(name || '').toLowerCase());
+}
+function graphYDomain(name, values, extras = []) {
+  const all = values.concat(extras).filter(Number.isFinite);
+  if (!all.length) return [0, 1];
+  if (signedGraphSeries(name)) {
+    const minBound = graphSeriesName(name) === 'elo' ? 8 : 0.15;
+    const bound = Math.max(minBound, ...all.map(v => Math.abs(v)));
+    return [-bound * 1.08, bound * 1.08];
+  }
+  return [0, 1];
+}
+function graphY(name, values, y, extras = [], h = 220) {
+  const pad = 8;
+  const [minY, maxY] = graphYDomain(name, values, extras);
+  return maxY === minY
+    ? h / 2
+    : h - pad - ((y - minY) / (maxY - minY)) * (h - pad * 2);
+}
+function graphConfidenceBandPoints(name, points, ciPoints) {
+  if (graphSeriesName(name) !== 'elo' || !ciPoints || !ciPoints.length) return [];
+  const ciByX = new Map(ciPoints.map(p => [String(p.x), p.y]));
+  const ciValues = ciPoints.map(p => Number(p.y)).filter(v => Number.isFinite(v) && v > 0);
+  const latestCi = ciValues.length ? ciValues[ciValues.length - 1] : null;
+  const maxCi = Number.isFinite(latestCi) && latestCi > 0 ? Math.max(50, latestCi * 2.5) : Infinity;
+  const band = points.map(p => {
+    const ci = Number(ciByX.get(String(p.x)));
+    if (!Number.isFinite(ci) || ci <= 0 || ci > maxCi) return null;
+    return {x: p.x, lo: p.y - ci, hi: p.y + ci};
+  }).filter(Boolean);
+  if (band.length && points.length && band[0].x > points[0].x) {
+    band.unshift({x: points[0].x, lo: points[0].y, hi: points[0].y});
+  }
+  return band;
+}
+function graphBandYValues(band) {
+  return band.flatMap(p => [p.lo, p.hi]).filter(Number.isFinite);
+}
+const points = [
+  {x: 0, y: 0},
+  {x: 38, y: 34.85},
+  {x: 142, y: 36.84},
+  {x: 496, y: 43.67},
+  {x: 500, y: 43.33},
+];
+const ci = [
+  {x: 54, y: 564.34},
+  {x: 60, y: 313.4},
+  {x: 142, y: 64.85},
+  {x: 496, y: 27.25},
+  {x: 500, y: 27.09},
+];
+const band = graphConfidenceBandPoints('elo', points, ci);
+const extras = graphBandYValues(band);
+const domain = graphYDomain('elo', points.map(p => p.y), extras);
+const zero = graphY('elo', points.map(p => p.y), 0, extras, 220);
+const last = graphY('elo', points.map(p => p.y), 43.33, extras, 220);
+console.log(JSON.stringify({band, domain, zero, last, delta: zero - last}));
+"""
+        result = subprocess.run(
+            ["node", "-e", probe],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertGreater(payload["delta"], 35)
+        self.assertLess(abs(payload["domain"][1]), 140)
+        self.assertEqual(0, len([point for point in payload["band"] if point["x"] in (54, 60)]))
 
     def test_web_favicon_asset_is_available(self) -> None:
         import crucible_lib.web as web
