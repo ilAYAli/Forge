@@ -1397,7 +1397,7 @@ _HTML = r"""<!DOCTYPE html>
       if (runGraph) {
         sections.push(makeSection(r.run, 'graphs',
           'graphs', 'dim',
-          runGraph, false
+          runGraph, true
         ));
       }
 
