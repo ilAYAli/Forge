@@ -232,6 +232,7 @@ _HTML = r"""<!DOCTYPE html>
     <div id="dot"></div>
     <span id="coord"></span>
     <span id="ts">Loading…</span>
+    <button id="inactive" class="top-btn" type="button" onclick="toggleInactiveRuns()" title="Toggle completed, stopped, failed, and empty runs">inactive on</button>
     <button id="restart" class="top-btn" type="button" onclick="restartWeb(this)" title="Restart this web server process">restart</button>
     <button id="sound" class="top-btn" type="button" onclick="toggleSound()" title="Toggle job start sound" aria-pressed="false">ding off</button>
   </header>
@@ -369,6 +370,7 @@ _HTML = r"""<!DOCTYPE html>
     }
 
     let soundEnabled = localStorage.getItem('crucible.sound') === '1';
+    let showInactiveRuns = localStorage.getItem('crucible.showInactive') !== '0';
     let audioCtx = null;
     let activeJobKeys = null;
     const HIDDEN_RUNS_KEY = 'crucible.hiddenRuns.v1';
@@ -398,6 +400,26 @@ _HTML = r"""<!DOCTYPE html>
       btn.classList.toggle('on', soundEnabled);
       btn.setAttribute('aria-pressed', soundEnabled ? 'true' : 'false');
       btn.textContent = soundEnabled ? 'notify on' : 'ding off';
+    }
+
+    function updateInactiveButton() {
+      const btn = document.getElementById('inactive');
+      if (!btn) return;
+      btn.classList.toggle('on', showInactiveRuns);
+      btn.setAttribute('aria-pressed', showInactiveRuns ? 'true' : 'false');
+      btn.textContent = showInactiveRuns ? 'inactive on' : 'inactive off';
+    }
+
+    function toggleInactiveRuns() {
+      showInactiveRuns = !showInactiveRuns;
+      localStorage.setItem('crucible.showInactive', showInactiveRuns ? '1' : '0');
+      updateInactiveButton();
+      refresh();
+    }
+
+    function runIsActive(r) {
+      const state = String(r?.state || '');
+      return state === 'current' || state === 'queued' || state === 'stalled';
     }
 
     function ensureAudioContext() {
@@ -1588,6 +1610,7 @@ _HTML = r"""<!DOCTYPE html>
 
         const runs = (data.runs||[])
           .filter(r => !hiddenRunNames.has(String(r.run || '')))
+          .filter(r => showInactiveRuns || runIsActive(r))
           .slice()
           .sort((a,b) => {
             const ea=runSortEpoch(a), eb=runSortEpoch(b);
@@ -1627,6 +1650,7 @@ _HTML = r"""<!DOCTYPE html>
     }
 
     loadUiState();
+    updateInactiveButton();
     updateSoundButton();
     document.addEventListener('click', () => {
       if (soundEnabled) ensureAudioContext();
