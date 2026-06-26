@@ -28,12 +28,14 @@
         {
           "name": "loss",
           "field": "loss",
-          "x": "done"
+          "x": "done",
+          "scale": "linear"
         },
         {
           "name": "lr",
           "field": "lr",
-          "x": "done"
+          "x": "done",
+          "scale": "linear"
         }
       ]
     }

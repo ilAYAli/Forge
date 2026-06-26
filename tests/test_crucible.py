@@ -548,16 +548,28 @@ except SystemExit as exc:
         self.assertIn("return r.toFixed(4) + '/s'", web._HTML)
         self.assertIn("function graphDomain", web._HTML)
         self.assertIn("function graphDisplayPoints", web._HTML)
+        self.assertIn("const w = 3 - Math.abs(j - i)", web._HTML)
+        self.assertIn("function graphNumberOption", web._HTML)
+        self.assertIn("function graphScaleMode", web._HTML)
         self.assertIn("function graphXTotal", web._HTML)
         self.assertIn("function graphYDomain", web._HTML)
+        self.assertIn("if (graphSeriesName(name) === 'llr' && extras.length >= 2)", web._HTML)
+        self.assertIn("if (Number.isFinite(bound) && bound > 0) return [-bound, bound]", web._HTML)
         self.assertIn("function graphYExtras", web._HTML)
+        self.assertIn("function interpolatedGraphY", web._HTML)
+        self.assertIn("function graphValueAt", web._HTML)
         self.assertIn("function graphConfidenceBandPoints", web._HTML)
         self.assertIn("function confidenceBandPath", web._HTML)
         self.assertIn("function graphAxisHtml", web._HTML)
         self.assertNotIn("function toggleGraphLlr", web._HTML)
         self.assertIn("band.unshift({x: points[0].x, lo: points[0].y, hi: points[0].y})", web._HTML)
-        self.assertIn("ci <= 0 || ci > maxCi", web._HTML)
-        self.assertIn("latestCi * 2.5", web._HTML)
+        self.assertIn("ci <= 0) return null", web._HTML)
+        self.assertNotIn("maxCi", web._HTML)
+        self.assertNotIn("graphBandYValues", web._HTML)
+        self.assertIn("const clampY = y => Math.max(0, Math.min(h, y))", web._HTML)
+        self.assertIn("overflow: hidden", web._HTML)
+        self.assertIn("<clipPath id=", web._HTML)
+        self.assertIn('clip-path="url(#${clipId})"', web._HTML)
         self.assertIn("function zeroLine", web._HTML)
         self.assertIn("function graphBoundLines", web._HTML)
         self.assertIn("function graphHoverZones", web._HTML)
@@ -567,15 +579,21 @@ except SystemExit as exc:
         self.assertIn("function graphDataPoints", web._HTML)
         self.assertIn("const [minY, maxY] = graphYDomain(name, values, extras)", web._HTML)
         self.assertIn("const yExtras = graphYExtras(s.name, options, s.points)", web._HTML)
-        self.assertIn("const band = graphConfidenceBandPoints(s.name, s.points, ciSeries?.points || [])", web._HTML)
+        self.assertIn("const bandMaxFraction = graphNumberOption(s, ['band_max_fraction']) ?? 0.30", web._HTML)
+        self.assertIn("const maxBandRadius = bandSeries ? (maxY - minY) * bandMaxFraction : null", web._HTML)
+        self.assertIn("const band = bandSeries ? graphConfidenceBandPoints(s, s.points, bandSeries.points || [], maxBandRadius) : []", web._HTML)
         self.assertIn("const path = sparkPath(s.name, s.points, yExtras, GRAPH_W, h, xTotal)", web._HTML)
         self.assertIn("const zero = zeroLine(s.name, s.points, yExtras, GRAPH_W, h)", web._HTML)
         self.assertIn("graphHoverZones(s.name, s.points, yExtras", web._HTML)
+        self.assertIn("const rawPoints = s.rawPoints || s.points", web._HTML)
+        self.assertIn("const rawPoints = graphDataPoints(el, 'data-raw-points')", web._HTML)
+        self.assertIn("const rawBest = rawPoints.length ? nearestGraphPoint(rawPoints, best.x) : best", web._HTML)
+        self.assertIn("const ciValue = graphValueAt(graphDataPoints(el, 'data-ci-points'), rawBest.x)", web._HTML)
+        self.assertIn("` ci=${fmtGraphNumber(ciValue)}`", web._HTML)
         self.assertIn("const minX = useTotal ? 0 : dataMinX", web._HTML)
-        self.assertIn("const clampX", web._HTML)
-        self.assertIn("const clampY = clampX", web._HTML)
-        self.assertIn("const c1y = clampY", web._HTML)
-        self.assertIn("path += ` C${c1x.toFixed(1)}", web._HTML)
+        self.assertIn("function scaledLinePath", web._HTML)
+        self.assertIn("path += ` L${p.x.toFixed(1)},${p.y.toFixed(1)}`", web._HTML)
+        self.assertNotIn("function smoothScaledPath", web._HTML)
         self.assertIn("function llrBoundFromRun", web._HTML)
         self.assertIn("function signedGraphSeries", web._HTML)
         self.assertIn(".graph-zero", web._HTML)
@@ -597,6 +615,8 @@ except SystemExit as exc:
         self.assertIn("stroke-linecap: round", web._HTML)
         self.assertIn("return [-bound, bound]", web._HTML)
         self.assertIn("data-points=\"${payload}\"", web._HTML)
+        self.assertIn("data-raw-points=\"${rawPayload}\"", web._HTML)
+        self.assertIn("data-ci-points=\"${ciPayload}\"", web._HTML)
         self.assertIn("onmousemove=\"setGraphPointReadout(this,event)\"", web._HTML)
         self.assertNotIn("stroke-dasharray: 2 3", web._HTML)
         self.assertNotIn(".graph-dot", web._HTML)
@@ -617,8 +637,10 @@ except SystemExit as exc:
         self.assertIn("function nearestGraphPoint", web._HTML)
         self.assertIn("data-overlay-points", web._HTML)
         self.assertIn("data-overlay-name", web._HTML)
-        self.assertIn("`${name}=${fmtGraphValue(name, best.y)}${overlayText} @ ${fmtGraphNumber(best.x)} ${xUnit}`", web._HTML)
-        self.assertIn("graphRowHtml(primary, options, graph, xTotal, ciSeries, overlay)", web._HTML)
+        self.assertIn("`${name}=${fmtGraphValue(name, rawBest.y)}${ciText}${overlayText} @ ${fmtGraphNumber(rawBest.x)} ${xUnit}`", web._HTML)
+        self.assertIn("const bandName = primary.band_series || (graphSeriesName(primary) === 'elo' ? 'ci' : '')", web._HTML)
+        self.assertIn("const bandSeries = bandName ? graphSeriesByName(allSeries, bandName) : null", web._HTML)
+        self.assertIn("graphRowHtml(primary, options, graph, xTotal, bandSeries, overlay)", web._HTML)
         self.assertNotIn("GRAPH_SMALL_H", web._HTML)
         self.assertNotIn("function renderTaskGraphs", web._HTML)
         self.assertIn("function graphCard", web._HTML)
@@ -684,24 +706,51 @@ function graphY(name, values, y, extras = [], h = 220) {
     ? h / 2
     : h - pad - ((y - minY) / (maxY - minY)) * (h - pad * 2);
 }
-function graphConfidenceBandPoints(name, points, ciPoints) {
+function interpolatedGraphY(points, x) {
+  if (!points || !points.length) return null;
+  if (x <= points[0].x) return points[0].y;
+  const last = points[points.length - 1];
+  if (x >= last.x) return last.y;
+  for (let i = 0; i < points.length - 1; i++) {
+    const a = points[i], b = points[i + 1];
+    if (x < a.x || x > b.x) continue;
+    if (b.x === a.x) return b.y;
+    const t = (x - a.x) / (b.x - a.x);
+    return a.y + (b.y - a.y) * t;
+  }
+  return null;
+}
+function graphValueAt(points, x) {
+  if (!points || !points.length) return null;
+  const sorted = points
+    .map(p => ({x: Number(p.x), y: Number(p.y)}))
+    .filter(p => Number.isFinite(p.x) && Number.isFinite(p.y))
+    .sort((a, b) => a.x - b.x);
+  if (!sorted.length || x < sorted[0].x) return null;
+  return interpolatedGraphY(sorted, x);
+}
+function graphConfidenceBandPoints(name, points, ciPoints, maxBandRadius = null) {
   if (graphSeriesName(name) !== 'elo' || !ciPoints || !ciPoints.length) return [];
-  const ciByX = new Map(ciPoints.map(p => [String(p.x), p.y]));
-  const ciValues = ciPoints.map(p => Number(p.y)).filter(v => Number.isFinite(v) && v > 0);
-  const latestCi = ciValues.length ? ciValues[ciValues.length - 1] : null;
-  const maxCi = Number.isFinite(latestCi) && latestCi > 0 ? Math.max(50, latestCi * 2.5) : Infinity;
+  const sortedCi = ciPoints
+    .map(p => ({x: Number(p.x), y: Number(p.y)}))
+    .filter(p => Number.isFinite(p.x) && Number.isFinite(p.y))
+    .sort((a, b) => a.x - b.x);
+  const ciByX = new Map(sortedCi.map(p => [String(p.x), p.y]));
+  const firstX = points[0]?.x;
   const band = points.map(p => {
-    const ci = Number(ciByX.get(String(p.x)));
-    if (!Number.isFinite(ci) || ci <= 0 || ci > maxCi) return null;
-    return {x: p.x, lo: p.y - ci, hi: p.y + ci};
+    const exact = ciByX.get(String(p.x));
+    if (exact === undefined && p.x === firstX) return null;
+    const ci = Number(exact === undefined ? interpolatedGraphY(sortedCi, p.x) : exact);
+    if (!Number.isFinite(ci) || ci <= 0) return null;
+    const radius = Number.isFinite(maxBandRadius) && maxBandRadius > 0
+      ? Math.min(ci, maxBandRadius)
+      : ci;
+    return {x: p.x, lo: p.y - radius, hi: p.y + radius};
   }).filter(Boolean);
   if (band.length && points.length && band[0].x > points[0].x) {
     band.unshift({x: points[0].x, lo: points[0].y, hi: points[0].y});
   }
   return band;
-}
-function graphBandYValues(band) {
-  return band.flatMap(p => [p.lo, p.hi]).filter(Number.isFinite);
 }
 const points = [
   {x: 0, y: 0},
@@ -717,12 +766,16 @@ const ci = [
   {x: 496, y: 27.25},
   {x: 500, y: 27.09},
 ];
-const band = graphConfidenceBandPoints('elo', points, ci);
-const extras = graphBandYValues(band);
-const domain = graphYDomain('elo', points.map(p => p.y), extras);
-const zero = graphY('elo', points.map(p => p.y), 0, extras, 220);
-const last = graphY('elo', points.map(p => p.y), 43.33, extras, 220);
-console.log(JSON.stringify({band, domain, zero, last, delta: zero - last}));
+const values = points.map(p => p.y);
+const domain = graphYDomain('elo', values, []);
+const maxBandRadius = (domain[1] - domain[0]) * 0.30;
+const band = graphConfidenceBandPoints('elo', points, ci, maxBandRadius);
+const zero = graphY('elo', values, 0, [], 220);
+const last = graphY('elo', values, 43.33, [], 220);
+const byX = new Map(points.map(p => [p.x, p.y]));
+const misses = band.filter(p => byX.has(p.x) && (byX.get(p.x) < p.lo || byX.get(p.x) > p.hi));
+const hoverCi = graphValueAt(ci, 496);
+console.log(JSON.stringify({band, domain, maxBandRadius, zero, last, delta: zero - last, misses, hoverCi}));
 """
         result = subprocess.run(
             ["node", "-e", probe],
@@ -736,7 +789,10 @@ console.log(JSON.stringify({band, domain, zero, last, delta: zero - last}));
         payload = json.loads(result.stdout)
         self.assertGreater(payload["delta"], 35)
         self.assertLess(abs(payload["domain"][1]), 140)
-        self.assertEqual(0, len([point for point in payload["band"] if point["x"] in (54, 60)]))
+        self.assertGreater(payload["maxBandRadius"], 0)
+        self.assertEqual([], payload["misses"])
+        self.assertEqual([0, 38, 142, 496, 500], [point["x"] for point in payload["band"]])
+        self.assertAlmostEqual(27.25, payload["hoverCi"])
 
     def test_web_favicon_asset_is_available(self) -> None:
         import crucible_lib.web as web
@@ -1657,6 +1713,64 @@ console.log(JSON.stringify({band, domain, zero, last, delta: zero - last}));
             named.assert_called_once_with("done-run", None)
             self.assertEqual(fresh["commands"], merged["runs"][0]["commands"])
             self.assertEqual(fresh["commands"], state["lingering_runs"]["done-run"]["commands"])
+
+    def test_web_enriches_lingering_completed_run_graph_metadata(self) -> None:
+        import crucible_lib.web as web
+
+        with tempfile.TemporaryDirectory() as tmp:
+            runs = Path(tmp) / "runs"
+            run_dir = runs / "done-run"
+            stale = {
+                "run": "done-run",
+                "run_dir": str(run_dir),
+                "manifest": str(run_dir / "manifest.json"),
+                "state": "done",
+                "tasks": 1,
+                "counts": {"done": 1, "fail": 0, "running": 0, "claimed": 0, "stale": 0, "pending": 0},
+                "commands": [{"label": "crucible sprt", "count": 1, "command": "crucible sprt --candidate c --games 16"}],
+                "progress_graph": {
+                    "series": [
+                        {"name": "ci", "points": [{"x": 1, "y": 50}, {"x": 2, "y": 40}]},
+                        {"name": "elo", "points": [{"x": 1, "y": 5}, {"x": 2, "y": 8}]},
+                    ],
+                },
+            }
+            fresh = copy.deepcopy(stale)
+            fresh["progress_graph"]["series"][1].update({
+                "band_max_fraction": 0.24,
+                "band_scale": 0.35,
+                "band_series": "ci",
+                "scale": "symmetric",
+            })
+            fresh["progress_graph"]["version"] = crucible.PROGRESS_GRAPH_VERSION
+            empty_payload = {
+                "runs": [],
+                "collapsed_failures": [],
+                "collapsed_failures_count": 0,
+                "coordinator": None,
+            }
+
+            with self.patch_runs_dir(runs), mock.patch("crucible_lib.web.runs_dir", return_value=runs):
+                crucible.write_json(run_dir / "manifest.json", {
+                    "schema": "crucible.task.v1",
+                    "name": "done-run",
+                    "work_dir": str(run_dir),
+                    "state_dir": str(run_dir / "state"),
+                    "tasks": [],
+                })
+                crucible.write_json(runs / ".web-state.json", {
+                    "lingering_runs": {"done-run": stale},
+                })
+                with mock.patch("crucible_lib.web._collect_named_run_payload", return_value=fresh) as named:
+                    merged = web._merge_lingering_runs(copy.deepcopy(empty_payload))
+                    state = web._read_web_state()
+
+            named.assert_called_once_with("done-run", None)
+            series = {item["name"]: item for item in merged["runs"][0]["progress_graph"]["series"]}
+            self.assertEqual("ci", series["elo"]["band_series"])
+            self.assertEqual(0.35, series["elo"]["band_scale"])
+            self.assertEqual(0.24, series["elo"]["band_max_fraction"])
+            self.assertEqual(fresh["progress_graph"], state["lingering_runs"]["done-run"]["progress_graph"])
 
     def test_web_refreshes_seed_specific_legacy_commands(self) -> None:
         import crucible_lib.web as web
@@ -7862,8 +7976,8 @@ console.log(JSON.stringify({band, domain, zero, last, delta: zero - last}));
                         "total": 100,
                         "log_regex": r"step=(?P<done>\d+)/(?P<total>\d+)\s+loss=(?P<loss>[0-9.]+)\s+lr=(?P<lr>[0-9.e-]+)",
                         "series": [
-                            {"name": "loss", "field": "loss", "x": "done"},
-                            {"name": "lr", "field": "lr", "x": "done"},
+                            {"name": "loss", "field": "loss", "x": "done", "scale": "linear", "min": 0.0},
+                            {"name": "lr", "field": "lr", "x": "done", "scale": "linear", "max": 0.01},
                         ],
                     },
                 }],
@@ -7881,8 +7995,13 @@ console.log(JSON.stringify({band, domain, zero, last, delta: zero - last}));
             self.assertEqual("rows", graph["x_unit"])
             self.assertEqual(100, graph["x_total"])
             series = {item["name"]: item["points"] for item in graph["series"]}
+            meta = {item["name"]: item for item in graph["series"]}
             self.assertEqual([{"x": 10.0, "y": 1.5}, {"x": 20.0, "y": 1.25}], series["loss"])
             self.assertEqual([{"x": 10.0, "y": 0.001}, {"x": 20.0, "y": 0.0005}], series["lr"])
+            self.assertEqual("linear", meta["loss"]["scale"])
+            self.assertEqual(0.0, meta["loss"]["min"])
+            self.assertEqual("linear", meta["lr"]["scale"])
+            self.assertEqual(0.01, meta["lr"]["max"])
 
     def test_status_builds_sprt_run_graph_without_declared_series(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -7937,9 +8056,17 @@ console.log(JSON.stringify({band, domain, zero, last, delta: zero - last}));
             self.assertIsNotNone(graph)
             self.assertEqual(4, graph["x_total"])
             series = {item["name"]: item["points"] for item in graph["series"]}
+            meta = {item["name"]: item for item in graph["series"]}
             self.assertEqual([{"x": 0.0, "y": 0.0}, {"x": 4.0, "y": -0.01}], series["llr"])
             self.assertAlmostEqual(0.0, series["elo"][0]["y"], places=1)
             self.assertAlmostEqual(-5.0, series["elo"][1]["y"], places=1)
+            self.assertEqual(-2.94, meta["llr"]["min"])
+            self.assertEqual(2.94, meta["llr"]["max"])
+            self.assertEqual("symmetric", meta["llr"]["scale"])
+            self.assertEqual("ci", meta["elo"]["band_series"])
+            self.assertEqual(0.35, meta["elo"]["band_scale"])
+            self.assertEqual(0.24, meta["elo"]["band_max_fraction"])
+            self.assertTrue(meta["elo"]["smooth"])
 
     def test_status_sprt_run_graph_uses_processed_game_positions(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

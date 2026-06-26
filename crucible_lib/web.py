@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from .core import *
-from .status import configured_coordinator_runs
+from .status import PROGRESS_GRAPH_VERSION, configured_coordinator_runs
 from .tasks import parse_coordinator, shell_join
 
 _ASSETS_DIR = Path(__file__).resolve().parent.parent / "assets"
@@ -174,7 +174,7 @@ _HTML = r"""<!DOCTYPE html>
     .graph-axis.right { align-items: flex-start; color: var(--yel); opacity: .82; }
     .graph-axis .zero { color: var(--text); opacity: .55; }
     .graph-plot { position: relative; height: 220px; min-width: 240px; }
-    .graph-plot svg { width: 100%; height: 100%; display: block; }
+    .graph-plot svg { width: 100%; height: 100%; display: block; overflow: hidden; }
     .graph-band { fill: var(--blu); opacity: .13; stroke: none; }
     .graph-line { fill: none; stroke-width: 1.45; vector-effect: non-scaling-stroke; }
     .graph-line.llr-overlay { stroke-width: 1.15; opacity: .82; }
@@ -869,7 +869,21 @@ _HTML = r"""<!DOCTYPE html>
     }
 
     function graphSeriesName(name) {
+      if (name && typeof name === 'object') return String(name.name || '').toLowerCase();
       return String(name || '').toLowerCase();
+    }
+
+    function graphNumberOption(series, names) {
+      if (!series || typeof series !== 'object') return null;
+      for (const name of names) {
+        const value = Number(series[name]);
+        if (Number.isFinite(value)) return value;
+      }
+      return null;
+    }
+
+    function graphScaleMode(series) {
+      return String((series && typeof series === 'object' ? series.scale : '') || '').toLowerCase();
     }
 
     function graphColor(name, index) {
@@ -879,19 +893,48 @@ _HTML = r"""<!DOCTYPE html>
       return GRAPH_COLORS[index % GRAPH_COLORS.length];
     }
 
-    function graphDisplayPoints(name, points) {
-      return points;
+    function graphDisplayPoints(series, points) {
+      const smooth = series && typeof series === 'object' && series.smooth !== undefined
+        ? Boolean(series.smooth)
+        : graphSeriesName(series) === 'elo';
+      if (!smooth || !points || points.length < 5) return points;
+      const last = points.length - 1;
+      return points.map((point, i) => {
+        if (i === 0 || i === last) return point;
+        let weighted = 0, weight = 0;
+        const start = Math.max(0, i - 2);
+        const end = Math.min(last, i + 2);
+        for (let j = start; j <= end; j++) {
+          const w = 3 - Math.abs(j - i);
+          weighted += points[j].y * w;
+          weight += w;
+        }
+        return {x: point.x, y: weighted / weight};
+      });
     }
 
     function graphYDomain(name, values, extras = []) {
       const all = values.concat(extras).filter(Number.isFinite);
       if (!all.length) return [0, 1];
-      if (signedGraphSeries(name)) {
+      const explicitMin = graphNumberOption(name, ['min', 'y_min']);
+      const explicitMax = graphNumberOption(name, ['max', 'y_max']);
+      if (Number.isFinite(explicitMin) && Number.isFinite(explicitMax) && explicitMax > explicitMin) {
+        return [explicitMin, explicitMax];
+      }
+      if (graphSeriesName(name) === 'llr' && extras.length >= 2) {
+        const bound = Math.max(...extras.map(v => Math.abs(v)).filter(Number.isFinite));
+        if (Number.isFinite(bound) && bound > 0) return [-bound, bound];
+      }
+      const mode = graphScaleMode(name);
+      if ((mode === 'symmetric' || (!mode && signedGraphSeries(name))) && mode !== 'linear') {
         const minBound = graphSeriesName(name) === 'elo' ? 8 : 0.15;
         const bound = Math.max(minBound, ...all.map(v => Math.abs(v)));
         return [-bound * 1.08, bound * 1.08];
       }
-      return graphDomain(all, false);
+      const domain = graphDomain(all, false);
+      if (Number.isFinite(explicitMin)) domain[0] = explicitMin;
+      if (Number.isFinite(explicitMax)) domain[1] = explicitMax;
+      return domain;
     }
 
     function graphYExtras(name, options = {}, points = []) {
@@ -906,25 +949,54 @@ _HTML = r"""<!DOCTYPE html>
       return series.find(s => graphSeriesName(s.name) === key) || null;
     }
 
-    function graphConfidenceBandPoints(name, points, ciPoints) {
-      if (graphSeriesName(name) !== 'elo' || !ciPoints || !ciPoints.length) return [];
-      const ciByX = new Map(ciPoints.map(p => [String(p.x), p.y]));
-      const ciValues = ciPoints.map(p => Number(p.y)).filter(v => Number.isFinite(v) && v > 0);
-      const latestCi = ciValues.length ? ciValues[ciValues.length - 1] : null;
-      const maxCi = Number.isFinite(latestCi) && latestCi > 0 ? Math.max(50, latestCi * 2.5) : Infinity;
+    function interpolatedGraphY(points, x) {
+      if (!points || !points.length) return null;
+      if (x <= points[0].x) return points[0].y;
+      const last = points[points.length - 1];
+      if (x >= last.x) return last.y;
+      for (let i = 0; i < points.length - 1; i++) {
+        const a = points[i], b = points[i + 1];
+        if (x < a.x || x > b.x) continue;
+        if (b.x === a.x) return b.y;
+        const t = (x - a.x) / (b.x - a.x);
+        return a.y + (b.y - a.y) * t;
+      }
+      return null;
+    }
+
+    function graphValueAt(points, x) {
+      if (!points || !points.length) return null;
+      const sorted = points
+        .map(p => ({x: Number(p.x), y: Number(p.y)}))
+        .filter(p => Number.isFinite(p.x) && Number.isFinite(p.y))
+        .sort((a, b) => a.x - b.x);
+      if (!sorted.length || x < sorted[0].x) return null;
+      return interpolatedGraphY(sorted, x);
+    }
+
+    function graphConfidenceBandPoints(name, points, ciPoints, maxBandRadius = null) {
+      if (!ciPoints || !ciPoints.length) return [];
+      const sortedCi = ciPoints
+        .map(p => ({x: Number(p.x), y: Number(p.y)}))
+        .filter(p => Number.isFinite(p.x) && Number.isFinite(p.y))
+        .sort((a, b) => a.x - b.x);
+      const ciByX = new Map(sortedCi.map(p => [String(p.x), p.y]));
+      const firstX = points[0]?.x;
       const band = points.map(p => {
-        const ci = Number(ciByX.get(String(p.x)));
-        if (!Number.isFinite(ci) || ci <= 0 || ci > maxCi) return null;
-        return {x: p.x, lo: p.y - ci, hi: p.y + ci};
+        const exact = ciByX.get(String(p.x));
+        if (exact === undefined && p.x === firstX) return null;
+        const ci = Number(exact === undefined ? interpolatedGraphY(sortedCi, p.x) : exact);
+        if (!Number.isFinite(ci) || ci <= 0) return null;
+        const bandScale = graphNumberOption(name, ['band_scale']) ?? 1.0;
+        const radius = Number.isFinite(maxBandRadius) && maxBandRadius > 0
+          ? Math.min(ci * bandScale, maxBandRadius)
+          : ci * bandScale;
+        return {x: p.x, lo: p.y - radius, hi: p.y + radius};
       }).filter(Boolean);
       if (band.length && points.length && band[0].x > points[0].x) {
         band.unshift({x: points[0].x, lo: points[0].y, hi: points[0].y});
       }
       return band;
-    }
-
-    function graphBandYValues(band) {
-      return band.flatMap(p => [p.lo, p.hi]).filter(Number.isFinite);
     }
 
     function graphXTotal(graph) {
@@ -1036,29 +1108,25 @@ _HTML = r"""<!DOCTYPE html>
       if (!points || points.length < 2) return '';
       const scale = graphScale(name, points, extras, w, h, xTotal);
       const scaled = points.map(p => ({x: scale.x(p.x), y: scale.y(p.y)}));
-      const clampX = (value, a, b) => Math.max(Math.min(a, b), Math.min(Math.max(a, b), value));
-      const clampY = clampX;
-      let path = `M${scaled[0].x.toFixed(1)},${scaled[0].y.toFixed(1)}`;
-      for (let i = 0; i < scaled.length - 1; i++) {
-        const p0 = scaled[Math.max(0, i - 1)];
-        const p1 = scaled[i];
-        const p2 = scaled[i + 1];
-        const p3 = scaled[Math.min(scaled.length - 1, i + 2)];
-        const c1x = clampX(p1.x + (p2.x - p0.x) / 6, p1.x, p2.x);
-        const c1y = clampY(p1.y + (p2.y - p0.y) / 6, p1.y, p2.y);
-        const c2x = clampX(p2.x - (p3.x - p1.x) / 6, p1.x, p2.x);
-        const c2y = clampY(p2.y - (p3.y - p1.y) / 6, p1.y, p2.y);
-        path += ` C${c1x.toFixed(1)},${c1y.toFixed(1)} ${c2x.toFixed(1)},${c2y.toFixed(1)} ${p2.x.toFixed(1)},${p2.y.toFixed(1)}`;
+      return scaledLinePath(scaled);
+    }
+
+    function scaledLinePath(scaled, move = true) {
+      if (!scaled || !scaled.length) return '';
+      let path = `${move ? 'M' : 'L'}${scaled[0].x.toFixed(1)},${scaled[0].y.toFixed(1)}`;
+      for (const p of scaled.slice(1)) {
+        path += ` L${p.x.toFixed(1)},${p.y.toFixed(1)}`;
       }
       return path;
     }
 
     function confidenceBandPath(name, points, band, extras = [], w = GRAPH_W, h = GRAPH_H, xTotal = null) {
-      if (graphSeriesName(name) !== 'elo' || !band || band.length < 2) return '';
+      if (!band || band.length < 2) return '';
       const scale = graphScale(name, points, extras, w, h, xTotal);
-      const upper = band.map(p => `${scale.x(p.x).toFixed(1)},${scale.y(p.hi).toFixed(1)}`);
-      const lower = band.slice().reverse().map(p => `${scale.x(p.x).toFixed(1)},${scale.y(p.lo).toFixed(1)}`);
-      return `M${upper.concat(lower).join(' L')} Z`;
+      const clampY = y => Math.max(0, Math.min(h, y));
+      const upper = band.map(p => ({x: scale.x(p.x), y: clampY(scale.y(p.hi))}));
+      const lower = band.slice().reverse().map(p => ({x: scale.x(p.x), y: clampY(scale.y(p.lo))}));
+      return `${scaledLinePath(upper)} ${scaledLinePath(lower, false)} Z`;
     }
 
     function setGraphReadoutText(el, text) {
@@ -1092,6 +1160,7 @@ _HTML = r"""<!DOCTYPE html>
     function setGraphPointReadout(el, event) {
       const points = graphDataPoints(el, 'data-points');
       if (!points.length) return;
+      const rawPoints = graphDataPoints(el, 'data-raw-points');
       const extras = graphDataPoints(el, 'data-extras').map(p => p.y);
       const overlayName = el.getAttribute('data-overlay-name') || '';
       const overlayPoints = graphDataPoints(el, 'data-overlay-points');
@@ -1116,9 +1185,14 @@ _HTML = r"""<!DOCTYPE html>
       }
       const x = scale.x(best.x);
       const y = scale.y(best.y);
-      const overlay = overlayPoints.length && overlayName ? nearestGraphPoint(overlayPoints, best.x) : null;
+      const rawBest = rawPoints.length ? nearestGraphPoint(rawPoints, best.x) : best;
+      const overlay = overlayPoints.length && overlayName ? nearestGraphPoint(overlayPoints, rawBest.x) : null;
       const overlayText = overlay ? ` ${overlayName}=${fmtGraphValue(overlayName, overlay.y)}` : '';
-      const text = `${name}=${fmtGraphValue(name, best.y)}${overlayText} @ ${fmtGraphNumber(best.x)} ${xUnit}`;
+      const ciValue = graphValueAt(graphDataPoints(el, 'data-ci-points'), rawBest.x);
+      const ciText = graphSeriesName(name) === 'elo' && Number.isFinite(ciValue)
+        ? ` ci=${fmtGraphNumber(ciValue)}`
+        : '';
+      const text = `${name}=${fmtGraphValue(name, rawBest.y)}${ciText}${overlayText} @ ${fmtGraphNumber(rawBest.x)} ${xUnit}`;
       const vLine = svg.querySelector('.graph-crosshair-v');
       const hLine = svg.querySelector('.graph-crosshair-h');
       if (vLine) {
@@ -1146,20 +1220,22 @@ _HTML = r"""<!DOCTYPE html>
       setGraphReadoutText(el, text);
     }
 
-    function graphHoverZones(name, points, extras = [], xUnit = 'x', w = GRAPH_W, h = GRAPH_H, xTotal = null, overlay = null) {
+    function graphHoverZones(name, points, extras = [], xUnit = 'x', w = GRAPH_W, h = GRAPH_H, xTotal = null, overlay = null, ci = null, rawPoints = null) {
       if (!points || points.length < 2) return '';
       const payload = attrEsc(JSON.stringify(points));
+      const rawPayload = attrEsc(JSON.stringify(rawPoints || points));
       const extraPayload = attrEsc(JSON.stringify(extras.map(y => ({x: 0, y}))));
       const overlayPoints = overlay?.points || [];
       const overlayPayload = attrEsc(JSON.stringify(overlayPoints));
       const overlayName = overlayPoints.length ? String(overlay.name || '') : '';
+      const ciPayload = attrEsc(JSON.stringify(ci?.points || []));
       const total = Number(xTotal);
       const totalAttr = Number.isFinite(total) && total > 0 ? String(total) : '';
       return `<g class="graph-crosshair">`
         + `<line class="graph-crosshair-line graph-crosshair-v" x1="0" y1="0" x2="0" y2="${h}"></line>`
         + `<line class="graph-crosshair-line graph-crosshair-h" x1="0" y1="0" x2="0" y2="0"></line>`
         + `</g>`
-        + `<rect class="graph-hit" x="0" y="0" width="${w}" height="${h}" data-graph-name="${attrEsc(name)}" data-overlay-name="${attrEsc(overlayName)}" data-x-unit="${attrEsc(xUnit)}" data-x-total="${attrEsc(totalAttr)}" data-graph-width="${w}" data-graph-height="${h}" data-points="${payload}" data-overlay-points="${overlayPayload}" data-extras="${extraPayload}" onmouseenter="setGraphPointReadout(this,event)" onmousemove="setGraphPointReadout(this,event)" onmouseleave="clearGraphReadout(this)"></rect>`;
+        + `<rect class="graph-hit" x="0" y="0" width="${w}" height="${h}" data-graph-name="${attrEsc(name)}" data-overlay-name="${attrEsc(overlayName)}" data-x-unit="${attrEsc(xUnit)}" data-x-total="${attrEsc(totalAttr)}" data-graph-width="${w}" data-graph-height="${h}" data-points="${payload}" data-raw-points="${rawPayload}" data-overlay-points="${overlayPayload}" data-ci-points="${ciPayload}" data-extras="${extraPayload}" onmouseenter="setGraphPointReadout(this,event)" onmousemove="setGraphPointReadout(this,event)" onmouseleave="clearGraphReadout(this)"></rect>`;
     }
 
     function fmtGraphValue(name, value) {
@@ -1189,10 +1265,14 @@ _HTML = r"""<!DOCTYPE html>
       return null;
     }
 
-    function graphRowHtml(s, options, graph, xTotal, ciSeries, overlaySeries = null) {
+    function graphRowHtml(s, options, graph, xTotal, bandSeries = null, overlaySeries = null) {
       const h = GRAPH_H;
-      const band = graphConfidenceBandPoints(s.name, s.points, ciSeries?.points || []);
-      const yExtras = graphYExtras(s.name, options, s.points).concat(graphBandYValues(band));
+      const rawPoints = s.rawPoints || s.points;
+      const yExtras = graphYExtras(s.name, options, s.points);
+      const [minY, maxY] = graphYDomain(s.name, s.points.map(p => p.y), yExtras);
+      const bandMaxFraction = graphNumberOption(s, ['band_max_fraction']) ?? 0.30;
+      const maxBandRadius = bandSeries ? (maxY - minY) * bandMaxFraction : null;
+      const band = bandSeries ? graphConfidenceBandPoints(s, s.points, bandSeries.points || [], maxBandRadius) : [];
       const path = sparkPath(s.name, s.points, yExtras, GRAPH_W, h, xTotal);
       const bandPath = confidenceBandPath(s.name, s.points, band, yExtras, GRAPH_W, h, xTotal);
       const grid = graphGridLines(s.name, s.points, yExtras, GRAPH_W, h);
@@ -1203,27 +1283,31 @@ _HTML = r"""<!DOCTYPE html>
         ? graphOverlayPath(overlaySeries.name, overlaySeries.points, overlayExtras, s.points, GRAPH_W, h, xTotal)
         : '';
       const overlayBounds = overlaySeries ? graphBoundLines(overlaySeries.name, overlaySeries.points, options, GRAPH_W, h) : '';
-      const hover = graphHoverZones(s.name, s.points, yExtras, graph?.x_unit || 'x', GRAPH_W, h, xTotal, overlaySeries);
-      const last = s.points[s.points.length - 1]?.y;
-      const lastX = s.points[s.points.length - 1]?.x;
+      const hover = graphHoverZones(s.name, s.points, yExtras, graph?.x_unit || 'x', GRAPH_W, h, xTotal, overlaySeries, bandSeries, rawPoints);
+      const last = rawPoints[rawPoints.length - 1]?.y;
+      const lastX = rawPoints[rawPoints.length - 1]?.x;
       const lastValue = fmtGraphValue(s.name, last);
       const overlayLast = overlaySeries?.points?.[overlaySeries.points.length - 1]?.y;
       const overlayValue = overlaySeries ? fmtGraphValue(overlaySeries.name, overlayLast) : '';
       const valueText = overlaySeries ? `${s.name} ${lastValue} · ${overlaySeries.name} ${overlayValue}` : `${s.name} ${lastValue}`;
       const unit = graph?.x_unit ? ` ${graph.x_unit}` : '';
       const tooltip = `${valueText} at${unit} ${fmtGraphNumber(lastX)}`;
+      const clipId = `graph-clip-${Math.random().toString(36).slice(2)}`;
       return `<div class="graph-row${overlaySeries ? ' with-right-axis' : ''}">`
         + `<span class="graph-axis">${graphAxisHtml(s.name, s.points, yExtras)}</span>`
         + `<span class="graph-plot">`
         + `<svg class="graph-live-hover" viewBox="0 0 ${GRAPH_W} ${h}" preserveAspectRatio="none" aria-label="${esc(tooltip)}">`
         + `<title>${esc(tooltip)}</title>`
+        + `<defs><clipPath id="${clipId}"><rect x="0" y="0" width="${GRAPH_W}" height="${h}"></rect></clipPath></defs>`
         + grid
         + bounds
         + zero
         + overlayBounds
+        + `<g clip-path="url(#${clipId})">`
         + (bandPath ? `<path class="graph-band" d="${esc(bandPath)}"></path>` : '')
         + `<path class="graph-line" d="${esc(path)}" style="stroke:${esc(s.color)}"></path>`
         + (overlayPath ? `<path class="graph-line llr-overlay" d="${esc(overlayPath)}" style="stroke:${esc(overlaySeries.color)}"></path>` : '')
+        + `</g>`
         + hover
         + `</svg>`
         + `<span class="graph-crosshair-readout"></span>`
@@ -1236,11 +1320,22 @@ _HTML = r"""<!DOCTYPE html>
     function graphCard(graph, title, run) {
       const options = {llrBound: llrBoundFromRun(run)};
       const allSeries = (graph?.series || [])
-        .map((s, i) => ({
-          name: s.name || '',
-          color: graphColor(s.name, i),
-          points: graphDisplayPoints(s.name, graphPoints(s)),
-        }))
+        .map((s, i) => {
+          const rawPoints = graphPoints(s);
+          return {
+            name: s.name || '',
+            color: graphColor(s.name, i),
+            band_series: String(s.band_series || '').trim(),
+            band_max_fraction: graphNumberOption(s, ['band_max_fraction']),
+            band_scale: graphNumberOption(s, ['band_scale']),
+            max: graphNumberOption(s, ['max', 'y_max']),
+            min: graphNumberOption(s, ['min', 'y_min']),
+            scale: String(s.scale || '').trim(),
+            smooth: s.smooth,
+            points: graphDisplayPoints(s, rawPoints),
+            rawPoints,
+          };
+        })
         .filter(s => s.points.length >= 2);
       if (!allSeries.length) return '';
       const ciSeries = graphSeriesByName(allSeries, 'ci');
@@ -1250,7 +1345,9 @@ _HTML = r"""<!DOCTYPE html>
       if (!primary) return '';
       const xTotal = graphXTotal(graph);
       const overlay = llrSeries && llrSeries !== primary ? llrSeries : null;
-      const rows = graphRowHtml(primary, options, graph, xTotal, ciSeries, overlay);
+      const bandName = primary.band_series || (graphSeriesName(primary) === 'elo' ? 'ci' : '');
+      const bandSeries = bandName ? graphSeriesByName(allSeries, bandName) : null;
+      const rows = graphRowHtml(primary, options, graph, xTotal, bandSeries, overlay);
       const unit = graph?.x_unit ? ` · x: ${graph.x_unit}` : '';
       return `<div class="task-graph">`
         + `<div class="graph-title"><span class="graph-title-main">${esc(title + unit)}</span></div>`
@@ -1951,6 +2048,36 @@ def _commands_need_refresh(payload: dict[str, Any]) -> bool:
             return True
     return False
 
+def _progress_graph_needs_refresh(payload: dict[str, Any]) -> bool:
+    graph = payload.get("progress_graph")
+    if not isinstance(graph, dict):
+        return False
+    if graph.get("version") != PROGRESS_GRAPH_VERSION:
+        return True
+    raw_series = graph.get("series")
+    if not isinstance(raw_series, list):
+        return False
+    series = {
+        str(item.get("name") or "").lower(): item
+        for item in raw_series
+        if isinstance(item, dict)
+    }
+    elo = series.get("elo")
+    ci = series.get("ci")
+    if isinstance(elo, dict) and isinstance(ci, dict):
+        for key in ("band_series", "band_scale", "band_max_fraction", "scale"):
+            if key not in elo:
+                return True
+    llr = series.get("llr")
+    if isinstance(llr, dict):
+        for key in ("min", "max", "scale"):
+            if key not in llr:
+                return True
+    return False
+
+def _web_run_snapshot_needs_refresh(payload: dict[str, Any]) -> bool:
+    return _commands_need_refresh(payload) or _progress_graph_needs_refresh(payload)
+
 def _collect_named_run_payload(run: str, coordinator_runs: str | None) -> dict[str, Any] | None:
     result = _run_web_cli(["status", run, "--json"], coordinator_runs=coordinator_runs)
     if result.returncode not in (0, 1) or not result.stdout.strip():
@@ -2045,7 +2172,7 @@ def _merge_lingering_runs(payload: dict[str, Any]) -> dict[str, Any]:
             if _run_payload_done(final_payload):
                 linger[name] = _normalize_web_run_payload(final_payload)
                 refreshed_done.add(name)
-                if not _commands_need_refresh(final_payload):
+                if not _web_run_snapshot_needs_refresh(final_payload):
                     command_checked.discard(name)
                 else:
                     command_checked.add(name)
@@ -2084,7 +2211,7 @@ def _merge_lingering_runs(payload: dict[str, Any]) -> dict[str, Any]:
                     continue
                 linger[name] = _normalize_web_run_payload(final_payload)
                 refreshed_done.add(name)
-                if not _commands_need_refresh(final_payload):
+                if not _web_run_snapshot_needs_refresh(final_payload):
                     command_checked.discard(name)
                 else:
                     command_checked.add(name)
@@ -2126,11 +2253,11 @@ def _merge_lingering_runs(payload: dict[str, Any]) -> dict[str, Any]:
                 command_checked.discard(name)
                 continue
             if name not in visible_names and isinstance(item, dict):
-                if not _commands_need_refresh(item):
+                if not _web_run_snapshot_needs_refresh(item):
                     command_checked.discard(name)
                 if (
                     _run_payload_done(item)
-                    and _commands_need_refresh(item)
+                    and _web_run_snapshot_needs_refresh(item)
                     and name not in refreshed_done
                     and name not in command_checked
                 ):
@@ -2143,7 +2270,7 @@ def _merge_lingering_runs(payload: dict[str, Any]) -> dict[str, Any]:
                     ):
                         item = _normalize_web_run_payload(final_payload)
                         linger[name] = item
-                        if not _commands_need_refresh(item):
+                        if not _web_run_snapshot_needs_refresh(item):
                             command_checked.discard(name)
                 runs.append(_normalize_web_run_payload(item))
 

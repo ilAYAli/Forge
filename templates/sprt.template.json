@@ -155,12 +155,18 @@
         {
           "name": "llr",
           "field": "llr",
-          "x": "done"
+          "x": "done",
+          "scale": "symmetric"
         },
         {
           "name": "elo",
           "field": "elo",
-          "x": "done"
+          "x": "done",
+          "band_max_fraction": 0.24,
+          "band_scale": 0.35,
+          "band_series": "ci",
+          "scale": "symmetric",
+          "smooth": true
         },
         {
           "name": "ci",

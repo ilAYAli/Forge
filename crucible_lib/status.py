@@ -11,7 +11,19 @@ from .tasks import *
 
 QUEUE_MONITOR_NAME = "queue-monitor.json"
 PROGRESS_HISTORY_NAME = "progress-history.jsonl"
+PROGRESS_GRAPH_VERSION = 4
 SIGNED_PROGRESS_SERIES = {"elo", "llr"}
+PROGRESS_GRAPH_SERIES_OPTION_KEYS = {
+    "band_max_fraction",
+    "band_scale",
+    "band_series",
+    "max",
+    "min",
+    "scale",
+    "smooth",
+    "y_max",
+    "y_min",
+}
 
 
 def cmd_status(args: argparse.Namespace) -> int:
@@ -2112,17 +2124,47 @@ def format_llr_field(llr: float, bound: float | None, mixed_bound: bool) -> str:
     pct = llr / bound * 100.0
     return f"llr={llr:.2f}/{bound:.2f} ({pct:.0f}%)"
 
-def progress_series_specs(config: dict[str, Any], *, kind: str | None = None) -> list[dict[str, str]]:
+def sprt_progress_series_options(field: str) -> dict[str, Any]:
+    key = field.lower()
+    if key == "elo":
+        return {
+            "band_max_fraction": 0.24,
+            "band_scale": 0.35,
+            "band_series": "ci",
+            "scale": "symmetric",
+            "smooth": True,
+        }
+    if key == "llr":
+        return {"scale": "symmetric"}
+    return {}
+
+def progress_series_options(item: dict[str, Any], *, kind: str | None = None, field: str = "") -> dict[str, Any]:
+    options: dict[str, Any] = {}
+    if str(kind or "").lower() == "sprt":
+        options.update(sprt_progress_series_options(field))
+    for key in PROGRESS_GRAPH_SERIES_OPTION_KEYS:
+        if key in item:
+            options[key] = item[key]
+    return options
+
+def graph_series_with_options(name: str, points: list[dict[str, float]], options: dict[str, Any] | None = None) -> dict[str, Any]:
+    result: dict[str, Any] = {"name": name, "points": points}
+    for key, value in (options or {}).items():
+        if value is not None:
+            result[key] = value
+    return result
+
+def progress_series_specs(config: dict[str, Any], *, kind: str | None = None) -> list[dict[str, Any]]:
     raw = config.get("series")
     if not isinstance(raw, list):
         if str(kind or "").lower() == "sprt":
             return [
-                {"name": "llr", "field": "llr", "x": "done"},
-                {"name": "elo", "field": "elo", "x": "done"},
+                {"name": "llr", "field": "llr", "x": "done", **sprt_progress_series_options("llr")},
+                {"name": "elo", "field": "elo", "x": "done", **sprt_progress_series_options("elo")},
                 {"name": "ci", "field": "ci", "x": "done"},
             ]
         return []
-    specs: list[dict[str, str]] = []
+    specs: list[dict[str, Any]] = []
     for item in raw:
         if not isinstance(item, dict):
             continue
@@ -2134,6 +2176,7 @@ def progress_series_specs(config: dict[str, Any], *, kind: str | None = None) ->
             "name": name,
             "field": field,
             "x": str(item.get("x") or "done").strip() or "done",
+            **progress_series_options(item, kind=kind, field=field),
         })
     return specs
 
@@ -2204,14 +2247,16 @@ def task_log_progress_graph(manifest: dict[str, Any], task: dict[str, Any]) -> d
                 continue
             points_by_name[spec["name"]].append({"x": x, "y": y})
 
+    options_by_name = {spec["name"]: progress_series_options(spec, kind=str(metadata.get("kind") or ""), field=spec["field"]) for spec in specs}
     series = [
-        {"name": name, "points": points}
+        graph_series_with_options(name, points, options_by_name.get(name))
         for name, points in points_by_name.items()
         if len(points) >= 2
     ]
     if not series:
         return None
     result = {
+        "version": PROGRESS_GRAPH_VERSION,
         "x_unit": str(config.get("unit") or ""),
         "series": series,
     }
@@ -2220,7 +2265,7 @@ def task_log_progress_graph(manifest: dict[str, Any], task: dict[str, Any]) -> d
             result["x_total"] = total
     return result
 
-def task_progress_graph_point_specs(manifest: dict[str, Any], task: dict[str, Any]) -> list[dict[str, str]]:
+def task_progress_graph_point_specs(manifest: dict[str, Any], task: dict[str, Any]) -> list[dict[str, Any]]:
     config = task.get("progress")
     if not isinstance(config, dict):
         return []
@@ -2235,8 +2280,10 @@ def run_progress_graph_from_rows(
 ) -> dict[str, Any] | None:
     tasks_by_id = {str(task["id"]): task for task in manifest["tasks"]}
     points_by_name: dict[str, list[dict[str, float]]] = {}
+    options_by_name: dict[str, dict[str, Any]] = {}
     sprt_rows: list[dict[str, Any]] = []
     sprt_series_names: dict[str, str] = {}
+    sprt_llr_bound: float | None = None
     is_sprt = str(manifest_metadata(manifest).get("kind") or "").lower() == "sprt"
     x_unit = ""
     for row in rows:
@@ -2246,6 +2293,11 @@ def run_progress_graph_from_rows(
         specs = task_progress_graph_point_specs(manifest, task)
         if not specs:
             continue
+        for spec in specs:
+            options_by_name.setdefault(
+                spec["name"],
+                progress_series_options(spec, kind="sprt" if is_sprt else "", field=spec["field"]),
+            )
         data = row.get("progress_data")
         if not isinstance(data, dict) or data.get("kind") != "metadata":
             continue
@@ -2272,6 +2324,10 @@ def run_progress_graph_from_rows(
             field_name = str(spec["field"]).lower()
             if is_sprt and field_name in {"elo", "llr", "ci"}:
                 sprt_series_names.setdefault(spec["name"], field_name)
+                if field_name == "llr":
+                    _llr, bound = progress_field_llr(fields)
+                    if bound is not None and math.isfinite(bound) and bound > 0:
+                        sprt_llr_bound = max(sprt_llr_bound or 0.0, abs(bound))
                 sprt_x = x if sprt_x is None else sprt_x
                 continue
             points_by_name.setdefault(spec["name"], []).append({"x": x, "y": y})
@@ -2286,15 +2342,21 @@ def run_progress_graph_from_rows(
         x_total=x_total if isinstance(x_total, int) else None,
     ).items():
         points_by_name[name] = points
+        if sprt_series_names.get(name) == "llr" and sprt_llr_bound is not None:
+            options_by_name.setdefault(name, {}).update({
+                "max": sprt_llr_bound,
+                "min": -sprt_llr_bound,
+            })
 
     series = []
     for name, points in points_by_name.items():
         points.sort(key=lambda point: point["x"])
         if len(points) >= 2 or (name.lower() == "ci" and points):
-            series.append({"name": name, "points": points})
+            series.append(graph_series_with_options(name, points, options_by_name.get(name)))
     if not series:
         return None
     result = {
+        "version": PROGRESS_GRAPH_VERSION,
         "x_unit": x_unit,
         "series": series,
     }
@@ -2496,8 +2558,18 @@ def progress_graph_from_history(
     fallback_graph: dict[str, Any] | None,
 ) -> dict[str, Any] | None:
     points_by_name: dict[str, list[dict[str, float]]] = {}
+    options_by_name: dict[str, dict[str, Any]] = {}
     x_unit = ""
     x_total: int | None = None
+    if isinstance(fallback_graph, dict):
+        raw_fallback_series = fallback_graph.get("series")
+        if isinstance(raw_fallback_series, list):
+            for item in raw_fallback_series:
+                if not isinstance(item, dict):
+                    continue
+                name = str(item.get("name") or "").strip()
+                if name:
+                    options_by_name[name] = progress_series_options(item)
     for entry in history:
         x = parse_float(entry.get("x"))
         if x is None:
@@ -2530,10 +2602,14 @@ def progress_graph_from_history(
         if name.lower() in SIGNED_PROGRESS_SERIES and (not points or points[0]["x"] > 0.0):
             points = [{"x": 0.0, "y": 0.0}, *points]
         if len(points) >= 2:
-            series.append({"name": name, "points": points})
+            series.append(graph_series_with_options(name, points, options_by_name.get(name)))
     if not series:
         return None
-    result: dict[str, Any] = {"x_unit": x_unit, "series": series}
+    result: dict[str, Any] = {
+        "version": PROGRESS_GRAPH_VERSION,
+        "x_unit": x_unit,
+        "series": series,
+    }
     if x_total is not None and x_total > 0:
         result["x_total"] = x_total
     return result
