@@ -371,7 +371,26 @@ _HTML = r"""<!DOCTYPE html>
     let soundEnabled = localStorage.getItem('crucible.sound') === '1';
     let audioCtx = null;
     let activeJobKeys = null;
-    const hiddenRunNames = new Set();
+    const HIDDEN_RUNS_KEY = 'crucible.hiddenRuns.v1';
+    function loadHiddenRunNames() {
+      try {
+        const raw = localStorage.getItem(HIDDEN_RUNS_KEY);
+        const items = raw ? JSON.parse(raw) : [];
+        return new Set(Array.isArray(items) ? items.map(String) : []);
+      } catch(e) {
+        return new Set();
+      }
+    }
+    const hiddenRunNames = loadHiddenRunNames();
+    function saveHiddenRunNames() {
+      try {
+        if (hiddenRunNames.size) {
+          localStorage.setItem(HIDDEN_RUNS_KEY, JSON.stringify([...hiddenRunNames]));
+        } else {
+          localStorage.removeItem(HIDDEN_RUNS_KEY);
+        }
+      } catch(e) {}
+    }
 
     function updateSoundButton() {
       const btn = document.getElementById('sound');
@@ -1444,6 +1463,7 @@ _HTML = r"""<!DOCTYPE html>
 
     function removeRunCard(run) {
       hiddenRunNames.add(String(run));
+      saveHiddenRunNames();
       const body = document.getElementById(rbid(run));
       const card = body?.closest?.('.run');
       if (!card) return null;
@@ -1455,6 +1475,7 @@ _HTML = r"""<!DOCTYPE html>
 
     function restoreRunCard(run, removed) {
       hiddenRunNames.delete(String(run));
+      saveHiddenRunNames();
       if (!removed?.card || !removed.parent) return;
       if (removed.next && removed.next.parentNode === removed.parent) {
         removed.parent.insertBefore(removed.card, removed.next);
@@ -1551,6 +1572,18 @@ _HTML = r"""<!DOCTYPE html>
           document.getElementById('err').textContent = data.error;
         }
         if (!data.loading) notifyStartedJobs(data);
+
+        if (!data.loading) {
+          const serverRunNames = new Set((data.runs||[]).map(r => String(r.run || '')));
+          let hiddenChanged = false;
+          for (const name of [...hiddenRunNames]) {
+            if (!serverRunNames.has(name)) {
+              hiddenRunNames.delete(name);
+              hiddenChanged = true;
+            }
+          }
+          if (hiddenChanged) saveHiddenRunNames();
+        }
 
         const runs = (data.runs||[])
           .filter(r => !hiddenRunNames.has(String(r.run || '')))
@@ -2404,9 +2437,10 @@ def _run_api_command(run: str, cmd: str, *, server: ThreadingHTTPServer | None =
         return subprocess.CompletedProcess(["restart-web"], 0, stdout="web restart requested\n", stderr="")
     if cmd == "del":
         coordinator_runs = _validate_web_delete(run)
+        _delete_web_run(run)
         result = _run_web_cli(["del", run, "--force"], coordinator_runs=coordinator_runs)
-        if result.returncode == 0:
-            _delete_web_run(run)
+        if result.returncode != 0:
+            _forget_web_run(run)
         return result
     if cmd == "hide":
         _hide_web_run(run)

@@ -750,11 +750,15 @@ console.log(JSON.stringify({band, domain, zero, last, delta: zero - last}));
         self.assertNotIn("stopped early", web._HTML)
         self.assertIn("pendingCount <= 0", web._HTML)
         self.assertNotIn("state=stopped", web._HTML)
-        self.assertIn("const hiddenRunNames = new Set()", web._HTML)
+        self.assertIn("const HIDDEN_RUNS_KEY = 'crucible.hiddenRuns.v1'", web._HTML)
+        self.assertIn("const hiddenRunNames = loadHiddenRunNames()", web._HTML)
+        self.assertIn("function saveHiddenRunNames", web._HTML)
         self.assertIn("function removeRunCard", web._HTML)
         self.assertIn("const hidden = (cmd === 'del' || cmd === 'hide') ? removeRunCard(run) : null", web._HTML)
         self.assertIn("function restoreRunCard", web._HTML)
         self.assertIn("hiddenRunNames.add(String(run))", web._HTML)
+        self.assertIn("saveHiddenRunNames()", web._HTML)
+        self.assertIn("const serverRunNames = new Set((data.runs||[]).map(r => String(r.run || '')))", web._HTML)
         self.assertIn("!hiddenRunNames.has(String(r.run || ''))", web._HTML)
         self.assertIn("const card = body?.closest?.('.run')", web._HTML)
         self.assertIn("user-select: text", web._HTML)
@@ -1841,6 +1845,74 @@ console.log(JSON.stringify({band, domain, zero, last, delta: zero - last}));
             self.assertEqual(["other-run"], state["hidden_runs"])
             self.assertEqual(["dead-run"], state["deleted_runs"])
             self.assertEqual(["other-run"], state["command_checked_runs"])
+
+    def test_web_delete_tombstone_is_written_before_delete_command(self) -> None:
+        import crucible_lib.web as web
+
+        done_payload = {
+            "runs": [
+                {
+                    "run": "short-sprt",
+                    "state": "done",
+                    "tasks": 1,
+                    "counts": {"done": 1, "fail": 0, "running": 0, "claimed": 0, "stale": 0, "pending": 0},
+                },
+            ],
+            "collapsed_failures": [],
+            "collapsed_failures_count": 0,
+            "coordinator": None,
+        }
+        completed = subprocess.CompletedProcess(["del"], 0, stdout="deleted\n", stderr="")
+        with tempfile.TemporaryDirectory() as tmp:
+            runs = Path(tmp) / "runs"
+
+            def run_cli(*args: Any, **kwargs: Any) -> subprocess.CompletedProcess[str]:
+                state = web._read_web_state()
+                self.assertEqual(["short-sprt"], state["deleted_runs"])
+                return completed
+
+            with (
+                self.patch_runs_dir(runs),
+                mock.patch("crucible_lib.web.runs_dir", return_value=runs),
+                mock.patch("crucible_lib.web._collect_status_payload", return_value=done_payload),
+                mock.patch("crucible_lib.web._run_web_cli", side_effect=run_cli),
+            ):
+                result = web._run_api_command("short-sprt", "del")
+
+        self.assertEqual(0, result.returncode)
+
+    def test_web_delete_rolls_back_tombstone_when_delete_command_fails(self) -> None:
+        import crucible_lib.web as web
+
+        done_payload = {
+            "runs": [
+                {
+                    "run": "short-sprt",
+                    "state": "done",
+                    "tasks": 1,
+                    "counts": {"done": 1, "fail": 0, "running": 0, "claimed": 0, "stale": 0, "pending": 0},
+                },
+            ],
+            "collapsed_failures": [],
+            "collapsed_failures_count": 0,
+            "coordinator": None,
+        }
+        failed = subprocess.CompletedProcess(["del"], 1, stdout="", stderr="delete failed\n")
+        with tempfile.TemporaryDirectory() as tmp:
+            runs = Path(tmp) / "runs"
+            with (
+                self.patch_runs_dir(runs),
+                mock.patch("crucible_lib.web.runs_dir", return_value=runs),
+                mock.patch("crucible_lib.web._collect_status_payload", return_value=done_payload),
+                mock.patch("crucible_lib.web._run_web_cli", return_value=failed),
+            ):
+                result = web._run_api_command("short-sprt", "del")
+                state = web._read_web_state()
+
+        self.assertEqual(1, result.returncode)
+        self.assertEqual([], state["deleted_runs"])
+        self.assertEqual({}, state["seen_runs"])
+        self.assertEqual({}, state["lingering_runs"])
 
     def test_web_delete_allows_completed_runs(self) -> None:
         import crucible_lib.web as web
