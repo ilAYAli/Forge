@@ -11392,6 +11392,94 @@ console.log(JSON.stringify({band, domain, zero, last, delta: zero - last}));
             self.assertEqual(1, len([script for script in scripts if " work " in script and "--worker worker-a" in script]))
             self.assertEqual(0, len([script for script in scripts if " work " in script and "--worker worker-b" in script]))
 
+    def test_deploy_launch_only_starts_ready_workers_when_setup_hangs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            runs = root / "runs"
+            template = root / "template.manifest.json"
+            template.write_text(
+                json.dumps({
+                    "schema": "crucible.task.v1",
+                    "name": "slow-setup",
+                    "work_dir": str(root),
+                    "requirements": {"python_min": "3.11", "git_min": "2.38"},
+                    "tasks": [{"id": "task_0000", "index": 0, "command": "true", "outputs": []}],
+                }),
+                encoding="utf-8",
+            )
+            workers_path = root / "workers.json"
+            workers_path.write_text(
+                json.dumps({
+                    "schema": "crucible.workers.v1",
+                    "workers": [
+                        {"host": "worker-a", "profile": "worker-a", "local": True, "cache_dir": str(root / "cache-a")},
+                        {"host": "worker-b", "profile": "worker-b", "local": True, "cache_dir": str(root / "cache-b")},
+                    ],
+                }),
+                encoding="utf-8",
+            )
+            commands = []
+            slow_setup_started = threading.Event()
+            slow_setup_finished = threading.Event()
+            launch_started = threading.Event()
+
+            def fake_run(self, command, **kwargs):
+                commands.append(command)
+                script = command[-1]
+                if str(root / "cache-b") in script and " doctor " in script:
+                    slow_setup_started.set()
+                    launch_started.wait(1.0)
+                    slow_setup_finished.set()
+                    return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+                if "--worker worker-a" in script and " work " in script:
+                    launch_started.set()
+                    manifest = crucible.load_manifest(runs / "slow-setup" / "manifest.json")
+                    task = manifest["tasks"][0]
+                    crucible.write_json(crucible.task_running_path(manifest, task), {
+                        "task": task["id"],
+                        "index": task["index"],
+                        "worker": "worker-a",
+                        "state": "running",
+                    })
+                return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+            args = argparse.Namespace(
+                manifest=str(template),
+                workers=str(workers_path),
+                jobs=1,
+                run="slow-setup",
+                resume=False,
+                replace=False,
+                launch_only=True,
+                remote_timeout_seconds=1800.0,
+                no_color=True,
+                verbose=False,
+            )
+            with (
+                self.patch_runs_dir(runs),
+                mock.patch("crucible.ProcessTracker.run", fake_run),
+                mock.patch("crucible_lib.workers.DEPLOY_SETUP_READY_GRACE_SECONDS", 0.01),
+                mock.patch("crucible_lib.workers.DEPLOY_SETUP_CANCEL_WAIT_SECONDS", 0.01),
+                mock.patch("crucible_lib.workers.DEPLOY_STARTUP_TIMEOUT_SECONDS", 0.01),
+                mock.patch("crucible_lib.workers.DEPLOY_STARTUP_POLL_SECONDS", 0.01),
+            ):
+                stdout = io.StringIO()
+                with contextlib.redirect_stdout(stdout):
+                    rc = crucible.cmd_deploy(args)
+
+            self.assertEqual(0, rc)
+            self.assertTrue(slow_setup_started.is_set())
+            self.assertTrue(slow_setup_finished.wait(1.0))
+            output = stdout.getvalue()
+            self.assertIn("FAILED worker-b: setup rc=124", output)
+            self.assertIn("deploy: setup partial; 1/2 slots ready", output)
+            self.assertIn("deploy: setup partial; launching ready workers", output)
+            self.assertIn("deploy: workers active", output)
+            self.assertIn("deploy: launch complete", output)
+            scripts = [command[-1] for command in commands if command[0] == "sh"]
+            self.assertEqual(1, len([script for script in scripts if " work " in script and "--worker worker-a" in script]))
+            self.assertEqual(0, len([script for script in scripts if " work " in script and "--worker worker-b" in script]))
+
     def test_deploy_launch_only_cleans_up_when_workers_do_not_start(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
