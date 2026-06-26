@@ -761,6 +761,8 @@ console.log(JSON.stringify({band, domain, zero, last, delta: zero - last}));
         self.assertIn("const serverRunNames = new Set((data.runs||[]).map(r => String(r.run || '')))", web._HTML)
         self.assertIn("!hiddenRunNames.has(String(r.run || ''))", web._HTML)
         self.assertIn("const card = body?.closest?.('.run')", web._HTML)
+        self.assertIn("const inactiveFailed = state === 'failed' && activeCount === 0", web._HTML)
+        self.assertIn("(failCount > 0 && activeCount === 0) || inactiveFailed", web._HTML)
         self.assertIn("user-select: text", web._HTML)
         self.assertIn("onclick=\"event.stopPropagation();toggleId('${rId}')\"", web._HTML)
         self.assertIn("function toggleRunHeader", web._HTML)
@@ -1969,6 +1971,35 @@ console.log(JSON.stringify({band, domain, zero, last, delta: zero - last}));
         self.assertEqual(0, result.returncode)
         run_cli.assert_called_once_with(["del", "stopped-sprt", "--force"], coordinator_runs="pwa-5090:/runs")
         delete.assert_called_once_with("stopped-sprt")
+
+    def test_web_delete_allows_failed_launch_without_failed_shards(self) -> None:
+        import crucible_lib.web as web
+
+        failed_payload = {
+            "runs": [
+                {
+                    "run": "launch-failed-sprt",
+                    "state": "failed",
+                    "tasks": 20,
+                    "launch_state": "stale",
+                    "counts": {"done": 0, "fail": 0, "running": 0, "claimed": 0, "stale": 0, "pending": 20},
+                },
+            ],
+            "collapsed_failures": [],
+            "collapsed_failures_count": 0,
+            "coordinator": None,
+        }
+        completed = subprocess.CompletedProcess(["del"], 0, stdout="deleted\n", stderr="")
+        with (
+            mock.patch("crucible_lib.web._collect_status_payload", return_value=failed_payload),
+            mock.patch("crucible_lib.web._run_web_cli", return_value=completed) as run_cli,
+            mock.patch("crucible_lib.web._delete_web_run") as delete,
+        ):
+            result = web._run_api_command("launch-failed-sprt", "del")
+
+        self.assertEqual(0, result.returncode)
+        run_cli.assert_called_once_with(["del", "launch-failed-sprt", "--force"], coordinator_runs=None)
+        delete.assert_called_once_with("launch-failed-sprt")
 
     def test_web_delete_refuses_empty_and_queued_runs(self) -> None:
         import crucible_lib.web as web

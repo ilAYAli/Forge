@@ -1380,12 +1380,13 @@ _HTML = r"""<!DOCTYPE html>
       const runArg = attrEsc(jsSingle(r.run));
       const activeCount = Number(active.count || 0);
       const failCount = Number(fail.count || r.fail || 0);
+      const inactiveFailed = state === 'failed' && activeCount === 0;
       if (state === 'current' || state === 'queued' || state === 'stalled') actions.push(`<button class="act stop"   onclick="event.stopPropagation();runCmd('${runArg}','stop',this)">stop</button>`);
       if (state === 'stopped' || state === 'stalled') actions.push(`<button class="act resume" onclick="event.stopPropagation();runCmd('${runArg}','resume',this)">resume</button>`);
       if (state === 'done') actions.push(`<button class="act" onclick="event.stopPropagation();runCmd('${runArg}','hide',this)">hide</button>`);
       if (state === 'done') actions.push(`<button class="act del" onclick="event.stopPropagation();runCmd('${runArg}','del',this)">del</button>`);
-      if (failCount > 0 && activeCount === 0) actions.push(`<button class="act retry" onclick="event.stopPropagation();runCmd('${runArg}','retry',this)">retry</button>`);
-      if (failCount > 0 && activeCount === 0) actions.push(`<button class="act del" onclick="event.stopPropagation();runCmd('${runArg}','del',this)">del</button>`);
+      if ((failCount > 0 && activeCount === 0) || inactiveFailed) actions.push(`<button class="act retry" onclick="event.stopPropagation();runCmd('${runArg}','retry',this)">retry</button>`);
+      if ((failCount > 0 && activeCount === 0) || inactiveFailed) actions.push(`<button class="act del" onclick="event.stopPropagation();runCmd('${runArg}','del',this)">del</button>`);
       if (state === 'stopped' && activeCount === 0) actions.push(`<button class="act del" onclick="event.stopPropagation();runCmd('${runArg}','del',this)">del</button>`);
 
       // header — always visible
@@ -2347,7 +2348,7 @@ def _validate_web_delete(run: str) -> str | None:
     if _payload_active_count(item) > 0:
         raise RuntimeError(f"{run}: run has active tasks; stop it before deleting")
     state = _run_payload_state(item)
-    if _payload_fail_count(item) <= 0 and not _run_payload_done(item) and state != "stopped":
+    if _payload_fail_count(item) <= 0 and not _run_payload_done(item) and state not in {"failed", "stopped"}:
         raise RuntimeError(f"{run}: delete is only available for inactive runs")
     coordinator = payload.get("coordinator")
     return str(coordinator) if coordinator else None
