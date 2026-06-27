@@ -160,28 +160,34 @@ _HTML = r"""<!DOCTYPE html>
     .task-th.sorted-asc .sort-ind::after  { content: ' ▲'; font-size: 9px; color: var(--yel); }
     .task-th.sorted-desc .sort-ind::after { content: ' ▼'; font-size: 9px; color: var(--yel); }
     .task-graphs { margin-top: 8px; }
-    .task-graph { border-top: 1px solid var(--border); padding-top: 6px;
-                  display: grid; gap: 10px; }
-    .graph-title { color: var(--dim); font-size: 11px; margin-bottom: 2px;
+    .task-graph { border: 1px solid #2b3442; border-radius: 6px; padding: 10px 12px 8px;
+                  background: #171d26; display: grid; gap: 8px; }
+    .graph-title { color: #9aa6b8; font-size: 11px; margin-bottom: 2px;
                    display: flex; align-items: center; justify-content: space-between;
                    gap: 12px; white-space: nowrap; overflow: hidden; }
     .graph-title-main { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-    .graph-row { display: grid; grid-template-columns: 52px minmax(240px, 1fr) 104px; gap: 8px;
+    .graph-row { display: grid; grid-template-columns: 58px minmax(240px, 1fr); gap: 10px;
                  align-items: stretch; color: var(--dim); font-size: 11px; }
-    .graph-row.with-right-axis { grid-template-columns: 52px minmax(240px, 1fr) 42px 104px; }
+    .graph-row.with-right-axis { grid-template-columns: 58px minmax(240px, 1fr) 46px; }
     .graph-axis { display: flex; flex-direction: column; justify-content: space-between;
-                  align-items: flex-end; padding: 4px 0 3px; font-variant-numeric: tabular-nums; }
+                  align-items: flex-end; height: 280px; padding: 7px 0;
+                  color: #8d98aa; font-variant-numeric: tabular-nums; }
     .graph-axis.right { align-items: flex-start; color: var(--yel); opacity: .82; }
-    .graph-axis .zero { color: var(--text); opacity: .55; }
-    .graph-plot { position: relative; height: 220px; min-width: 240px; }
-    .graph-plot svg { width: 100%; height: 100%; display: block; overflow: hidden; }
-    .graph-band { fill: var(--blu); opacity: .13; stroke: none; }
-    .graph-line { fill: none; stroke-width: 1.45; vector-effect: non-scaling-stroke; }
-    .graph-line.llr-overlay { stroke-width: 1.15; opacity: .82; }
-    .graph-grid { stroke: var(--border); stroke-width: .7; opacity: .5;
+    .graph-axis .zero { color: #c3ccda; opacity: .78; }
+    .graph-plot { position: relative; height: 302px; min-width: 240px; }
+    .graph-plot svg { width: 100%; height: 280px; display: block; overflow: hidden; }
+    .graph-x-axis { height: 22px; display: flex; align-items: flex-end; justify-content: space-between;
+                    padding: 2px 7px 0; color: #8d98aa; font-variant-numeric: tabular-nums; }
+    .graph-band { fill: var(--blu); opacity: .18; stroke: none; }
+    .graph-line { fill: none; stroke-width: 1.9; stroke-linecap: round; stroke-linejoin: round;
                   vector-effect: non-scaling-stroke; }
-    .graph-zero { stroke: var(--text); stroke-width: .9; stroke-dasharray: 2 6;
-                  stroke-linecap: round; opacity: .42; vector-effect: non-scaling-stroke; }
+    .graph-line.llr-overlay { stroke-width: 1.35; opacity: .86; }
+    .graph-point { fill: var(--blu); stroke: #a9cfff; stroke-width: .75;
+                   vector-effect: non-scaling-stroke; }
+    .graph-grid { stroke: #334052; stroke-width: .75; opacity: .72;
+                  vector-effect: non-scaling-stroke; }
+    .graph-zero { stroke: #7389a7; stroke-width: .9; stroke-dasharray: 4 6;
+                  stroke-linecap: round; opacity: .58; vector-effect: non-scaling-stroke; }
     .graph-bound { stroke: var(--red); stroke-width: .5; stroke-dasharray: 4 7;
                    opacity: .24; vector-effect: non-scaling-stroke; }
     .graph-hit { fill: transparent; pointer-events: all; }
@@ -197,9 +203,23 @@ _HTML = r"""<!DOCTYPE html>
       line-height: 1.25; white-space: nowrap; font-variant-numeric: tabular-nums;
     }
     .graph-plot:hover .graph-crosshair-readout { opacity: .95; }
-    .graph-value { color: var(--dim); white-space: nowrap; font-variant-numeric: tabular-nums;
-                   padding-top: 3px; }
+    .graph-value { position: absolute; right: 8px; top: 3px; z-index: 1;
+                   color: #a9b4c4; background: rgba(23,29,38,.88); border-radius: 3px;
+                   max-width: calc(100% - 16px); overflow: hidden; text-overflow: ellipsis;
+                   white-space: nowrap; font-variant-numeric: tabular-nums; padding: 1px 4px; }
     .graph-value.hover { color: var(--text); }
+
+    @media (max-width: 640px) {
+      #runs { padding: 8px 6px; }
+      .run-tree { margin-left: 12px; padding-right: 6px; }
+      .section-detail { margin-left: 6px; padding-left: 6px; }
+      .task-graph { padding: 9px 7px 7px; }
+      .graph-row,
+      .graph-row.with-right-axis { grid-template-columns: 44px minmax(0, 1fr); gap: 7px; }
+      .graph-axis.right,
+      .graph-value { display: none; }
+      .graph-plot { min-width: 0; }
+    }
 
     /* pending / fail groups */
     .group-row { font-size: 13px; color: var(--dim); padding: 2px 0; }
@@ -825,8 +845,8 @@ _HTML = r"""<!DOCTYPE html>
     }
 
     const GRAPH_COLORS = ['var(--blu)', 'var(--yel)', 'var(--grn)', 'var(--red)'];
-    const GRAPH_W = 320;
-    const GRAPH_H = 220;
+    const GRAPH_W = 720;
+    const GRAPH_H = 280;
 
     function graphPoints(series) {
       return (series?.points || [])
@@ -838,6 +858,7 @@ _HTML = r"""<!DOCTYPE html>
     function fmtGraphNumber(v) {
       const n = Number(v);
       if (!Number.isFinite(n)) return '';
+      if (n === 0) return '0';
       const a = Math.abs(n);
       if (a >= 100) return n.toFixed(0);
       if (a >= 10) return n.toFixed(1);
@@ -1053,29 +1074,36 @@ _HTML = r"""<!DOCTYPE html>
     function graphGridLines(name, points, extras = [], w = GRAPH_W, h = GRAPH_H) {
       if (!points || points.length < 2) return '';
       const values = points.map(p => p.y);
-      const [minY, maxY] = graphYDomain(name, values, extras);
-      const ys = signedGraphSeries(name)
-        ? [(minY + 0) / 2, (maxY + 0) / 2].filter(Number.isFinite)
-        : [minY + (maxY - minY) / 3, minY + (maxY - minY) * 2 / 3];
-      const hLines = ys.map(v => {
+      const hLines = graphTicks(name, points, extras).map(v => {
         const y = graphY(name, values, v, extras, h);
         return `<line class="graph-grid" x1="0" y1="${y.toFixed(1)}" x2="${w}" y2="${y.toFixed(1)}"></line>`;
       });
-      const vLines = [0.25, 0.5, 0.75].map(frac => {
-        const x = (w * frac).toFixed(1);
-        return `<line class="graph-grid" x1="${x}" y1="0" x2="${x}" y2="${h}"></line>`;
-      });
-      return hLines.concat(vLines).join('');
+      return hLines.join('');
+    }
+
+    function graphTicks(name, points, extras = []) {
+      if (!points || points.length < 2) return [];
+      const [minY, maxY] = graphYDomain(name, points.map(p => p.y), extras);
+      return [1, 0.75, 0.5, 0.25, 0].map(fraction => minY + (maxY - minY) * fraction);
     }
 
     function graphAxisHtml(name, points, extras = []) {
+      return graphTicks(name, points, extras).map(value => {
+        const zero = signedGraphSeries(name) && Math.abs(value) < 1e-9;
+        return `<span class="${zero ? 'zero' : ''}">${esc(fmtGraphValue(name, value))}</span>`;
+      }).join('');
+    }
+
+    function graphXAxisHtml(points, xTotal = null) {
       if (!points || points.length < 2) return '';
-      const values = points.map(p => p.y);
-      const [minY, maxY] = graphYDomain(name, values, extras);
-      const mid = signedGraphSeries(name) ? 0 : minY + (maxY - minY) / 2;
-      return `<span>${esc(fmtGraphValue(name, maxY))}</span>`
-        + `<span class="${signedGraphSeries(name) ? 'zero' : ''}">${esc(fmtGraphValue(name, mid))}</span>`
-        + `<span>${esc(fmtGraphValue(name, minY))}</span>`;
+      const xs = points.map(point => point.x);
+      const minX = Number.isFinite(Number(xTotal)) && Number(xTotal) > 0 ? 0 : Math.min(...xs);
+      const maxX = Number.isFinite(Number(xTotal)) && Number(xTotal) > 0
+        ? Math.max(Number(xTotal), ...xs)
+        : Math.max(...xs);
+      return [0, 0.25, 0.5, 0.75, 1].map(fraction =>
+        `<span>${esc(fmtGraphNumber(minX + (maxX - minX) * fraction))}</span>`
+      ).join('');
     }
 
     function graphBoundLines(name, points, options = {}, w = GRAPH_W, h = GRAPH_H) {
@@ -1109,6 +1137,15 @@ _HTML = r"""<!DOCTYPE html>
       const scale = graphScale(name, points, extras, w, h, xTotal);
       const scaled = points.map(p => ({x: scale.x(p.x), y: scale.y(p.y)}));
       return scaledLinePath(scaled);
+    }
+
+    function graphPointMarkers(name, color, points, extras = [], w = GRAPH_W, h = GRAPH_H, xTotal = null) {
+      if (!points || points.length < 2) return '';
+      const scale = graphScale(name, points, extras, w, h, xTotal);
+      const stride = Math.max(1, Math.ceil(points.length / 48));
+      return points.filter((_, index) => index % stride === 0 || index === points.length - 1).map(point =>
+        `<circle class="graph-point" style="fill:${esc(color)}" cx="${scale.x(point.x).toFixed(1)}" cy="${scale.y(point.y).toFixed(1)}" r="2.2"></circle>`
+      ).join('');
     }
 
     function scaledLinePath(scaled, move = true) {
@@ -1273,17 +1310,19 @@ _HTML = r"""<!DOCTYPE html>
       const bandMaxFraction = graphNumberOption(s, ['band_max_fraction']) ?? 0.30;
       const maxBandRadius = bandSeries ? (maxY - minY) * bandMaxFraction : null;
       const band = bandSeries ? graphConfidenceBandPoints(s, s.points, bandSeries.points || [], maxBandRadius) : [];
-      const path = sparkPath(s.name, s.points, yExtras, GRAPH_W, h, xTotal);
-      const bandPath = confidenceBandPath(s.name, s.points, band, yExtras, GRAPH_W, h, xTotal);
-      const grid = graphGridLines(s.name, s.points, yExtras, GRAPH_W, h);
-      const zero = zeroLine(s.name, s.points, yExtras, GRAPH_W, h);
+      const scaleExtras = yExtras.concat(band.flatMap(point => [point.lo, point.hi]));
+      const path = sparkPath(s.name, s.points, scaleExtras, GRAPH_W, h, xTotal);
+      const markers = graphPointMarkers(s.name, s.color, s.points, scaleExtras, GRAPH_W, h, xTotal);
+      const bandPath = confidenceBandPath(s.name, s.points, band, scaleExtras, GRAPH_W, h, xTotal);
+      const grid = graphGridLines(s.name, s.points, scaleExtras, GRAPH_W, h);
+      const zero = zeroLine(s.name, s.points, scaleExtras, GRAPH_W, h);
       const bounds = graphBoundLines(s.name, s.points, options, GRAPH_W, h);
       const overlayExtras = overlaySeries ? graphYExtras(overlaySeries.name, options, overlaySeries.points) : [];
       const overlayPath = overlaySeries
         ? graphOverlayPath(overlaySeries.name, overlaySeries.points, overlayExtras, s.points, GRAPH_W, h, xTotal)
         : '';
       const overlayBounds = overlaySeries ? graphBoundLines(overlaySeries.name, overlaySeries.points, options, GRAPH_W, h) : '';
-      const hover = graphHoverZones(s.name, s.points, yExtras, graph?.x_unit || 'x', GRAPH_W, h, xTotal, overlaySeries, bandSeries, rawPoints);
+      const hover = graphHoverZones(s.name, s.points, scaleExtras, graph?.x_unit || 'x', GRAPH_W, h, xTotal, overlaySeries, bandSeries, rawPoints);
       const last = rawPoints[rawPoints.length - 1]?.y;
       const lastX = rawPoints[rawPoints.length - 1]?.x;
       const lastValue = fmtGraphValue(s.name, last);
@@ -1294,7 +1333,7 @@ _HTML = r"""<!DOCTYPE html>
       const tooltip = `${valueText} at${unit} ${fmtGraphNumber(lastX)}`;
       const clipId = `graph-clip-${Math.random().toString(36).slice(2)}`;
       return `<div class="graph-row${overlaySeries ? ' with-right-axis' : ''}">`
-        + `<span class="graph-axis">${graphAxisHtml(s.name, s.points, yExtras)}</span>`
+        + `<span class="graph-axis">${graphAxisHtml(s.name, s.points, scaleExtras)}</span>`
         + `<span class="graph-plot">`
         + `<svg class="graph-live-hover" viewBox="0 0 ${GRAPH_W} ${h}" preserveAspectRatio="none" aria-label="${esc(tooltip)}">`
         + `<title>${esc(tooltip)}</title>`
@@ -1306,14 +1345,16 @@ _HTML = r"""<!DOCTYPE html>
         + `<g clip-path="url(#${clipId})">`
         + (bandPath ? `<path class="graph-band" d="${esc(bandPath)}"></path>` : '')
         + `<path class="graph-line" d="${esc(path)}" style="stroke:${esc(s.color)}"></path>`
+        + markers
         + (overlayPath ? `<path class="graph-line llr-overlay" d="${esc(overlayPath)}" style="stroke:${esc(overlaySeries.color)}"></path>` : '')
         + `</g>`
         + hover
         + `</svg>`
+        + `<span class="graph-x-axis">${graphXAxisHtml(s.points, xTotal)}</span>`
+        + `<span class="graph-value" data-default="${attrEsc(valueText)}">${esc(valueText)}</span>`
         + `<span class="graph-crosshair-readout"></span>`
         + `</span>`
         + (overlaySeries ? `<span class="graph-axis right">${graphAxisHtml(overlaySeries.name, overlaySeries.points, overlayExtras)}</span>` : '')
-        + `<span class="graph-value" data-default="${attrEsc(valueText)}">${esc(valueText)}</span>`
         + `</div>`;
     }
 
