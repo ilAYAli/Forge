@@ -413,30 +413,6 @@ def set_worker_record_slots(worker: dict[str, Any], slots: int) -> dict[str, Any
         record["slots"] = slots
     return record
 
-def add_worker_payload_slots(base_payload: dict[str, Any], add_payload: dict[str, Any]) -> dict[str, Any]:
-    merged: list[dict[str, Any]] = []
-    positions: dict[str, int] = {}
-    for worker in worker_records_from_payload(base_payload, label="base workers", allow_empty=True):
-        host = worker_host(worker)
-        if host in positions:
-            merged[positions[host]] = worker
-        else:
-            positions[host] = len(merged)
-            merged.append(worker)
-    for worker in worker_records_from_payload(add_payload, label="added workers", allow_empty=True):
-        add_slots = worker_record_slots(worker)
-        if add_slots <= 0:
-            continue
-        host = worker_host(worker)
-        if host in positions:
-            index = positions[host]
-            total_slots = worker_record_slots(merged[index]) + add_slots
-            merged[index] = set_worker_record_slots(worker, total_slots)
-        else:
-            positions[host] = len(merged)
-            merged.append(worker)
-    return workers_payload_from_records(merged)
-
 def worker_set_record_from_arg(value: str, *, inline_defaults_path: str | Path | None = None) -> dict[str, Any]:
     if "," in value:
         raise SystemExit("worker set accepts a single worker spec")
@@ -2667,17 +2643,28 @@ def run_active_task_count(manifest: dict[str, Any], *, lease_seconds: int) -> in
     except (TypeError, ValueError):
         return 0
 
-def worker_hosts_from_inline(value: str) -> list[str]:
-    workers = load_workers_arg(value, default_ok=False)
-    hosts = {str(worker.get("host") or "").strip() for worker in workers}
-    return sorted(host for host in hosts if host)
+def run_active_worker_task_count(manifest: dict[str, Any], worker: str, *, lease_seconds: int) -> int:
+    count = 0
+    for task in manifest.get("tasks") or []:
+        state = task_state(manifest, task, lease_seconds=lease_seconds)
+        if state not in {"claimed", "running", "stale"}:
+            continue
+        if status_worker(manifest, task, state) == worker:
+            count += 1
+    return count
+
+def run_pending_task_count(manifest: dict[str, Any], *, lease_seconds: int) -> int:
+    return sum(
+        task_state(manifest, task, lease_seconds=lease_seconds) == "pending"
+        for task in manifest.get("tasks") or []
+    )
 
 def clear_worker_drains(
     manifest: dict[str, Any],
     hosts: list[str],
     *,
     run_name: str,
-    label: str = "worker add",
+    label: str = "worker set",
 ) -> int:
     cleared = 0
     for host in hosts:
@@ -2688,57 +2675,6 @@ def clear_worker_drains(
         cleared += 1
         print(f"{label}: cleared drain for {run_name} {host}")
     return cleared
-
-def cmd_worker_add(args: argparse.Namespace) -> int:
-    coordinator_runs = configured_coordinator_runs()
-    if coordinator_runs and status_can_delegate(args.run):
-        return run_worker_control_on_coordinator("add", args, coordinator_runs)
-    targets = worker_run_paths(args.run, lease_seconds=args.lease_seconds)
-    failed = 0
-    for run_name, manifest_path, workers_path in targets:
-        add_payload = workers_payload_from_arg(
-            str(args.worker),
-            default_ok=False,
-            inline_defaults_path=workers_path,
-        )
-        manifest = load_manifest(manifest_path)
-        add_payload = workers_payload_for_manifest(add_payload, manifest)
-        merged_payload = add_worker_payload_slots(read_json(workers_path), add_payload)
-        hosts = worker_hosts_from_payload(add_payload)
-        clear_worker_drains(manifest, hosts, run_name=run_name)
-        resume_args = argparse.Namespace(
-            manifest=str(manifest_path),
-            workers=str(args.worker),
-            worker_defaults=str(workers_path),
-            worker_snapshot_payload=None,
-            preserve_workers_snapshot=True,
-            worker_snapshot_commit_payload=merged_payload,
-            launch_workers_payload=add_payload,
-            launch_only=True,
-            jobs=args.jobs,
-            run=run_name,
-            resume=True,
-            replace=False,
-            retry_failed=False,
-            task_attempts=getattr(args, "task_attempts", 2),
-            coordinator_host=args.coordinator_host,
-            remote_timeout_seconds=args.remote_timeout_seconds,
-            wait=args.wait,
-            lease_seconds=args.lease_seconds,
-            interval_seconds=args.interval_seconds,
-            timeout_seconds=args.timeout_seconds,
-            fail_on_fail=args.fail_on_fail,
-            verify=args.verify,
-            merge=args.merge,
-            merge_force=args.merge_force,
-            newline_between=args.newline_between,
-            notify_command=args.notify_command,
-            no_color=args.no_color,
-            verbose=args.verbose,
-            command_label="worker add",
-        )
-        failed += 1 if cmd_run_job(resume_args) else 0
-    return 1 if failed else 0
 
 def cmd_worker_set(args: argparse.Namespace) -> int:
     coordinator_runs = configured_coordinator_runs()
@@ -2757,12 +2693,19 @@ def cmd_worker_set(args: argparse.Namespace) -> int:
         current_slots = worker_slots_for_host(current_payload, host)
         next_payload = set_worker_payload_slots(current_payload, set_worker)
         delta = desired_slots - current_slots
+        manifest = load_manifest(manifest_path)
+        active_slots = run_active_worker_task_count(
+            manifest,
+            host,
+            lease_seconds=int(args.lease_seconds),
+        )
+        pending_tasks = run_pending_task_count(manifest, lease_seconds=int(args.lease_seconds))
+        launch_slots = max(0, desired_slots - active_slots) if pending_tasks else 0
 
-        if delta > 0:
-            manifest = load_manifest(manifest_path)
-            launch_worker = set_worker_record_slots(set_worker, delta)
+        if launch_slots > 0:
+            launch_worker = set_worker_record_slots(set_worker, launch_slots)
             launch_payload = workers_payload_from_records([launch_worker])
-            launch_workers = worker_inline_arg_for_slots(set_worker, delta)
+            launch_workers = worker_inline_arg_for_slots(set_worker, launch_slots)
             clear_worker_drains(manifest, [host], run_name=run_name, label="worker set")
             resume_args = argparse.Namespace(
                 manifest=str(manifest_path),
@@ -2799,12 +2742,14 @@ def cmd_worker_set(args: argparse.Namespace) -> int:
             continue
 
         write_json(workers_path, next_payload)
-        if delta == 0:
+        if delta >= 0:
+            if delta > 0:
+                print(f"worker set: {run_name} {host} slots={current_slots}->{desired_slots}; no pending tasks")
+                continue
             print(f"worker set: {run_name} {host} slots={desired_slots} unchanged")
             continue
 
-        manifest = load_manifest(manifest_path)
-        release_count = 0 if desired_slots <= 0 else -delta
+        release_count = 0 if desired_slots <= 0 else max(0, active_slots - desired_slots)
         released = release_worker_claims(
             manifest,
             worker=host,
@@ -2838,7 +2783,7 @@ def cmd_resume(args: argparse.Namespace) -> int:
         if active_count > 0 and args.workers:
             raise SystemExit(
                 f"resume: {run_name} already has {active_count} active/claimed/stale task(s); "
-                "use add --worker to add capacity"
+                "use worker set HOST:N to change capacity"
             )
         if active_count > 0:
             print(f"resume: {run_name} already active ({active_count} task(s)); no workers launched")
@@ -2938,7 +2883,7 @@ def cmd_retry(args: argparse.Namespace) -> int:
         if active_count > 0 and args.workers:
             raise SystemExit(
                 f"retry: {run_name} already has {active_count} active/claimed/stale task(s); "
-                "retry without --workers to requeue failures, or use add --worker to add capacity"
+                "retry without --workers to requeue failures, or use worker set HOST:N to change capacity"
             )
         archived = archive_failed_tasks_for_retry(manifest, run_name)
         if not args.workers:

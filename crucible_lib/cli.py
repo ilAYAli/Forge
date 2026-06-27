@@ -38,7 +38,6 @@ COMMON_COMMANDS = [
     "sprt",
     "sh",
     "start",
-    "add",
     "del",
     "stop",
     "resume",
@@ -49,7 +48,7 @@ COMMON_COMMANDS = [
     "template",
 ]
 if cmd_web is not None:
-    COMMON_COMMANDS.insert(6, "web")
+    COMMON_COMMANDS.insert(5, "web")
 
 
 COMMAND_GROUPS = [
@@ -139,18 +138,8 @@ class CrucibleArgumentParser(argparse.ArgumentParser):
         )
 
 
-def add_worker_add_options(
-    parser: argparse.ArgumentParser,
-    *,
-    worker_positional: bool,
-    set_total: bool = False,
-) -> None:
-    verb = "sets the total slot count to" if set_total else "adds"
-    help_text = f"Inline worker spec; worker-a:5 {verb} five slots."
-    if worker_positional:
-        parser.add_argument("worker", help=help_text)
-    else:
-        parser.add_argument("--worker", required=True, help=help_text)
+def add_worker_set_options(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("worker", help="Inline worker spec; worker-a:5 sets the total slot count to five.")
     parser.add_argument("run", nargs="?", help="Run name or run directory. Omit to use the single active run.")
     parser.add_argument("--jobs", type=int, default=4, help="Maximum workers to prepare concurrently.")
     parser.add_argument("--task-attempts", type=int, default=2, help="Total attempts per task before final failure.")
@@ -553,35 +542,19 @@ def build_parser() -> argparse.ArgumentParser:
     drain.add_argument("--lease-seconds", type=int, default=600, help="Claim lease duration before stale.")
     drain.set_defaults(func=cmd_drain)
 
-    add = sub.add_parser(
-        "add",
-        help="Start extra worker slots for a materialized run.",
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
-    )
-    add_worker_add_options(add, worker_positional=False)
-    add.set_defaults(func=cmd_worker_add)
-
     worker = sub.add_parser(
         "worker",
-        help="Add or drain worker slots for a materialized run.",
+        help="Set or drain worker slots for a materialized run.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     worker_sub = worker.add_subparsers(dest="worker_command", metavar="command", required=True)
 
-    worker_add = worker_sub.add_parser(
-        "add",
-        help="Start extra worker slots for a materialized run.",
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
-    )
-    add_worker_add_options(worker_add, worker_positional=True)
-    worker_add.set_defaults(func=cmd_worker_add)
-
     worker_set = worker_sub.add_parser(
         "set",
-        help="Set total worker slots for a materialized run.",
+        help="Set and enforce total worker slots for a materialized run.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    add_worker_add_options(worker_set, worker_positional=True, set_total=True)
+    add_worker_set_options(worker_set)
     worker_set.set_defaults(func=cmd_worker_set)
 
     worker_del = worker_sub.add_parser(

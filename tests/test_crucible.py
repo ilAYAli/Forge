@@ -352,12 +352,6 @@ class CrucibleTests(unittest.TestCase):
             setattr(args, key, value)
         return args
 
-    def worker_add_args(self, **overrides: Any) -> argparse.Namespace:
-        args = self.retry_args(worker="worker-b:5")
-        for key, value in overrides.items():
-            setattr(args, key, value)
-        return args
-
     def worker_set_args(self, **overrides: Any) -> argparse.Namespace:
         args = self.retry_args(worker="worker-b:6")
         for key, value in overrides.items():
@@ -428,7 +422,7 @@ class CrucibleTests(unittest.TestCase):
         advanced = stdout.index("Advanced:")
         common_positions = {
             command: stdout.index(f"    {command}")
-            for command in ("run", "sprt", "start", "add", "del", "stop", "resume", "retry", "worker", "status", "update", "template")
+            for command in ("run", "sprt", "start", "del", "stop", "resume", "retry", "worker", "status", "update", "template")
         }
         for position in common_positions.values():
             self.assertLess(common, position)
@@ -436,8 +430,7 @@ class CrucibleTests(unittest.TestCase):
         self.assertLess(common_positions["run"], common_positions["start"])
         self.assertLess(common_positions["run"], common_positions["sprt"])
         self.assertLess(common_positions["sprt"], common_positions["start"])
-        self.assertLess(common_positions["start"], common_positions["add"])
-        self.assertLess(common_positions["add"], common_positions["del"])
+        self.assertLess(common_positions["start"], common_positions["del"])
         self.assertLess(common_positions["del"], common_positions["stop"])
         self.assertLess(common_positions["stop"], common_positions["resume"])
         self.assertLess(common_positions["resume"], common_positions["retry"])
@@ -2898,7 +2891,7 @@ console.log(JSON.stringify({band, domain, maxBandRadius, zero, last, delta: zero
         commands = [
             "run", "sprt", "sh", "template", "plan", "add-input", "add-repo", "add-command", "sync-repos", "start", "run-task", "claim",
             "release", "heartbeat", "work", "doctor", "status",
-            "wait", "verify", "merge", "stop", "drain", "add", "del", "self-update",
+            "wait", "verify", "merge", "stop", "drain", "del", "self-update",
             "update", "version", "deploy", "resume", "retry", "worker",
         ]
         for command in commands:
@@ -2913,15 +2906,19 @@ console.log(JSON.stringify({band, domain, maxBandRadius, zero, last, delta: zero
         self.assertIn("comma-separated workers", self.run_cli("deploy", "--help").stdout)
         self.assertIn("--merge", self.run_cli("start", "--help").stdout)
         self.assertIn("--merge", self.run_cli("resume", "--help").stdout)
-        self.assertIn("--worker", self.run_cli("add", "--help").stdout)
-        self.assertIn("worker-a:5", self.run_cli("add", "--help").stdout)
         self.assertIn("--worker", self.run_cli("del", "--help").stdout)
-        self.assertIn("worker-a:5", self.run_cli("worker", "add", "--help").stdout)
+        self.assertIn("worker-a:5", self.run_cli("worker", "set", "--help").stdout)
         self.assertIn("--keep-claims", self.run_cli("worker", "del", "--help").stdout)
         self.assertIn("--index", self.run_cli("run-task", "--help").stdout)
         self.assertIn("--coordinator", self.run_cli("doctor", "--help").stdout)
         self.assertIn("comma-separated workers", self.run_cli("update", "--help").stdout)
         self.assertNotEqual(0, self.run_cli("run-job", "--help").returncode)
+
+    def test_additive_worker_commands_are_removed(self) -> None:
+        parser = crucible.build_parser()
+        for argv in (["add", "--worker", "worker-a:2"], ["worker", "add", "worker-a:2"]):
+            with self.subTest(argv=argv), contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                parser.parse_args(argv)
 
     def test_sh_caps_default_workers_to_one_slot_per_host(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -4089,244 +4086,6 @@ console.log(JSON.stringify({band, domain, maxBandRadius, zero, last, delta: zero
             self.assertIn("paused-a", message)
             self.assertIn("paused-b", message)
 
-    def test_worker_add_resumes_requested_worker_slots_and_clears_drain(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            runs = Path(tmp) / "runs"
-            run = self.write_retry_run(runs, "paused", failed=None)
-            manifest = crucible.load_manifest(run / "manifest.json")
-            crucible.drain_dir(manifest).mkdir(parents=True)
-            crucible.write_json(crucible.worker_drain_path(manifest, "worker-b"), {
-                "schema": "crucible.task.v1",
-                "run": "paused",
-                "worker": "worker-b",
-            })
-
-            with (
-                self.patch_runs_dir(runs),
-                mock.patch("crucible_lib.workers.default_workers_path", side_effect=SystemExit("no workers")),
-                mock.patch("crucible_lib.workers.cmd_run_job", return_value=0) as run_job,
-            ):
-                stdout = io.StringIO()
-                with contextlib.redirect_stdout(stdout):
-                    rc = crucible.cmd_worker_add(self.worker_add_args(run="paused", worker="worker-b:5"))
-
-            self.assertEqual(0, rc)
-            self.assertFalse(crucible.worker_drain_path(manifest, "worker-b").exists())
-            self.assertIn("worker add: cleared drain for paused worker-b", stdout.getvalue())
-            add_args = run_job.call_args.args[0]
-            self.assertEqual("paused", add_args.run)
-            self.assertEqual("worker-b:5", add_args.workers)
-            self.assertEqual(str(run / "workers.json"), add_args.worker_defaults)
-            self.assertEqual(
-                {
-                    "schema": "crucible.workers.v1",
-                    "workers": [
-                        {"host": "worker-b", "profile": "worker-b", "local": False, "slots": 5},
-                    ],
-                },
-                add_args.launch_workers_payload,
-            )
-            self.assertEqual(
-                {
-                    "schema": "crucible.workers.v1",
-                    "workers": [
-                        {"host": "worker-a", "profile": "worker-a", "local": False},
-                        {"host": "worker-b", "profile": "worker-b", "local": False, "slots": 5},
-                    ],
-                },
-                add_args.worker_snapshot_commit_payload,
-            )
-            self.assertIsNone(add_args.worker_snapshot_payload)
-            self.assertTrue(add_args.preserve_workers_snapshot)
-            self.assertTrue(add_args.launch_only)
-            self.assertTrue(add_args.resume)
-            self.assertFalse(add_args.retry_failed)
-            self.assertEqual("worker add", add_args.command_label)
-
-    def test_worker_add_without_run_uses_single_active_run(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            runs = Path(tmp) / "runs"
-            self.write_retry_run(runs, "paused", failed=None)
-            active_run = self.write_retry_run(runs, "active", failed=None)
-            manifest = crucible.load_manifest(active_run / "manifest.json")
-            crucible.claim_task(
-                manifest,
-                worker="worker-a",
-                profile=None,
-                lease_seconds=600,
-                retry_failed=False,
-            )
-
-            with (
-                self.patch_runs_dir(runs),
-                mock.patch("crucible_lib.workers.default_workers_path", side_effect=SystemExit("no workers")),
-                mock.patch("crucible_lib.workers.cmd_run_job", return_value=0) as run_job,
-            ):
-                rc = crucible.cmd_worker_add(self.worker_add_args(run=None, worker="worker-b:5"))
-
-            self.assertEqual(0, rc)
-            add_args = run_job.call_args.args[0]
-            self.assertEqual("active", add_args.run)
-            self.assertEqual("worker-b:5", add_args.workers)
-            self.assertEqual(str(active_run / "workers.json"), add_args.worker_defaults)
-
-    def test_worker_add_inline_defaults_come_from_run_workers_snapshot(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            runs = Path(tmp) / "runs"
-            run = self.write_retry_run(runs, "active", failed=None)
-            cache = Path(tmp) / "cache"
-            crucible.write_json(run / "workers.json", {
-                "schema": "crucible.workers.v1",
-                "workers": [
-                    "worker-a",
-                    {
-                        "host": "pwa-mbp",
-                        "profile": "mac",
-                        "local": True,
-                        "python": "/opt/homebrew/bin/python3",
-                        "cache_dir": str(cache),
-                        "path_map": {
-                            "/home/petter/code/cpp/chess": "/Users/pwahlman/code/cpp/chess",
-                        },
-                        "slots": 4,
-                    },
-                ],
-            })
-
-            with (
-                self.patch_runs_dir(runs),
-                mock.patch("crucible_lib.workers.cmd_run_job", return_value=0) as run_job,
-            ):
-                rc = crucible.cmd_worker_add(self.worker_add_args(run="active", worker="pwa-mbp:10"))
-
-            self.assertEqual(0, rc)
-            add_args = run_job.call_args.args[0]
-            self.assertEqual(
-                {
-                    "schema": "crucible.workers.v1",
-                    "workers": [{
-                        "host": "pwa-mbp",
-                        "profile": "mac",
-                        "local": True,
-                        "python": "/opt/homebrew/bin/python3",
-                        "cache_dir": str(cache),
-                        "path_map": {
-                            "/home/petter/code/cpp/chess": "/Users/pwahlman/code/cpp/chess",
-                        },
-                        "slots": 10,
-                    }],
-                },
-                add_args.launch_workers_payload,
-            )
-            self.assertEqual(
-                {
-                    "schema": "crucible.workers.v1",
-                    "workers": [
-                        {"host": "worker-a", "profile": "worker-a", "local": False},
-                        {
-                            "host": "pwa-mbp",
-                            "profile": "mac",
-                            "local": True,
-                            "python": "/opt/homebrew/bin/python3",
-                            "cache_dir": str(cache),
-                            "path_map": {
-                                "/home/petter/code/cpp/chess": "/Users/pwahlman/code/cpp/chess",
-                            },
-                            "slots": 14,
-                        },
-                    ],
-                },
-                add_args.worker_snapshot_commit_payload,
-            )
-            self.assertIsNone(add_args.worker_snapshot_payload)
-            self.assertTrue(add_args.preserve_workers_snapshot)
-            self.assertTrue(add_args.launch_only)
-
-    def test_worker_add_adds_slots_instead_of_replacing_existing_count(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            runs = Path(tmp) / "runs"
-            run = self.write_retry_run(runs, "active", failed=None)
-            cache = Path(tmp) / "cache"
-            crucible.write_json(run / "workers.json", {
-                "schema": "crucible.workers.v1",
-                "workers": [{
-                    "host": "pwa-mbp",
-                    "profile": "mac",
-                    "local": True,
-                    "cache_dir": str(cache),
-                    "slots": 4,
-                }],
-            })
-
-            with (
-                self.patch_runs_dir(runs),
-                mock.patch("crucible_lib.workers.cmd_run_job", return_value=0) as run_job,
-            ):
-                rc = crucible.cmd_worker_add(self.worker_add_args(run="active", worker="pwa-mbp:2"))
-
-            self.assertEqual(0, rc)
-            add_args = run_job.call_args.args[0]
-            self.assertEqual(
-                {
-                    "schema": "crucible.workers.v1",
-                    "workers": [{
-                        "host": "pwa-mbp",
-                        "profile": "mac",
-                        "local": True,
-                        "cache_dir": str(cache),
-                        "slots": 2,
-                    }],
-                },
-                add_args.launch_workers_payload,
-            )
-            self.assertEqual(
-                {
-                    "schema": "crucible.workers.v1",
-                    "workers": [{
-                        "host": "pwa-mbp",
-                        "profile": "mac",
-                        "local": True,
-                        "cache_dir": str(cache),
-                        "slots": 6,
-                    }],
-                },
-                add_args.worker_snapshot_commit_payload,
-            )
-
-    def test_worker_add_does_not_repair_profile_from_prefix_path_map(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            runs = Path(tmp) / "runs"
-            run = self.write_retry_run(runs, "active", failed=None)
-            manifest = crucible.load_manifest(run / "manifest.json")
-            manifest["path_maps"] = {
-                "pwa-mbp0": {
-                    "/home/petter/code/cpp/chess": "/Users/petter/code/cpp/chess",
-                },
-            }
-            crucible.write_json(run / "manifest.json", manifest)
-            crucible.write_json(run / "workers.json", {
-                "schema": "crucible.workers.v1",
-                "workers": [{
-                    "host": "pwa-mbp",
-                    "profile": "pwa-mbp",
-                    "local": False,
-                    "python": "/opt/homebrew/bin/python3",
-                    "cache_dir": "/Users/pwahlman/.cache/crucible",
-                    "slots": 8,
-                }],
-            })
-
-            with (
-                self.patch_runs_dir(runs),
-                mock.patch("crucible_lib.workers.cmd_run_job", return_value=0) as run_job,
-            ):
-                rc = crucible.cmd_worker_add(self.worker_add_args(run="active", worker="pwa-mbp:10"))
-
-            self.assertEqual(0, rc)
-            add_args = run_job.call_args.args[0]
-            self.assertEqual("pwa-mbp", add_args.launch_workers_payload["workers"][0]["profile"])
-            self.assertEqual("pwa-mbp", add_args.worker_snapshot_commit_payload["workers"][0]["profile"])
-            self.assertEqual(10, add_args.launch_workers_payload["workers"][0]["slots"])
 
     def test_worker_set_launches_only_delta_slots_and_commits_total(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -4346,6 +4105,7 @@ console.log(JSON.stringify({band, domain, maxBandRadius, zero, last, delta: zero
 
             with (
                 self.patch_runs_dir(runs),
+                mock.patch("crucible_lib.workers.run_active_worker_task_count", return_value=4),
                 mock.patch("crucible_lib.workers.cmd_run_job", return_value=0) as run_job,
             ):
                 rc = crucible.cmd_worker_set(self.worker_set_args(run="active", worker="pwa-mbp:6"))
@@ -4383,7 +4143,7 @@ console.log(JSON.stringify({band, domain, maxBandRadius, zero, last, delta: zero
             self.assertEqual("worker set", set_args.command_label)
             self.assertTrue(set_args.launch_only)
 
-    def test_worker_set_same_total_does_not_launch(self) -> None:
+    def test_worker_set_same_total_restarts_missing_slots(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             runs = Path(tmp) / "runs"
             run = self.write_retry_run(runs, "active", failed=None)
@@ -4399,6 +4159,28 @@ console.log(JSON.stringify({band, domain, maxBandRadius, zero, last, delta: zero
 
             with (
                 self.patch_runs_dir(runs),
+                mock.patch("crucible_lib.workers.cmd_run_job", return_value=0) as run_job,
+            ):
+                rc = crucible.cmd_worker_set(self.worker_set_args(run="active", worker="pwa-mbp:6"))
+
+            self.assertEqual(0, rc)
+            set_args = run_job.call_args.args[0]
+            self.assertEqual("pwa-mbp=mac:6", set_args.workers)
+            self.assertEqual(6, set_args.launch_workers_payload["workers"][0]["slots"])
+            self.assertEqual(6, set_args.worker_snapshot_commit_payload["workers"][0]["slots"])
+
+    def test_worker_set_same_total_with_active_slots_does_not_launch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runs = Path(tmp) / "runs"
+            run = self.write_retry_run(runs, "active", failed=None)
+            crucible.write_json(run / "workers.json", {
+                "schema": "crucible.workers.v1",
+                "workers": [{"host": "pwa-mbp", "profile": "mac", "local": True, "slots": 6}],
+            })
+
+            with (
+                self.patch_runs_dir(runs),
+                mock.patch("crucible_lib.workers.run_active_worker_task_count", return_value=6),
                 mock.patch("crucible_lib.workers.cmd_run_job") as run_job,
             ):
                 stdout = io.StringIO()
@@ -4425,6 +4207,7 @@ console.log(JSON.stringify({band, domain, maxBandRadius, zero, last, delta: zero
 
             with (
                 self.patch_runs_dir(runs),
+                mock.patch("crucible_lib.workers.run_active_worker_task_count", return_value=6),
                 mock.patch("crucible_lib.workers.cmd_run_job") as run_job,
             ):
                 stdout = io.StringIO()
@@ -4490,25 +4273,6 @@ console.log(JSON.stringify({band, domain, maxBandRadius, zero, last, delta: zero
         )
         self.assertEqual(["--profile", "pwa-mbp"], crucible.worker_profile_args(manifest, worker))
 
-    def test_add_command_resumes_requested_worker_slots(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            runs = Path(tmp) / "runs"
-            self.write_retry_run(runs, "paused", failed=None)
-
-            with (
-                self.patch_runs_dir(runs),
-                mock.patch("crucible_lib.workers.default_workers_path", side_effect=SystemExit("no workers")),
-                mock.patch("crucible_lib.workers.cmd_run_job", return_value=0) as run_job,
-            ):
-                args = crucible.build_parser().parse_args(["add", "--worker", "worker-b:5", "paused"])
-                rc = args.func(args)
-
-            self.assertEqual(0, rc)
-            add_args = run_job.call_args.args[0]
-            self.assertEqual("paused", add_args.run)
-            self.assertEqual("worker-b:5", add_args.workers)
-            self.assertTrue(add_args.resume)
-            self.assertFalse(add_args.retry_failed)
 
     def test_worker_set_command_sets_total_slots(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -4526,6 +4290,7 @@ console.log(JSON.stringify({band, domain, maxBandRadius, zero, last, delta: zero
 
             with (
                 self.patch_runs_dir(runs),
+                mock.patch("crucible_lib.workers.run_active_worker_task_count", return_value=4),
                 mock.patch("crucible_lib.workers.cmd_run_job", return_value=0) as run_job,
             ):
                 args = crucible.build_parser().parse_args(["worker", "set", "worker-b:6", "paused"])
@@ -4538,63 +4303,6 @@ console.log(JSON.stringify({band, domain, maxBandRadius, zero, last, delta: zero
             self.assertEqual(2, set_args.launch_workers_payload["workers"][0]["slots"])
             self.assertEqual(6, set_args.worker_snapshot_commit_payload["workers"][0]["slots"])
 
-    def test_worker_add_named_run_delegates_to_coordinator(self) -> None:
-        remote_result = subprocess.CompletedProcess(
-            args=["ssh"],
-            returncode=0,
-            stdout="remote worker add\n",
-            stderr="",
-        )
-        with mock.patch.dict(
-            os.environ,
-            {"CRUCIBLE_COORDINATOR_RUNS": "pwa-5090:/home/petter/code/cpp/chess/crucible/runs"},
-        ), mock.patch("crucible.subprocess.run", return_value=remote_result) as run_mock:
-            stdout = io.StringIO()
-            with contextlib.redirect_stdout(stdout):
-                rc = crucible.cmd_worker_add(self.worker_add_args(run="paused", worker="worker-b:5"))
-
-        self.assertEqual(0, rc)
-        self.assertEqual(
-            "coordinator: pwa-5090:/home/petter/code/cpp/chess/crucible/runs\nremote worker add\n",
-            stdout.getvalue(),
-        )
-        command = run_mock.call_args.args[0]
-        self.assertEqual("ssh", command[0])
-        self.assertIn("pwa-5090", command)
-        self.assertIn("CRUCIBLE_RUNS_DIR=/home/petter/code/cpp/chess/crucible/runs", command[-1])
-        self.assertIn("CRUCIBLE_COORDINATOR_RUNS=", command[-1])
-        self.assertIn("crucible worker add worker-b:5 paused", command[-1])
-
-    def test_worker_add_without_run_delegates_explicit_active_run(self) -> None:
-        status_result = subprocess.CompletedProcess(
-            args=["ssh"],
-            returncode=0,
-            stdout=self.delegated_status_payload(),
-            stderr="",
-        )
-        add_result = subprocess.CompletedProcess(
-            args=["ssh"],
-            returncode=0,
-            stdout="remote worker add\n",
-            stderr="",
-        )
-        with mock.patch.dict(
-            os.environ,
-            {"CRUCIBLE_COORDINATOR_RUNS": "pwa-5090:/home/petter/code/cpp/chess/crucible/runs"},
-        ), mock.patch("crucible.subprocess.run", side_effect=[status_result, add_result]) as run_mock:
-            stdout = io.StringIO()
-            with contextlib.redirect_stdout(stdout):
-                rc = crucible.cmd_worker_add(self.worker_add_args(run=None, worker="worker-b:5"))
-
-        self.assertEqual(0, rc)
-        self.assertEqual(
-            "coordinator: pwa-5090:/home/petter/code/cpp/chess/crucible/runs\nremote worker add\n",
-            stdout.getvalue(),
-        )
-        status_command = run_mock.call_args_list[0].args[0][-1]
-        add_command = run_mock.call_args_list[1].args[0][-1]
-        self.assertIn("crucible status --json", status_command)
-        self.assertIn("crucible worker add worker-b:5 remote-run", add_command)
 
     def test_worker_set_named_run_delegates_to_coordinator(self) -> None:
         remote_result = subprocess.CompletedProcess(

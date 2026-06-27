@@ -17,7 +17,7 @@ crucible start manifest.json --workers worker-a,worker-b:4
 crucible stop my-run
 crucible resume my-run
 crucible retry
-crucible add --worker worker-c:4
+crucible worker set worker-c:4
 crucible del --worker worker-c
 crucible status
 watch 'crucible status --verbose'
@@ -132,18 +132,14 @@ crucible resume my-run
 `resume` restarts incomplete non-failed work from the materialized run.
 Use `retry` for failed tasks.
 
-Add worker slots to an incomplete run:
+Set worker slots for an incomplete run:
 
 ```sh
-crucible add --worker worker-c:4
-crucible add --worker worker-c:4 my-run
-crucible worker add worker-c:4 my-run
-crucible worker set worker-c:6 my-run
+crucible worker set worker-c:4 my-run
 ```
 
-`add --worker worker-c:4` adds 4 new slots. It does not set the host total to 4.
-Use `worker set worker-c:6` to set the desired total slot count. Existing
-workers keep running.
+`worker set worker-c:4` sets and enforces four total slots. Missing workers are
+started; existing workers keep running.
 
 Drain a worker from a run:
 
