@@ -658,6 +658,7 @@ def cmd_template_run(args: argparse.Namespace) -> int:
     workers_arg = workers_arg or resolved_workers_arg(run_options, config)
     coordinator_host = run_options.coordinator_host or default_coordinator_host(config)
     notify_command = run_options.notify_command
+    print(f"run: id={manifest['name']}")
     with tempfile.TemporaryDirectory(prefix="crucible-template-") as tmp:
         manifest_path = Path(tmp) / f"{manifest['name']}.manifest.json"
         write_json(manifest_path, manifest)

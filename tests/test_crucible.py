@@ -2491,13 +2491,16 @@ console.log(JSON.stringify({band, domain, maxBandRadius, zero, last, delta: zero
                 mock.patch.dict(os.environ, {"CRUCIBLE_CONFIG": str(config), "CRUCIBLE_NOTIFY_COMMAND": ""}, clear=False),
                 mock.patch("crucible_lib.workers.cmd_run_job", side_effect=fake_run_job),
             ):
-                rc = crucible.cmd_template_run(argparse.Namespace(
-                    template=str(template_path),
-                    template_args=["--item", "/tmp/input.dat", "--total", "10"],
-                ))
+                stdout = io.StringIO()
+                with contextlib.redirect_stdout(stdout):
+                    rc = crucible.cmd_template_run(argparse.Namespace(
+                        template=str(template_path),
+                        template_args=["--item", "/tmp/input.dat", "--total", "10"],
+                    ))
 
             self.assertEqual(0, rc)
             self.assertEqual("worker-a:2", captured["args"].workers)
+            self.assertEqual("run: id=demo-input.dat-10\n", stdout.getvalue())
 
     def test_sprt_command_alias_runs_sprt_template(self) -> None:
         args = crucible.build_parser().parse_args([
