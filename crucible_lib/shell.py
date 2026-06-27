@@ -59,8 +59,8 @@ def indent_lines(text: str, *, prefix: str = "  ") -> list[str]:
 
 
 def format_shell_result(label: str, result: subprocess.CompletedProcess[str]) -> str:
-    status = "OK" if result.returncode == 0 else f"FAILED rc={result.returncode}"
-    lines = [f"{label}: {status}"]
+    suffix = "" if result.returncode == 0 else f" FAILED rc={result.returncode}"
+    lines = [f"{label}:{suffix}"]
     stdout = result.stdout or ""
     stderr = result.stderr or ""
     if stdout and stderr:

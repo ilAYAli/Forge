@@ -3009,7 +3009,8 @@ console.log(JSON.stringify({band, domain, maxBandRadius, zero, last, delta: zero
             self.assertEqual(0, rc)
             self.assertEqual(["printf '{ok}\\n'"], seen)
             output = stdout.getvalue()
-            self.assertIn("localhost: OK", output)
+            self.assertIn("localhost:\n", output)
+            self.assertNotIn("localhost: OK", output)
             self.assertIn("  {ok}", output)
             self.assertIn("sh: ok", output)
 
@@ -3045,7 +3046,8 @@ console.log(JSON.stringify({band, domain, maxBandRadius, zero, last, delta: zero
 
         self.assertEqual(1, rc)
         output = stdout.getvalue()
-        self.assertIn("worker-a: OK", output)
+        self.assertIn("worker-a:\n", output)
+        self.assertNotIn("worker-a: OK", output)
         self.assertIn("worker-b: FAILED rc=7", output)
         self.assertIn("  boom", output)
         self.assertIn("sh: failed on 1/2 host(s)", stderr.getvalue())
