@@ -2501,6 +2501,30 @@ console.log(JSON.stringify({band, domain, maxBandRadius, zero, last, delta: zero
             self.assertEqual("worker-a:2", captured["args"].workers)
             self.assertEqual("run: id=demo-input.dat-10\n", stdout.getvalue())
 
+    def test_run_template_immediately_prints_explicit_run_id(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            template_path = self.write_test_template(root)
+            config = root / "config.yml"
+            config.write_text('default_workers: "worker-a:2"\n', encoding="utf-8")
+
+            with (
+                mock.patch.dict(os.environ, {"CRUCIBLE_CONFIG": str(config)}, clear=False),
+                mock.patch("crucible_lib.workers.cmd_run_job", return_value=0),
+                mock.patch("builtins.print") as print_mock,
+            ):
+                rc = crucible.cmd_template_run(argparse.Namespace(
+                    template=str(template_path),
+                    template_args=[
+                        "--run", "explicit-run",
+                        "--item", "/tmp/input.dat",
+                        "--total", "10",
+                    ],
+                ))
+
+            self.assertEqual(0, rc)
+            print_mock.assert_called_once_with("run: id=explicit-run", flush=True)
+
     def test_sprt_command_alias_runs_sprt_template(self) -> None:
         args = crucible.build_parser().parse_args([
             "sprt",
