@@ -19,6 +19,11 @@
       "slots": 5
     },
     {
+      "host": "pwa-rce",
+      "profile": "linux",
+      "slots": 4
+    },
+    {
       "host": "pwa-wsl",
       "profile": "linux",
       "slots": 4
