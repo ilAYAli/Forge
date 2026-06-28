@@ -1728,7 +1728,7 @@ def cmd_deploy(args: argparse.Namespace) -> int:
             synced_inputs = sync_inputs_to_worker(
                 worker,
                 manifest,
-                timeout=bootstrap_timeout,
+                timeout=remote_timeout,
                 tracker=tracker,
                 retries=setup_retries,
             )

@@ -10702,6 +10702,7 @@ console.log(JSON.stringify({band, domain, maxBandRadius, zero, last, delta: zero
             worker_a_saw_worker_b = False
             worker_a_waited = False
             bootstrap_timeouts = []
+            input_sync_timeouts = []
 
             def targets(command: list[str], host: str) -> bool:
                 return any(part == host or part.startswith(f"{host}:") for part in command)
@@ -10717,6 +10718,10 @@ console.log(JSON.stringify({band, domain, maxBandRadius, zero, last, delta: zero
                     worker_a_saw_worker_b = worker_b_started.wait(0.2)
                 return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
 
+            def fake_sync_inputs(*args, **kwargs):
+                input_sync_timeouts.append(kwargs.get("timeout"))
+                return 0
+
             args = argparse.Namespace(
                 manifest=str(template),
                 workers="worker-a:2,worker-b:1",
@@ -10728,7 +10733,9 @@ console.log(JSON.stringify({band, domain, maxBandRadius, zero, last, delta: zero
                 no_color=True,
                 verbose=False,
             )
-            with self.patch_runs_dir(runs), mock.patch("crucible.ProcessTracker.run", fake_run):
+            with self.patch_runs_dir(runs), mock.patch(
+                "crucible.ProcessTracker.run", fake_run
+            ), mock.patch("crucible_lib.workers.sync_inputs_to_worker", side_effect=fake_sync_inputs):
                 stdout = io.StringIO()
                 with contextlib.redirect_stdout(stdout):
                     rc = crucible.cmd_deploy(args)
@@ -10737,6 +10744,7 @@ console.log(JSON.stringify({band, domain, maxBandRadius, zero, last, delta: zero
             self.assertTrue(worker_a_saw_worker_b)
             self.assertTrue(bootstrap_timeouts)
             self.assertTrue(all(timeout == 60.0 for timeout in bootstrap_timeouts))
+            self.assertEqual([1800.0, 1800.0], sorted(input_sync_timeouts))
             self.assertIn("  SETUP  worker-a [2 slots]: setup", stdout.getvalue())
             self.assertIn("  SETUP  worker-b: setup", stdout.getvalue())
             self.assertNotIn("  OK     worker-a#1: setup", stdout.getvalue())
