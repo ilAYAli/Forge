@@ -112,7 +112,9 @@ crucible worker set pwa-wsl:8 lc0-test91-depth12 --remote-timeout-seconds 1800
 
 The first setup on a host may appear idle while its corpus cache is transferred
 and verified. Add `--verbose` to show setup progress. Existing workers and
-completed shards remain untouched.
+completed shards remain untouched. The `pwa-wsl` profile stores this many-file
+cache on native WSL ext4 under `/home/petter/.cache/crucible`; putting it under
+`/mnt/c` or `/mnt/d` makes verification prohibitively slow.
 
 The corpus is inventoried by relative path, size, and SHA-256 under
 `~/.cache/crucible/inputs/`. Completed shards resume from their done markers;

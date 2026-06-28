@@ -24,6 +24,15 @@ from crucible_lib.tasks import task_done_path
 
 
 class Lc0InventoryTests(unittest.TestCase):
+    def test_template_keeps_wsl_corpus_cache_on_native_ext4(self) -> None:
+        template_path = Path(__file__).resolve().parents[1] / "templates" / "lc0-label.template.json"
+        template = json.loads(template_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(
+            "/home/petter/.cache/crucible",
+            template["path_maps"]["pwa-wsl"]["~/.cache/crucible"],
+        )
+
     def test_digest_excludes_host_paths(self) -> None:
         files = [
             {"path": "a/training.1.gz", "size": 3, "sha256": "1" * 64},

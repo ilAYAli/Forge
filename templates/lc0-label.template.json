@@ -9,6 +9,9 @@
   "path_maps": {
     "pwa-mbp0": {
       "~/.cache/crucible": "~/Library/Caches/crucible"
+    },
+    "pwa-wsl": {
+      "~/.cache/crucible": "/home/petter/.cache/crucible"
     }
   },
   "parameters": {
