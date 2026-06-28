@@ -1021,6 +1021,21 @@ _HTML = r"""<!DOCTYPE html>
       return Number.isFinite(total) && total > 0 ? total : null;
     }
 
+    function graphEarlyStop(run, series, target) {
+      if ((run?.state || '') !== 'done' || !Number.isFinite(target) || target <= 0) return null;
+      const reachedBound = series.some(item => {
+        const last = item.rawPoints?.[item.rawPoints.length - 1];
+        if (!last || !Number.isFinite(last.y)) return false;
+        const min = Number(item.min), max = Number(item.max);
+        return (Number.isFinite(min) && last.y <= min) || (Number.isFinite(max) && last.y >= max);
+      });
+      if (!reachedBound) return null;
+      const observed = Math.max(...series.flatMap(item => item.rawPoints.map(point => point.x)));
+      return Number.isFinite(observed) && observed > 0 && observed < target
+        ? {observed, target}
+        : null;
+    }
+
     function graphScale(name, points, extras = [], w = GRAPH_W, h = GRAPH_H, xTotal = null) {
       const pad = 8;
       const xs = points.map(p => p.x);
@@ -1373,14 +1388,17 @@ _HTML = r"""<!DOCTYPE html>
       const llrSeries = graphSeriesByName(allSeries, 'llr');
       const primary = eloSeries || allSeries.find(s => graphSeriesName(s.name) !== 'ci') || null;
       if (!primary) return '';
-      const xTotal = graphXTotal(graph);
+      const configuredTotal = graphXTotal(graph);
+      const earlyStop = graphEarlyStop(run, allSeries, configuredTotal);
+      const xTotal = earlyStop?.observed || configuredTotal;
       const overlay = llrSeries && llrSeries !== primary ? llrSeries : null;
       const bandName = primary.band_series || (graphSeriesName(primary) === 'elo' ? 'ci' : '');
       const bandSeries = bandName ? graphSeriesByName(allSeries, bandName) : null;
       const rows = graphRowHtml(primary, options, graph, xTotal, bandSeries, overlay);
       const unit = graph?.x_unit ? ` · x: ${graph.x_unit}` : '';
+      const stopLabel = earlyStop ? ` · stopped at ${fmtGraphNumber(earlyStop.observed)} / ${fmtGraphNumber(earlyStop.target)}` : '';
       return `<div class="task-graph">`
-        + `<div class="graph-title"><span class="graph-title-main">${esc(title + unit)}</span></div>`
+        + `<div class="graph-title"><span class="graph-title-main">${esc(title + unit + stopLabel)}</span></div>`
         + rows
         + `</div>`;
     }
