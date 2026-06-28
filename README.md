@@ -99,9 +99,20 @@ merged BulletFormat dataset. The default run uses 152 shards across
 crucible lc0-label \
   --source ~/code/cpp/chess/nnue/data/lc0/test91/training-run2-test91-20260128-1817 \
   --output ~/code/cpp/chess/nnue/data/labeled/test91-depth12.bullet \
+  --workers pwa-5090:20,pwa-mbp:8,pwa-mbp0:10,pwa-rce:8,pwa-wsl:8 \
   --run lc0-test91-depth12 \
   --comment "9M raw LC0 records, quiet positions from ply 16"
 ```
+
+Add or restore worker slots on an incomplete run without relaunching it:
+
+```sh
+crucible worker set pwa-wsl:8 lc0-test91-depth12 --remote-timeout-seconds 1800
+```
+
+The first setup on a host may appear idle while its corpus cache is transferred
+and verified. Add `--verbose` to show setup progress. Existing workers and
+completed shards remain untouched.
 
 The corpus is inventoried by relative path, size, and SHA-256 under
 `~/.cache/crucible/inputs/`. Completed shards resume from their done markers;
