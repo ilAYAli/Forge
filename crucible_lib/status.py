@@ -1114,6 +1114,21 @@ def active_worker_summary(summary: dict[str, Any]) -> str:
         return ""
     values = list(metrics.values())
     output_values = [metric for metric in values if bool(metric.get("output_seen"))]
+    rate_values = [metric for metric in values if bool(metric.get("progress_rate_seen"))]
+    prefer_rates = str((summary.get("metadata") or {}).get("kind") or "").lower() == "lc0-label"
+    if prefer_rates and len(rate_values) > 1:
+        total_rate = sum(float(metric.get("progress_rate", 0.0)) for metric in rate_values)
+        parts = [f"workers={len(values)}"]
+        if output_values:
+            parts.append(f"output={compact_count(sum(int(metric['output']) for metric in values))}")
+        parts.append(f"rate={compact_rate_per_second(total_rate)}")
+        ordered = sorted(rate_values, key=lambda metric: (float(metric["progress_rate"]), str(metric["worker"])))
+        max_rate = float(ordered[-1]["progress_rate"])
+        parts.append(f"min={str(ordered[0]['worker'])}:{compact_rate_per_second(float(ordered[0]['progress_rate']))}")
+        parts.append(f"max={str(ordered[-1]['worker'])}:{compact_rate_per_second(max_rate)}")
+        if max_rate > 0:
+            parts.append(f"speedup={total_rate / max_rate:.1f}x")
+        return " ".join(parts)
     if output_values:
         total_output = sum(int(metric["output"]) for metric in values)
         if len(values) == 1:
@@ -1127,7 +1142,6 @@ def active_worker_summary(summary: dict[str, Any]) -> str:
             parts.append(speedup)
         return " ".join(parts)
 
-    rate_values = [metric for metric in values if bool(metric.get("progress_rate_seen"))]
     if not rate_values:
         return ""
     if len(values) == 1:
@@ -1147,6 +1161,8 @@ def active_worker_summary_payload(summary: dict[str, Any]) -> dict[str, Any]:
     if not metrics:
         return {}
     values = list(metrics.values())
+    rate_values = [metric for metric in values if bool(metric.get("progress_rate_seen"))]
+    prefer_rates = str((summary.get("metadata") or {}).get("kind") or "").lower() == "lc0-label"
     payload: dict[str, Any] = {
         "workers": len(values),
         "tasks": sum(int(metric.get("tasks", 0)) for metric in values),
@@ -1170,6 +1186,27 @@ def active_worker_summary_payload(summary: dict[str, Any]) -> dict[str, Any]:
             max_output = int(ordered[-1]["output"])
             if max_output > 0:
                 speedup = total_output / max_output
+                payload["speedup"] = round(speedup, 3)
+                payload["speedup_text"] = f"{speedup:.1f}x"
+        if prefer_rates and len(rate_values) > 1:
+            total_rate = sum(float(metric.get("progress_rate", 0.0)) for metric in rate_values)
+            ordered = sorted(rate_values, key=lambda metric: (float(metric["progress_rate"]), str(metric["worker"])))
+            max_rate = float(ordered[-1]["progress_rate"])
+            payload["rate"] = total_rate
+            payload["rate_name"] = "rate"
+            payload["rate_text"] = compact_rate_per_second(total_rate)
+            payload["min_rate"] = {
+                "worker": str(ordered[0]["worker"]),
+                "rate": float(ordered[0]["progress_rate"]),
+                "rate_text": compact_rate_per_second(float(ordered[0]["progress_rate"])),
+            }
+            payload["max_rate"] = {
+                "worker": str(ordered[-1]["worker"]),
+                "rate": max_rate,
+                "rate_text": compact_rate_per_second(max_rate),
+            }
+            if max_rate > 0:
+                speedup = total_rate / max_rate
                 payload["speedup"] = round(speedup, 3)
                 payload["speedup_text"] = f"{speedup:.1f}x"
     elif any(bool(metric.get("progress_rate_seen")) for metric in values):
@@ -1202,17 +1239,21 @@ def run_speedup_field(summary: dict[str, Any]) -> str:
     if len(metrics) <= 1:
         return ""
     values = list(metrics.values())
+    prefer_rates = str((summary.get("metadata") or {}).get("kind") or "").lower() == "lc0-label"
+    rates = [
+        float(metric.get("progress_rate", 0.0))
+        for metric in values
+        if bool(metric.get("progress_rate_seen"))
+    ]
+    if prefer_rates and len(rates) > 1:
+        max_rate = max(rates)
+        return f"speedup={sum(rates) / max_rate:.1f}x" if max_rate > 0 else ""
     if any(bool(metric.get("output_seen")) for metric in values):
         outputs = [int(metric.get("output", 0)) for metric in values]
         max_output = max(outputs)
         if max_output <= 0:
             return ""
         return f"speedup={sum(outputs) / max_output:.1f}x"
-    rates = [
-        float(metric.get("progress_rate", 0.0))
-        for metric in values
-        if bool(metric.get("progress_rate_seen"))
-    ]
     if not rates:
         return ""
     max_rate = max(rates)
@@ -2298,7 +2339,11 @@ def run_progress_graph_from_rows(
     sprt_rows: list[dict[str, Any]] = []
     sprt_series_names: dict[str, str] = {}
     sprt_llr_bound: float | None = None
-    is_sprt = str(manifest_metadata(manifest).get("kind") or "").lower() == "sprt"
+    kind = str(manifest_metadata(manifest).get("kind") or "").lower()
+    is_sprt = kind == "sprt"
+    is_lc0_label = kind == "lc0-label"
+    lc0_x = 0.0
+    lc0_values: dict[str, float] = {}
     x_unit = ""
     for row in rows:
         task = tasks_by_id.get(str(row.get("id") or ""))
@@ -2328,6 +2373,15 @@ def run_progress_graph_from_rows(
             if offset_unit == unit:
                 graph_data.setdefault("global_done", offset + int(data["done"]))
                 graph_data.setdefault("global_total", progress_unit_totals.get(unit, task_total))
+        if is_lc0_label:
+            done = progress_numeric_value("done", graph_data, fields)
+            if done is not None:
+                lc0_x += done
+            for spec in specs:
+                y = progress_numeric_value(spec["field"], graph_data, fields)
+                if y is not None:
+                    lc0_values[spec["name"]] = lc0_values.get(spec["name"], 0.0) + y
+            continue
         sprt_x: float | None = None
         for spec in specs:
             x_name = "global_done" if spec["x"] == "done" and "global_done" in graph_data else spec["x"]
@@ -2349,6 +2403,10 @@ def run_progress_graph_from_rows(
         if sprt_x is not None and isinstance(done, int) and done > 0:
             sprt_rows.append({"x": sprt_x, "done": done, "fields": fields})
 
+    if is_lc0_label and lc0_x > 0:
+        for name, value in lc0_values.items():
+            points_by_name[name] = [{"x": lc0_x, "y": value}]
+
     x_total = progress_unit_totals.get(x_unit) if x_unit else None
     for name, points in sprt_aggregate_graph_points(
         sprt_rows,
@@ -2365,7 +2423,7 @@ def run_progress_graph_from_rows(
     series = []
     for name, points in points_by_name.items():
         points.sort(key=lambda point: point["x"])
-        if len(points) >= 2 or (name.lower() == "ci" and points):
+        if len(points) >= 2 or (is_lc0_label and points) or (name.lower() == "ci" and points):
             series.append(graph_series_with_options(name, points, options_by_name.get(name)))
     if not series:
         return None

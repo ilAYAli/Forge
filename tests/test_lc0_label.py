@@ -225,6 +225,49 @@ class Lc0ProgressTests(unittest.TestCase):
             self.assertIn("output=240", active_worker_summary(summary))
             self.assertIn("speedup=2.0x", active_worker_summary(summary))
 
+            for index in range(2):
+                with (logs / f"lc0_{index}.log").open("a", encoding="utf-8") as file:
+                    file.write("shard 0/2 read=201 selected=151 written=121\n")
+            summary = status_summary(manifest, lease_seconds=600)
+            run_series = {
+                item["name"]: item["points"]
+                for item in summary["progress_graph"]["series"]
+            }
+            self.assertEqual(
+                [{"x": 400.0, "y": 400.0}, {"x": 402.0, "y": 402.0}],
+                run_series["read"],
+            )
+            self.assertEqual(
+                [{"x": 400.0, "y": 300.0}, {"x": 402.0, "y": 302.0}],
+                run_series["selected"],
+            )
+            self.assertEqual(
+                [{"x": 400.0, "y": 240.0}, {"x": 402.0, "y": 242.0}],
+                run_series["written"],
+            )
+
+    def test_speedup_uses_current_rates_instead_of_accumulated_output(self) -> None:
+        summary = {
+            "metadata": {"kind": "lc0-label"},
+            "active": [
+                {"worker": "early", "progress_data": {"kind": "metadata", "rate": 10.0}},
+                {"worker": "late", "progress_data": {"kind": "metadata", "rate": 8.0}},
+            ],
+            "worker_outputs": {
+                "early": {"output": 1_000_000, "output_seen": True},
+                "late": {"output": 10_000, "output_seen": True},
+            },
+            "worker_rates": {},
+        }
+
+        text = active_worker_summary(summary)
+
+        self.assertIn("output=1m", text)
+        self.assertIn("rate=18.0/s", text)
+        self.assertIn("min=late:8/s", text)
+        self.assertIn("max=early:10.0/s", text)
+        self.assertIn("speedup=1.8x", text)
+
 
 if __name__ == "__main__":
     unittest.main()

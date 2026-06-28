@@ -1407,7 +1407,12 @@ _HTML = r"""<!DOCTYPE html>
       const overlay = llrSeries && llrSeries !== primary ? llrSeries : null;
       const bandName = primary.band_series || (graphSeriesName(primary) === 'elo' ? 'ci' : '');
       const bandSeries = bandName ? graphSeriesByName(allSeries, bandName) : null;
-      const rows = graphRowHtml(primary, options, graph, xTotal, bandSeries, overlay);
+      const genericSeries = !eloSeries && !llrSeries
+        ? allSeries.filter(s => graphSeriesName(s.name) !== 'ci')
+        : [primary];
+      const rows = genericSeries.map(s => s === primary
+        ? graphRowHtml(s, options, graph, xTotal, bandSeries, overlay)
+        : graphRowHtml(s, options, graph, xTotal)).join('');
       const unit = graph?.x_unit ? ` · x: ${graph.x_unit}` : '';
       const stopLabel = earlyStop ? ` · stopped at ${fmtGraphNumber(earlyStop.observed)} / ${fmtGraphNumber(earlyStop.target)}` : '';
       return `<div class="task-graph">`
