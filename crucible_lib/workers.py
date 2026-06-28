@@ -2573,20 +2573,28 @@ def run_worker_control_on_coordinator(action: str, args: argparse.Namespace, coo
     host, runs_path = parse_coordinator(coordinator_runs)
     command = worker_control_command_args(action, args)
     if host:
+        pid_file = f"/tmp/crucible-control-{uuid.uuid4().hex}.pid"
+        reset_sigint_exec = (
+            "import os, signal, sys; "
+            "signal.signal(signal.SIGINT, signal.SIG_DFL); "
+            "os.execvp(sys.argv[1], sys.argv[1:])"
+        )
+        child = (
+            f"exec env {shlex.quote(COORDINATOR_RUNS_ENV)}= "
+            f"{shlex.quote(RUNS_DIR_ENV)}={shlex.quote(runs_path)} "
+            f"python3 -c {shlex.quote(reset_sigint_exec)} crucible {shell_join(command)}"
+        )
         remote = (
             "command -v crucible >/dev/null 2>&1 || "
             "{ echo 'crucible not found in PATH on coordinator' >&2; exit 127; }; "
-            f"exec env {shlex.quote(COORDINATOR_RUNS_ENV)}= "
-            f"{shlex.quote(RUNS_DIR_ENV)}={shlex.quote(runs_path)} "
-            f"crucible {shell_join(command)}"
+            f"pid_file={shlex.quote(pid_file)}; rm -f \"$pid_file\"; "
+            f"sh -lc {shlex.quote(child)} & pid=$!; "
+            "printf '%s\\n' \"$pid\" > \"$pid_file\"; "
+            "trap 'kill -INT \"$pid\" 2>/dev/null; wait \"$pid\" 2>/dev/null; "
+            "rm -f \"$pid_file\"; exit 130' INT TERM HUP; "
+            "wait \"$pid\"; rc=$?; rm -f \"$pid_file\"; exit $rc"
         )
-        result = subprocess.run(
-            ["ssh", *SSH_OPTS, host, remote],
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=False,
-        )
+        result = run_interruptible_coordinator_process(host, remote, pid_file)
     else:
         env = os.environ.copy()
         env[COORDINATOR_RUNS_ENV] = ""
@@ -2605,6 +2613,58 @@ def run_worker_control_on_coordinator(action: str, args: argparse.Namespace, coo
     if result.stderr:
         print(result.stderr, end="", file=sys.stderr)
     return result.returncode
+
+def cancel_remote_coordinator_process(host: str, pid_file: str) -> None:
+    cleanup = (
+        f"pid_file={shlex.quote(pid_file)}; "
+        "if test -r \"$pid_file\"; then "
+        "pid=$(cat \"$pid_file\"); kill -INT \"$pid\" 2>/dev/null || true; "
+        "i=0; while kill -0 \"$pid\" 2>/dev/null && test \"$i\" -lt 20; do "
+        "sleep 1; i=$((i + 1)); done; "
+        "if kill -0 \"$pid\" 2>/dev/null; then kill -TERM \"$pid\" 2>/dev/null || true; sleep 2; fi; "
+        "if kill -0 \"$pid\" 2>/dev/null; then kill -KILL \"$pid\" 2>/dev/null || true; fi; "
+        "fi; rm -f \"$pid_file\""
+    )
+    try:
+        subprocess.run(
+            ["ssh", *SSH_OPTS, host, cleanup],
+            text=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+            timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+
+def run_interruptible_coordinator_process(
+    host: str,
+    remote: str,
+    pid_file: str,
+) -> subprocess.CompletedProcess[str]:
+    command = ["ssh", *SSH_OPTS, host, remote]
+    proc = subprocess.Popen(
+        command,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        start_new_session=True,
+    )
+    try:
+        stdout, stderr = proc.communicate()
+    except KeyboardInterrupt:
+        cancel_remote_coordinator_process(host, pid_file)
+        try:
+            proc.communicate(timeout=REMOTE_PROCESS_STOP_GRACE_SECONDS)
+        except subprocess.TimeoutExpired:
+            ProcessTracker._terminate(proc, signal.SIGTERM)
+            try:
+                proc.communicate(timeout=REMOTE_PROCESS_STOP_GRACE_SECONDS)
+            except subprocess.TimeoutExpired:
+                ProcessTracker._terminate(proc, signal.SIGKILL)
+                proc.communicate()
+        raise
+    return subprocess.CompletedProcess(command, proc.returncode, stdout=stdout, stderr=stderr)
 
 def cmd_run_job(args: argparse.Namespace) -> int:
     delegated = start_on_coordinator(args, configured_coordinator_runs() or "")

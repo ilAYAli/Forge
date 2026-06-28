@@ -4415,7 +4415,12 @@ console.log(JSON.stringify({band, domain, maxBandRadius, zero, last, delta: zero
         with mock.patch.dict(
             os.environ,
             {"CRUCIBLE_COORDINATOR_RUNS": "pwa-5090:/home/petter/code/cpp/chess/crucible/runs"},
-        ), mock.patch("crucible.subprocess.run", return_value=remote_result) as run_mock:
+        ), mock.patch(
+            "crucible_lib.workers.status_can_delegate", return_value=True,
+        ), mock.patch(
+            "crucible_lib.workers.run_interruptible_coordinator_process",
+            return_value=remote_result,
+        ) as run_mock:
             stdout = io.StringIO()
             with contextlib.redirect_stdout(stdout):
                 rc = crucible.cmd_worker_set(self.worker_set_args(run="paused", worker="worker-b:6"))
@@ -4425,12 +4430,31 @@ console.log(JSON.stringify({band, domain, maxBandRadius, zero, last, delta: zero
             "coordinator: pwa-5090:/home/petter/code/cpp/chess/crucible/runs\nremote worker set\n",
             stdout.getvalue(),
         )
-        command = run_mock.call_args.args[0]
-        self.assertEqual("ssh", command[0])
-        self.assertIn("pwa-5090", command)
-        self.assertIn("CRUCIBLE_RUNS_DIR=/home/petter/code/cpp/chess/crucible/runs", command[-1])
-        self.assertIn("CRUCIBLE_COORDINATOR_RUNS=", command[-1])
-        self.assertIn("crucible worker set worker-b:6 paused", command[-1])
+        host, remote, pid_file = run_mock.call_args.args
+        self.assertEqual("pwa-5090", host)
+        self.assertIn("CRUCIBLE_RUNS_DIR=/home/petter/code/cpp/chess/crucible/runs", remote)
+        self.assertIn("CRUCIBLE_COORDINATOR_RUNS=", remote)
+        self.assertIn("crucible worker set worker-b:6 paused", remote)
+        self.assertIn("signal.SIG_DFL", remote)
+        self.assertIn("kill -INT", remote)
+        self.assertIn(pid_file, remote)
+
+    def test_worker_set_interrupt_cancels_remote_coordinator_process(self) -> None:
+        proc = mock.Mock()
+        proc.communicate.side_effect = [KeyboardInterrupt, ("", "")]
+        with (
+            mock.patch("crucible_lib.workers.subprocess.Popen", return_value=proc),
+            mock.patch("crucible_lib.workers.cancel_remote_coordinator_process") as cancel,
+        ):
+            with self.assertRaises(KeyboardInterrupt):
+                crucible.run_interruptible_coordinator_process(
+                    "pwa-5090",
+                    "remote command",
+                    "/tmp/control.pid",
+                )
+
+        cancel.assert_called_once_with("pwa-5090", "/tmp/control.pid")
+        proc.communicate.assert_has_calls([mock.call(), mock.call(timeout=crucible.REMOTE_PROCESS_STOP_GRACE_SECONDS)])
 
     def test_worker_del_drains_worker_and_releases_reserved_claims(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -4543,7 +4567,10 @@ console.log(JSON.stringify({band, domain, maxBandRadius, zero, last, delta: zero
         with mock.patch.dict(
             os.environ,
             {"CRUCIBLE_COORDINATOR_RUNS": "pwa-5090:/home/petter/code/cpp/chess/crucible/runs"},
-        ), mock.patch("crucible.subprocess.run", side_effect=[status_result, del_result]) as run_mock:
+        ), mock.patch("crucible.subprocess.run", return_value=status_result) as run_mock, mock.patch(
+            "crucible_lib.workers.run_interruptible_coordinator_process",
+            return_value=del_result,
+        ) as control_mock:
             stdout = io.StringIO()
             with contextlib.redirect_stdout(stdout):
                 rc = crucible.cmd_worker_del(self.worker_del_args(run=None, worker="worker-b"))
@@ -4554,7 +4581,7 @@ console.log(JSON.stringify({band, domain, maxBandRadius, zero, last, delta: zero
             stdout.getvalue(),
         )
         status_command = run_mock.call_args_list[0].args[0][-1]
-        del_command = run_mock.call_args_list[1].args[0][-1]
+        del_command = control_mock.call_args.args[1]
         self.assertIn("crucible status --json", status_command)
         self.assertIn("crucible worker del worker-b remote-run", del_command)
 
