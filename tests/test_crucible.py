@@ -5446,7 +5446,7 @@ console.log(JSON.stringify({band, domain, maxBandRadius, zero, last, delta: zero
             self.assertEqual("run_done", summary["event"])
             self.assertEqual("ok", summary["state"])
             self.assertEqual({"done": 3, "fail": 0, "running": 0, "claimed": 0, "stale": 0, "pending": 0}, summary["counts"])
-            self.assertIn("games=30/30", summary["status_line"])
+            self.assertIn("games=20/30", summary["status_line"])
             stop = json.loads((state / "stop.json").read_text(encoding="utf-8"))
             self.assertEqual("aggregate_sprt_decision", stop["reason"])
             self.assertEqual("H1", stop["decision"]["side"])
@@ -8849,6 +8849,47 @@ console.log(JSON.stringify({band, domain, maxBandRadius, zero, last, delta: zero
             pending_row = next(row for row in summary["rows"] if row["id"] == "sprt_0001")
             self.assertEqual("pending", pending_row["state"])
             self.assertEqual("games=22/64", pending_row["progress"])
+
+    def test_status_counts_only_observed_progress_for_soft_cancelled_done_tasks(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            state = root / "state"
+            logs = root / "logs"
+            state.mkdir()
+            logs.mkdir()
+            manifest = {
+                "schema": "crucible.task.v1",
+                "name": "sprt",
+                "work_dir": str(root),
+                "state_dir": str(state),
+                "log_dir": str(logs),
+                "tasks": [
+                    {
+                        "id": f"sprt_{index:04d}",
+                        "index": index,
+                        "command": "true",
+                        "outputs": [],
+                        "progress": {
+                            "unit": "games",
+                            "total": 25,
+                            "log_regex": r"\[\s*(?P<done>\d+)\s*/\s*(?P<total>\d+)\]",
+                        },
+                    }
+                    for index in range(2)
+                ],
+            }
+            for index in range(2):
+                (state / f"sprt_{index:04d}.done.json").write_text(
+                    json.dumps({"task": f"sprt_{index:04d}", "soft_cancel": True, "skipped": True}),
+                    encoding="utf-8",
+                )
+            (logs / "sprt_0000.log").write_text("[10/25]\n", encoding="utf-8")
+
+            summary = crucible.status_summary(manifest, lease_seconds=600)
+
+            self.assertEqual(2, summary["counts"]["done"])
+            self.assertEqual({"games": 10}, summary["progress_done"])
+            self.assertEqual("progress=games=10/50", crucible.summary_progress(summary))
 
     def test_status_uses_completed_rate_when_running_task_has_no_progress_yet(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
