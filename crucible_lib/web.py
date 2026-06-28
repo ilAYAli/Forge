@@ -643,6 +643,7 @@ _HTML = r"""<!DOCTYPE html>
       openState[id] = nowOpen;
       const hdr = el.previousElementSibling;
       if (hdr) { const a = hdr.querySelector('.arrow'); if (a) a.classList.toggle('open', nowOpen); }
+      if (nowOpen) requestAnimationFrame(() => sizeGraphPointMarkers(el));
       saveUiState();
     }
 
@@ -1144,8 +1145,20 @@ _HTML = r"""<!DOCTYPE html>
       const scale = graphScale(name, points, extras, w, h, xTotal);
       const stride = Math.max(1, Math.ceil(points.length / 48));
       return points.filter((_, index) => index % stride === 0 || index === points.length - 1).map(point =>
-        `<circle class="graph-point" style="fill:${esc(color)}" cx="${scale.x(point.x).toFixed(1)}" cy="${scale.y(point.y).toFixed(1)}" r="2.2"></circle>`
+        `<ellipse class="graph-point" style="fill:${esc(color)}" cx="${scale.x(point.x).toFixed(1)}" cy="${scale.y(point.y).toFixed(1)}" rx="2.2" ry="2.2"></ellipse>`
       ).join('');
+    }
+
+    function sizeGraphPointMarkers(root = document) {
+      root.querySelectorAll('svg.graph-live-hover').forEach(svg => {
+        const rect = svg.getBoundingClientRect();
+        if (!rect.width || !rect.height) return;
+        const radiusX = 2.2 * (rect.height / GRAPH_H) / (rect.width / GRAPH_W);
+        svg.querySelectorAll('.graph-point').forEach(point => {
+          point.setAttribute('rx', radiusX.toFixed(3));
+          point.setAttribute('ry', '2.2');
+        });
+      });
     }
 
     function scaledLinePath(scaled, move = true) {
@@ -1774,6 +1787,7 @@ _HTML = r"""<!DOCTYPE html>
           parts.push('<div class="empty">no active Crucible runs found</div>');
         }
         el.innerHTML = parts.join('');
+        sizeGraphPointMarkers(el);
         initResizableTables();
         applySortToAllTables();
         saveUiState();
@@ -1793,6 +1807,7 @@ _HTML = r"""<!DOCTYPE html>
     document.addEventListener('click', () => {
       if (soundEnabled) ensureAudioContext();
     }, {once: true});
+    window.addEventListener('resize', () => sizeGraphPointMarkers());
     refresh();
     setInterval(refresh, 5000);
   </script>
