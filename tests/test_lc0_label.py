@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import argparse
+import copy
 import tempfile
 import unittest
 from pathlib import Path
@@ -18,6 +19,7 @@ from crucible_lib.lc0 import (
 )
 from crucible_lib.core import file_record, write_json
 from crucible_lib.status import cmd_wait
+from crucible_lib.status import active_worker_summary, status_summary
 from crucible_lib.tasks import task_done_path
 
 
@@ -165,6 +167,63 @@ class Lc0FinalizationTests(unittest.TestCase):
             self.assertEqual(96, completion["merged_bytes"])
             self.assertEqual(3, completion["positions"])
             self.assertTrue((root / "dataset.bullet").is_file())
+
+
+class Lc0ProgressTests(unittest.TestCase):
+    def test_template_graphs_counters_and_reports_speedup(self) -> None:
+        template_path = Path(__file__).resolve().parents[1] / "templates" / "lc0-label.template.json"
+        progress = json.loads(template_path.read_text(encoding="utf-8"))["task"]["progress"]
+        progress.pop("series")
+        progress["log_regex"] = (
+            r"read=(?P<done>\d+) selected=(?P<selected>\d+) written=(?P<output>\d+)"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            state = root / "state"
+            logs = root / "logs"
+            state.mkdir()
+            logs.mkdir()
+            tasks = []
+            for index, host in enumerate(("worker-a", "worker-b")):
+                task_progress = copy.deepcopy(progress)
+                task_progress["total"] = 200
+                task_id = f"lc0_{index}"
+                tasks.append({
+                    "id": task_id,
+                    "index": index,
+                    "command": "true",
+                    "outputs": [],
+                    "progress": task_progress,
+                })
+                (state / f"{task_id}.running.json").write_text(
+                    json.dumps({"task": task_id, "host": host}),
+                    encoding="utf-8",
+                )
+                (logs / f"{task_id}.log").write_text(
+                    "shard 0/2 read=100 selected=80 written=60\n"
+                    "shard 0/2 read=200 selected=150 written=120\n",
+                    encoding="utf-8",
+                )
+            manifest = {
+                "schema": "crucible.task.v1",
+                "name": "lc0-progress",
+                "kind": "lc0-label",
+                "work_dir": str(root),
+                "state_dir": str(state),
+                "log_dir": str(logs),
+                "tasks": tasks,
+            }
+
+            summary = status_summary(manifest, lease_seconds=600)
+
+            graph = summary["active"][0]["progress_graph"]
+            series = {item["name"]: item["points"] for item in graph["series"]}
+            self.assertEqual(["read", "selected", "written"], list(series))
+            self.assertEqual([{"x": 100.0, "y": 80.0}, {"x": 200.0, "y": 150.0}], series["selected"])
+            self.assertEqual([{"x": 100.0, "y": 60.0}, {"x": 200.0, "y": 120.0}], series["written"])
+            self.assertIn("workers=2", active_worker_summary(summary))
+            self.assertIn("output=240", active_worker_summary(summary))
+            self.assertIn("speedup=2.0x", active_worker_summary(summary))
 
 
 if __name__ == "__main__":

@@ -2171,6 +2171,12 @@ def progress_series_specs(config: dict[str, Any], *, kind: str | None = None) ->
                 {"name": "elo", "field": "elo", "x": "done", **sprt_progress_series_options("elo")},
                 {"name": "ci", "field": "ci", "x": "done"},
             ]
+        if str(kind or "").lower() == "lc0-label":
+            return [
+                {"name": "read", "field": "done", "x": "done", "scale": "linear"},
+                {"name": "selected", "field": "selected", "x": "done", "scale": "linear"},
+                {"name": "written", "field": "output", "x": "done", "scale": "linear"},
+            ]
         return []
     specs: list[dict[str, Any]] = []
     for item in raw:

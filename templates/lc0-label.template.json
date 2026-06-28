@@ -113,8 +113,28 @@
     "command": ".venv/bin/python tools/score/label_lc0.py --input {source_cache} --inventory {inventory} --output {output_dir}/{task_name}.bullet --stats {output_dir}/{task_name}.stats.json --engine {engine} --depth {depth} --threads {threads} --hash {hash} --max-records {max_records} --min-ply {min_ply} {quiet_only_arg} --shard-count {task_count} --shard-index {task_index}",
     "progress": {
       "unit": "records",
-      "log_regex": "read=(?P<done>\\d+) selected=(?P<selected>\\d+) written=(?P<output>\\d+)",
-      "output_unit": "positions"
+      "log_regex": "read=(?P<done>\\d+) selected=(?P<selected>\\d+) written=(?P<output>\\d+) rate=(?P<rate>[0-9.]+)/s",
+      "output_unit": "positions",
+      "series": [
+        {
+          "name": "read",
+          "field": "done",
+          "x": "done",
+          "scale": "linear"
+        },
+        {
+          "name": "selected",
+          "field": "selected",
+          "x": "done",
+          "scale": "linear"
+        },
+        {
+          "name": "written",
+          "field": "output",
+          "x": "done",
+          "scale": "linear"
+        }
+      ]
     }
   },
   "finalize": {
