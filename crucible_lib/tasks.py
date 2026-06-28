@@ -380,6 +380,7 @@ def run_task(
         "attempt": max(1, int(attempt)),
         "log": str(log_path),
         "manifest_sha256": manifest_checksum(manifest),
+        "task_execution_sha256": task_execution_checksum(manifest, task),
         "outputs": [file_record(path) for path in task_outputs(task) if path.exists()],
     }
     if max_attempts > 0:
@@ -461,6 +462,7 @@ def claim_task(
             "heartbeat_epoch": epoch(),
             "lease_seconds": lease_seconds,
             "manifest_sha256": digest,
+            "task_execution_sha256": task_execution_checksum(manifest, task),
             "attempt": attempt,
         }
         if max_attempts > 0:
@@ -693,6 +695,10 @@ def coordinator_result_payload(
     )
     payload = dict(local_payload)
     payload["manifest_sha256"] = manifest_checksum(coordinator_manifest)
+    payload["task_execution_sha256"] = task_execution_checksum(
+        coordinator_manifest,
+        coordinator_task,
+    )
     payload["log"] = str(task_log_path(coordinator_manifest, coordinator_task))
     payload["outputs"] = output_records
     payload["worker"] = {
@@ -700,6 +706,10 @@ def coordinator_result_payload(
         "host": local_payload.get("host"),
         "platform": local_payload.get("platform"),
         "profile_manifest_sha256": manifest_checksum(local_manifest),
+        "profile_task_execution_sha256": task_execution_checksum(
+            local_manifest,
+            local_task,
+        ),
         "log": local_payload.get("log"),
         "outputs": worker_outputs,
     }

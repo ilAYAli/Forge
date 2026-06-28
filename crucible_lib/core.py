@@ -270,6 +270,21 @@ def manifest_checksum(manifest: dict[str, Any]) -> str:
     payload = json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(payload).hexdigest()
 
+def task_execution_checksum(manifest: dict[str, Any], task: dict[str, Any]) -> str:
+    """Hash inputs that define a task's execution, excluding mutable routing."""
+    execution_task = dict(task)
+    execution_task.pop("claim_worker", None)
+    execution = {
+        "schema": manifest.get("schema"),
+        "kind": manifest.get("kind"),
+        "work_dir": manifest.get("work_dir"),
+        "vars": manifest.get("vars"),
+        "requirements": manifest.get("requirements"),
+        "task": execution_task,
+    }
+    payload = json.dumps(execution, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
 def sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:

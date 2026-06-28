@@ -6143,6 +6143,141 @@ console.log(JSON.stringify({band, domain, maxBandRadius, zero, last, delta: zero
             self.assertIsNotNone(reclaimed)
             self.assertFalse(running.exists())
 
+    def test_task_execution_checksum_excludes_routing_but_tracks_execution(self) -> None:
+        manifest = {
+            "schema": "crucible.task.v1",
+            "kind": "lc0-label",
+            "name": "checksum-test",
+            "created_at": "2026-01-01T00:00:00+0000",
+            "work_dir": "/work",
+            "vars": {"depth": 12},
+            "requirements": {"repos": [{"commit": "abc123"}]},
+            "tasks": [
+                {
+                    "id": "task_0000",
+                    "index": 0,
+                    "claim_worker": "worker-a",
+                    "command": "label --depth {depth}",
+                    "outputs": ["/output/0.bullet"],
+                },
+                {"id": "task_0001", "index": 1, "command": "other"},
+            ],
+        }
+        task = manifest["tasks"][0]
+        expected = crucible.task_execution_checksum(manifest, task)
+
+        routed = copy.deepcopy(manifest)
+        routed["created_at"] = "2026-02-01T00:00:00+0000"
+        routed["tasks"][0]["claim_worker"] = "worker-b"
+        routed["tasks"][1]["command"] = "changed other task"
+        self.assertEqual(
+            expected,
+            crucible.task_execution_checksum(routed, routed["tasks"][0]),
+        )
+
+        changed_command = copy.deepcopy(manifest)
+        changed_command["tasks"][0]["command"] = "label --depth 13"
+        self.assertNotEqual(
+            expected,
+            crucible.task_execution_checksum(changed_command, changed_command["tasks"][0]),
+        )
+        changed_requirement = copy.deepcopy(manifest)
+        changed_requirement["requirements"]["repos"][0]["commit"] = "def456"
+        self.assertNotEqual(
+            expected,
+            crucible.task_execution_checksum(changed_requirement, changed_requirement["tasks"][0]),
+        )
+
+    def test_verify_prefers_task_execution_checksum_over_manifest_checksum(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            output = root / "task.out"
+            output.write_text("valid output", encoding="utf-8")
+            manifest = {
+                "schema": "crucible.task.v1",
+                "kind": "test",
+                "name": "task-checksum",
+                "work_dir": str(root),
+                "state_dir": str(root / "state"),
+                "log_dir": str(root / "logs"),
+                "claim_dir": str(root / "claims"),
+                "requirements": {},
+                "tasks": [{
+                    "id": "task_0000",
+                    "index": 0,
+                    "claim_worker": "worker-b",
+                    "command": "true",
+                    "outputs": [str(output)],
+                }],
+            }
+            task = manifest["tasks"][0]
+            done_path = crucible.task_done_path(manifest, task)
+            done_path.parent.mkdir()
+            payload = {
+                "task": task["id"],
+                "manifest_sha256": "obsolete-manifest-checksum",
+                "task_execution_sha256": crucible.task_execution_checksum(manifest, task),
+                "outputs": [crucible.file_record(output)],
+            }
+            crucible.write_json(done_path, payload)
+
+            crucible.verify_manifest(manifest, verify_requirements=False)
+
+            payload["task_execution_sha256"] = "wrong-task-checksum"
+            crucible.write_json(done_path, payload)
+            with self.assertRaisesRegex(SystemExit, "task execution checksum mismatch"):
+                crucible.verify_manifest(manifest, verify_requirements=False)
+
+    def test_coordinator_result_payload_stamps_task_execution_checksum(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            coordinator_output = root / "coordinator" / "task.out"
+            local_output = root / "worker" / "task.out"
+            local_output.parent.mkdir(parents=True)
+            local_output.write_text("result", encoding="utf-8")
+            coordinator_task = {
+                "id": "task_0000",
+                "index": 0,
+                "claim_worker": "worker-a",
+                "command": "true",
+                "outputs": [str(coordinator_output)],
+            }
+            local_task = dict(coordinator_task, outputs=[str(local_output)])
+            coordinator_manifest = {
+                "schema": "crucible.task.v1",
+                "work_dir": str(root / "coordinator"),
+                "state_dir": str(root / "coordinator" / "state"),
+                "log_dir": str(root / "coordinator" / "logs"),
+                "requirements": {},
+                "tasks": [coordinator_task],
+            }
+            local_manifest = {
+                **coordinator_manifest,
+                "work_dir": str(root / "worker"),
+                "state_dir": str(root / "worker" / "state"),
+                "log_dir": str(root / "worker" / "logs"),
+                "tasks": [local_task],
+            }
+
+            payload, _ = crucible.coordinator_result_payload(
+                coordinator_manifest=coordinator_manifest,
+                local_payload={"host": "worker-a"},
+                local_manifest=local_manifest,
+                coordinator_task=coordinator_task,
+                local_task=local_task,
+                worker="worker-a",
+                state="done",
+            )
+
+            self.assertEqual(
+                crucible.task_execution_checksum(coordinator_manifest, coordinator_task),
+                payload["task_execution_sha256"],
+            )
+            self.assertEqual(
+                crucible.task_execution_checksum(local_manifest, local_task),
+                payload["worker"]["profile_task_execution_sha256"],
+            )
+
     def test_verify_rejects_done_task_without_outputs(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

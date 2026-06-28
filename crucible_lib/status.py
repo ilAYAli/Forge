@@ -1789,6 +1789,7 @@ def soft_cancel_done_payload(
         "rc": 0,
         "log": str(task_log_path(manifest, task)),
         "manifest_sha256": manifest_checksum(manifest),
+        "task_execution_sha256": task_execution_checksum(manifest, task),
         "outputs": [],
         "soft_cancel": True,
         "skipped": True,
@@ -3633,8 +3634,16 @@ def verify_manifest(manifest: dict[str, Any], *, verify_requirements: bool = Tru
         done = read_json(task_done_path(manifest, task))
         if done.get("soft_cancel"):
             continue
+        expected_task_sha = task_execution_checksum(manifest, task)
+        done_task_sha = str(done.get("task_execution_sha256") or "")
         done_manifest_sha = str(done.get("manifest_sha256") or "")
-        if done_manifest_sha and done_manifest_sha != expected_manifest_sha:
+        if done_task_sha and done_task_sha != expected_task_sha:
+            failures.append(f"{task['id']}: task execution checksum mismatch")
+        elif (
+            not done_task_sha
+            and done_manifest_sha
+            and done_manifest_sha != expected_manifest_sha
+        ):
             failures.append(f"{task['id']}: manifest checksum mismatch")
         records = done.get("outputs", [])
         outputs = task_outputs(task)
