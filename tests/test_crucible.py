@@ -527,6 +527,8 @@ except SystemExit as exc:
         self.assertIn(".elo-pos", web._HTML)
         self.assertIn("function eloFieldClass", web._HTML)
         self.assertIn("nonEtaFields.map(renderField)", web._HTML)
+        self.assertIn("class=\"games-current\"", web._HTML)
+        self.assertIn(".games-current { color: var(--grn)", web._HTML)
         self.assertIn("function progressEtaFromRate", web._HTML)
         self.assertIn("(pd.total - pd.done) / pd.rate", web._HTML)
         self.assertIn("function hasTextSelection", web._HTML)

@@ -95,6 +95,7 @@ _HTML = r"""<!DOCTYPE html>
     .run-state { font-weight: 700; }
     .run-state.stopped-early { color: var(--warn); }
     .run-fields { color: var(--text); }
+    .games-current { color: var(--grn); font-weight: 600; }
     .run-eta   { color: var(--yel); font-weight: 600; }
     .elo-pos { color: var(--grn); font-weight: 600; }
     .elo-neu { color: var(--yel); font-weight: 600; }
@@ -306,6 +307,10 @@ _HTML = r"""<!DOCTYPE html>
     }
 
     function renderField(field) {
+      const games = String(field).match(/^(games=)([^/]+)(\/.*)$/);
+      if (games) {
+        return `<span class="field">${esc(games[1])}<span class="games-current">${esc(games[2])}</span>${esc(games[3])}</span>`;
+      }
       return `<span class="field${eloFieldClass(field)}">${esc(field)}</span>`;
     }
 
