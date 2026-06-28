@@ -1,5 +1,7 @@
 <img width="660" height="800" alt="logo" src="https://github.com/user-attachments/assets/e124b3bf-8e83-4421-80e0-78c2e4c9d0bb" />
 
+<img width="1531" height="778" alt="image" src="https://github.com/user-attachments/assets/75437e73-3e77-477c-900b-a3207de17086" />
+
 # Crucible
 
 Crucible distributes manifest-defined work across workers you control.
