@@ -1846,6 +1846,7 @@ _WEB_HOST = "127.0.0.1"
 _WEB_PORT = 0
 _WEB_RESTART_DELAY_SECONDS = 0.2
 _WEB_RESTARTER_WAIT_SECONDS = 15.0
+_WEB_RUN_SNAPSHOT_VERSION = 2
 _WEB_STATE_NAME = ".web-state.json"
 _WEB_STATE_LOCK = threading.Lock()
 _WEB_RESTARTER_CODE = r"""
@@ -2094,6 +2095,7 @@ def _normalize_web_run_payload(payload: dict[str, Any]) -> dict[str, Any]:
         return payload
     normalized = copy.deepcopy(payload)
     normalized["state"] = "done"
+    normalized["web_snapshot_version"] = _WEB_RUN_SNAPSHOT_VERSION
     return normalized
 
 def _commands_need_refresh(payload: dict[str, Any]) -> bool:
@@ -2139,7 +2141,11 @@ def _progress_graph_needs_refresh(payload: dict[str, Any]) -> bool:
     return False
 
 def _web_run_snapshot_needs_refresh(payload: dict[str, Any]) -> bool:
-    return _commands_need_refresh(payload) or _progress_graph_needs_refresh(payload)
+    return (
+        payload.get("web_snapshot_version") != _WEB_RUN_SNAPSHOT_VERSION
+        or _commands_need_refresh(payload)
+        or _progress_graph_needs_refresh(payload)
+    )
 
 def _collect_named_run_payload(run: str, coordinator_runs: str | None) -> dict[str, Any] | None:
     result = _run_web_cli(["status", run, "--json"], coordinator_runs=coordinator_runs)
@@ -2316,6 +2322,8 @@ def _merge_lingering_runs(payload: dict[str, Any]) -> dict[str, Any]:
                 command_checked.discard(name)
                 continue
             if name not in visible_names and isinstance(item, dict):
+                if item.get("web_snapshot_version") != _WEB_RUN_SNAPSHOT_VERSION:
+                    command_checked.discard(name)
                 if not _web_run_snapshot_needs_refresh(item):
                     command_checked.discard(name)
                 if (

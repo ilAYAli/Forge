@@ -1714,6 +1714,7 @@ console.log(JSON.stringify({band, domain, maxBandRadius, zero, last, delta: zero
                 })
                 crucible.write_json(runs / ".web-state.json", {
                     "lingering_runs": {"done-run": stale},
+                    "command_checked_runs": ["done-run"],
                 })
                 with mock.patch("crucible_lib.web._collect_named_run_payload", return_value=fresh) as named:
                     merged = web._merge_lingering_runs(copy.deepcopy(empty_payload))
@@ -1780,6 +1781,7 @@ console.log(JSON.stringify({band, domain, maxBandRadius, zero, last, delta: zero
             self.assertEqual(0.35, series["elo"]["band_scale"])
             self.assertEqual(0.24, series["elo"]["band_max_fraction"])
             self.assertEqual(fresh["progress_graph"], state["lingering_runs"]["done-run"]["progress_graph"])
+            self.assertEqual(web._WEB_RUN_SNAPSHOT_VERSION, state["lingering_runs"]["done-run"]["web_snapshot_version"])
 
     def test_web_refreshes_seed_specific_legacy_commands(self) -> None:
         import crucible_lib.web as web
