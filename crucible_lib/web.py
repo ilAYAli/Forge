@@ -306,17 +306,20 @@ _HTML = r"""<!DOCTYPE html>
       return m ? eloClass(m[1]) : '';
     }
 
-    function llrFieldClass(field) {
-      const m = String(field).match(/^llr=([^/]+)/i);
-      return m ? eloClass(m[1]) : '';
-    }
-
     function renderField(field) {
       const games = String(field).match(/^(games=)([^/]+)(\/.*)$/);
       if (games) {
         return `<span class="field">${esc(games[1])}<span class="games-current">${esc(games[2])}</span>${esc(games[3])}</span>`;
       }
-      return `<span class="field${eloFieldClass(field) || llrFieldClass(field)}">${esc(field)}</span>`;
+      const elo = String(field).match(/^(elo~?=)(.*)$/i);
+      if (elo) {
+        return `<span class="field">${esc(elo[1])}<span class="${eloClass(elo[2]).trim()}">${esc(elo[2])}</span></span>`;
+      }
+      const llr = String(field).match(/^(llr=)([^/]+)(.*)$/i);
+      if (llr) {
+        return `<span class="field">${esc(llr[1])}<span class="${eloClass(llr[2]).trim()}">${esc(llr[2])}</span>${esc(llr[3])}</span>`;
+      }
+      return `<span class="field">${esc(field)}</span>`;
     }
 
     function runDatePrefix(r) {
