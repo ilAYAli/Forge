@@ -206,16 +206,16 @@ _HTML = r"""<!DOCTYPE html>
                    max-width: calc(100% - 16px); overflow: hidden; text-overflow: ellipsis;
                    white-space: nowrap; font-variant-numeric: tabular-nums; padding: 1px 4px; }
     .graph-value.hover { color: var(--text); }
-    .graph-row.combined .graph-axis { height: 160px; }
-    .graph-row.combined .graph-plot { height: 182px; }
-    .graph-row.combined .graph-plot svg { height: 160px; }
-    .graph-legend { display: flex; flex-wrap: wrap; gap: 5px 16px; margin: -1px 0 1px 68px;
+    .graph-row.combined .graph-axis { height: 72px; }
+    .graph-row.combined .graph-plot { height: 94px; }
+    .graph-row.combined .graph-plot svg { height: 72px; }
+    .graph-row.combined .graph-value { display: none; }
+    .graph-legend { display: flex; flex-wrap: wrap; gap: 3px 12px; margin: -2px 0 0 68px;
                     color: #9aa6b8; font-size: 11px; }
     .graph-legend-item { display: inline-flex; align-items: baseline; gap: 5px; white-space: nowrap; }
     .graph-legend-dot { width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto; }
     .graph-legend-name { color: var(--text); }
     .graph-legend-value { color: #c3ccda; font-variant-numeric: tabular-nums; }
-    .graph-legend-help { color: #7f8b9d; }
 
     @media (max-width: 640px) {
       #runs { padding: 8px 6px; }
@@ -225,8 +225,7 @@ _HTML = r"""<!DOCTYPE html>
       .graph-row { grid-template-columns: 44px minmax(0, 1fr); gap: 7px; }
       .graph-value { display: none; }
       .graph-plot { min-width: 0; }
-      .graph-legend { margin-left: 51px; gap: 4px 10px; }
-      .graph-legend-help { display: none; }
+      .graph-legend { margin-left: 51px; gap: 3px 8px; }
     }
 
     /* pending / fail groups */
@@ -1457,31 +1456,33 @@ _HTML = r"""<!DOCTYPE html>
     }
 
     function combinedGraphLegendHtml(series) {
-      return `<div class="graph-legend">` + series.map(s => {
+      const ordered = [...series].sort((a, b) =>
+        Number(graphSeriesName(b.name) === 'total') - Number(graphSeriesName(a.name) === 'total')
+      );
+      return `<div class="graph-legend">` + ordered.map(s => {
         const raw = s.rawPoints || s.points;
         const latest = raw[raw.length - 1]?.y;
-        const help = graphSeriesName(s.name) === 'total' ? 'aggregate throughput' : 'worker throughput';
         return `<span class="graph-legend-item">`
           + `<span class="graph-legend-dot" style="background:${esc(s.color)}"></span>`
           + `<span class="graph-legend-name">${esc(s.name)}</span>`
           + `<span class="graph-legend-value">${esc(fmtGraphValue(s.name, latest))}/s</span>`
-          + `<span class="graph-legend-help">${esc(help)}</span>`
           + `</span>`;
       }).join('') + `</div>`;
     }
 
     function graphCombinedRowHtml(series, graph, xTotal) {
-      const h = 160;
-      const primary = series[0];
-      const allY = series.flatMap(s => s.points.map(point => point.y));
+      const h = 72;
+      const primary = graphSeriesByName(series, 'total') || series[0];
+      const plotted = [primary];
+      const allY = primary.points.map(point => point.y);
       const grid = graphGridLines(primary.name, primary.points, allY, GRAPH_W, h);
-      const paths = series.map(s => {
+      const paths = plotted.map(s => {
         const path = sparkPath(primary.name, s.points, allY, GRAPH_W, h, xTotal);
         return `<path class="graph-line" d="${esc(path)}" style="stroke:${esc(s.color)}"></path>`;
       }).join('');
-      const hover = graphCombinedHoverZones(series, graph?.x_unit || 'records', GRAPH_W, h, xTotal);
+      const hover = graphCombinedHoverZones(plotted, graph?.x_unit || 'records', GRAPH_W, h, xTotal);
       const latestX = primary.rawPoints[primary.rawPoints.length - 1]?.x;
-      const valueText = series.map(s => {
+      const valueText = plotted.map(s => {
         const raw = s.rawPoints || s.points;
         return `${s.name} ${fmtGraphValue(s.name, raw[raw.length - 1]?.y)}/s`;
       }).join(' · ');
@@ -1528,8 +1529,7 @@ _HTML = r"""<!DOCTYPE html>
       const ciSeries = graphSeriesByName(allSeries, 'ci');
       const eloSeries = graphSeriesByName(allSeries, 'elo');
       const llrSeries = graphSeriesByName(allSeries, 'llr');
-      const isLc0Graph = String(run?.kind || run?.metadata?.kind || '').toLowerCase() === 'lc0-label'
-        && Boolean(graphSeriesByName(allSeries, 'total'));
+      const isLc0Graph = Boolean(graphSeriesByName(allSeries, 'total'));
       const lc0Series = isLc0Graph ? allSeries : [];
       const primary = eloSeries || allSeries.find(s => graphSeriesName(s.name) !== 'ci') || null;
       if (!primary) return '';
@@ -1548,7 +1548,7 @@ _HTML = r"""<!DOCTYPE html>
           ? graphRowHtml(s, options, graph, xTotal, bandSeries, overlay)
           : graphRowHtml(s, options, graph, xTotal)).join('');
       const unit = isLc0Graph
-        ? ' · throughput · y-axis: records/s · x-axis: raw records scanned'
+        ? ' · aggregate records/s over records scanned'
         : (graph?.x_unit ? ` · x: ${graph.x_unit}` : '');
       const stopLabel = earlyStop ? ` · stopped at ${fmtGraphNumber(earlyStop.observed)} / ${fmtGraphNumber(earlyStop.target)}` : '';
       return `<div class="task-graph">`
