@@ -3339,6 +3339,22 @@ def cmd_wait(args: argparse.Namespace) -> int:
     last_line = ""
 
     def finish(event: str, state: str, rc: int, manifest: dict[str, Any]) -> int:
+        finalization = None
+        if event == "run_done" and state == "ok" and isinstance(manifest.get("finalize"), dict):
+            try:
+                verify_manifest(manifest, verify_requirements=False)
+                from .lc0 import finalize_lc0
+
+                finalization = finalize_lc0(manifest_path, manifest)
+            except (OSError, ValueError, json.JSONDecodeError, SystemExit) as exc:
+                print(f"finalization failed: {exc}", file=sys.stderr)
+                event, state, rc = "run_finalize_fail", "failed", 1
+        if state != "ok":
+            from .lc0 import cleanup_partials
+
+            finalizer = manifest.get("finalize")
+            if isinstance(finalizer, dict):
+                cleanup_partials(manifest, finalizer)
         payload = run_completion_event_payload(
             manifest_path=manifest_path,
             manifest=manifest,
@@ -3348,6 +3364,11 @@ def cmd_wait(args: argparse.Namespace) -> int:
             elapsed_seconds=time.monotonic() - started_at,
             lease_seconds=args.lease_seconds,
         )
+        if isinstance(finalization, dict):
+            payload["finalization"] = finalization
+            for key in ("merged_bytes", "positions", "shard_count", "inventory_digest", "task_totals"):
+                if key in finalization:
+                    payload[key] = finalization[key]
         write_json(run_summary_path(manifest_path), payload)
         try:
             from .web import remember_web_run_payload

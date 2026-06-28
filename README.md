@@ -87,6 +87,26 @@ Notes:
 - Without `--shards`, Crucible chooses 8 shards per worker slot, capped by
   `--games`.
 
+### Distributed LC0 labeling
+
+`lc0-label` streams LC0 V6 gzip records directly through Stockfish into a
+merged BulletFormat dataset. The default run uses 152 shards across
+`pwa-5090:20,pwa-mbp:8,pwa-mbp0:10`.
+
+```sh
+crucible lc0-label \
+  --source ~/code/cpp/chess/nnue/data/lc0/test91/training-run2-test91-20260128-1817 \
+  --output ~/code/cpp/chess/nnue/data/labeled/test91-depth12.bullet \
+  --run lc0-test91-depth12 \
+  --comment "9M raw LC0 records, quiet positions from ply 16"
+```
+
+The corpus is inventoried by relative path, size, and SHA-256 under
+`~/.cache/crucible/inputs/`. Completed shards resume from their done markers;
+the detached wait monitor validates every shard and atomically merges them
+before publishing success. `--replace` is required to replace either the named
+run or final dataset.
+
 Default workers can be configured in `~/.config/crucible/config.yml`:
 
 ```yaml

@@ -5,6 +5,7 @@ import tempfile
 
 from .config import *
 from .manifest import *
+from .lc0 import build_inventory
 
 
 TEMPLATE_SCHEMA = "crucible.template.v1"
@@ -574,12 +575,21 @@ def expand_template(template_name: str, template_path_: Path, template: dict[str
     path_maps = template.get("path_maps")
     if path_maps is not None:
         manifest["path_maps"] = safe_format(path_maps, values)
+    finalizer = template.get("finalize")
+    if finalizer is not None:
+        if not isinstance(finalizer, dict):
+            raise SystemExit(f"{template_name}: finalize must be an object")
+        manifest["finalize"] = safe_format(finalizer, values)
     validate_manifest_payload(manifest, label=f"template {template_name}")
     return manifest
 
 
-def resolved_workers_arg(run_options: argparse.Namespace, config: dict[str, Any]) -> str:
-    workers = run_options.workers or default_workers_arg(config)
+def resolved_workers_arg(
+    run_options: argparse.Namespace,
+    config: dict[str, Any],
+    template: dict[str, Any] | None = None,
+) -> str:
+    workers = run_options.workers or (template or {}).get("default_workers") or default_workers_arg(config)
     if not workers:
         raise SystemExit(
             "crucible run: missing --workers and no default_workers configured; "
@@ -647,7 +657,22 @@ def cmd_template_run(args: argparse.Namespace) -> int:
             params["shards"] = auto_sprt_shards(params, sprt_workers_payload or {})
     else:
         params = parse_template_parameters(template_name, template, template_args)
+    inventory_info: dict[str, Any] | None = None
+    if template_name == "lc0-label":
+        inventory_info = build_inventory(str(params["source"]))
+        params = dict(params)
+        params["source_cache"] = "~/.cache/crucible/inputs/" + str(inventory_info["digest"])
+        params["inventory"] = params["source_cache"] + "/inventory.json"
+        params["inventory_digest"] = str(inventory_info["digest"])
+        params["quiet_only_arg"] = "--quiet-only" if bool(params["quiet_only"]) else "--no-quiet-only"
     manifest = expand_template(template_name, path, template, params)
+    if inventory_info is not None:
+        finalizer = manifest.get("finalize")
+        if isinstance(finalizer, dict):
+            finalizer["replace"] = bool(run_options.replace)
+        output = expand_path(str(params["output"]))
+        if output.exists() and not run_options.replace:
+            raise SystemExit(f"{output}: exists; pass --replace to overwrite")
     comment = clean_manifest_text(run_options.comment, label="--comment")
     if comment:
         manifest["comment"] = comment
@@ -655,7 +680,7 @@ def cmd_template_run(args: argparse.Namespace) -> int:
         print(json.dumps(manifest, indent=2, sort_keys=True))
         return 0
 
-    workers_arg = workers_arg or resolved_workers_arg(run_options, config)
+    workers_arg = workers_arg or resolved_workers_arg(run_options, config, template)
     coordinator_host = run_options.coordinator_host or default_coordinator_host(config)
     notify_command = run_options.notify_command
     run_id = run_options.run or str(manifest["name"])

@@ -35,6 +35,7 @@ WORKERS_ARG_HELP_RETRY_DEFAULT = (
 
 COMMON_COMMANDS = [
     "run",
+    "lc0-label",
     "sprt",
     "sh",
     "start",
@@ -85,6 +86,8 @@ COMMAND_GROUPS = [
 def expand_template_command_aliases(args: list[str]) -> list[str]:
     if args and args[0] == "sprt":
         return ["run", "sprt", *args[1:]]
+    if args and args[0] == "lc0-label":
+        return ["run", "lc0-label", *args[1:]]
     return args
 
 

@@ -5,6 +5,7 @@ from .core import *
 from .manifest import *
 from .tasks import *
 from .status import *
+from .lc0 import VERIFIED_MARKER_NAME, marker_matches
 
 
 DEFAULT_INLINE_WORKER_SLOTS = 8
@@ -36,6 +37,8 @@ from crucible_lib.workers import run_queue_launcher
 
 raise SystemExit(run_queue_launcher(json.loads(sys.argv[1])))
 """
+_INPUT_TREE_SYNC_LOCK = threading.Lock()
+_SYNCED_INPUT_TREES: set[tuple[str, str, str]] = set()
 
 
 def update_worker_label(worker: dict[str, Any]) -> str:
@@ -873,6 +876,24 @@ def sync_inputs_to_worker(
         dst = str(remote_item.get("path") or "")
         if not src.exists():
             raise RuntimeError(f"input does not exist: {src}")
+        if remote_item.get("tree") == "lc0-inventory":
+            digest = str(remote_item.get("digest") or "")
+            key = (worker_host(worker), dst, digest)
+            with _INPUT_TREE_SYNC_LOCK:
+                if key in _SYNCED_INPUT_TREES:
+                    continue
+                if sync_lc0_inventory_tree(
+                    worker,
+                    src,
+                    dst,
+                    digest,
+                    timeout=timeout,
+                    tracker=tracker,
+                    retries=retries,
+                ):
+                    synced += 1
+                _SYNCED_INPUT_TREES.add(key)
+            continue
         if is_local_worker(worker):
             target = expand_path(dst)
             if src.resolve() == target.resolve() or local_input_matches(target, remote_item):
@@ -896,6 +917,106 @@ def sync_inputs_to_worker(
         copy_to_worker(worker, src, dst, timeout=timeout, tracker=tracker, retries=retries)
         synced += 1
     return synced
+
+
+def sync_lc0_inventory_tree(
+    worker: dict[str, Any],
+    src: Path,
+    dst: str,
+    digest: str,
+    *,
+    timeout: float | None,
+    tracker: ProcessTracker | None,
+    retries: int,
+) -> bool:
+    if not digest:
+        raise RuntimeError("LC0 inventory input is missing digest")
+    if is_local_worker(worker):
+        target = expand_path(dst)
+        if src.resolve() != target.resolve():
+            copy_dir_to_worker(worker, src, dst, timeout=timeout, tracker=tracker, retries=retries)
+        if not marker_matches(target, digest):
+            from .lc0 import verify_inventory_tree
+
+            verify_inventory_tree(target, digest)
+        return src.resolve() != target.resolve()
+
+    marker_code = "\n".join([
+        "from pathlib import Path",
+        "import json, sys",
+        "root = Path(sys.argv[1]).expanduser()",
+        f"marker = root / {VERIFIED_MARKER_NAME!r}",
+        "try:",
+        "    data = json.loads(marker.read_text())",
+        "except (OSError, json.JSONDecodeError):",
+        "    sys.exit(1)",
+        "sys.exit(0 if data.get('digest') == sys.argv[2] else 1)",
+    ])
+    if run_worker_shell(
+        worker,
+        shell_join([worker_python(worker), "-c", marker_code, dst, digest]),
+        timeout=timeout,
+        tracker=tracker,
+        retries=retries,
+    ).returncode == 0:
+        return False
+
+    mkdir = run_worker_shell(
+        worker,
+        shell_join([worker_python(worker), "-c", "from pathlib import Path; import sys; Path(sys.argv[1]).expanduser().mkdir(parents=True, exist_ok=True)", dst]),
+        timeout=timeout,
+        tracker=tracker,
+        retries=retries,
+    )
+    if mkdir.returncode != 0:
+        raise RuntimeError(mkdir.stderr.strip() or f"failed to create {dst}")
+    command = [
+        "rsync", "-aL", "--delete", "--exclude", VERIFIED_MARKER_NAME,
+        "-e", RSYNC_SSH, str(src) + "/", worker_rsync_target(worker, dst.rstrip("/") + "/"),
+    ]
+    result = run_process_command_with_retries(
+        command,
+        timeout=timeout,
+        tracker=tracker,
+        retries=retries,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.strip() or f"rsync failed for {src}")
+
+    verify_code = "\n".join([
+        "from pathlib import Path",
+        "import hashlib, json, os, sys, tempfile",
+        "root = Path(sys.argv[1]).expanduser()",
+        "digest = sys.argv[2]",
+        "inventory_path = root / 'inventory.json'",
+        "inventory = json.loads(inventory_path.read_text())",
+        "canonical = json.dumps(inventory, sort_keys=True, separators=(',', ':')).encode()",
+        "if hashlib.sha256(canonical).hexdigest() != digest: sys.exit(2)",
+        "total = 0",
+        "for item in inventory['files']:",
+        "    path = root / item['path']",
+        "    if path.stat().st_size != int(item['size']): sys.exit(3)",
+        "    h = hashlib.sha256()",
+        "    with path.open('rb') as handle:",
+        "        for chunk in iter(lambda: handle.read(1024 * 1024), b''): h.update(chunk)",
+        "    if h.hexdigest() != item['sha256']: sys.exit(4)",
+        "    total += path.stat().st_size",
+        "marker = {'schema': inventory['schema'], 'digest': digest, 'files': len(inventory['files']), 'bytes': total}",
+        f"target = root / {VERIFIED_MARKER_NAME!r}",
+        "tmp = target.with_name(target.name + '.tmp')",
+        "tmp.write_text(json.dumps(marker, sort_keys=True) + '\\n')",
+        "os.replace(tmp, target)",
+    ])
+    verified = run_worker_shell(
+        worker,
+        shell_join([worker_python(worker), "-c", verify_code, dst, digest]),
+        timeout=timeout,
+        tracker=tracker,
+        retries=retries,
+    )
+    if verified.returncode != 0:
+        raise RuntimeError(verified.stderr.strip() or f"LC0 cache verification failed rc={verified.returncode}")
+    return True
 
 def manifest_has_git_requirements(manifest: dict[str, Any]) -> bool:
     req = manifest.get("requirements", {})
@@ -1438,6 +1559,7 @@ def materialize_run(
     if resume:
         if not manifest_path.exists() or not workers_snapshot.exists():
             raise SystemExit(f"{run_name}: cannot resume; run manifest or workers file is missing")
+        clear_restart_requests(load_manifest(manifest_path), run_name, label="resume")
         if not preserve_workers_snapshot:
             payload = (
                 workers_snapshot_payload
@@ -1456,9 +1578,25 @@ def materialize_run(
     if run_dir.exists():
         if not replace:
             raise SystemExit(f"{run_name}: run already exists; pass --resume or --replace")
+        archive_tmp = run_dir.parent / f".{run_name}.archive.{os.getpid()}"
+        archive_tmp.mkdir(parents=True, exist_ok=True)
+        for name in ("logs", "summary.json", "dataset-summary.json", "wait.log"):
+            source = run_dir / name
+            if not source.exists():
+                continue
+            target = archive_tmp / name
+            if source.is_dir():
+                shutil.copytree(source, target)
+            else:
+                shutil.copy2(source, target)
         shutil.rmtree(run_dir)
 
     run_dir.mkdir(parents=True)
+    archive_tmp = run_dir.parent / f".{run_name}.archive.{os.getpid()}"
+    if archive_tmp.exists():
+        archive_root = run_dir / "archive" / time.strftime("%Y%m%d-%H%M%S")
+        archive_root.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(archive_tmp), str(archive_root))
     materialized = materialize_manifest(template, run_name=run_name, run_dir=run_dir)
     clean_comment = clean_manifest_text(comment, label="--comment")
     if clean_comment:
@@ -1498,6 +1636,8 @@ def cmd_deploy(args: argparse.Namespace) -> int:
     planned_run_dir, _planned_manifest_path = planned_run_paths(template_path, getattr(args, "run", None))
     run_name = planned_run_dir.name
     lease_seconds = int(getattr(args, "lease_seconds", 600))
+    if bool(getattr(args, "replace", False)) and planned_run_dir.exists():
+        kill_run_workers(planned_run_dir)
     if not bool(getattr(args, "replace", False)):
         blockers = active_or_queued_blockers(run_name, lease_seconds=lease_seconds)
         if blockers:
