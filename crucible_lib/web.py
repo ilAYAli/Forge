@@ -865,7 +865,7 @@ _HTML = r"""<!DOCTYPE html>
       return `<table class="task-table">${cg}${thead}${tbody}</table>`;
     }
 
-    const GRAPH_COLORS = ['var(--blu)', 'var(--yel)', 'var(--grn)', 'var(--red)'];
+    const GRAPH_COLORS = ['var(--blu)', 'var(--yel)', 'var(--grn)', 'var(--red)', '#b58cff', '#50c9c3'];
     const GRAPH_W = 720;
     const GRAPH_H = 280;
 
@@ -932,6 +932,7 @@ _HTML = r"""<!DOCTYPE html>
       const key = graphSeriesName(name);
       if (key === 'llr') return 'var(--yel)';
       if (key === 'elo') return 'var(--blu)';
+      if (key === 'total') return '#dce6f2';
       return GRAPH_COLORS[index % GRAPH_COLORS.length];
     }
 
@@ -1343,7 +1344,7 @@ _HTML = r"""<!DOCTYPE html>
       const values = series.map(s => {
         const raw = (s.rawPoints || s.points || []).map(p => ({x: Number(p.x), y: Number(p.y)}));
         const point = raw.length ? nearestGraphPoint(raw, best.x) : null;
-        return point ? `${s.name}=${fmtGraphValue(s.name, point.y)}` : '';
+        return point ? `${s.name}=${fmtGraphValue(s.name, point.y)}/s` : '';
       }).filter(Boolean);
       const xUnit = el.getAttribute('data-x-unit') || 'records';
       const text = `${values.join(' · ')} @ ${fmtGraphNumber(best.x)} ${xUnit}`;
@@ -1456,19 +1457,15 @@ _HTML = r"""<!DOCTYPE html>
     }
 
     function combinedGraphLegendHtml(series) {
-      const help = {
-        read: 'raw records scanned',
-        selected: 'positions passing filters',
-        written: 'Bullet records saved',
-      };
       return `<div class="graph-legend">` + series.map(s => {
         const raw = s.rawPoints || s.points;
         const latest = raw[raw.length - 1]?.y;
+        const help = graphSeriesName(s.name) === 'total' ? 'aggregate throughput' : 'worker throughput';
         return `<span class="graph-legend-item">`
           + `<span class="graph-legend-dot" style="background:${esc(s.color)}"></span>`
           + `<span class="graph-legend-name">${esc(s.name)}</span>`
-          + `<span class="graph-legend-value">${esc(fmtGraphValue(s.name, latest))}</span>`
-          + `<span class="graph-legend-help">${esc(help[graphSeriesName(s.name)] || '')}</span>`
+          + `<span class="graph-legend-value">${esc(fmtGraphValue(s.name, latest))}/s</span>`
+          + `<span class="graph-legend-help">${esc(help)}</span>`
           + `</span>`;
       }).join('') + `</div>`;
     }
@@ -1486,7 +1483,7 @@ _HTML = r"""<!DOCTYPE html>
       const latestX = primary.rawPoints[primary.rawPoints.length - 1]?.x;
       const valueText = series.map(s => {
         const raw = s.rawPoints || s.points;
-        return `${s.name} ${fmtGraphValue(s.name, raw[raw.length - 1]?.y)}`;
+        return `${s.name} ${fmtGraphValue(s.name, raw[raw.length - 1]?.y)}/s`;
       }).join(' · ');
       const clipId = `graph-clip-${Math.random().toString(36).slice(2)}`;
       return combinedGraphLegendHtml(series)
@@ -1531,8 +1528,9 @@ _HTML = r"""<!DOCTYPE html>
       const ciSeries = graphSeriesByName(allSeries, 'ci');
       const eloSeries = graphSeriesByName(allSeries, 'elo');
       const llrSeries = graphSeriesByName(allSeries, 'llr');
-      const lc0Series = ['read', 'selected', 'written'].map(name => graphSeriesByName(allSeries, name));
-      const isLc0Graph = lc0Series.every(Boolean);
+      const isLc0Graph = String(run?.kind || run?.metadata?.kind || '').toLowerCase() === 'lc0-label'
+        && Boolean(graphSeriesByName(allSeries, 'total'));
+      const lc0Series = isLc0Graph ? allSeries : [];
       const primary = eloSeries || allSeries.find(s => graphSeriesName(s.name) !== 'ci') || null;
       if (!primary) return '';
       const configuredTotal = graphXTotal(graph);
@@ -1549,7 +1547,9 @@ _HTML = r"""<!DOCTYPE html>
         : genericSeries.map(s => s === primary
           ? graphRowHtml(s, options, graph, xTotal, bandSeries, overlay)
           : graphRowHtml(s, options, graph, xTotal)).join('');
-      const unit = isLc0Graph ? ' · x-axis: raw records scanned' : (graph?.x_unit ? ` · x: ${graph.x_unit}` : '');
+      const unit = isLc0Graph
+        ? ' · throughput · y-axis: records/s · x-axis: raw records scanned'
+        : (graph?.x_unit ? ` · x: ${graph.x_unit}` : '');
       const stopLabel = earlyStop ? ` · stopped at ${fmtGraphNumber(earlyStop.observed)} / ${fmtGraphNumber(earlyStop.target)}` : '';
       return `<div class="task-graph">`
         + `<div class="graph-title"><span class="graph-title-main">${esc(title + unit + stopLabel)}</span></div>`

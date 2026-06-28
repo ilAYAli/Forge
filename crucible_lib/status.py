@@ -2343,7 +2343,7 @@ def run_progress_graph_from_rows(
     is_sprt = kind == "sprt"
     is_lc0_label = kind == "lc0-label"
     lc0_x = 0.0
-    lc0_values: dict[str, float] = {}
+    lc0_worker_rates: dict[str, float] = {}
     x_unit = ""
     for row in rows:
         task = tasks_by_id.get(str(row.get("id") or ""))
@@ -2377,10 +2377,10 @@ def run_progress_graph_from_rows(
             done = progress_numeric_value("done", graph_data, fields)
             if done is not None:
                 lc0_x += done
-            for spec in specs:
-                y = progress_numeric_value(spec["field"], graph_data, fields)
-                if y is not None:
-                    lc0_values[spec["name"]] = lc0_values.get(spec["name"], 0.0) + y
+            rate = progress_numeric_value("rate", graph_data, fields)
+            if row.get("state") == "running" and rate is not None and rate > 0:
+                worker = worker_group_name(str(row.get("worker") or "unknown"))
+                lc0_worker_rates[worker] = lc0_worker_rates.get(worker, 0.0) + rate
             continue
         sprt_x: float | None = None
         for spec in specs:
@@ -2403,9 +2403,10 @@ def run_progress_graph_from_rows(
         if sprt_x is not None and isinstance(done, int) and done > 0:
             sprt_rows.append({"x": sprt_x, "done": done, "fields": fields})
 
-    if is_lc0_label and lc0_x > 0:
-        for name, value in lc0_values.items():
-            points_by_name[name] = [{"x": lc0_x, "y": value}]
+    if is_lc0_label and lc0_x > 0 and lc0_worker_rates:
+        points_by_name["total"] = [{"x": lc0_x, "y": sum(lc0_worker_rates.values())}]
+        for worker, rate in sorted(lc0_worker_rates.items()):
+            points_by_name[worker] = [{"x": lc0_x, "y": rate}]
 
     x_total = progress_unit_totals.get(x_unit) if x_unit else None
     for name, points in sprt_aggregate_graph_points(

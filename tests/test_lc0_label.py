@@ -175,7 +175,8 @@ class Lc0ProgressTests(unittest.TestCase):
         progress = json.loads(template_path.read_text(encoding="utf-8"))["task"]["progress"]
         progress.pop("series")
         progress["log_regex"] = (
-            r"read=(?P<done>\d+) selected=(?P<selected>\d+) written=(?P<output>\d+)"
+            r"read=(?P<done>\d+) selected=(?P<selected>\d+) written=(?P<output>\d+) "
+            r"rate=(?P<rate>[0-9.]+)/s"
         )
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -200,8 +201,8 @@ class Lc0ProgressTests(unittest.TestCase):
                     encoding="utf-8",
                 )
                 (logs / f"{task_id}.log").write_text(
-                    "shard 0/2 read=100 selected=80 written=60\n"
-                    "shard 0/2 read=200 selected=150 written=120\n",
+                    f"shard 0/2 read=100 selected=80 written=60 rate={(index + 1) * 8}/s\n"
+                    f"shard 0/2 read=200 selected=150 written=120 rate={(index + 1) * 10}/s\n",
                     encoding="utf-8",
                 )
             manifest = {
@@ -227,23 +228,25 @@ class Lc0ProgressTests(unittest.TestCase):
 
             for index in range(2):
                 with (logs / f"lc0_{index}.log").open("a", encoding="utf-8") as file:
-                    file.write("shard 0/2 read=201 selected=151 written=121\n")
+                    file.write(
+                        f"shard 0/2 read=201 selected=151 written=121 rate={(index + 1) * 12}/s\n"
+                    )
             summary = status_summary(manifest, lease_seconds=600)
             run_series = {
                 item["name"]: item["points"]
                 for item in summary["progress_graph"]["series"]
             }
             self.assertEqual(
-                [{"x": 400.0, "y": 400.0}, {"x": 402.0, "y": 402.0}],
-                run_series["read"],
+                [{"x": 400.0, "y": 30.0}, {"x": 402.0, "y": 36.0}],
+                run_series["total"],
             )
             self.assertEqual(
-                [{"x": 400.0, "y": 300.0}, {"x": 402.0, "y": 302.0}],
-                run_series["selected"],
+                [{"x": 400.0, "y": 10.0}, {"x": 402.0, "y": 12.0}],
+                run_series["worker-a"],
             )
             self.assertEqual(
-                [{"x": 400.0, "y": 240.0}, {"x": 402.0, "y": 242.0}],
-                run_series["written"],
+                [{"x": 400.0, "y": 20.0}, {"x": 402.0, "y": 24.0}],
+                run_series["worker-b"],
             )
 
     def test_speedup_uses_current_rates_instead_of_accumulated_output(self) -> None:
