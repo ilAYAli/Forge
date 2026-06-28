@@ -1343,15 +1343,7 @@ def run_command_groups(manifest: dict[str, Any]) -> list[dict[str, Any]]:
 
 def run_status_payload(summary: dict[str, Any]) -> dict[str, Any]:
     counts = summary["counts"]
-    fields = [
-        f"tasks={counts['done']}/{summary['tasks']}",
-        *run_state_fields(summary),
-    ]
-    if counts["fail"]:
-        fields.append(f"fail={counts['fail']}")
-    if counts["stale"]:
-        fields.append(f"stale={counts['stale']}")
-    fields.extend(run_progress_fields(summary))
+    fields = run_display_fields(summary)
     active_summary = active_worker_summary(summary)
     active_fields = active_section_fields(summary)
     manifest_payload = summary.get("manifest_payload")
@@ -1543,6 +1535,31 @@ def run_progress_fields(summary: dict[str, Any]) -> list[str]:
         )
     ])
 
+def run_display_fields(summary: dict[str, Any]) -> list[str]:
+    counts = summary["counts"]
+    progress = run_progress_fields(summary)
+    eta = [field for field in progress if field.startswith("eta=")]
+    remaining = [field for field in progress if not field.startswith("eta=")]
+    ordered: list[str] = []
+    for key in ("elo", "llr", "los", "ci", "draw", "games"):
+        matches = [
+            field for field in remaining
+            if field.split("=", 1)[0].removesuffix("~") == key
+        ]
+        ordered.extend(matches)
+        remaining = [field for field in remaining if field not in matches]
+    fields = [
+        *run_state_fields(summary),
+        *ordered,
+        *remaining,
+        f"tasks={counts['done']}/{summary['tasks']}",
+    ]
+    if counts["fail"]:
+        fields.append(f"fail={counts['fail']}")
+    if counts["stale"]:
+        fields.append(f"stale={counts['stale']}")
+    return [*fields, *eta]
+
 def section_progress_fields(summary: dict[str, Any]) -> list[str]:
     return split_eta_last(summary_progress_fields(summary))
 
@@ -1633,20 +1650,11 @@ def print_run_status(
                 print(f"  {color_status_field(description, summary=summary, color_enabled=color_enabled)}")
             if comment := run_comment_field(summary):
                 print(f"  {color_status_field(comment, summary=summary, color_enabled=color_enabled)}")
-        fields = [
-            f"tasks={counts['done']}/{summary['tasks']}",
-            *run_state_fields(summary),
-        ]
-        if not show_details:
-            fields = [run_title(summary), *fields]
-        if show_details and counts["fail"]:
-            fields.append(f"fail={counts['fail']}")
         if show_details:
-            if counts["stale"]:
-                fields.append(f"stale={counts['stale']}")
-            fields.extend(run_progress_fields(summary))
+            fields = run_display_fields(summary)
         else:
-            fields.extend([
+            fields = [
+                run_title(summary),
                 f"active={active}",
                 f"running={counts['running']}",
                 f"claimed={counts['claimed']}",
@@ -1654,7 +1662,7 @@ def print_run_status(
                 f"fail={counts['fail']}",
                 f"pending={counts['pending']}",
                 f"stale={counts['stale']}",
-            ])
+            ]
         indent = "  " if show_details else ""
         print(f"{indent}{' '.join(color_status_fields(fields, summary=summary, color_enabled=color_enabled))}")
         if show_details:
@@ -3313,15 +3321,7 @@ def print_compact_status(
         print(f"  {color_status_field(description, summary=summary, color_enabled=color_enabled)}")
     if comment := run_comment_field(summary):
         print(f"  {color_status_field(comment, summary=summary, color_enabled=color_enabled)}")
-    fields = [
-        f"tasks={counts['done']}/{summary['tasks']}",
-        *run_state_fields(summary),
-    ]
-    if counts["fail"]:
-        fields.append(f"fail={counts['fail']}")
-    if counts["stale"]:
-        fields.append(f"stale={counts['stale']}")
-    fields.extend(run_progress_fields(summary))
+    fields = run_display_fields(summary)
     print(f"  {' '.join(color_status_fields(fields, summary=summary, color_enabled=color_enabled))}")
     print_status_details(
         summary,

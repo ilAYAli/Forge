@@ -8014,7 +8014,7 @@ console.log(JSON.stringify({band, domain, maxBandRadius, zero, last, delta: zero
             status = self.run_cli("status", str(run))
 
             self.assertEqual(0, status.returncode, status.stderr)
-            self.assertIn("tasks=0/2 games=400/2000 elo=+1.0 ci=9.0 llr=-0.12/2.94 (-4%) los=58.8% draw=43.8%", status.stdout)
+            self.assertIn("elo=+1.0 llr=-0.12/2.94 (-4%) los=58.8% ci=9.0 draw=43.8% games=400/2000 tasks=0/2", status.stdout)
             self.assertIn("active: 2", status.stdout)
             self.assertNotIn("active: 2 games=400/2000", status.stdout)
             self.assertIn("worker-a sprt shard=0 [games=100/1000, elo=10.0, ci=20.0, llr=0.12/2.94 (4%), los=70.0, draw=40.0]", status.stdout)
@@ -8061,10 +8061,10 @@ console.log(JSON.stringify({band, domain, maxBandRadius, zero, last, delta: zero
             status = self.run_cli("status", str(run))
 
             self.assertEqual(0, status.returncode, status.stderr)
-            self.assertIn("tasks=0/1 games=38/50 elo=-18.3 ci=89.8 llr=-0.09/2.94 (-3%) los=34.1% draw=36.8%", status.stdout)
+            self.assertIn("elo=-18.3 llr=-0.09/2.94 (-3%) los=34.1% ci=89.8 draw=36.8% games=38/50 tasks=0/1", status.stdout)
             self.assertIn("worker-a sprt shard=0 [games=38/50, elo=-18.3, ci=89.8, llr=-0.09/2.94 (-3%), los=34.1, draw=36.8]", status.stdout)
 
-    def test_status_header_shows_total_games_before_progress(self) -> None:
+    def test_status_header_shows_games_before_tasks(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             run = root / "sprt-run"
@@ -8101,7 +8101,7 @@ console.log(JSON.stringify({band, domain, maxBandRadius, zero, last, delta: zero
             status = self.run_cli("status", str(run))
 
             self.assertEqual(0, status.returncode, status.stderr)
-            self.assertIn("tasks=0/2 games=0/256", status.stdout)
+            self.assertIn("games=0/256 tasks=0/2", status.stdout)
 
     def test_status_eta_counts_down_from_log_timestamp(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -8682,7 +8682,7 @@ console.log(JSON.stringify({band, domain, maxBandRadius, zero, last, delta: zero
                 )
                 self.assertEqual(0, rc)
                 text = stdout.getvalue()
-                self.assertIn("  tasks=1/2 games=1500/2000 eta=1m40s", text)
+                self.assertIn("  games=1500/2000 tasks=1/2 eta=1m40s", text)
                 self.assertIn("  active: 1", text)
                 self.assertNotIn("  active: 1 games=1500/2000", text)
                 self.assertIn("worker-a shard=1 [games=500/1000, eta=1m40s]", text)
@@ -8964,7 +8964,7 @@ console.log(JSON.stringify({band, domain, maxBandRadius, zero, last, delta: zero
                 )
                 self.assertEqual(0, rc)
                 text = stdout.getvalue()
-                self.assertIn("  tasks=1/2 games=1000/2000 eta=1m40s", text)
+                self.assertIn("  games=1000/2000 tasks=1/2 eta=1m40s", text)
                 self.assertIn("  active: 1", text)
                 self.assertNotIn("  active: 1 games=1000/2000", text)
                 self.assertIn("worker-a shard=1 [games=0/1000]", text)
@@ -9038,7 +9038,7 @@ console.log(JSON.stringify({band, domain, maxBandRadius, zero, last, delta: zero
                 )
                 self.assertEqual(0, rc)
                 text = stdout.getvalue()
-                self.assertIn("  tasks=1/2 games=1000/2000 eta=unknown", text)
+                self.assertIn("  games=1000/2000 tasks=1/2 eta=unknown", text)
                 self.assertIn("  active: 1", text)
                 self.assertNotIn("  active: 1 games=1000/2000", text)
                 self.assertIn("worker-a shard=1 [games=0/1000]", text)
