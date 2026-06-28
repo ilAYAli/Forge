@@ -206,6 +206,16 @@ _HTML = r"""<!DOCTYPE html>
                    max-width: calc(100% - 16px); overflow: hidden; text-overflow: ellipsis;
                    white-space: nowrap; font-variant-numeric: tabular-nums; padding: 1px 4px; }
     .graph-value.hover { color: var(--text); }
+    .graph-row.combined .graph-axis { height: 160px; }
+    .graph-row.combined .graph-plot { height: 182px; }
+    .graph-row.combined .graph-plot svg { height: 160px; }
+    .graph-legend { display: flex; flex-wrap: wrap; gap: 5px 16px; margin: -1px 0 1px 68px;
+                    color: #9aa6b8; font-size: 11px; }
+    .graph-legend-item { display: inline-flex; align-items: baseline; gap: 5px; white-space: nowrap; }
+    .graph-legend-dot { width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto; }
+    .graph-legend-name { color: var(--text); }
+    .graph-legend-value { color: #c3ccda; font-variant-numeric: tabular-nums; }
+    .graph-legend-help { color: #7f8b9d; }
 
     @media (max-width: 640px) {
       #runs { padding: 8px 6px; }
@@ -215,6 +225,8 @@ _HTML = r"""<!DOCTYPE html>
       .graph-row { grid-template-columns: 44px minmax(0, 1fr); gap: 7px; }
       .graph-value { display: none; }
       .graph-plot { min-width: 0; }
+      .graph-legend { margin-left: 51px; gap: 4px 10px; }
+      .graph-legend-help { display: none; }
     }
 
     /* pending / fail groups */
@@ -1299,6 +1311,74 @@ _HTML = r"""<!DOCTYPE html>
         + `<rect class="graph-hit" x="0" y="0" width="${w}" height="${h}" data-graph-name="${attrEsc(name)}" data-overlay-name="${attrEsc(overlayName)}" data-x-unit="${attrEsc(xUnit)}" data-x-total="${attrEsc(totalAttr)}" data-graph-width="${w}" data-graph-height="${h}" data-points="${payload}" data-raw-points="${rawPayload}" data-overlay-points="${overlayPayload}" data-ci-points="${ciPayload}" data-extras="${extraPayload}" onmouseenter="setGraphPointReadout(this,event)" onmousemove="setGraphPointReadout(this,event)" onmouseleave="clearGraphReadout(this)"></rect>`;
     }
 
+    function setCombinedGraphPointReadout(el, event) {
+      let series;
+      try {
+        series = JSON.parse(el.getAttribute('data-series') || '[]');
+      } catch {
+        return;
+      }
+      if (!Array.isArray(series) || !series.length) return;
+      const primary = series[0];
+      const points = (primary.points || []).map(p => ({x: Number(p.x), y: Number(p.y)}));
+      if (!points.length) return;
+      const allY = series.flatMap(s => (s.points || []).map(p => Number(p.y))).filter(Number.isFinite);
+      const xTotalValue = Number(el.getAttribute('data-x-total'));
+      const xTotal = Number.isFinite(xTotalValue) && xTotalValue > 0 ? xTotalValue : null;
+      const graphW = Number(el.getAttribute('data-graph-width')) || GRAPH_W;
+      const graphH = Number(el.getAttribute('data-graph-height')) || GRAPH_H;
+      const svg = el.closest('svg');
+      const box = svg?.getBoundingClientRect?.();
+      if (!box || box.width <= 0) return;
+      const scale = graphScale(primary.name, points, allY, graphW, graphH, xTotal);
+      const viewX = Math.max(0, Math.min(graphW, ((event.clientX - box.left) / box.width) * graphW));
+      let best = points[0], bestDist = Infinity;
+      for (const point of points) {
+        const distance = Math.abs(scale.x(point.x) - viewX);
+        if (distance < bestDist) {
+          best = point;
+          bestDist = distance;
+        }
+      }
+      const values = series.map(s => {
+        const raw = (s.rawPoints || s.points || []).map(p => ({x: Number(p.x), y: Number(p.y)}));
+        const point = raw.length ? nearestGraphPoint(raw, best.x) : null;
+        return point ? `${s.name}=${fmtGraphValue(s.name, point.y)}` : '';
+      }).filter(Boolean);
+      const xUnit = el.getAttribute('data-x-unit') || 'records';
+      const text = `${values.join(' · ')} @ ${fmtGraphNumber(best.x)} ${xUnit}`;
+      const x = scale.x(best.x);
+      const vLine = svg.querySelector('.graph-crosshair-v');
+      if (vLine) {
+        vLine.setAttribute('x1', x.toFixed(1));
+        vLine.setAttribute('x2', x.toFixed(1));
+      }
+      const plot = el.closest('.graph-plot');
+      const label = plot?.querySelector?.('.graph-crosshair-readout');
+      if (label) {
+        label.textContent = text;
+        const px = x / graphW * box.width;
+        const width = label.getBoundingClientRect?.().width || 0;
+        label.style.left = `${Math.max(width / 2 + 2, Math.min(box.width - width / 2 - 2, px))}px`;
+        label.style.top = '4px';
+      }
+      setGraphReadoutText(el, text);
+    }
+
+    function graphCombinedHoverZones(series, xUnit, w, h, xTotal) {
+      const payload = attrEsc(JSON.stringify(series.map(s => ({
+        name: s.name,
+        points: s.points,
+        rawPoints: s.rawPoints || s.points,
+      }))));
+      const total = Number(xTotal);
+      const totalAttr = Number.isFinite(total) && total > 0 ? String(total) : '';
+      return `<g class="graph-crosshair">`
+        + `<line class="graph-crosshair-line graph-crosshair-v" x1="0" y1="0" x2="0" y2="${h}"></line>`
+        + `</g>`
+        + `<rect class="graph-hit" x="0" y="0" width="${w}" height="${h}" data-x-unit="${attrEsc(xUnit)}" data-x-total="${attrEsc(totalAttr)}" data-graph-width="${w}" data-graph-height="${h}" data-series="${payload}" onmouseenter="setCombinedGraphPointReadout(this,event)" onmousemove="setCombinedGraphPointReadout(this,event)" onmouseleave="clearGraphReadout(this)"></rect>`;
+    }
+
     function fmtGraphValue(name, value) {
       const text = fmtGraphNumber(value);
       if (!text || !signedGraphSeries(name)) return text;
@@ -1375,6 +1455,58 @@ _HTML = r"""<!DOCTYPE html>
         + `</div>`;
     }
 
+    function combinedGraphLegendHtml(series) {
+      const help = {
+        read: 'raw records scanned',
+        selected: 'positions passing filters',
+        written: 'Bullet records saved',
+      };
+      return `<div class="graph-legend">` + series.map(s => {
+        const raw = s.rawPoints || s.points;
+        const latest = raw[raw.length - 1]?.y;
+        return `<span class="graph-legend-item">`
+          + `<span class="graph-legend-dot" style="background:${esc(s.color)}"></span>`
+          + `<span class="graph-legend-name">${esc(s.name)}</span>`
+          + `<span class="graph-legend-value">${esc(fmtGraphValue(s.name, latest))}</span>`
+          + `<span class="graph-legend-help">${esc(help[graphSeriesName(s.name)] || '')}</span>`
+          + `</span>`;
+      }).join('') + `</div>`;
+    }
+
+    function graphCombinedRowHtml(series, graph, xTotal) {
+      const h = 160;
+      const primary = series[0];
+      const allY = series.flatMap(s => s.points.map(point => point.y));
+      const grid = graphGridLines(primary.name, primary.points, allY, GRAPH_W, h);
+      const paths = series.map(s => {
+        const path = sparkPath(primary.name, s.points, allY, GRAPH_W, h, xTotal);
+        return `<path class="graph-line" d="${esc(path)}" style="stroke:${esc(s.color)}"></path>`;
+      }).join('');
+      const hover = graphCombinedHoverZones(series, graph?.x_unit || 'records', GRAPH_W, h, xTotal);
+      const latestX = primary.rawPoints[primary.rawPoints.length - 1]?.x;
+      const valueText = series.map(s => {
+        const raw = s.rawPoints || s.points;
+        return `${s.name} ${fmtGraphValue(s.name, raw[raw.length - 1]?.y)}`;
+      }).join(' · ');
+      const clipId = `graph-clip-${Math.random().toString(36).slice(2)}`;
+      return combinedGraphLegendHtml(series)
+        + `<div class="graph-row combined">`
+        + `<span class="graph-axis">${graphAxisHtml(primary.name, primary.points, allY)}</span>`
+        + `<span class="graph-plot">`
+        + `<svg class="graph-live-hover" viewBox="0 0 ${GRAPH_W} ${h}" preserveAspectRatio="none" aria-label="${esc(valueText)} at ${esc(fmtGraphNumber(latestX))} records">`
+        + `<title>${esc(valueText)}</title>`
+        + `<defs><clipPath id="${clipId}"><rect x="0" y="0" width="${GRAPH_W}" height="${h}"></rect></clipPath></defs>`
+        + grid
+        + `<g clip-path="url(#${clipId})">${paths}</g>`
+        + hover
+        + `</svg>`
+        + `<span class="graph-x-axis">${graphXAxisHtml(primary.points, xTotal)}</span>`
+        + `<span class="graph-value" data-default="${attrEsc(valueText)}">${esc(valueText)}</span>`
+        + `<span class="graph-crosshair-readout"></span>`
+        + `</span>`
+        + `</div>`;
+    }
+
     function graphCard(graph, title, run) {
       const options = {llrBound: llrBoundFromRun(run)};
       const allSeries = (graph?.series || [])
@@ -1399,6 +1531,8 @@ _HTML = r"""<!DOCTYPE html>
       const ciSeries = graphSeriesByName(allSeries, 'ci');
       const eloSeries = graphSeriesByName(allSeries, 'elo');
       const llrSeries = graphSeriesByName(allSeries, 'llr');
+      const lc0Series = ['read', 'selected', 'written'].map(name => graphSeriesByName(allSeries, name));
+      const isLc0Graph = lc0Series.every(Boolean);
       const primary = eloSeries || allSeries.find(s => graphSeriesName(s.name) !== 'ci') || null;
       if (!primary) return '';
       const configuredTotal = graphXTotal(graph);
@@ -1410,10 +1544,12 @@ _HTML = r"""<!DOCTYPE html>
       const genericSeries = !eloSeries && !llrSeries
         ? allSeries.filter(s => graphSeriesName(s.name) !== 'ci')
         : [primary];
-      const rows = genericSeries.map(s => s === primary
-        ? graphRowHtml(s, options, graph, xTotal, bandSeries, overlay)
-        : graphRowHtml(s, options, graph, xTotal)).join('');
-      const unit = graph?.x_unit ? ` · x: ${graph.x_unit}` : '';
+      const rows = isLc0Graph
+        ? graphCombinedRowHtml(lc0Series, graph, xTotal)
+        : genericSeries.map(s => s === primary
+          ? graphRowHtml(s, options, graph, xTotal, bandSeries, overlay)
+          : graphRowHtml(s, options, graph, xTotal)).join('');
+      const unit = isLc0Graph ? ' · x-axis: raw records scanned' : (graph?.x_unit ? ` · x: ${graph.x_unit}` : '');
       const stopLabel = earlyStop ? ` · stopped at ${fmtGraphNumber(earlyStop.observed)} / ${fmtGraphNumber(earlyStop.target)}` : '';
       return `<div class="task-graph">`
         + `<div class="graph-title"><span class="graph-title-main">${esc(title + unit + stopLabel)}</span></div>`
