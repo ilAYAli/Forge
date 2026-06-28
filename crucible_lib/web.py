@@ -2184,6 +2184,16 @@ def _merge_lingering_runs(payload: dict[str, Any]) -> dict[str, Any]:
             hidden.update(str(item) for item in remote_hidden_runs)
         if isinstance(remote_deleted_runs, list):
             deleted.update(str(item) for item in remote_deleted_runs)
+        status_names = {
+            str(item.get("run"))
+            for item in runs
+            if (
+                isinstance(item, dict)
+                and item.get("run") is not None
+                and not _run_payload_done(item)
+            )
+        }
+        deleted.difference_update(status_names)
         hidden.difference_update(deleted)
         runs = [
             item

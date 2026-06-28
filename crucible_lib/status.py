@@ -3438,6 +3438,11 @@ def run_notify_command(command_text: str | None, payload: dict[str, Any]) -> int
     command = shlex.split(command_text)
     if not command:
         return 0
+    executable = Path(command[0]).expanduser()
+    if not executable.is_absolute() and os.sep in command[0]:
+        candidate = script_repo() / executable
+        if candidate.is_file():
+            command[0] = str(candidate)
     data = json.dumps(payload, sort_keys=True)
     env = os.environ.copy()
     env["CRUCIBLE_EVENT_JSON"] = data

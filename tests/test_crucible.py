@@ -1297,6 +1297,53 @@ console.log(JSON.stringify({band, domain, maxBandRadius, zero, last, delta: zero
             self.assertEqual({}, state.get("seen_runs", {}))
             self.assertEqual({}, state.get("lingering_runs", {}))
 
+    def test_web_recreated_run_clears_deleted_tombstone(self) -> None:
+        import crucible_lib.web as web
+
+        with tempfile.TemporaryDirectory() as tmp:
+            runs = Path(tmp) / "runs"
+            payload = {
+                "runs": [{
+                    "run": "recreated",
+                    "state": "stopped",
+                    "tasks": 2,
+                    "counts": {
+                        "done": 0,
+                        "fail": 0,
+                        "running": 0,
+                        "claimed": 0,
+                        "stale": 0,
+                        "pending": 2,
+                    },
+                }],
+                "collapsed_failures": [],
+                "collapsed_failures_count": 0,
+                "coordinator": None,
+            }
+
+            with self.patch_runs_dir(runs), mock.patch("crucible_lib.web.runs_dir", return_value=runs):
+                web._write_web_state({"deleted_runs": ["recreated"]})
+                merged = web._merge_lingering_runs(copy.deepcopy(payload))
+                state = web._read_web_state()
+
+            self.assertEqual(["recreated"], [run["run"] for run in merged["runs"]])
+            self.assertEqual([], state["deleted_runs"])
+
+    def test_notify_resolves_repo_relative_executable(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            script = repo / "scripts" / "notify.sh"
+            script.parent.mkdir(parents=True)
+            script.write_text("#!/bin/sh\n", encoding="utf-8")
+            with mock.patch("crucible_lib.status.script_repo", return_value=repo), mock.patch(
+                "crucible_lib.status.subprocess.run",
+                return_value=subprocess.CompletedProcess([], 0, "", ""),
+            ) as run:
+                rc = crucible.run_notify_command("scripts/notify.sh --flag", {"event": "done"})
+
+            self.assertEqual(0, rc)
+            self.assertEqual([str(script), "--flag"], run.call_args.args[0])
+
     def test_web_remembered_completion_normalizes_ok_state(self) -> None:
         import crucible_lib.web as web
 
