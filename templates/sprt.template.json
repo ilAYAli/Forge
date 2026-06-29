@@ -5,6 +5,9 @@
   "description": "Run distributed SPRT game shards",
   "run_name": "sprt-{candidate_stem}-{games}-{timestamp}",
   "work_dir": "~",
+  "uci_file_options": [
+    "nnue_file"
+  ],
   "parameters": {
     "candidate": {
       "required": true,
@@ -133,6 +136,14 @@
       }
     ],
     "inputs": [
+      {
+        "name": "candidate",
+        "path": "{candidate}"
+      },
+      {
+        "name": "reference",
+        "path": "{reference}"
+      },
       {
         "name": "book",
         "path": "{book}"

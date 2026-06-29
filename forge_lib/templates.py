@@ -295,6 +295,7 @@ def parse_sprt_template_parameters(template_name: str, template: dict[str, Any],
         allow_unknown=True,
     )
     validate_sprt_uci_options(values)
+    normalize_sprt_uci_file_paths(template, values)
     if unknown:
         values["sprt_extra_args"] = unknown
     return values
@@ -311,6 +312,50 @@ def validate_sprt_uci_options(values: dict[str, Any]) -> None:
             text = str(item)
             if "=" in text and text.split("=", 1)[1] == "":
                 raise SystemExit(f"{flag} {text}: empty UCI option values are rejected; omit the option instead")
+
+
+def normalize_sprt_uci_file_paths(template: dict[str, Any], values: dict[str, Any]) -> None:
+    file_options = {str(item).lower() for item in template.get("uci_file_options", [])}
+    for key in ("candidate_uci", "reference_uci"):
+        items = values.get(key)
+        if not isinstance(items, list):
+            continue
+        normalized = []
+        for item in items:
+            name, separator, value = str(item).partition("=")
+            if separator and name.lower() in file_options:
+                value = worker_path_parameter(value)
+            normalized.append(f"{name}={value}" if separator else name)
+        values[key] = normalized
+
+
+def materialize_template_inputs(template: dict[str, Any], manifest: dict[str, Any], params: dict[str, Any]) -> None:
+    requirements = manifest.get("requirements")
+    if not isinstance(requirements, dict):
+        return
+    raw_inputs = requirements.get("inputs")
+    if not isinstance(raw_inputs, list):
+        return
+    inputs = [dict(item) for item in raw_inputs if isinstance(item, dict)]
+    file_options = {str(item).lower() for item in template.get("uci_file_options", [])}
+    for key in ("candidate_uci", "reference_uci"):
+        for item in params.get(key, []):
+            name, separator, value = str(item).partition("=")
+            if separator and name.lower() in file_options:
+                inputs.append({"name": f"{key}.{name}", "path": value})
+    materialized = []
+    seen: set[str] = set()
+    for item in inputs:
+        worker_path = str(item.get("path") or "")
+        local_path = expand_path(worker_path)
+        if not local_path.is_file():
+            raise SystemExit(f"SPRT input does not exist: {worker_path}")
+        if worker_path in seen:
+            continue
+        seen.add(worker_path)
+        record = {**item, **file_record(local_path), "path": worker_path}
+        materialized.append(record)
+    requirements["inputs"] = materialized
 
 
 def template_parameter_supplied(template: dict[str, Any], raw_args: list[str], parameter_names: set[str]) -> bool:
@@ -666,6 +711,8 @@ def cmd_template_run(args: argparse.Namespace) -> int:
         params["inventory_digest"] = str(inventory_info["digest"])
         params["quiet_only_arg"] = "--quiet-only" if bool(params["quiet_only"]) else "--no-quiet-only"
     manifest = expand_template(template_name, path, template, params)
+    if template_name == "sprt":
+        materialize_template_inputs(template, manifest, params)
     if inventory_info is not None:
         finalizer = manifest.get("finalize")
         if isinstance(finalizer, dict):

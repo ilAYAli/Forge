@@ -3010,6 +3010,39 @@ console.log(JSON.stringify({band, domain, maxBandRadius, zero, last, delta: zero
                 ],
             )
 
+    def test_sprt_template_materializes_engine_book_and_nnue_inputs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            paths = {
+                name: root / name
+                for name in ("candidate", "reference", "book.epd", "candidate.nn", "reference.nn")
+            }
+            for name, path in paths.items():
+                path.write_bytes(name.encode())
+            template_path = ROOT / "templates" / "sprt.template.json"
+            template = forge.load_template(template_path)
+            params = forge.parse_sprt_template_parameters(
+                "sprt",
+                template,
+                [
+                    "--candidate", str(paths["candidate"]),
+                    "--reference", str(paths["reference"]),
+                    "--book", str(paths["book.epd"]),
+                    "--games", "50",
+                    "--shards", "2",
+                    "--candidate-uci", f"nnue_file={paths['candidate.nn']}",
+                    "--reference-uci", f"nnue_file={paths['reference.nn']}",
+                ],
+            )
+            manifest = forge.expand_template("sprt", template_path, template, params)
+
+            forge.materialize_template_inputs(template, manifest, params)
+
+            inputs = manifest["requirements"]["inputs"]
+            self.assertEqual(5, len(inputs))
+            self.assertEqual(set(paths.values()), {Path(item["path"]) for item in inputs})
+            self.assertTrue(all(item["bytes"] > 0 and len(item["sha256"]) == 64 for item in inputs))
+
     def test_subcommand_help_is_available(self) -> None:
         commands = [
             "run", "sprt", "sh", "template", "plan", "add-input", "add-repo", "add-command", "sync-repos", "start", "run-task", "claim",
