@@ -508,6 +508,8 @@ def transient_ssh_transport_failure(command: list[str], result: subprocess.Compl
         return False
     if result.returncode == 0:
         return False
+    if result.returncode == 255:
+        return True
     output = "\n".join(
         part for part in (result.stdout or "", result.stderr or "") if part
     ).lower()

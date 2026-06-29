@@ -10500,8 +10500,8 @@ console.log(JSON.stringify({band, domain, maxBandRadius, zero, last, delta: zero
                 return subprocess.CompletedProcess(
                     command,
                     255,
-                    stdout="",
-                    stderr="Connection timed out during banner exchange",
+                    stdout="ok\n",
+                    stderr="",
                 )
             return subprocess.CompletedProcess(command, 0, stdout="ok\n", stderr="")
 
@@ -12362,8 +12362,8 @@ console.log(JSON.stringify({band, domain, maxBandRadius, zero, last, delta: zero
                 return subprocess.CompletedProcess(
                     command,
                     255,
-                    stdout="",
-                    stderr="Connection timed out during banner exchange",
+                    stdout="ok\n",
+                    stderr="",
                 )
             return subprocess.CompletedProcess(command, 0, stdout="ok\n", stderr="")
 
@@ -12375,6 +12375,34 @@ console.log(JSON.stringify({band, domain, maxBandRadius, zero, last, delta: zero
                 worker,
                 "true",
                 tracker=forge.ProcessTracker(),
+                retries=1,
+            )
+
+        self.assertEqual(0, result.returncode)
+        self.assertEqual(2, len(calls))
+
+    def test_worker_process_retries_rsync_code_255_without_ssh_detail(self) -> None:
+        from forge_lib import workers as worker_module
+
+        calls = []
+
+        def fake_run(command, **kwargs):
+            calls.append(command)
+            if len(calls) == 1:
+                return subprocess.CompletedProcess(
+                    command,
+                    255,
+                    stdout="",
+                    stderr="rsync error: unexplained error (code 255) at rsync.c(716) [sender=3.4.1]",
+                )
+            return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+        with (
+            mock.patch("forge_lib.workers.run_process_command", side_effect=fake_run),
+            mock.patch("forge_lib.workers.SSH_TRANSIENT_RETRY_DELAY_SECONDS", 0.0),
+        ):
+            result = worker_module.run_process_command_with_retries(
+                ["rsync", "source", "pwa-rce:destination"],
                 retries=1,
             )
 
