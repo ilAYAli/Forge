@@ -931,7 +931,7 @@ _HTML = r"""<!DOCTYPE html>
       const key = graphSeriesName(name);
       if (key === 'llr') return 'var(--yel)';
       if (key === 'elo') return 'var(--blu)';
-      if (key === 'total') return '#dce6f2';
+      if (key === 'total') return 'var(--blu)';
       return GRAPH_COLORS[index % GRAPH_COLORS.length];
     }
 
@@ -1176,7 +1176,8 @@ _HTML = r"""<!DOCTYPE html>
       root.querySelectorAll('svg.graph-live-hover').forEach(svg => {
         const rect = svg.getBoundingClientRect();
         if (!rect.width || !rect.height) return;
-        const radiusX = 2.2 * (rect.height / GRAPH_H) / (rect.width / GRAPH_W);
+        const viewHeight = svg.viewBox?.baseVal?.height || GRAPH_H;
+        const radiusX = 2.2 * (rect.height / viewHeight) / (rect.width / GRAPH_W);
         svg.querySelectorAll('.graph-point').forEach(point => {
           point.setAttribute('rx', radiusX.toFixed(3));
           point.setAttribute('ry', '2.2');
@@ -1480,6 +1481,15 @@ _HTML = r"""<!DOCTYPE html>
         const path = sparkPath(primary.name, s.points, allY, GRAPH_W, h, xTotal);
         return `<path class="graph-line" d="${esc(path)}" style="stroke:${esc(s.color)}"></path>`;
       }).join('');
+      const markers = graphPointMarkers(
+        primary.name,
+        primary.color,
+        primary.points,
+        allY,
+        GRAPH_W,
+        h,
+        xTotal,
+      );
       const hover = graphCombinedHoverZones(plotted, graph?.x_unit || 'records', GRAPH_W, h, xTotal);
       const latestX = primary.rawPoints[primary.rawPoints.length - 1]?.x;
       const valueText = plotted.map(s => {
@@ -1495,7 +1505,7 @@ _HTML = r"""<!DOCTYPE html>
         + `<title>${esc(valueText)}</title>`
         + `<defs><clipPath id="${clipId}"><rect x="0" y="0" width="${GRAPH_W}" height="${h}"></rect></clipPath></defs>`
         + grid
-        + `<g clip-path="url(#${clipId})">${paths}</g>`
+        + `<g clip-path="url(#${clipId})">${paths}${markers}</g>`
         + hover
         + `</svg>`
         + `<span class="graph-x-axis">${graphXAxisHtml(primary.points, xTotal)}</span>`
