@@ -22,14 +22,14 @@ from pathlib import Path
 from typing import Any
 
 
-SCHEMA = "crucible.task.v1"
+SCHEMA = "forge.task.v1"
 RUNS_DIR_NAME = "runs"
 RUN_MANIFEST_NAME = "manifest.json"
 RUN_WORKERS_NAME = "workers.json"
-RUNS_DIR_ENV = "CRUCIBLE_RUNS_DIR"
-COORDINATOR_RUNS_ENV = "CRUCIBLE_COORDINATOR_RUNS"
+RUNS_DIR_ENV = "FORGE_RUNS_DIR"
+COORDINATOR_RUNS_ENV = "FORGE_COORDINATOR_RUNS"
 COORDINATOR_RUNS_FILE = "coordinator"
-COLOR_ENV = "CRUCIBLE_COLOR"
+COLOR_ENV = "FORGE_COLOR"
 STATUS_BLUE_SGR = "38;5;004"
 RUN_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 SSH_CONNECT_TIMEOUT_SECONDS = 15
@@ -63,6 +63,11 @@ SSH_OPTS = [
     "-o", f"ServerAliveCountMax={SSH_SERVER_ALIVE_COUNT_MAX}",
 ]
 RSYNC_SSH = "ssh " + " ".join(shlex.quote(item) for item in SSH_OPTS)
+
+
+def schema_matches(value: Any, kind: str, version: str = "v1") -> bool:
+    parts = str(value or "").split(".")
+    return len(parts) >= 3 and parts[-2:] == [kind, version]
 
 
 def transient_ssh_transport_failure(command: list[str], result: subprocess.CompletedProcess[str]) -> bool:
@@ -116,9 +121,9 @@ def run_process_command_with_retries(
 
 def script_path() -> Path:
     path = Path(__file__).resolve()
-    if path.name == "crucible.py":
+    if path.name == "forge.py":
         return path
-    wrapper = path.parent.parent / "crucible.py"
+    wrapper = path.parent.parent / "forge.py"
     return wrapper if wrapper.exists() else path
 
 def script_repo(path: Path | None = None) -> Path:
@@ -515,7 +520,7 @@ def run_checked(command: list[str], *, cwd: Path | None = None) -> None:
     if result.returncode != 0:
         raise SystemExit(result.stdout.strip() or f"command failed: {shell_join(command)}")
 
-def crucible_version_payload() -> dict[str, Any]:
+def forge_version_payload() -> dict[str, Any]:
     path = script_path()
     try:
         repo = script_repo(path)
@@ -525,7 +530,7 @@ def crucible_version_payload() -> dict[str, Any]:
     except SystemExit:
         return {
             "schema": SCHEMA,
-            "tool": "crucible",
+            "tool": "forge",
             "path": str(path),
             "repo": "",
             "branch": "packaged",
@@ -546,7 +551,7 @@ def crucible_version_payload() -> dict[str, Any]:
         upstream = ""
     return {
         "schema": SCHEMA,
-        "tool": "crucible",
+        "tool": "forge",
         "path": str(path),
         "repo": str(repo),
         "branch": branch,
@@ -561,7 +566,7 @@ def print_version_payload(payload: dict[str, Any], *, as_json: bool) -> None:
         print(json.dumps(payload, sort_keys=True))
         return
     suffix = " dirty" if payload["dirty"] else ""
-    print(f"crucible {payload['commit']} {payload['branch']}{suffix}")
+    print(f"forge {payload['commit']} {payload['branch']}{suffix}")
 
 def cmd_self_update(args: argparse.Namespace) -> int:
     repo = script_repo()
@@ -570,16 +575,16 @@ def cmd_self_update(args: argparse.Namespace) -> int:
     current_branch = git_output(repo, "rev-parse", "--abbrev-ref", "HEAD")
     branch = args.branch or current_branch
     if branch == "HEAD":
-        raise SystemExit("crucible is on a detached HEAD; pass --branch explicitly")
+        raise SystemExit("forge is on a detached HEAD; pass --branch explicitly")
     run_checked(["git", "-C", str(repo), "fetch", args.remote])
     if current_branch != branch:
         run_checked(["git", "-C", str(repo), "checkout", branch])
     run_checked(["git", "-C", str(repo), "pull", "--ff-only", args.remote, branch])
-    print_version_payload(crucible_version_payload(), as_json=args.json)
+    print_version_payload(forge_version_payload(), as_json=args.json)
     return 0
 
 def cmd_version(args: argparse.Namespace) -> int:
-    print_version_payload(crucible_version_payload(), as_json=args.json)
+    print_version_payload(forge_version_payload(), as_json=args.json)
     return 0
 
 def terminal_color_enabled(*, no_color: bool = False) -> bool:

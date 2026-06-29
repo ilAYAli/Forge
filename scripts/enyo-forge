@@ -1,61 +1,61 @@
 #!/usr/bin/env bash
 #
-# forge -- crucible frontend for Enyo dev workflow
+# enyo-forge -- Forge frontend for Enyo dev workflow
 #
 # Install (no sourcing needed):
-#   cp forge ~/code/cpp/chess/enyo/scripts/forge
-#   chmod +x ~/code/cpp/chess/enyo/scripts/forge
-#   ln -s ~/code/cpp/chess/enyo/scripts/forge /usr/local/bin/forge   # or anywhere on $PATH
+#   cp enyo-forge ~/code/cpp/chess/enyo/scripts/enyo-forge
+#   chmod +x ~/code/cpp/chess/enyo/scripts/enyo-forge
+#   ln -s ~/code/cpp/chess/enyo/scripts/enyo-forge /usr/local/bin/enyo-forge   # or anywhere on $PATH
 #
 # IMPORTANT: remote paths use a literal `~` so each host expands its OWN
 # $HOME. Do NOT replace `~` with $HOME or "$HOME/code/..." -- that gets
-# expanded by YOUR local shell before crucible ever sees it.
+# expanded by YOUR local shell before forge ever sees it.
 #
-# OPTIONAL: set CRUCIBLE_HOST to scope all crucible calls to a single host
+# OPTIONAL: set FORGE_HOST to scope all forge calls to a single host
 # (avoids the "ran on 3 hosts, 2 failed" noise from machines that don't
 # have the repo). e.g.:
-#   export CRUCIBLE_HOST=pwa-5090
+#   export FORGE_HOST=pwa-5090
 # NOTE: verify `--host` is actually the right flag/position for your
-# crucible build -- adjust host_args_fn below if needed.
+# forge build -- adjust host_args_fn below if needed.
 #
 # Usage:
-#   forge engine <hash>                                                      # build+deploy (skips if already built), prints engine path
-#   forge test   <cand_hash> [ref_hash] [-- crucible-args]                   # if ref omitted, uses cand's parent commit as reference
-#   forge nnue   <hash> --candidate-nnue file [--reference-nnue file] [-- crucible-args]  # default reference: ~/code/cpp/chess/enyo/net/default.net
+#   enyo-forge engine <hash>                                                      # build+deploy (skips if already built), prints engine path
+#   enyo-forge test   <cand_hash> [ref_hash] [-- forge-args]                   # if ref omitted, uses cand's parent commit as reference
+#   enyo-forge nnue   <hash> --candidate-nnue file [--reference-nnue file] [-- forge-args]  # default reference: ~/code/cpp/chess/enyo/net/default.net
 #
-# Anything after `--` is passed straight through to `crucible sprt`,
+# Anything after `--` is passed straight through to `forge sprt`,
 # e.g.:
-#   forge test 57e99d7 -- --games 200
-#   forge test 57e99d7 fe20dfe -- --games 200 --concurrency 8
-#   forge nnue 57e99d7 --candidate-nnue /tmp/foo.nn -- --games 200
-#   forge nnue 57e99d7 --candidate-nnue /tmp/foo.nn --reference-nnue /tmp/bar.nn -- --games 200
+#   enyo-forge test 57e99d7 -- --games 200
+#   enyo-forge test 57e99d7 fe20dfe -- --games 200 --concurrency 8
+#   enyo-forge nnue 57e99d7 --candidate-nnue /tmp/foo.nn -- --games 200
+#   enyo-forge nnue 57e99d7 --candidate-nnue /tmp/foo.nn --reference-nnue /tmp/bar.nn -- --games 200
 
 set -u
 
 ENYO_DIR=~/code/cpp/chess/enyo
-CRUCIBLE_DIR=~/code/cpp/chess/crucible
-WORKERS_FILE=$CRUCIBLE_DIR/runs/workers.json
+FORGE_DIR=~/code/cpp/chess/forge
+WORKERS_FILE=$FORGE_DIR/runs/workers.json
 DEFAULT_REFERENCE_NNUE='~/code/cpp/chess/enyo/net/default.net'
 
 host_args_fn() {
-    [[ -n "${CRUCIBLE_HOST:-}" ]] && printf '%s\n' --host "$CRUCIBLE_HOST"
+    [[ -n "${FORGE_HOST:-}" ]] && printf '%s\n' --host "$FORGE_HOST"
 }
 
 # --- Build & deploy an engine for a given git hash, prints its path ---
 # Skips the build entirely if ~/assets/engines/enyo_<hash> already exists.
 forge_engine() {
     local hash="$1"
-    [[ -z "$hash" ]] && { echo "Usage: forge engine <hash>" >&2; return 1; }
+    [[ -z "$hash" ]] && { echo "Usage: enyo-forge engine <hash>" >&2; return 1; }
 
     local engine_path="~/assets/engines/enyo_$hash"
     local -a host_args=()
-    [[ -n "${CRUCIBLE_HOST:-}" ]] && host_args=(--host "$CRUCIBLE_HOST")
+    [[ -n "${FORGE_HOST:-}" ]] && host_args=(--host "$FORGE_HOST")
 
-    if crucible sh "${host_args[@]+"${host_args[@]}"}" "[ -f $engine_path ]" >/dev/null 2>&1; then
+    if forge sh "${host_args[@]+"${host_args[@]}"}" "[ -f $engine_path ]" >/dev/null 2>&1; then
         echo "enyo_$hash already exists, skipping build" >&2
     else
         local out rc
-        out=$( (set -o pipefail; crucible sh "${host_args[@]+"${host_args[@]}"}" "cd ~/code/cpp/chess/enyo && \
+        out=$( (set -o pipefail; forge sh "${host_args[@]+"${host_args[@]}"}" "cd ~/code/cpp/chess/enyo && \
             git fetch origin && \
             git -c advice.detachedHead=false checkout -f $hash && \
             cmake --build build && \
@@ -90,7 +90,7 @@ is_ancestor() {
 # Extra args (e.g. --games 200) are appended verbatim to the SPRT template.
 sprt_engines() {
     local ref="$1" cand="$2"; shift 2
-    local -a cmd=(crucible run "$CRUCIBLE_DIR/templates/sprt.template.json" --workers "$WORKERS_FILE" --reference "$ref" --candidate "$cand" "$@")
+    local -a cmd=(forge run "$FORGE_DIR/templates/sprt.template.json" --workers "$WORKERS_FILE" --reference "$ref" --candidate "$cand" "$@")
     echo "+ ${cmd[*]}" >&2
     "${cmd[@]}"
 }
@@ -99,7 +99,7 @@ sprt_engines() {
 # Extra args (e.g. --games 200) are appended verbatim to the SPRT template.
 sprt_nnue() {
     local bin="$1" cand_nnue="$2" ref_nnue="$3"; shift 3
-    local -a cmd=(crucible run "$CRUCIBLE_DIR/templates/sprt.template.json" --workers "$WORKERS_FILE" --candidate "$bin" --reference "$bin" \
+    local -a cmd=(forge run "$FORGE_DIR/templates/sprt.template.json" --workers "$WORKERS_FILE" --candidate "$bin" --reference "$bin" \
         --candidate-uci "nnue_file=$cand_nnue" --reference-uci "nnue_file=$ref_nnue")
     cmd+=("$@")
     echo "+ ${cmd[*]}" >&2
@@ -107,14 +107,14 @@ sprt_nnue() {
 }
 
 # --- High-level: build candidate (+ reference) and SPRT them ---
-# forge test <candidate_hash> [reference_hash] [-- crucible-args]
+# enyo-forge test <candidate_hash> [reference_hash] [-- forge-args]
 #
 #   1 hash  -> reference = parent commit of candidate (candidate^)
 #   2 hashes -> explicit candidate + reference. If reference does NOT
 #               look like an ancestor of candidate (i.e. an OLDER commit),
 #               warns and asks for confirmation -- catches accidental
 #               candidate/reference swaps.
-#   anything after `--` is passed through to `crucible sprt` as-is
+#   anything after `--` is passed through to `forge sprt` as-is
 #   (e.g. --games 200, --concurrency 8). Default --games 1000 if omitted.
 forge_test() {
     local cand_hash="${1:-}" ref_hash=""
@@ -129,7 +129,7 @@ forge_test() {
     local -a extra=("$@")
 
     [[ -z "$cand_hash" ]] && {
-        echo "Usage: forge test <candidate_hash> [reference_hash] [-- crucible-args]" >&2
+        echo "Usage: enyo-forge test <candidate_hash> [reference_hash] [-- forge-args]" >&2
         return 1
     }
 
@@ -167,7 +167,7 @@ sync_net_to_workers() {
     echo "Syncing $remote_basename to all workers..." >&2
 
     # Create target directory on all workers
-    crucible sh --workers "$WORKERS_FILE" "mkdir -p ~/assets/nets" >/dev/null || return 1
+    forge sh --workers "$WORKERS_FILE" "mkdir -p ~/assets/nets" >/dev/null || return 1
 
     # Extract unique non-local hosts from workers.json
     local -a hosts=()
@@ -203,9 +203,9 @@ with open('$WORKERS_FILE') as f:
 }
 
 # --- High-level: build one hash, then SPRT candidate NNUE vs reference NNUE ---
-# forge nnue <hash> --candidate-nnue file [--reference-nnue file] [-- crucible-args]
+# enyo-forge nnue <hash> --candidate-nnue file [--reference-nnue file] [-- forge-args]
 # --reference-nnue defaults to ~/code/cpp/chess/enyo/net/default.net if omitted.
-# anything after `--` is passed through to `crucible sprt` as-is
+# anything after `--` is passed through to `forge sprt` as-is
 # (e.g. --games 200). Default --games 1500 if omitted.
 forge_nnue() {
     local hash="${1:-}"
@@ -225,7 +225,7 @@ forge_nnue() {
     done
 
     [[ -z "$hash" ]] && {
-        echo "Usage: forge nnue <hash> --candidate-nnue file [--reference-nnue file] [-- crucible-args]" >&2
+        echo "Usage: enyo-forge nnue <hash> --candidate-nnue file [--reference-nnue file] [-- forge-args]" >&2
         return 1
     }
     [[ -z "$cand_nnue" ]] && {
@@ -269,11 +269,11 @@ forge_nnue() {
 
 usage() {
     cat >&2 << USAGE
-forge -- crucible frontend for Enyo
+enyo-forge -- Forge frontend for Enyo
 
-  forge engine <hash>
-  forge test   <cand_hash> [ref_hash] [-- crucible-args]
-  forge nnue   <hash> --candidate-nnue file [--reference-nnue file] [-- crucible-args]
+  enyo-forge engine <hash>
+  enyo-forge test   <cand_hash> [ref_hash] [-- forge-args]
+  enyo-forge nnue   <hash> --candidate-nnue file [--reference-nnue file] [-- forge-args]
 USAGE
 }
 

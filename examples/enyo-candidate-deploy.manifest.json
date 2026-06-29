@@ -1,5 +1,5 @@
 {
-  "schema": "crucible.task.v1",
+  "schema": "forge.task.v1",
   "name": "enyo-candidate-deploy",
   "work_dir": "~/code/cpp/chess/enyo",
   "path_maps": {},

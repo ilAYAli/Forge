@@ -1,4 +1,4 @@
-# Crucible Examples
+# Forge Examples
 
 These manifests are templates. Replace commit SHAs, run names, and source paths
 before use.
@@ -8,7 +8,7 @@ to. Do not rely on short hostnames unless they resolve to the same machine from
 every worker.
 
 ```sh
-crucible deploy examples/workers.json examples/nnue-selfplay.manifest.json \
+forge deploy examples/workers.json examples/nnue-selfplay.manifest.json \
   --run nnue-selfplay \
   --coordinator-host COORDINATOR_HOST_OR_IP
 ```
@@ -18,12 +18,12 @@ crucible deploy examples/workers.json examples/nnue-selfplay.manifest.json \
 Sync and verify common chess tooling on all workers:
 
 ```sh
-crucible deploy examples/workers.json examples/tooling-update.manifest.json \
+forge deploy examples/workers.json examples/tooling-update.manifest.json \
   --run tooling-update \
   --coordinator-host COORDINATOR_HOST_OR_IP
 ```
 
-This is setup-only. It updates Crucible, NNUE, and Enyo checkouts, builds Enyo,
+This is setup-only. It updates Forge, NNUE, and Enyo checkouts, builds Enyo,
 runs `scripts/deploy.sh --candidate`, and probes `fastchess`, Stockfish, and
 the candidate engine.
 
@@ -32,10 +32,10 @@ the candidate engine.
 Run self-play shards:
 
 ```sh
-crucible deploy examples/workers.json examples/nnue-selfplay.manifest.json \
+forge deploy examples/workers.json examples/nnue-selfplay.manifest.json \
   --run nnue-selfplay \
   --coordinator-host COORDINATOR_HOST_OR_IP
-crucible status nnue-selfplay
+forge status nnue-selfplay
 ```
 
 Use workers with few slots for this. Each self-play shard already runs several
@@ -46,11 +46,11 @@ engine games concurrently.
 Label a sampled source JSONL:
 
 ```sh
-crucible deploy examples/workers.json examples/nnue-label-stockfish.manifest.json \
+forge deploy examples/workers.json examples/nnue-label-stockfish.manifest.json \
   --run nnue-label-stockfish \
   --coordinator-host COORDINATOR_HOST_OR_IP
-crucible status nnue-label-stockfish
-crucible merge \
+forge status nnue-label-stockfish
+forge merge \
   nnue-label-stockfish \
   --output runs/nnue-label-stockfish/outputs/labeled.jsonl
 ```
@@ -63,10 +63,10 @@ multiple slots can use idle CPU cores on the same host.
 Run independent SPRT shards:
 
 ```sh
-crucible deploy examples/workers.json examples/nnue-sprt.manifest.json \
+forge deploy examples/workers.json examples/nnue-sprt.manifest.json \
   --run nnue-sprt \
   --coordinator-host COORDINATOR_HOST_OR_IP
-crucible status nnue-sprt --verbose
+forge status nnue-sprt --verbose
 ```
 
 The manifest pins and installs the `sprt` wrapper from Git, then probes the

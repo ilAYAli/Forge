@@ -1,5 +1,5 @@
 {
-  "schema": "crucible.template.v1",
+  "schema": "forge.template.v1",
   "name": "sprt",
   "kind": "sprt",
   "description": "Run distributed SPRT game shards",
@@ -42,7 +42,7 @@
     "shards": {
       "type": "int",
       "aliases": ["shard_count"],
-      "help": "Number of Crucible shards"
+      "help": "Number of Forge shards"
     },
     "concurrency": {
       "type": "int",

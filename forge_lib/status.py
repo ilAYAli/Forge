@@ -135,12 +135,12 @@ def run_status_on_coordinator(args: argparse.Namespace, coordinator_runs: str) -
     color_mode = status_color_mode(args)
     if host:
         remote = (
-            "command -v crucible >/dev/null 2>&1 || "
-            "{ echo 'crucible not found in PATH on coordinator' >&2; exit 127; }; "
+            "command -v forge >/dev/null 2>&1 || "
+            "{ echo 'forge not found in PATH on coordinator' >&2; exit 127; }; "
             f"exec env {shlex.quote(COORDINATOR_RUNS_ENV)}= "
             f"{shlex.quote(COLOR_ENV)}={shlex.quote(color_mode)} "
             f"{shlex.quote(RUNS_DIR_ENV)}={shlex.quote(runs_path)} "
-            f"crucible {shell_join(command)}"
+            f"forge {shell_join(command)}"
         )
         result = subprocess.run(
             ["ssh", *SSH_OPTS, host, remote],
@@ -217,11 +217,11 @@ def run_state_control_on_coordinator(name: str, args: argparse.Namespace, coordi
     command = state_control_command_args(name, args)
     if host:
         remote = (
-            "command -v crucible >/dev/null 2>&1 || "
-            "{ echo 'crucible not found in PATH on coordinator' >&2; exit 127; }; "
+            "command -v forge >/dev/null 2>&1 || "
+            "{ echo 'forge not found in PATH on coordinator' >&2; exit 127; }; "
             f"exec env {shlex.quote(COORDINATOR_RUNS_ENV)}= "
             f"{shlex.quote(RUNS_DIR_ENV)}={shlex.quote(runs_path)} "
-            f"crucible {shell_join(command)}"
+            f"forge {shell_join(command)}"
         )
         result = subprocess.run(
             ["ssh", *SSH_OPTS, host, remote],
@@ -1282,7 +1282,7 @@ def template_command_group(manifest: dict[str, Any]) -> dict[str, Any] | None:
     parameters = template.get("parameters")
     if not template_name or not isinstance(parameters, dict):
         return None
-    parts = ["crucible", template_name] if template_name == "sprt" else ["crucible", "run", template_name]
+    parts = ["forge", template_name] if template_name == "sprt" else ["forge", "run", template_name]
     extra_args: list[str] = []
     for key, value in parameters.items():
         name = str(key)
@@ -1625,7 +1625,7 @@ def color_count_line(label: str, count: int, color: str, *, color_enabled: bool)
 
 def color_failure_summary(count: int, *, color_enabled: bool) -> str:
     noun = "run" if count == 1 else "runs"
-    return f"failed: {colorize(str(count), 'red', enabled=color_enabled)} {noun} (use crucible status --failed)"
+    return f"failed: {colorize(str(count), 'red', enabled=color_enabled)} {noun} (use forge status --failed)"
 
 def print_run_status(
     summaries: list[dict[str, Any]],
@@ -1665,7 +1665,7 @@ def print_run_status(
         }
         label = labels.get(filter_name, "")
         qualifier = f"{label} " if label else ""
-        print(f"no {qualifier}Crucible runs found in {runs_label or runs_dir()}")
+        print(f"no {qualifier}Forge runs found in {runs_label or runs_dir()}")
         return 0
     collapsed_failures = [
         summary for summary in filtered
@@ -1719,7 +1719,7 @@ def print_run_status(
 def load_run_manifest(run: str | Path) -> tuple[Path, dict[str, Any]]:
     path = run_manifest_path(run)
     if not path.exists():
-        raise SystemExit(f"{run}: no Crucible run manifest found at {path}")
+        raise SystemExit(f"{run}: no Forge run manifest found at {path}")
     return path, load_manifest(path)
 
 def run_summary_for(run: str | Path, *, lease_seconds: int) -> dict[str, Any]:
@@ -1936,7 +1936,7 @@ def confirm_delete(paths: list[Path], *, force: bool) -> None:
     if not sys.stdin.isatty():
         raise SystemExit("pass --force to delete runs non-interactively")
     names = ", ".join(path.name for path in paths)
-    answer = input(f"delete Crucible run(s) {names}? type 'yes' to confirm: ")
+    answer = input(f"delete Forge run(s) {names}? type 'yes' to confirm: ")
     if answer != "yes":
         raise SystemExit("delete cancelled")
 
@@ -1946,7 +1946,7 @@ def mark_deleted_run_for_web(run: str) -> None:
 
         _delete_web_run(run)
     except ModuleNotFoundError as exc:
-        if exc.name != "crucible_lib.web":
+        if exc.name != "forge_lib.web":
             raise
     except Exception as exc:
         print(f"warning: web state not updated for {run}: {exc}", file=sys.stderr)
@@ -3441,7 +3441,7 @@ def cmd_wait(args: argparse.Namespace) -> int:
 
             remember_web_run_payload(payload, coordinator_runs=configured_coordinator_runs())
         except ModuleNotFoundError as exc:
-            if exc.name != "crucible_lib.web":
+            if exc.name != "forge_lib.web":
                 raise
         if notify_command:
             run_notify_command(notify_command, payload)
@@ -3511,7 +3511,7 @@ def run_notify_command(command_text: str | None, payload: dict[str, Any]) -> int
             command[0] = str(candidate)
     data = json.dumps(payload, sort_keys=True)
     env = os.environ.copy()
-    env["CRUCIBLE_EVENT_JSON"] = data
+    env["FORGE_EVENT_JSON"] = data
     result = subprocess.run(
         command,
         input=data + "\n",

@@ -62,7 +62,7 @@ def apply_profile(manifest: dict[str, Any], profile: str | None) -> dict[str, An
     return translated
 
 def validate_manifest_payload(manifest: dict[str, Any], *, label: str) -> None:
-    if manifest.get("schema") != SCHEMA:
+    if not schema_matches(manifest.get("schema"), "task"):
         raise SystemExit(f"{label}: unsupported schema {manifest.get('schema')!r}")
     tasks = manifest.get("tasks")
     if not isinstance(tasks, list):

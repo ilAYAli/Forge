@@ -24,7 +24,7 @@ def one_slot_per_host_payload(workers_arg: str | None) -> dict[str, Any]:
     if not records:
         raise SystemExit("no enabled workers")
     return {
-        "schema": "crucible.workers.v1",
+        "schema": "forge.workers.v1",
         "workers": records,
     }
 

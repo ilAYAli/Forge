@@ -594,12 +594,12 @@ def parse_coordinator(value: str) -> tuple[str | None, str]:
 def shell_join(args: list[str]) -> str:
     return " ".join(shlex.quote(item) for item in args)
 
-def remote_crucible_command(args: list[str]) -> str:
+def remote_forge_command(args: list[str]) -> str:
     quoted_args = shell_join(args)
     return (
-        "command -v crucible >/dev/null 2>&1 || "
-        "{ echo 'crucible not found in PATH on coordinator' >&2; exit 127; }; "
-        f"exec crucible {quoted_args}"
+        "command -v forge >/dev/null 2>&1 || "
+        "{ echo 'forge not found in PATH on coordinator' >&2; exit 127; }; "
+        f"exec forge {quoted_args}"
     )
 
 def run_coordinator_cli(coordinator: str, args: list[str]) -> subprocess.CompletedProcess[str]:
@@ -607,7 +607,7 @@ def run_coordinator_cli(coordinator: str, args: list[str]) -> subprocess.Complet
     resolved_args = [item.replace("{manifest}", manifest_path) for item in args]
     if host:
         return run_process_command_with_retries(
-            ["ssh", *SSH_OPTS, host, remote_crucible_command(resolved_args)],
+            ["ssh", *SSH_OPTS, host, remote_forge_command(resolved_args)],
             retries=SSH_TRANSIENT_RETRY_COUNT,
         )
     script = str(script_path())
@@ -987,7 +987,7 @@ def heartbeat_loop(
 def check_coordinator_cli(coordinator: str) -> None:
     result = run_coordinator_cli(coordinator, ["version", "--json"])
     if result.returncode != 0:
-        detail = result.stderr.strip() or result.stdout.strip() or "coordinator crucible check failed"
+        detail = result.stderr.strip() or result.stdout.strip() or "coordinator forge check failed"
         raise SystemExit(detail)
 
 def cmd_work(args: argparse.Namespace) -> int:

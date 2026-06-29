@@ -7,11 +7,11 @@ import shutil
 from pathlib import Path
 from typing import Any
 
-from .core import expand_path, now, sha256_file, write_json
+from .core import expand_path, now, schema_matches, sha256_file, write_json
 from .tasks import task_outputs
 
 
-INVENTORY_SCHEMA = "crucible.lc0-inventory.v1"
+INVENTORY_SCHEMA = "forge.lc0-inventory.v1"
 STATS_SCHEMA = "enyo.label-stats.v1"
 RECORD_BYTES = 32
 HASH_CACHE_NAME = "lc0-inventory-hashes.json"
@@ -42,7 +42,7 @@ def build_inventory(source: str | Path, *, cache_home: Path | None = None) -> di
     source_path = expand_path(str(source)).resolve()
     if not source_path.is_dir():
         raise SystemExit(f"LC0 source is not a directory: {source_path}")
-    cache_home = cache_home or expand_path("~/.cache/crucible")
+    cache_home = cache_home or expand_path("~/.cache/forge")
     hash_cache_path = cache_home / HASH_CACHE_NAME
     hash_cache = load_hash_cache(hash_cache_path)
     updated_cache: dict[str, Any] = dict(hash_cache)
@@ -102,7 +102,7 @@ def build_inventory(source: str | Path, *, cache_home: Path | None = None) -> di
 def verify_inventory_tree(root: Path, digest: str) -> dict[str, Any]:
     inventory = json.loads((root / "inventory.json").read_text(encoding="utf-8"))
     files = inventory.get("files")
-    if inventory.get("schema") != INVENTORY_SCHEMA or not isinstance(files, list):
+    if not schema_matches(inventory.get("schema"), "lc0-inventory") or not isinstance(files, list):
         raise ValueError("invalid LC0 inventory")
     if inventory_digest(files) != digest:
         raise ValueError("LC0 inventory digest mismatch")
@@ -131,7 +131,7 @@ def marker_matches(root: Path, digest: str) -> bool:
         marker = json.loads((root / VERIFIED_MARKER_NAME).read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return False
-    return marker.get("schema") == INVENTORY_SCHEMA and marker.get("digest") == digest
+    return schema_matches(marker.get("schema"), "lc0-inventory") and marker.get("digest") == digest
 
 
 def cleanup_partials(manifest: dict[str, Any], finalizer: dict[str, Any]) -> None:
@@ -206,7 +206,7 @@ def finalize_labeling(manifest_path: Path, manifest: dict[str, Any]) -> dict[str
         temp.unlink(missing_ok=True)
 
     summary = {
-        "schema": "crucible.label-summary.v1",
+        "schema": "forge.label-summary.v1",
         "completed_at": now(),
         "output": str(output),
         "merged_bytes": expected_bytes,

@@ -1,5 +1,5 @@
 {
-  "schema": "crucible.task.v1",
+  "schema": "forge.task.v1",
   "name": "nnue-sprt",
   "kind": "sprt",
   "description": "Distributed SPRT in fixed-size game shards",

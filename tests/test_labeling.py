@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from crucible_lib.labeling import (
+from forge_lib.labeling import (
     INVENTORY_SCHEMA,
     build_inventory,
     canonical_inventory_bytes,
@@ -17,10 +17,10 @@ from crucible_lib.labeling import (
     marker_matches,
     verify_inventory_tree,
 )
-from crucible_lib.core import file_record, write_json
-from crucible_lib.status import cmd_wait
-from crucible_lib.status import active_worker_summary, status_summary
-from crucible_lib.tasks import task_done_path
+from forge_lib.core import file_record, write_json
+from forge_lib.status import cmd_wait
+from forge_lib.status import active_worker_summary, status_summary
+from forge_lib.tasks import task_done_path
 
 
 class Lc0InventoryTests(unittest.TestCase):
@@ -40,8 +40,8 @@ class Lc0InventoryTests(unittest.TestCase):
         template = json.loads(template_path.read_text(encoding="utf-8"))
 
         self.assertEqual(
-            "/home/petter/.cache/crucible",
-            template["path_maps"]["pwa-wsl"]["~/.cache/crucible"],
+            "/home/petter/.cache/forge",
+            template["path_maps"]["pwa-wsl"]["~/.cache/forge"],
         )
 
     def test_digest_excludes_host_paths(self) -> None:
@@ -61,7 +61,7 @@ class Lc0InventoryTests(unittest.TestCase):
             (source / "training.1.gz").write_bytes(b"one")
             (source / "training.2.gz").write_bytes(b"two")
             first = build_inventory(source, cache_home=cache)
-            with mock.patch("crucible_lib.labeling.sha256_file", side_effect=AssertionError("rehash")):
+            with mock.patch("forge_lib.labeling.sha256_file", side_effect=AssertionError("rehash")):
                 second = build_inventory(source, cache_home=cache)
             self.assertEqual(first["digest"], second["digest"])
             self.assertTrue(marker_matches(Path(second["cache_root"]), str(second["digest"])))
@@ -111,7 +111,7 @@ class LabelingFinalizationTests(unittest.TestCase):
             })
         final = root / "dataset.bullet"
         manifest = {
-            "schema": "crucible.task.v1",
+            "schema": "forge.task.v1",
             "tasks": tasks,
             "finalize": {
                 "type": "bullet-labels",
@@ -130,7 +130,7 @@ class LabelingFinalizationTests(unittest.TestCase):
             output = Path(str(summary["output"]))
             self.assertEqual(b"a" * 32 + b"b" * 32 + b"c" * 32, output.read_bytes())
             self.assertEqual(96, summary["merged_bytes"])
-            self.assertEqual("crucible.label-summary.v1", summary["schema"])
+            self.assertEqual("forge.label-summary.v1", summary["schema"])
             self.assertEqual(3, summary["positions"])
             self.assertEqual(9, summary["task_totals"]["read"])
             self.assertEqual(summary, json.loads((Path(tmp) / "dataset-summary.json").read_text()))
@@ -227,7 +227,7 @@ class LabelingProgressTests(unittest.TestCase):
                     encoding="utf-8",
                 )
             manifest = {
-                "schema": "crucible.task.v1",
+                "schema": "forge.task.v1",
                 "name": "label-progress",
                 "kind": "label",
                 "work_dir": str(root),

@@ -33,7 +33,7 @@ _QUEUE_LAUNCHER_CODE = r"""
 import json
 import sys
 
-from crucible_lib.workers import run_queue_launcher
+from forge_lib.workers import run_queue_launcher
 
 raise SystemExit(run_queue_launcher(json.loads(sys.argv[1])))
 """
@@ -134,7 +134,7 @@ def default_inline_worker_records(path: str | Path | None = None) -> dict[str, d
         if not path.exists():
             return {}
     payload = read_json(path)
-    if payload.get("schema") not in (None, "crucible.workers.v1"):
+    if payload.get("schema") is not None and not schema_matches(payload.get("schema"), "workers"):
         return {}
     raw_workers = payload.get("workers")
     if not isinstance(raw_workers, list):
@@ -182,7 +182,7 @@ def parse_inline_workers(value: str, *, defaults_path: str | Path | None = None)
     defaults = default_inline_worker_records(defaults_path)
     workers = [worker for entry in entries if (worker := inline_worker_record(entry, defaults))]
     return {
-        "schema": "crucible.workers.v1",
+        "schema": "forge.workers.v1",
         "workers": workers,
     }
 
@@ -224,7 +224,7 @@ def worker_update_script(*, commit: str, remote: str, branch: str, require_clean
     )
     return (
         "set -e; "
-        "bin=$(command -v crucible); "
+        "bin=$(command -v forge); "
         "repo=$(python3 - \"$bin\" <<'PY'\n"
         "import pathlib, subprocess, sys\n"
         "path = pathlib.Path(sys.argv[1]).resolve()\n"
@@ -242,8 +242,8 @@ def worker_update_script(*, commit: str, remote: str, branch: str, require_clean
         "fi; "
         f"test \"$(git -C \"$repo\" rev-parse HEAD)\" = {shlex.quote(commit)}; "
         "mkdir -p \"$HOME/.local/bin\"; "
-        "ln -sf \"$repo/crucible.py\" \"$HOME/.local/bin/crucible\"; "
-        "crucible version"
+        "ln -sf \"$repo/forge.py\" \"$HOME/.local/bin/forge\"; "
+        "forge version"
     )
 
 def cmd_update(args: argparse.Namespace) -> int:
@@ -375,7 +375,7 @@ def worker_records_from_payload(
     label: str,
     allow_empty: bool = False,
 ) -> list[dict[str, Any]]:
-    if payload.get("schema") not in (None, "crucible.workers.v1"):
+    if payload.get("schema") is not None and not schema_matches(payload.get("schema"), "workers"):
         raise SystemExit(f"{label}: unsupported schema {payload.get('schema')!r}")
     raw_workers = payload.get("workers")
     if not isinstance(raw_workers, list):
@@ -391,7 +391,7 @@ def worker_records_from_payload(
 
 def workers_payload_from_records(records: list[dict[str, Any]]) -> dict[str, Any]:
     return {
-        "schema": "crucible.workers.v1",
+        "schema": "forge.workers.v1",
         "workers": records,
     }
 
@@ -485,8 +485,8 @@ def worker_cache_dir(worker: dict[str, Any]) -> str:
     if worker.get("cache_dir"):
         return str(worker["cache_dir"])
     if is_local_worker(worker):
-        return str(Path.home() / ".cache/crucible")
-    return "/tmp/crucible-cache"
+        return str(Path.home() / ".cache/forge")
+    return "/tmp/forge-cache"
 
 def worker_cache_file(worker: dict[str, Any], name: str) -> str:
     return str(Path(worker_cache_dir(worker)) / name)
@@ -644,15 +644,15 @@ def bootstrap_worker_runner(
     copy_to_worker(
         worker,
         wrapper,
-        worker_cache_file(worker, "crucible.py"),
+        worker_cache_file(worker, "forge.py"),
         timeout=timeout,
         tracker=tracker,
         retries=retries,
     )
     copy_dir_to_worker(
         worker,
-        wrapper.parent / "crucible_lib",
-        worker_cache_file(worker, "crucible_lib"),
+        wrapper.parent / "forge_lib",
+        worker_cache_file(worker, "forge_lib"),
         timeout=timeout,
         tracker=tracker,
         retries=retries,
@@ -1030,7 +1030,7 @@ def deploy_prereq_command(
     manifest: dict[str, Any],
     coordinator: str | None = None,
 ) -> str:
-    runner = worker_cache_file(worker, "crucible.py")
+    runner = worker_cache_file(worker, "forge.py")
     manifest_path = worker_cache_file(worker, "manifest.json")
     profile_args = worker_profile_args(manifest, worker)
     python = worker_python(worker)
@@ -1058,7 +1058,7 @@ def deploy_work_command(
     retry_failed: bool = False,
     task_attempts: int = 0,
 ) -> str:
-    runner = worker_cache_file(worker, "crucible.py")
+    runner = worker_cache_file(worker, "forge.py")
     manifest_path = worker_cache_file(worker, "manifest.json")
     profile_args = worker_profile_args(manifest, worker)
     python = worker_python(worker)
@@ -1230,7 +1230,7 @@ def remember_run_for_web(run_name: str, *, coordinator_runs: str | None = None) 
 
         remember_web_run(run_name, coordinator_runs=coordinator_runs)
     except ModuleNotFoundError as exc:
-        if exc.name != "crucible_lib.web":
+        if exc.name != "forge_lib.web":
             raise
 
 def queued_run_sort_key(summary: dict[str, Any]) -> tuple[float, str]:
@@ -1668,7 +1668,7 @@ def cmd_deploy(args: argparse.Namespace) -> int:
             blocker_names = ", ".join(str(summary.get("run") or "") for summary in blockers)
             print(f"deploy: queued {run_name}; waiting for {blocker_names}")
             print(f"deploy: queue monitor pid={monitor_pid}")
-            print(f"deploy: status: crucible status {run_name} --verbose")
+            print(f"deploy: status: forge status {run_name} --verbose")
             return 0
     run_dir, manifest_path, workers_path = materialize_run(
         template_path=template_path,
@@ -2306,11 +2306,11 @@ def run_control_on_coordinator(name: str, args: argparse.Namespace, coordinator_
     command = run_control_command_args(name, args)
     if host:
         remote = (
-            "command -v crucible >/dev/null 2>&1 || "
-            "{ echo 'crucible not found in PATH on coordinator' >&2; exit 127; }; "
+            "command -v forge >/dev/null 2>&1 || "
+            "{ echo 'forge not found in PATH on coordinator' >&2; exit 127; }; "
             f"exec env {shlex.quote(COORDINATOR_RUNS_ENV)}= "
             f"{shlex.quote(RUNS_DIR_ENV)}={shlex.quote(runs_path)} "
-            f"crucible {shell_join(command)}"
+            f"forge {shell_join(command)}"
         )
         result = subprocess.run(
             ["ssh", *SSH_OPTS, host, remote],
@@ -2340,7 +2340,7 @@ def run_control_on_coordinator(name: str, args: argparse.Namespace, coordinator_
 
 def coordinator_temp_file(host: str) -> str:
     result = subprocess.run(
-        ["ssh", *SSH_OPTS, host, "mktemp /tmp/crucible.XXXXXX"],
+        ["ssh", *SSH_OPTS, host, "mktemp /tmp/forge.XXXXXX"],
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -2410,11 +2410,11 @@ def run_launch_on_coordinator(command: list[str], coordinator_runs: str) -> int:
     if not host:
         return 0
     remote = (
-        "command -v crucible >/dev/null 2>&1 || "
-        "{ echo 'crucible not found in PATH on coordinator' >&2; exit 127; }; "
+        "command -v forge >/dev/null 2>&1 || "
+        "{ echo 'forge not found in PATH on coordinator' >&2; exit 127; }; "
         f"exec env {shlex.quote(COORDINATOR_RUNS_ENV)}= "
         f"{shlex.quote(RUNS_DIR_ENV)}={shlex.quote(runs_path)} "
-        f"crucible {shell_join(command)}"
+        f"forge {shell_join(command)}"
     )
     result = subprocess.run(
         ["ssh", *SSH_OPTS, host, remote],
@@ -2458,12 +2458,12 @@ def run_coordinator_command(coordinator_runs: str, command: list[str]) -> subpro
     host, runs_path = parse_coordinator(coordinator_runs)
     if host:
         remote = (
-            "command -v crucible >/dev/null 2>&1 || "
-            "{ echo 'crucible not found in PATH on coordinator' >&2; exit 127; }; "
+            "command -v forge >/dev/null 2>&1 || "
+            "{ echo 'forge not found in PATH on coordinator' >&2; exit 127; }; "
             f"exec env {shlex.quote(COORDINATOR_RUNS_ENV)}= "
             f"{shlex.quote(COLOR_ENV)}=never "
             f"{shlex.quote(RUNS_DIR_ENV)}={shlex.quote(runs_path)} "
-            f"crucible {shell_join(command)}"
+            f"forge {shell_join(command)}"
         )
         return subprocess.run(
             ["ssh", *SSH_OPTS, host, remote],
@@ -2493,10 +2493,10 @@ def single_active_run_name(summaries: list[dict[str, Any]], *, source: str = "")
     ]
     qualifier = f" {source}" if source else ""
     if not active:
-        raise SystemExit(f"no active Crucible run found{qualifier}")
+        raise SystemExit(f"no active Forge run found{qualifier}")
     if len(active) > 1:
         names = ", ".join(str(summary["run"]) for summary in sorted(active, key=lambda item: str(item["run"])))
-        raise SystemExit(f"multiple active Crucible runs found{qualifier}; specify one: {names}")
+        raise SystemExit(f"multiple active Forge runs found{qualifier}; specify one: {names}")
     return str(active[0]["run"])
 
 def single_active_local_run_name(*, lease_seconds: int) -> str:
@@ -2573,7 +2573,7 @@ def run_worker_control_on_coordinator(action: str, args: argparse.Namespace, coo
     host, runs_path = parse_coordinator(coordinator_runs)
     command = worker_control_command_args(action, args)
     if host:
-        pid_file = f"/tmp/crucible-control-{uuid.uuid4().hex}.pid"
+        pid_file = f"/tmp/forge-control-{uuid.uuid4().hex}.pid"
         reset_sigint_exec = (
             "import os, signal, sys; "
             "signal.signal(signal.SIGINT, signal.SIG_DFL); "
@@ -2582,11 +2582,11 @@ def run_worker_control_on_coordinator(action: str, args: argparse.Namespace, coo
         child = (
             f"exec env {shlex.quote(COORDINATOR_RUNS_ENV)}= "
             f"{shlex.quote(RUNS_DIR_ENV)}={shlex.quote(runs_path)} "
-            f"python3 -c {shlex.quote(reset_sigint_exec)} crucible {shell_join(command)}"
+            f"python3 -c {shlex.quote(reset_sigint_exec)} forge {shell_join(command)}"
         )
         remote = (
-            "command -v crucible >/dev/null 2>&1 || "
-            "{ echo 'crucible not found in PATH on coordinator' >&2; exit 127; }; "
+            "command -v forge >/dev/null 2>&1 || "
+            "{ echo 'forge not found in PATH on coordinator' >&2; exit 127; }; "
             f"pid_file={shlex.quote(pid_file)}; rm -f \"$pid_file\"; "
             f"sh -lc {shlex.quote(child)} & pid=$!; "
             "printf '%s\\n' \"$pid\" > \"$pid_file\"; "
@@ -2708,7 +2708,7 @@ def cmd_run_job(args: argparse.Namespace) -> int:
             print(f"{label}: queued {run_name}; waiting for {blocker_names}")
             if should_wait:
                 print(f"{label}: waiting for queued run to finish")
-                print(f"{label}: status: crucible status {run_name} --verbose")
+                print(f"{label}: status: forge status {run_name} --verbose")
                 return run_queue_launcher_foreground(
                     run_dir=queued_run_dir,
                     command=command,
@@ -2720,7 +2720,7 @@ def cmd_run_job(args: argparse.Namespace) -> int:
                 lease_seconds=int(args.lease_seconds),
             )
             print(f"{label}: queue monitor pid={monitor_pid}")
-            print(f"{label}: status: crucible status {run_name} --verbose")
+            print(f"{label}: status: forge status {run_name} --verbose")
             return 0
 
     deploy_args = argparse.Namespace(
@@ -2754,7 +2754,7 @@ def cmd_run_job(args: argparse.Namespace) -> int:
     rc = run_command_stage(label, "deploy", cmd_deploy, deploy_args)
     if rc:
         if not ephemeral:
-            print(f"{label}: inspect with: crucible status {run_name} --verbose", file=sys.stderr)
+            print(f"{label}: inspect with: forge status {run_name} --verbose", file=sys.stderr)
         return rc
 
     if should_wait:
@@ -2772,7 +2772,7 @@ def cmd_run_job(args: argparse.Namespace) -> int:
         if rc:
             print(f"{label}: deploy failed rc={rc}", file=sys.stderr)
             if not ephemeral:
-                print(f"{label}: inspect with: crucible status {run_name} --verbose", file=sys.stderr)
+                print(f"{label}: inspect with: forge status {run_name} --verbose", file=sys.stderr)
             return rc
 
     if should_verify:
@@ -2784,7 +2784,7 @@ def cmd_run_job(args: argparse.Namespace) -> int:
         )
         if rc:
             if not ephemeral:
-                print(f"{label}: inspect with: crucible status {run_name} --verbose", file=sys.stderr)
+                print(f"{label}: inspect with: forge status {run_name} --verbose", file=sys.stderr)
             return rc
 
     if args.merge:
@@ -2798,20 +2798,20 @@ def cmd_run_job(args: argparse.Namespace) -> int:
         rc = run_command_stage(label, "merge", cmd_merge, merge_args)
         if rc:
             if not ephemeral:
-                print(f"{label}: inspect with: crucible status {run_name} --verbose", file=sys.stderr)
+                print(f"{label}: inspect with: forge status {run_name} --verbose", file=sys.stderr)
             return rc
 
     if ephemeral:
         print(f"{label}: ok")
     else:
-        print(f"{label}: ok; status: crucible status {run_name} --verbose")
+        print(f"{label}: ok; status: forge status {run_name} --verbose")
     return 0
 
 def materialized_run_paths(run_dir: Path, *, label: str) -> tuple[str, Path, Path]:
     manifest_path = run_dir / RUN_MANIFEST_NAME
     workers_path = run_dir / RUN_WORKERS_NAME
     if not manifest_path.exists() or not workers_path.exists():
-        raise SystemExit(f"{label}: no materialized Crucible run found")
+        raise SystemExit(f"{label}: no materialized Forge run found")
     return run_dir.name, manifest_path, workers_path
 
 def resume_run_paths(run: str | None, *, lease_seconds: int) -> list[tuple[str, Path, Path]]:
@@ -2823,10 +2823,10 @@ def resume_run_paths(run: str | None, *, lease_seconds: int) -> list[tuple[str, 
         if not run_done(summary)
     ]
     if not incomplete:
-        raise SystemExit("no incomplete Crucible run found")
+        raise SystemExit("no incomplete Forge run found")
     if len(incomplete) > 1:
         names = ", ".join(str(summary["run"]) for summary in sorted(incomplete, key=lambda item: str(item["run"])))
-        raise SystemExit(f"multiple incomplete Crucible runs found; specify one: {names}")
+        raise SystemExit(f"multiple incomplete Forge runs found; specify one: {names}")
     summary = incomplete[0]
     return [materialized_run_paths(run_dir_for_name(str(summary["run"])), label=str(summary["run"]))]
 
@@ -3034,7 +3034,7 @@ def cmd_resume(args: argparse.Namespace) -> int:
             print(f"resume: queued {run_name}; waiting for {blocker_names}")
             if should_wait:
                 print(f"resume: waiting for queued run to finish")
-                print(f"resume: status: crucible status {run_name} --verbose")
+                print(f"resume: status: forge status {run_name} --verbose")
                 rc = run_queue_launcher_foreground(
                     run_dir=manifest_path.parent,
                     command=command,
@@ -3048,7 +3048,7 @@ def cmd_resume(args: argparse.Namespace) -> int:
                 lease_seconds=int(args.lease_seconds),
             )
             print(f"resume: queue monitor pid={monitor_pid}")
-            print(f"resume: status: crucible status {run_name} --verbose")
+            print(f"resume: status: forge status {run_name} --verbose")
             continue
         failed += 1 if cmd_run_job(resume_args) else 0
     return 1 if failed else 0
@@ -3062,7 +3062,7 @@ def retry_run_paths(run: str | None, *, lease_seconds: int) -> list[tuple[str, P
         if summary["counts"]["fail"] > 0 and not run_done(summary)
     ]
     if not failed:
-        raise SystemExit("no failed Crucible run found")
+        raise SystemExit("no failed Forge run found")
     return [
         materialized_run_paths(run_dir_for_name(str(summary["run"])), label=str(summary["run"]))
         for summary in sorted(failed, key=lambda item: str(item["run"]))

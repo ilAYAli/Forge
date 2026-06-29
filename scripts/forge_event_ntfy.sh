@@ -1,29 +1,29 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-AI_STDOUT_URL=${CRUCIBLE_AI_STDOUT_URL:-https://ntfy.wahlman.no/AI_stdout}
-AI_STDIN_URL=${CRUCIBLE_AI_STDIN_URL:-https://ntfy.wahlman.no/AI_stdin}
-AI_STDIN_ENABLE=${CRUCIBLE_AI_STDIN_ENABLE:-1}
-AI_STDIN_EVENTS=${CRUCIBLE_AI_STDIN_EVENTS:-deploy_done,deploy_fail}
-DRY_RUN=${CRUCIBLE_NTFY_DRY_RUN:-0}
+AI_STDOUT_URL=${FORGE_AI_STDOUT_URL:-https://ntfy.wahlman.no/AI_stdout}
+AI_STDIN_URL=${FORGE_AI_STDIN_URL:-https://ntfy.wahlman.no/AI_stdin}
+AI_STDIN_ENABLE=${FORGE_AI_STDIN_ENABLE:-1}
+AI_STDIN_EVENTS=${FORGE_AI_STDIN_EVENTS:-deploy_done,deploy_fail}
+DRY_RUN=${FORGE_NTFY_DRY_RUN:-0}
 
-payload=${CRUCIBLE_EVENT_JSON:-}
+payload=${FORGE_EVENT_JSON:-}
 if [ -z "$payload" ]; then
     payload=$(cat)
 fi
 
 rendered=$(
-    CRUCIBLE_EVENT_JSON="$payload" python3 - <<'PY'
+    FORGE_EVENT_JSON="$payload" python3 - <<'PY'
 import json
 import os
 
 
-event = json.loads(os.environ["CRUCIBLE_EVENT_JSON"])
+event = json.loads(os.environ["FORGE_EVENT_JSON"])
 counts = event.get("counts") or {}
 workers = event.get("worker_results") or []
 failed = [item for item in workers if not item.get("ok")]
 
-title = "Crucible"
+title = "Forge"
 kind = event.get("kind")
 if kind:
     title += f" {kind}"
@@ -67,14 +67,14 @@ print("\n".join(lines))
 PY
 )
 wake_message=$(
-    CRUCIBLE_EVENT_JSON="$payload" python3 - <<'PY'
+    FORGE_EVENT_JSON="$payload" python3 - <<'PY'
 import json
 import math
 import os
 import re
 from pathlib import Path
 
-event = json.loads(os.environ["CRUCIBLE_EVENT_JSON"])
+event = json.loads(os.environ["FORGE_EVENT_JSON"])
 state = event.get("state", "")
 run = event.get("run", "")
 run_dir = event.get("run_dir", "")
@@ -135,7 +135,7 @@ elif state == "stopped":
 else:
     verb = "failed"
 print(
-    f"Crucible run {verb}: run={run} state={state} "
+    f"Forge run {verb}: run={run} state={state} "
     f"tasks={done}/{tasks} fail={failed}."
     f"{sprt_summary(run_dir)} log={run_dir}/deploy.log. "
     "Inspect the result and continue the next task."
@@ -173,13 +173,13 @@ send_ntfy() {
 }
 
 rc=0
-send_ntfy "$AI_STDOUT_URL" "Crucible" "$rendered" || rc=$?
+send_ntfy "$AI_STDOUT_URL" "Forge" "$rendered" || rc=$?
 
 event_name=$(
-    CRUCIBLE_EVENT_JSON="$payload" python3 - <<'PY'
+    FORGE_EVENT_JSON="$payload" python3 - <<'PY'
 import json
 import os
-print(json.loads(os.environ["CRUCIBLE_EVENT_JSON"]).get("event", ""))
+print(json.loads(os.environ["FORGE_EVENT_JSON"]).get("event", ""))
 PY
 )
 
@@ -189,7 +189,7 @@ case ",$AI_STDIN_EVENTS," in
 esac
 
 if [ "$AI_STDIN_ENABLE" = "1" ] && [ "$send_ai_stdin" = "1" ]; then
-    send_ntfy "$AI_STDIN_URL" "Crucible" "$wake_message" || rc=$?
+    send_ntfy "$AI_STDIN_URL" "Forge" "$wake_message" || rc=$?
 fi
 
 exit "$rc"

@@ -14,7 +14,7 @@ from .shell import *
 try:
     from .web import cmd_web
 except ModuleNotFoundError as exc:
-    if exc.name != "crucible_lib.web":
+    if exc.name != "forge_lib.web":
         raise
     cmd_web = None
 
@@ -91,14 +91,14 @@ def expand_template_command_aliases(args: list[str]) -> list[str]:
     return args
 
 
-class CrucibleHelpFormatter(
+class ForgeHelpFormatter(
     argparse.ArgumentDefaultsHelpFormatter,
     argparse.RawDescriptionHelpFormatter,
 ):
     pass
 
 
-class CrucibleArgumentParser(argparse.ArgumentParser):
+class ForgeArgumentParser(argparse.ArgumentParser):
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         self.command_groups = kwargs.pop("command_groups", [])
         self.command_help: dict[str, str] = {}
@@ -159,7 +159,7 @@ def add_worker_set_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--newline-between", action="store_true", help="Insert a newline between task outputs.")
     parser.add_argument(
         "--notify-command",
-        help="Command run on deploy/wait completion with CRUCIBLE_EVENT_JSON and JSON on stdin.",
+        help="Command run on deploy/wait completion with FORGE_EVENT_JSON and JSON on stdin.",
     )
     parser.add_argument("--no-color", action="store_true", help="Disable ANSI color output.")
     parser.add_argument("--verbose", action="store_true", help="Print setup and worker phase details.")
@@ -178,16 +178,16 @@ def cmd_del_or_worker(args: argparse.Namespace) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = CrucibleArgumentParser(
+    parser = ForgeArgumentParser(
         description=(
-            "Crucible distributes manifest-defined work across workers. "
+            "Forge distributes manifest-defined work across workers. "
             "Start with start, add, del, stop, resume, retry, status, and update."
         ),
-        formatter_class=CrucibleHelpFormatter,
+        formatter_class=ForgeHelpFormatter,
         command_groups=COMMAND_GROUPS,
     )
-    parser.add_argument("--version", action="store_true", help="Print crucible version and exit.")
-    parser.add_argument("--version-json", action="store_true", help="Print crucible version as JSON and exit.")
+    parser.add_argument("--version", action="store_true", help="Print forge version and exit.")
+    parser.add_argument("--version-json", action="store_true", help="Print forge version as JSON and exit.")
     sub = parser.add_subparsers(dest="subcommand", metavar="command")
 
     run = sub.add_parser(
@@ -195,7 +195,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Run a named template.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
         description=(
-            "Run a named Crucible template. Run options such as --workers may be "
+            "Run a named Forge template. Run options such as --workers may be "
             "mixed with template parameters after the template name."
         ),
     )
@@ -209,7 +209,7 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
         description=(
             "Run the built-in SPRT template. This is equivalent to "
-            "`crucible run sprt ...`. Crucible consumes only orchestration "
+            "`forge run sprt ...`. Forge consumes only orchestration "
             "flags; other flags are passed to the SPRT template."
         ),
     )
@@ -219,13 +219,13 @@ def build_parser() -> argparse.ArgumentParser:
     shell = sub.add_parser(
         "sh",
         help="Run a shell command once on each worker host.",
-        formatter_class=CrucibleHelpFormatter,
+        formatter_class=ForgeHelpFormatter,
         description=(
             "Run a shell command once on each selected worker host and print "
             "grouped per-host output.\n\n"
             "Examples:\n"
-            "  crucible sh \"cd ~/repo; git pull; cmake --build build\"\n"
-            "  crucible sh --workers pwa-5090,pwa-mbp \"hostname && git --version\""
+            "  forge sh \"cd ~/repo; git pull; cmake --build build\"\n"
+            "  forge sh --workers pwa-5090,pwa-mbp \"hostname && git --version\""
         ),
     )
     shell.add_argument("command", help="Shell command run on each host.")
@@ -501,7 +501,7 @@ def build_parser() -> argparse.ArgumentParser:
     wait.add_argument("--interval-seconds", type=float, default=30.0, help="Polling interval.")
     wait.add_argument("--timeout-seconds", type=float, default=0.0, help="Overall timeout; 0 means no timeout.")
     wait.add_argument("--fail-on-fail", action=argparse.BooleanOptionalAction, default=True, help="Return failure when any task fails.")
-    wait.add_argument("--notify-command", help="Command run on done/fail/timeout with CRUCIBLE_EVENT_JSON and JSON on stdin.")
+    wait.add_argument("--notify-command", help="Command run on done/fail/timeout with FORGE_EVENT_JSON and JSON on stdin.")
     wait.set_defaults(func=cmd_wait)
 
     verify = sub.add_parser(
@@ -591,7 +591,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     self_update = sub.add_parser(
         "self-update",
-        help="Fast-forward the crucible checkout itself.",
+        help="Fast-forward the forge checkout itself.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     self_update.add_argument("--remote", default="origin", help="Git remote to pull from.")
@@ -605,7 +605,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Update workers to the coordinator HEAD.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
         description=(
-            "Update Crucible on workers to the exact commit currently checked "
+            "Update Forge on workers to the exact commit currently checked "
             "out by the coordinator. With --all, first fast-forward the "
             "coordinator from the selected remote/branch, then update workers "
             "to that new HEAD."
@@ -628,7 +628,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     version = sub.add_parser(
         "version",
-        help="Print crucible version.",
+        help="Print forge version.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     version.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
@@ -652,7 +652,7 @@ def build_parser() -> argparse.ArgumentParser:
     deploy.add_argument("--remote-timeout-seconds", type=float, default=1800.0, help="Timeout for remote setup/work commands.")
     deploy.add_argument(
         "--notify-command",
-        help="Command run on completion with CRUCIBLE_EVENT_JSON and JSON on stdin.",
+        help="Command run on completion with FORGE_EVENT_JSON and JSON on stdin.",
     )
     deploy.add_argument("--no-color", action="store_true", help="Disable ANSI color output.")
     deploy.add_argument("--verbose", action="store_true", help="Print setup and worker phase details.")
@@ -661,13 +661,13 @@ def build_parser() -> argparse.ArgumentParser:
     run_job = sub.add_parser(
         "start",
         help="Start a manifest on workers, verify, and optionally merge outputs.",
-        formatter_class=CrucibleHelpFormatter,
+        formatter_class=ForgeHelpFormatter,
         description=(
             "Start a manifest on workers.\n\n"
             "Examples:\n"
-            "  crucible start manifest.json --workers worker-a,worker-b:4\n"
-            "  crucible start manifest.json --workers workers.json --wait\n"
-            "  crucible start manifest.json --workers worker-a,worker-b:4 --merge merged.txt"
+            "  forge start manifest.json --workers worker-a,worker-b:4\n"
+            "  forge start manifest.json --workers workers.json --wait\n"
+            "  forge start manifest.json --workers worker-a,worker-b:4 --merge merged.txt"
         ),
     )
     run_job.add_argument("manifest", help="Manifest template to materialize into runs/<name>.")
@@ -692,7 +692,7 @@ def build_parser() -> argparse.ArgumentParser:
     run_job.add_argument("--newline-between", action="store_true", help="Insert a newline between merged task outputs.")
     run_job.add_argument(
         "--notify-command",
-        help="Command run on deploy/wait completion with CRUCIBLE_EVENT_JSON and JSON on stdin.",
+        help="Command run on deploy/wait completion with FORGE_EVENT_JSON and JSON on stdin.",
     )
     run_job.add_argument("--no-color", action="store_true", help="Disable ANSI color output.")
     run_job.add_argument("--verbose", action="store_true", help="Print setup and worker phase details.")
@@ -720,7 +720,7 @@ def build_parser() -> argparse.ArgumentParser:
     resume.add_argument("--newline-between", action="store_true", help="Insert a newline between task outputs.")
     resume.add_argument(
         "--notify-command",
-        help="Command run on deploy/wait completion with CRUCIBLE_EVENT_JSON and JSON on stdin.",
+        help="Command run on deploy/wait completion with FORGE_EVENT_JSON and JSON on stdin.",
     )
     resume.add_argument("--no-color", action="store_true", help="Disable ANSI color output.")
     resume.add_argument("--verbose", action="store_true", help="Print setup and worker phase details.")
@@ -752,7 +752,7 @@ def build_parser() -> argparse.ArgumentParser:
     retry.add_argument("--newline-between", action="store_true", help="Insert a newline between task outputs.")
     retry.add_argument(
         "--notify-command",
-        help="Command run on deploy/wait completion with CRUCIBLE_EVENT_JSON and JSON on stdin.",
+        help="Command run on deploy/wait completion with FORGE_EVENT_JSON and JSON on stdin.",
     )
     retry.add_argument("--no-color", action="store_true", help="Disable ANSI color output.")
     retry.add_argument("--verbose", action="store_true", help="Print setup and worker phase details.")

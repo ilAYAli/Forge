@@ -12,7 +12,7 @@ from .status import PROGRESS_GRAPH_VERSION, configured_coordinator_runs
 from .tasks import parse_coordinator, shell_join
 
 _ASSETS_DIR = Path(__file__).resolve().parent.parent / "assets"
-_FAVICON_PATH = _ASSETS_DIR / "crucible.png"
+_FAVICON_PATH = _ASSETS_DIR / "forge.png"
 
 
 _HTML = r"""<!DOCTYPE html>
@@ -20,7 +20,7 @@ _HTML = r"""<!DOCTYPE html>
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Crucible Status</title>
+  <title>Forge Status</title>
   <link rel="icon" type="image/png" href="/favicon.png">
   <style>
     :root {
@@ -408,11 +408,11 @@ _HTML = r"""<!DOCTYPE html>
       return completed > 0 ? completed : 0;
     }
 
-    let soundEnabled = localStorage.getItem('crucible.sound') === '1';
-    let showInactiveRuns = localStorage.getItem('crucible.showInactive') !== '0';
+    let soundEnabled = localStorage.getItem('forge.sound') === '1';
+    let showInactiveRuns = localStorage.getItem('forge.showInactive') !== '0';
     let audioCtx = null;
     let activeJobKeys = null;
-    const HIDDEN_RUNS_KEY = 'crucible.hiddenRuns.v1';
+    const HIDDEN_RUNS_KEY = 'forge.hiddenRuns.v1';
     function loadHiddenRunNames() {
       try {
         const raw = localStorage.getItem(HIDDEN_RUNS_KEY);
@@ -451,7 +451,7 @@ _HTML = r"""<!DOCTYPE html>
 
     function toggleInactiveRuns() {
       showInactiveRuns = !showInactiveRuns;
-      localStorage.setItem('crucible.showInactive', showInactiveRuns ? '1' : '0');
+      localStorage.setItem('forge.showInactive', showInactiveRuns ? '1' : '0');
       updateInactiveButton();
       refresh();
     }
@@ -471,7 +471,7 @@ _HTML = r"""<!DOCTYPE html>
 
     function toggleSound() {
       soundEnabled = !soundEnabled;
-      localStorage.setItem('crucible.sound', soundEnabled ? '1' : '0');
+      localStorage.setItem('forge.sound', soundEnabled ? '1' : '0');
       if (soundEnabled) ensureAudioContext();
       updateSoundButton();
     }
@@ -519,7 +519,7 @@ _HTML = r"""<!DOCTYPE html>
     }
 
     // UI state persistence
-    const UI_STATE_KEY = 'crucible.ui.v1';
+    const UI_STATE_KEY = 'forge.ui.v1';
     function clearOldHashState() {
       if (!location.hash) return;
       try {
@@ -1936,14 +1936,14 @@ _HTML = r"""<!DOCTYPE html>
         const parts = [];
         if (data.collapsed_failures_count > 0) {
           const n = data.collapsed_failures_count;
-          parts.push(`<div class="empty" style="color:var(--red)">failed: ${n} run${n===1?'':'s'} — use crucible status --failed</div>`);
+          parts.push(`<div class="empty" style="color:var(--red)">failed: ${n} run${n===1?'':'s'} — use forge status --failed</div>`);
         }
         if (runs.length) {
           parts.push(...runs.map(renderRun));
         } else if (data.loading) {
-          parts.push('<div class="empty">loading Crucible status...</div>');
+          parts.push('<div class="empty">loading Forge status...</div>');
         } else if (!data.collapsed_failures_count) {
-          parts.push('<div class="empty">no active Crucible runs found</div>');
+          parts.push('<div class="empty">no active Forge runs found</div>');
         }
         el.innerHTML = parts.join('');
         sizeGraphPointMarkers(el);
@@ -2539,7 +2539,7 @@ def _collect_local_status_payload() -> dict[str, Any]:
         timeout=_WEB_STATUS_TIMEOUT_SECONDS,
     )
     if result.returncode not in (0, 1):
-        raise RuntimeError(result.stderr.strip() or f"crucible status exit {result.returncode}")
+        raise RuntimeError(result.stderr.strip() or f"forge status exit {result.returncode}")
     data = json.loads(result.stdout)
     data["coordinator"] = None
     return data
@@ -2549,12 +2549,12 @@ def _collect_coordinator_status_payload(coordinator_runs: str) -> dict[str, Any]
     command = ["status", "--json"]
     if host:
         remote = (
-            "command -v crucible >/dev/null 2>&1 || "
-            "{ echo 'crucible not found in PATH on coordinator' >&2; exit 127; }; "
+            "command -v forge >/dev/null 2>&1 || "
+            "{ echo 'forge not found in PATH on coordinator' >&2; exit 127; }; "
             f"exec env {shlex.quote(COORDINATOR_RUNS_ENV)}= "
             f"{shlex.quote(COLOR_ENV)}=never "
             f"{shlex.quote(RUNS_DIR_ENV)}={shlex.quote(runs_path)} "
-            f"crucible {shell_join(command)}"
+            f"forge {shell_join(command)}"
         )
         result = subprocess.run(
             ["ssh", *_WEB_SSH_OPTS, host, remote],
@@ -2577,7 +2577,7 @@ def _collect_coordinator_status_payload(coordinator_runs: str) -> dict[str, Any]
             timeout=_WEB_STATUS_TIMEOUT_SECONDS,
         )
     if result.returncode not in (0, 1):
-        raise RuntimeError(result.stderr.strip() or f"crucible status exit {result.returncode}")
+        raise RuntimeError(result.stderr.strip() or f"forge status exit {result.returncode}")
     data = json.loads(result.stdout)
     data["coordinator"] = coordinator_runs
     _attach_coordinator_web_state(data, coordinator_runs)
@@ -2742,12 +2742,12 @@ def _run_web_cli(command: list[str], *, coordinator_runs: str | None = None) -> 
         host, runs_path = parse_coordinator(coordinator_runs)
         if host:
             remote = (
-                "command -v crucible >/dev/null 2>&1 || "
-                "{ echo 'crucible not found in PATH on coordinator' >&2; exit 127; }; "
+                "command -v forge >/dev/null 2>&1 || "
+                "{ echo 'forge not found in PATH on coordinator' >&2; exit 127; }; "
                 f"exec env {shlex.quote(COORDINATOR_RUNS_ENV)}= "
                 f"{shlex.quote(COLOR_ENV)}=never "
                 f"{shlex.quote(RUNS_DIR_ENV)}={shlex.quote(runs_path)} "
-                f"crucible {shell_join(command)}"
+                f"forge {shell_join(command)}"
             )
             return subprocess.run(
                 ["ssh", *_WEB_SSH_OPTS, host, remote],
@@ -2916,16 +2916,16 @@ def cmd_web(args: argparse.Namespace) -> int:
         server = ThreadingHTTPServer((host, port), _Handler)
     except OSError as exc:
         if exc.errno == 98 or exc.errno == 48:  # EADDRINUSE
-            raise SystemExit(f"port {port} already in use — is crucible web already running?")
+            raise SystemExit(f"port {port} already in use — is forge web already running?")
         raise
     if getattr(args, "foreground", False):
-        print(f"crucible web: {url}", flush=True)
+        print(f"forge web: {url}", flush=True)
         try:
             server.serve_forever()
         except KeyboardInterrupt:
             pass
     else:
-        print(f"crucible web: {url}", flush=True)
+        print(f"forge web: {url}", flush=True)
         _daemonize()
         server.serve_forever()
     return 0

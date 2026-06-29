@@ -8,7 +8,7 @@ from .manifest import *
 from .labeling import build_inventory
 
 
-TEMPLATE_SCHEMA = "crucible.template.v1"
+TEMPLATE_SCHEMA = "forge.template.v1"
 SPRT_AUTO_TARGET_GAMES_PER_SHARD = 25
 
 
@@ -81,7 +81,7 @@ def template_path(name: str) -> Path:
 
 def load_template(path: Path) -> dict[str, Any]:
     payload = read_json(path)
-    if payload.get("schema") != TEMPLATE_SCHEMA:
+    if not schema_matches(payload.get("schema"), "template"):
         raise SystemExit(f"{path}: unsupported template schema {payload.get('schema')!r}")
     return payload
 
@@ -222,7 +222,7 @@ def parse_template_parameters_with_unknown(
     allow_unknown: bool = False,
 ) -> tuple[dict[str, Any], list[str]]:
     parser = argparse.ArgumentParser(
-        prog=f"crucible run {template_name}",
+        prog=f"forge run {template_name}",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
         allow_abbrev=False,
     )
@@ -592,8 +592,8 @@ def resolved_workers_arg(
     workers = run_options.workers or (template or {}).get("default_workers") or default_workers_arg(config)
     if not workers:
         raise SystemExit(
-            "crucible run: missing --workers and no default_workers configured; "
-            "pass --workers HOST[:SLOTS],... or set default_workers in ~/.config/crucible/config.yml"
+            "forge run: missing --workers and no default_workers configured; "
+            "pass --workers HOST[:SLOTS],... or set default_workers in ~/.config/forge/config.yml"
         )
     return workers
 
@@ -661,7 +661,7 @@ def cmd_template_run(args: argparse.Namespace) -> int:
     if template_name == "label":
         inventory_info = build_inventory(str(params["source"]))
         params = dict(params)
-        params["source_cache"] = "~/.cache/crucible/inputs/" + str(inventory_info["digest"])
+        params["source_cache"] = "~/.cache/forge/inputs/" + str(inventory_info["digest"])
         params["inventory"] = params["source_cache"] + "/inventory.json"
         params["inventory_digest"] = str(inventory_info["digest"])
         params["quiet_only_arg"] = "--quiet-only" if bool(params["quiet_only"]) else "--no-quiet-only"
@@ -685,7 +685,7 @@ def cmd_template_run(args: argparse.Namespace) -> int:
     notify_command = run_options.notify_command
     run_id = run_options.run or str(manifest["name"])
     print(f"run: id={run_id}", flush=True)
-    with tempfile.TemporaryDirectory(prefix="crucible-template-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="forge-template-") as tmp:
         manifest_path = Path(tmp) / f"{manifest['name']}.manifest.json"
         write_json(manifest_path, manifest)
         if template_name == "sprt":

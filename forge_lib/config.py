@@ -3,11 +3,11 @@ from __future__ import annotations
 from .core import *
 
 
-CONFIG_ENV = "CRUCIBLE_CONFIG"
-WORKERS_ENV = "CRUCIBLE_WORKERS"
-COORDINATOR_HOST_ENV = "CRUCIBLE_COORDINATOR_HOST"
-NOTIFY_ENV = "CRUCIBLE_NOTIFY_COMMAND"
-CONFIG_DIR = Path("~/.config/crucible")
+CONFIG_ENV = "FORGE_CONFIG"
+WORKERS_ENV = "FORGE_WORKERS"
+COORDINATOR_HOST_ENV = "FORGE_COORDINATOR_HOST"
+NOTIFY_ENV = "FORGE_NOTIFY_COMMAND"
+CONFIG_DIR = Path("~/.config/forge")
 CONFIG_YML = "config.yml"
 CONFIG_TOML = "config.toml"
 
@@ -117,7 +117,7 @@ def config_template_dirs(config: dict[str, Any] | None = None) -> list[Path]:
     else:
         raise SystemExit("config template_dirs must be a string or list")
     defaults = [
-        ".crucible/templates",
+        ".forge/templates",
         str(config_dir() / "templates"),
         str(script_repo() / "templates"),
     ]

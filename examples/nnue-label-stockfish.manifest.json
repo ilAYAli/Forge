@@ -1,5 +1,5 @@
 {
-  "schema": "crucible.task.v1",
+  "schema": "forge.task.v1",
   "name": "nnue-label-stockfish",
   "work_dir": "~/code/cpp/chess/nnue",
   "requirements": {

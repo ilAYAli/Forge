@@ -1,5 +1,5 @@
 {
-  "schema": "crucible.template.v1",
+  "schema": "forge.template.v1",
   "name": "training",
   "kind": "training",
   "description": "Run an NNUE build.py create job",

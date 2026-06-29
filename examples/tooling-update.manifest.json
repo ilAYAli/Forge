@@ -1,5 +1,5 @@
 {
-  "schema": "crucible.task.v1",
+  "schema": "forge.task.v1",
   "name": "tooling-update",
   "work_dir": "~/code/cpp/chess",
   "requirements": {
@@ -7,18 +7,18 @@
     "git_min": "2.38",
     "repos": [
       {
-        "name": "crucible",
-        "url": "git@github.com:ilAYAli/Crucible.git",
-        "path": "~/code/cpp/chess/crucible",
+        "name": "forge",
+        "url": "git@github.com:ilAYAli/forge.git",
+        "path": "~/code/cpp/chess/forge",
         "remote": "origin",
-        "commit": "REPLACE_WITH_CRUCIBLE_COMMIT_SHA",
+        "commit": "REPLACE_WITH_FORGE_COMMIT_SHA",
         "allow_dirty": false,
         "install": [
           "mkdir -p ~/.local/bin",
-          "ln -sf \"$PWD/crucible.py\" ~/.local/bin/crucible"
+          "ln -sf \"$PWD/forge.py\" ~/.local/bin/forge"
         ],
         "probe": [
-          "~/.local/bin/crucible --version"
+          "~/.local/bin/forge --version"
         ]
       },
       {

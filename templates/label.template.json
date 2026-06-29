@@ -1,17 +1,17 @@
 {
-  "schema": "crucible.template.v1",
+  "schema": "forge.template.v1",
   "name": "label",
   "kind": "label",
   "description": "Stream LC0 V6 records through Stockfish into deterministic BulletFormat shards",
   "run_name": "label-{source_stem}-{depth}-{timestamp}",
   "default_workers": "pwa-5090:20,pwa-mbp:8,pwa-mbp0:10",
-  "work_dir": "~/.cache/crucible/repos/nnue-labeler",
+  "work_dir": "~/.cache/forge/repos/nnue-labeler",
   "path_maps": {
     "pwa-mbp0": {
-      "~/.cache/crucible": "~/Library/Caches/crucible"
+      "~/.cache/forge": "~/Library/Caches/forge"
     },
     "pwa-wsl": {
-      "~/.cache/crucible": "/home/petter/.cache/crucible"
+      "~/.cache/forge": "/home/petter/.cache/forge"
     }
   },
   "parameters": {
@@ -72,7 +72,7 @@
       {
         "name": "nnue-labeler",
         "url": "git@github.com:ilAYAli/nnue.git",
-        "path": "~/.cache/crucible/repos/nnue-labeler",
+        "path": "~/.cache/forge/repos/nnue-labeler",
         "remote": "origin",
         "commit": "78c59897c7aeb84bc9df06eb2924d3ccf3687f1c",
         "allow_untracked": true,
