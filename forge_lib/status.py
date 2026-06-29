@@ -2687,6 +2687,10 @@ def run_progress_history_graph(
     current_graph: dict[str, Any] | None,
 ) -> dict[str, Any] | None:
     history = append_progress_history(manifest, progress_graph_snapshot(current_graph))
+    if str(manifest_metadata(manifest).get("kind") or "").lower() == "sprt" and all(
+        task_complete(manifest, task) for task in manifest.get("tasks", [])
+    ):
+        return current_graph
     return progress_graph_from_history(history, current_graph)
 
 def sprt_summary_rows(summary: dict[str, Any]) -> list[dict[str, Any]]:

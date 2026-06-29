@@ -5520,9 +5520,12 @@ console.log(JSON.stringify({band, domain, maxBandRadius, zero, last, delta: zero
             graph = payload["progress_graph"]
             self.assertEqual(4, graph["x_total"])
             series = {item["name"]: item["points"] for item in graph["series"]}
-            self.assertEqual([{"x": 0.0, "y": 0.0}, {"x": 4.0, "y": 0.0}], series["llr"])
+            self.assertEqual(
+                [{"x": 0.0, "y": 0.0}, {"x": 2.0, "y": 0.1}, {"x": 4.0, "y": 0.0}],
+                series["llr"],
+            )
             self.assertAlmostEqual(0.0, series["elo"][0]["y"], places=1)
-            self.assertAlmostEqual(0.0, series["elo"][1]["y"], places=1)
+            self.assertAlmostEqual(0.0, series["elo"][-1]["y"], places=1)
             self.assertEqual([{"label": "sprt", "count": 2, "command": "true"}], payload["commands"])
 
     def test_wait_completes_sprt_when_aggregate_h1_is_reached(self) -> None:
@@ -8076,9 +8079,12 @@ console.log(JSON.stringify({band, domain, maxBandRadius, zero, last, delta: zero
             self.assertEqual(4, graph["x_total"])
             series = {item["name"]: item["points"] for item in graph["series"]}
             meta = {item["name"]: item for item in graph["series"]}
-            self.assertEqual([{"x": 0.0, "y": 0.0}, {"x": 4.0, "y": -0.01}], series["llr"])
+            self.assertEqual(
+                [{"x": 0.0, "y": 0.0}, {"x": 2.0, "y": 0.01}, {"x": 4.0, "y": -0.01}],
+                series["llr"],
+            )
             self.assertAlmostEqual(0.0, series["elo"][0]["y"], places=1)
-            self.assertAlmostEqual(-5.0, series["elo"][1]["y"], places=1)
+            self.assertAlmostEqual(-5.0, series["elo"][-1]["y"], places=1)
             self.assertEqual(-2.94, meta["llr"]["min"])
             self.assertEqual(2.94, meta["llr"]["max"])
             self.assertEqual("symmetric", meta["llr"]["scale"])
@@ -8208,7 +8214,7 @@ console.log(JSON.stringify({band, domain, maxBandRadius, zero, last, delta: zero
             second = forge.status_summary(manifest, lease_seconds=600)
             series = {item["name"]: item["points"] for item in second["progress_graph"]["series"]}
             self.assertEqual(
-                [{"x": 0.0, "y": 0.0}, {"x": 2.0, "y": -0.2}, {"x": 4.0, "y": 0.5}],
+                [{"x": 0.0, "y": 0.0}, {"x": 2.0, "y": 0.4}, {"x": 4.0, "y": 0.5}],
                 series["llr"],
             )
             self.assertEqual([2.0, 4.0], [point["x"] for point in series["ci"]])
