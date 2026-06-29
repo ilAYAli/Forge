@@ -125,5 +125,4 @@ def cmd_sh(args: argparse.Namespace) -> int:
     if failed:
         write_shell_stream(sys.stderr, f"sh: failed on {failed}/{len(workers)} host(s)\n")
         return 1
-    write_shell_stream(sys.stdout, "sh: ok\n")
     return 0

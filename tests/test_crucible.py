@@ -3125,7 +3125,6 @@ console.log(JSON.stringify({band, domain, maxBandRadius, zero, last, delta: zero
             self.assertIn("localhost:\n", output)
             self.assertNotIn("localhost: OK", output)
             self.assertIn("  {ok}", output)
-            self.assertIn("sh: ok", output)
 
     def test_sh_reports_failed_hosts(self) -> None:
         def fake_run_worker_shell(
