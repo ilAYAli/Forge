@@ -147,8 +147,8 @@ the detached wait monitor validates every shard and atomically merges them
 before publishing success. `--replace` is required to replace either the named
 run or final dataset.
 
-Templates use `runs/workers.json` when `--workers` is omitted. If that file is
-absent, default workers can be configured in `~/.config/forge/config.yml`:
+Default workers can be configured in `~/.config/forge/config.yml`. Without a
+configured default, templates fall back to `runs/workers.json`:
 
 ```yaml
 default_workers: "pwa-5090:8,pwa-mbp0:5,pwa-mbp:4"

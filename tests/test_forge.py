@@ -2772,13 +2772,22 @@ console.log(JSON.stringify({band, domain, maxBandRadius, zero, last, delta: zero
             self.assertEqual("coordinator-a", captured["args"].coordinator_host)
             self.assertIsNone(captured["args"].notify_command)
 
-    def test_run_template_prefers_workers_file_over_config_default(self) -> None:
+    def test_run_template_prefers_config_default_over_workers_file(self) -> None:
         run_options = argparse.Namespace(workers=None)
-        config = {"default_workers": "stale-worker:2"}
+        config = {"default_workers": "configured-worker:2"}
         workers_path = Path("/tmp/forge-runs/workers.json")
 
         with mock.patch("forge_lib.workers.default_workers_path", return_value=workers_path):
             workers = forge.resolved_workers_arg(run_options, config)
+
+        self.assertEqual("configured-worker:2", workers)
+
+    def test_run_template_falls_back_to_workers_file_without_config_default(self) -> None:
+        run_options = argparse.Namespace(workers=None)
+        workers_path = Path("/tmp/forge-runs/workers.json")
+
+        with mock.patch("forge_lib.workers.default_workers_path", return_value=workers_path):
+            workers = forge.resolved_workers_arg(run_options, {})
 
         self.assertEqual(str(workers_path), workers)
 

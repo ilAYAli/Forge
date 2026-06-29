@@ -651,7 +651,7 @@ def resolved_workers_arg(
     workers = (
         run_options.workers
         or (template or {}).get("default_workers")
-        or os.environ.get(WORKERS_ENV)
+        or default_workers_arg(config)
     )
     if not workers:
         from .workers import default_workers_path
@@ -659,7 +659,7 @@ def resolved_workers_arg(
         try:
             workers = str(default_workers_path())
         except SystemExit:
-            workers = default_workers_arg(config)
+            workers = None
     if not workers:
         raise SystemExit(
             "forge run: missing --workers and no workers file or default_workers configured; "
