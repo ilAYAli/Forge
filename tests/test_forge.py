@@ -3035,7 +3035,29 @@ console.log(JSON.stringify({band, domain, maxBandRadius, zero, last, delta: zero
         self.assertIn("--index", self.run_cli("run-task", "--help").stdout)
         self.assertIn("--coordinator", self.run_cli("doctor", "--help").stdout)
         self.assertIn("comma-separated workers", self.run_cli("update", "--help").stdout)
-        self.assertNotEqual(0, self.run_cli("run-job", "--help").returncode)
+        self.assertNotEqual(0, self.run_cli("worker", "run-job", "--help").returncode)
+
+    def test_unknown_command_is_an_implicit_shell_command(self) -> None:
+        parser = forge.build_parser()
+        with mock.patch(
+            "forge_lib.cli.template_files",
+            return_value=[Path("/tmp/custom.template.json")],
+        ):
+            shell = parser.parse_args(["pwd"])
+            quoted_shell = parser.parse_args(["sprt foo bar"])
+            builtin_template = parser.parse_args(["sprt", "--games", "10"])
+            custom_template = parser.parse_args(["custom", "--value", "x"])
+
+        self.assertEqual("sh", shell.subcommand)
+        self.assertEqual("pwd", shell.command)
+        self.assertEqual("sh", quoted_shell.subcommand)
+        self.assertEqual("sprt foo bar", quoted_shell.command)
+        self.assertEqual("run", builtin_template.subcommand)
+        self.assertEqual("sprt", builtin_template.template)
+        self.assertEqual(["--games", "10"], builtin_template.template_args)
+        self.assertEqual("run", custom_template.subcommand)
+        self.assertEqual("custom", custom_template.template)
+        self.assertEqual(["--value", "x"], custom_template.template_args)
 
     def test_additive_worker_commands_are_removed(self) -> None:
         parser = forge.build_parser()

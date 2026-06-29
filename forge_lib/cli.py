@@ -82,6 +82,8 @@ COMMAND_GROUPS = [
     ),
 ]
 
+RESERVED_COMMANDS = {"add", "list", "web"}
+
 
 def expand_template_command_aliases(args: list[str]) -> list[str]:
     if args and args[0] == "sprt":
@@ -89,6 +91,27 @@ def expand_template_command_aliases(args: list[str]) -> list[str]:
     if args and args[0] == "label":
         return ["run", "label", *args[1:]]
     return args
+
+
+def expand_implicit_command(args: list[str]) -> list[str]:
+    expanded = expand_template_command_aliases(args)
+    if not expanded or expanded[0].startswith("-"):
+        return expanded
+    command = expanded[0]
+    known_commands = {
+        name
+        for _title, names in COMMAND_GROUPS
+        for name in names
+    }
+    if command in known_commands or command in RESERVED_COMMANDS:
+        return expanded
+    template_names = {
+        path.name.removesuffix(".template.json")
+        for path in template_files()
+    }
+    if command in template_names:
+        return ["run", *expanded]
+    return ["sh", *expanded]
 
 
 class ForgeHelpFormatter(
@@ -107,7 +130,7 @@ class ForgeArgumentParser(argparse.ArgumentParser):
     def parse_args(self, args: list[str] | None = None, namespace: Any = None) -> argparse.Namespace:
         if args is None:
             args = sys.argv[1:]
-        return super().parse_args(expand_template_command_aliases(list(args)), namespace)
+        return super().parse_args(expand_implicit_command(list(args)), namespace)
 
     def format_help(self) -> str:
         if not self.command_groups:
@@ -224,6 +247,7 @@ def build_parser() -> argparse.ArgumentParser:
             "Run a shell command once on each selected worker host and print "
             "grouped per-host output.\n\n"
             "Examples:\n"
+            "  forge \"pwd\"\n"
             "  forge sh \"cd ~/repo; git pull; cmake --build build\"\n"
             "  forge sh --workers pwa-5090,pwa-mbp \"hostname && git --version\""
         ),

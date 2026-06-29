@@ -22,7 +22,7 @@ ln -s ~/code/cpp/chess/forge/forge.py ~/.local/bin/forge
 
 ```sh
 forge --help
-forge sh "cd ~/repo; git pull; cmake --build build"
+forge "cd ~/repo; git pull; cmake --build build"
 forge start manifest.json --workers worker-a,worker-b:4
 forge stop my-run
 forge resume my-run
@@ -41,11 +41,16 @@ Use `forge <command> --help` for full options.
 Run the same shell command once on each selected host:
 
 ```sh
+forge "pwd"
 forge sh "cd ~/code/cpp/chess/enyo; git switch main; git pull; cmake --build build && ./scripts/deploy.sh --candidate"
 ```
 
 `sh` waits, prints grouped output per host, and does not create run history.
 Each host gets one slot unless `--workers` says otherwise.
+The `sh` prefix is optional when the complete first argument does not exactly
+match a Forge command or installed template name. Forge does not split a quoted
+command, so `forge "sprt foo bar"` runs that shell command while
+`forge sprt ...` selects the `sprt` template.
 
 ```sh
 forge sh --workers pwa-5090,pwa-mbp0,pwa-mbp "hostname; git --version"
