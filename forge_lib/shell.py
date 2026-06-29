@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 from .core import *
+from .manifest import SCHEMA
 from .workers import (
     run_worker_shell,
+    sync_inputs_to_worker,
     worker_host,
+    worker_path_map,
     worker_records_from_payload,
     workers_payload_from_arg,
 )
+from .templates import worker_path_parameter
 
 
 def one_slot_per_host_payload(workers_arg: str | None) -> dict[str, Any]:
@@ -126,3 +130,62 @@ def cmd_sh(args: argparse.Namespace) -> int:
         write_shell_stream(sys.stderr, f"sh: failed on {failed}/{len(workers)} host(s)\n")
         return 1
     return 0
+
+
+def cmd_sync(args: argparse.Namespace) -> int:
+    source = expand_path(args.source)
+    if not source.is_file():
+        raise SystemExit(f"sync source is not a file: {source}")
+    destination = worker_path_parameter(args.destination)
+    workers_payload = one_slot_per_host_payload(args.workers)
+    workers = worker_records_from_payload(workers_payload, label="sync workers")
+    timeout = bounded_timeout(args.remote_timeout_seconds)
+    jobs = max(1, int(args.jobs))
+    tracker = ProcessTracker()
+    source_path = str(source)
+    manifest = {
+        "schema": SCHEMA,
+        "name": "sync",
+        "requirements": {"inputs": [file_record(source)]},
+        "tasks": [],
+    }
+    sync_workers = []
+    for index, worker in enumerate(workers):
+        record = dict(worker)
+        record["profile"] = f"sync-{index}"
+        record["path_map"] = {**worker_path_map(record), source_path: destination}
+        sync_workers.append(record)
+
+    coordinator = socket.gethostname().split(".", 1)[0]
+    write_shell_stream(
+        sys.stdout,
+        f"syncing {source.name} from {coordinator} to {destination}\n",
+    )
+    failed = 0
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(jobs, len(sync_workers))) as executor:
+            futures = {
+                executor.submit(
+                    sync_inputs_to_worker,
+                    worker,
+                    manifest,
+                    timeout=timeout,
+                    tracker=tracker,
+                    retries=0,
+                ): shell_worker_label(worker)
+                for worker in sync_workers
+            }
+            for future in concurrent.futures.as_completed(futures):
+                label = futures[future]
+                try:
+                    synced = future.result()
+                except (OSError, RuntimeError) as exc:
+                    failed += 1
+                    write_shell_stream(sys.stderr, f"{label}: failed: {exc}\n")
+                else:
+                    state = "synced" if synced else "current"
+                    write_shell_stream(sys.stdout, f"{label}: {state}\n")
+    except KeyboardInterrupt:
+        tracker.terminate_all()
+        raise
+    return 1 if failed else 0

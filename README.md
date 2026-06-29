@@ -23,6 +23,7 @@ ln -s ~/code/cpp/chess/forge/forge.py ~/.local/bin/forge
 ```sh
 forge --help
 forge "cd ~/repo; git pull; cmake --build build"
+forge sync /tmp/foo ~/bar
 forge start manifest.json --workers worker-a,worker-b:4
 forge stop my-run
 forge resume my-run
@@ -35,6 +36,10 @@ forge update
 ```
 
 Use `forge <command> --help` for full options.
+
+`forge sync SOURCE DESTINATION` hashes the local file and synchronizes it to
+each selected worker host. Workers whose destination already has the matching
+size and SHA-256 are reported as `current` without copying.
 
 ## One-Shot Shell Commands
 

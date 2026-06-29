@@ -3049,7 +3049,7 @@ console.log(JSON.stringify({band, domain, maxBandRadius, zero, last, delta: zero
 
     def test_subcommand_help_is_available(self) -> None:
         commands = [
-            "run", "sprt", "sh", "template", "plan", "add-input", "add-repo", "add-command", "sync-repos", "start", "run-task", "claim",
+            "run", "sprt", "sync", "sh", "template", "plan", "add-input", "add-repo", "add-command", "sync-repos", "start", "run-task", "claim",
             "release", "heartbeat", "work", "doctor", "status",
             "wait", "verify", "merge", "stop", "drain", "del", "self-update",
             "update", "version", "deploy", "resume", "retry", "worker",
@@ -3151,6 +3151,36 @@ console.log(JSON.stringify({band, domain, maxBandRadius, zero, last, delta: zero
             self.assertEqual(["echo hi", "echo hi"], [command for _worker, command in seen_sorted])
             self.assertFalse((runs / ".sh-tmp").exists())
             self.assertFalse((runs / "sh-test").exists())
+
+    def test_sync_copies_once_and_skips_matching_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "foo"
+            destination = root / "worker" / "bar"
+            source.write_text("content\n", encoding="utf-8")
+            workers = root / "workers.json"
+            forge.write_json(workers, {
+                "schema": "forge.workers.v1",
+                "workers": [{"host": "localhost", "local": True, "slots": 8}],
+            })
+            args = argparse.Namespace(
+                source=str(source),
+                destination=str(destination),
+                workers=str(workers),
+                jobs=4,
+                remote_timeout_seconds=1800.0,
+            )
+
+            with contextlib.redirect_stdout(io.StringIO()) as first_stdout:
+                self.assertEqual(0, forge.cmd_sync(args))
+            with contextlib.redirect_stdout(io.StringIO()) as second_stdout:
+                self.assertEqual(0, forge.cmd_sync(args))
+
+            self.assertEqual("content\n", destination.read_text(encoding="utf-8"))
+            self.assertIn(f"syncing foo from ", first_stdout.getvalue())
+            self.assertIn(f" to {destination}\n", first_stdout.getvalue())
+            self.assertIn("localhost: synced", first_stdout.getvalue())
+            self.assertIn("localhost: current", second_stdout.getvalue())
 
     def test_sh_prints_grouped_output_and_preserves_command(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
