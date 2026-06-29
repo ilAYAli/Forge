@@ -23,7 +23,7 @@ WORKERS_ARG_HELP = (
     "workers.json file or comma-separated workers, e.g. worker-a,worker-b:4,worker-c:0."
 )
 WORKERS_ARG_HELP_WITH_DEFAULT = (
-    WORKERS_ARG_HELP + " Defaults to runs/workers.json, then ./workers.json."
+    WORKERS_ARG_HELP + " Defaults to ~/.config/forge/workers.json."
 )
 WORKERS_ARG_HELP_RUN_DEFAULT = (
     WORKERS_ARG_HELP + " Defaults to the run's workers.json."

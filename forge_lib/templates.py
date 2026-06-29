@@ -650,8 +650,7 @@ def resolved_workers_arg(
 ) -> str:
     workers = (
         run_options.workers
-        or (template or {}).get("default_workers")
-        or default_workers_arg(config)
+        or os.environ.get(WORKERS_ENV)
     )
     if not workers:
         from .workers import default_workers_path
@@ -662,9 +661,8 @@ def resolved_workers_arg(
             workers = None
     if not workers:
         raise SystemExit(
-            "forge run: missing --workers and no workers file or default_workers configured; "
-            "pass --workers HOST[:SLOTS],..., create runs/workers.json, or set "
-            "default_workers in ~/.config/forge/config.yml"
+            "forge run: missing --workers and no default workers file; "
+            "pass --workers HOST[:SLOTS],... or create ~/.config/forge/workers.json"
         )
     return workers
 

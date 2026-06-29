@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from .config import default_coordinator_host, default_notify_command
+from .config import config_workers_path, default_coordinator_host, default_notify_command
 from .core import *
 from .manifest import *
 from .tasks import *
@@ -82,15 +82,11 @@ def update_workers_from_arg(value: str | None, *, default_ok: bool) -> list[dict
     return unique
 
 def default_workers_path() -> Path:
-    candidates = [
-        runs_dir() / RUN_WORKERS_NAME,
-        expand_path(RUN_WORKERS_NAME),
-    ]
-    for path in candidates:
-        if path.exists():
-            return path
+    path = config_workers_path()
+    if path.exists():
+        return path
     raise SystemExit(
-        f"no workers file found; pass workers path or create {runs_dir() / RUN_WORKERS_NAME}"
+        f"no default workers file found; pass --workers or create {path}"
     )
 
 def worker_arg_looks_like_path(value: str) -> bool:
@@ -1147,7 +1143,10 @@ def cleanup_run_pid_files_command(cache_dir: str, run_name: str) -> str:
 def kill_run_workers(run_dir: Path, *, timeout: float = 15.0) -> int:
     workers_path = run_dir / RUN_WORKERS_NAME
     if not workers_path.exists():
-        return 0
+        try:
+            workers_path = default_workers_path()
+        except SystemExit:
+            return 0
     workers = load_workers(workers_path)
     run_name = run_dir.name
     host_scripts: dict[str, list[str]] = {}
@@ -1557,8 +1556,19 @@ def materialize_run(
     if resume and replace:
         raise SystemExit("--resume and --replace are mutually exclusive")
     if resume:
-        if not manifest_path.exists() or not workers_snapshot.exists():
-            raise SystemExit(f"{run_name}: cannot resume; run manifest or workers file is missing")
+        if not manifest_path.exists():
+            raise SystemExit(f"{run_name}: cannot resume; run manifest is missing")
+        if not workers_snapshot.exists():
+            payload = (
+                workers_snapshot_payload
+                if workers_snapshot_payload is not None
+                else workers_payload_from_arg(
+                    workers_arg or None,
+                    default_ok=not bool(workers_arg),
+                    inline_defaults_path=inline_worker_defaults,
+                )
+            )
+            write_json(workers_snapshot, payload)
         clear_restart_requests(load_manifest(manifest_path), run_name, label="resume")
         if not preserve_workers_snapshot:
             payload = (
@@ -2810,8 +2820,10 @@ def cmd_run_job(args: argparse.Namespace) -> int:
 def materialized_run_paths(run_dir: Path, *, label: str) -> tuple[str, Path, Path]:
     manifest_path = run_dir / RUN_MANIFEST_NAME
     workers_path = run_dir / RUN_WORKERS_NAME
-    if not manifest_path.exists() or not workers_path.exists():
+    if not manifest_path.exists():
         raise SystemExit(f"{label}: no materialized Forge run found")
+    if not workers_path.exists():
+        write_json(workers_path, workers_payload_from_arg(None, default_ok=True))
     return run_dir.name, manifest_path, workers_path
 
 def resume_run_paths(run: str | None, *, lease_seconds: int) -> list[tuple[str, Path, Path]]:

@@ -4,7 +4,6 @@
   "kind": "label",
   "description": "Stream LC0 V6 records through Stockfish into deterministic BulletFormat shards",
   "run_name": "label-{source_stem}-{depth}-{timestamp}",
-  "default_workers": "pwa-5090:20,pwa-mbp:8,pwa-mbp0:10",
   "work_dir": "~/.cache/forge/repos/nnue-labeler",
   "path_maps": {
     "pwa-mbp0": {

@@ -10,6 +10,7 @@ NOTIFY_ENV = "FORGE_NOTIFY_COMMAND"
 CONFIG_DIR = Path("~/.config/forge")
 CONFIG_YML = "config.yml"
 CONFIG_TOML = "config.toml"
+CONFIG_WORKERS = "workers.json"
 
 
 def config_dir() -> Path:
@@ -17,6 +18,10 @@ def config_dir() -> Path:
     if config:
         return expand_path(config).parent
     return expand_path(CONFIG_DIR)
+
+
+def config_workers_path() -> Path:
+    return config_dir() / CONFIG_WORKERS
 
 
 def config_path() -> Path | None:

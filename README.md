@@ -147,11 +147,21 @@ the detached wait monitor validates every shard and atomically merges them
 before publishing success. `--replace` is required to replace either the named
 run or final dataset.
 
-Default workers can be configured in `~/.config/forge/config.yml`. Without a
-configured default, templates fall back to `runs/workers.json`:
+Default workers are stored in `~/.config/forge/workers.json`:
+
+```json
+{
+  "schema": "forge.workers.v1",
+  "workers": [
+    {"host": "pwa-5090", "profile": "linux", "slots": 8},
+    {"host": "pwa-mbp", "profile": "mac", "python": "/opt/homebrew/bin/python3", "slots": 4}
+  ]
+}
+```
+
+Other defaults remain in `~/.config/forge/config.yml`:
 
 ```yaml
-default_workers: "pwa-5090:8,pwa-mbp0:5,pwa-mbp:4"
 coordinator_host: "pwa-5090"
 notify_command: "/path/to/notify-script"
 template_dirs:
@@ -190,7 +200,8 @@ forge resume my-run
 ```
 
 `stop` prevents new claims and releases incomplete active claims.
-`resume` restarts incomplete non-failed work from the materialized run.
+`resume` restarts incomplete non-failed work using `<run>/workers.json` when
+present, otherwise `~/.config/forge/workers.json`.
 Use `retry` for failed tasks.
 
 Set worker slots for an incomplete run:
@@ -199,8 +210,9 @@ Set worker slots for an incomplete run:
 forge worker set worker-c:4 my-run
 ```
 
-`worker set worker-c:4` sets and enforces four total slots. Missing workers are
-started; existing workers keep running.
+`worker set worker-c:4` seeds `<run>/workers.json` from the configured defaults
+when absent, then updates or adds only `worker-c`. Missing workers are started;
+existing workers keep running.
 
 Drain a worker from a run:
 
@@ -373,7 +385,7 @@ summary even when no notification command is configured.
 
 ## Updates
 
-`update` uses `runs/workers.json` by default, falling back to `./workers.json`.
+`update` uses `~/.config/forge/workers.json` by default.
 It updates workers to the coordinator's exact current Forge commit.
 
 ```sh

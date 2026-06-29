@@ -2568,11 +2568,15 @@ console.log(JSON.stringify({band, domain, maxBandRadius, zero, last, delta: zero
             template_path = self.write_test_template(root)
             config = root / "config.yml"
             config.write_text(
-                f'default_workers: "worker-a:2"\n'
                 f"template_dirs:\n"
                 f"  - \"{root / 'templates'}\"\n",
                 encoding="utf-8",
             )
+            workers = root / "workers.json"
+            forge.write_json(workers, {
+                "schema": "forge.workers.v1",
+                "workers": [{"host": "worker-a", "slots": 2}],
+            })
             captured = {}
 
             def fake_run_job(args):
@@ -2581,7 +2585,6 @@ console.log(JSON.stringify({band, domain, maxBandRadius, zero, last, delta: zero
 
             with (
                 mock.patch.dict(os.environ, {"FORGE_CONFIG": str(config), "FORGE_NOTIFY_COMMAND": ""}, clear=False),
-                mock.patch("forge_lib.workers.default_workers_path", side_effect=SystemExit("no workers")),
                 mock.patch("forge_lib.workers.cmd_run_job", side_effect=fake_run_job),
             ):
                 stdout = io.StringIO()
@@ -2592,7 +2595,7 @@ console.log(JSON.stringify({band, domain, maxBandRadius, zero, last, delta: zero
                     ))
 
             self.assertEqual(0, rc)
-            self.assertEqual("worker-a:2", captured["args"].workers)
+            self.assertEqual(str(workers), captured["args"].workers)
             self.assertEqual("run: id=demo-input.dat-10\n", stdout.getvalue())
 
     def test_run_template_immediately_prints_explicit_run_id(self) -> None:
@@ -2600,7 +2603,11 @@ console.log(JSON.stringify({band, domain, maxBandRadius, zero, last, delta: zero
             root = Path(tmp)
             template_path = self.write_test_template(root)
             config = root / "config.yml"
-            config.write_text('default_workers: "worker-a:2"\n', encoding="utf-8")
+            config.write_text("", encoding="utf-8")
+            forge.write_json(root / "workers.json", {
+                "schema": "forge.workers.v1",
+                "workers": [{"host": "worker-a", "slots": 2}],
+            })
 
             with (
                 mock.patch.dict(os.environ, {"FORGE_CONFIG": str(config)}, clear=False),
@@ -2744,13 +2751,17 @@ console.log(JSON.stringify({band, domain, maxBandRadius, zero, last, delta: zero
             self.write_test_template(root)
             config = root / "config.yml"
             config.write_text(
-                f'default_workers: "worker-a:2"\n'
                 f'coordinator_host: "coordinator-a"\n'
                 f'notify_command: "notify-me"\n'
                 f"template_dirs:\n"
                 f"  - \"{root / 'templates'}\"\n",
                 encoding="utf-8",
             )
+            workers = root / "workers.json"
+            forge.write_json(workers, {
+                "schema": "forge.workers.v1",
+                "workers": [{"host": "worker-a", "slots": 2}],
+            })
             captured = {}
 
             def fake_run_job(args):
@@ -2759,7 +2770,6 @@ console.log(JSON.stringify({band, domain, maxBandRadius, zero, last, delta: zero
 
             with (
                 mock.patch.dict(os.environ, {"FORGE_CONFIG": str(config), "FORGE_NOTIFY_COMMAND": ""}, clear=False),
-                mock.patch("forge_lib.workers.default_workers_path", side_effect=SystemExit("no workers")),
                 mock.patch("forge_lib.workers.cmd_run_job", side_effect=fake_run_job),
             ):
                 rc = forge.cmd_template_run(argparse.Namespace(
@@ -2768,19 +2778,21 @@ console.log(JSON.stringify({band, domain, maxBandRadius, zero, last, delta: zero
                 ))
 
             self.assertEqual(0, rc)
-            self.assertEqual("worker-a:2", captured["args"].workers)
+            self.assertEqual(str(workers), captured["args"].workers)
             self.assertEqual("coordinator-a", captured["args"].coordinator_host)
             self.assertIsNone(captured["args"].notify_command)
 
-    def test_run_template_prefers_config_default_over_workers_file(self) -> None:
+    def test_run_template_prefers_environment_over_default_workers_file(self) -> None:
         run_options = argparse.Namespace(workers=None)
-        config = {"default_workers": "configured-worker:2"}
         workers_path = Path("/tmp/forge-runs/workers.json")
 
-        with mock.patch("forge_lib.workers.default_workers_path", return_value=workers_path):
-            workers = forge.resolved_workers_arg(run_options, config)
+        with (
+            mock.patch.dict(os.environ, {"FORGE_WORKERS": "environment-worker:2"}),
+            mock.patch("forge_lib.workers.default_workers_path", return_value=workers_path),
+        ):
+            workers = forge.resolved_workers_arg(run_options, {})
 
-        self.assertEqual("configured-worker:2", workers)
+        self.assertEqual("environment-worker:2", workers)
 
     def test_run_template_falls_back_to_workers_file_without_config_default(self) -> None:
         run_options = argparse.Namespace(workers=None)
@@ -3153,7 +3165,7 @@ console.log(JSON.stringify({band, domain, maxBandRadius, zero, last, delta: zero
                 return subprocess.CompletedProcess(["sh"], 0, stdout=f"{worker['host']} output\n", stderr="")
 
             with (
-                self.patch_runs_dir(runs),
+                mock.patch("forge_lib.workers.config_workers_path", return_value=runs / "workers.json"),
                 mock.patch("forge_lib.shell.run_worker_shell", side_effect=fake_run_worker_shell),
             ):
                 rc = forge.cmd_sh(argparse.Namespace(
@@ -4185,6 +4197,32 @@ console.log(JSON.stringify({band, domain, maxBandRadius, zero, last, delta: zero
             self.assertFalse(resume_args.retry_failed)
             self.assertEqual("resume", resume_args.command_label)
 
+    def test_resume_uses_configured_workers_when_run_snapshot_is_absent(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            runs = root / "runs"
+            run = self.write_retry_run(runs, "paused", failed=None)
+            (run / "workers.json").unlink()
+            defaults = root / "workers.json"
+            payload = {
+                "schema": "forge.workers.v1",
+                "workers": [
+                    {"host": "worker-a", "profile": "linux", "slots": 4},
+                    {"host": "worker-b", "profile": "mac", "slots": 2},
+                ],
+            }
+            forge.write_json(defaults, payload)
+
+            with (
+                self.patch_runs_dir(runs),
+                mock.patch("forge_lib.workers.default_workers_path", return_value=defaults),
+                mock.patch("forge_lib.workers.cmd_run_job", return_value=0) as run_job,
+            ):
+                self.assertEqual(0, forge.cmd_resume(self.retry_args(run="paused")))
+
+            self.assertEqual(payload, forge.read_json(run / "workers.json"))
+            self.assertEqual(str(run / "workers.json"), run_job.call_args.args[0].workers)
+
     def test_resume_clears_stale_launch_and_restarts_incomplete_run(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             runs = Path(tmp) / "runs"
@@ -4416,6 +4454,63 @@ console.log(JSON.stringify({band, domain, maxBandRadius, zero, last, delta: zero
             )
             self.assertEqual("worker set", set_args.command_label)
             self.assertTrue(set_args.launch_only)
+
+    def test_worker_set_seeds_defaults_then_merges_repeated_updates(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            runs = root / "runs"
+            run = self.write_retry_run(runs, "active", failed=None)
+            (run / "workers.json").unlink()
+            defaults = root / "config-workers.json"
+            forge.write_json(defaults, {
+                "schema": "forge.workers.v1",
+                "workers": [
+                    {"host": "worker-a", "profile": "linux", "slots": 4},
+                    {"host": "worker-b", "profile": "mac", "slots": 3},
+                ],
+            })
+
+            with (
+                self.patch_runs_dir(runs),
+                mock.patch("forge_lib.workers.default_workers_path", return_value=defaults),
+                mock.patch("forge_lib.workers.run_pending_task_count", return_value=0),
+            ):
+                self.assertEqual(0, forge.cmd_worker_set(self.worker_set_args(run="active", worker="worker-c:1")))
+                self.assertEqual(0, forge.cmd_worker_set(self.worker_set_args(run="active", worker="worker-c:2")))
+
+            payload = forge.read_json(run / "workers.json")
+            self.assertEqual(
+                [("worker-a", 4), ("worker-b", 3), ("worker-c", 2)],
+                [(item["host"], int(item.get("slots", 1))) for item in payload["workers"]],
+            )
+
+    def test_worker_set_launch_preserves_all_default_workers(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            runs = root / "runs"
+            run = self.write_retry_run(runs, "active", failed=None)
+            (run / "workers.json").unlink()
+            defaults = root / "config-workers.json"
+            forge.write_json(defaults, {
+                "schema": "forge.workers.v1",
+                "workers": [
+                    {"host": "worker-a", "slots": 4},
+                    {"host": "worker-b", "slots": 3},
+                ],
+            })
+
+            with (
+                self.patch_runs_dir(runs),
+                mock.patch("forge_lib.workers.default_workers_path", return_value=defaults),
+                mock.patch("forge_lib.workers.cmd_run_job", return_value=0) as run_job,
+            ):
+                self.assertEqual(0, forge.cmd_worker_set(self.worker_set_args(run="active", worker="worker-c:2")))
+
+            payload = run_job.call_args.args[0].worker_snapshot_commit_payload
+            self.assertEqual(
+                [("worker-a", 4), ("worker-b", 3), ("worker-c", 2)],
+                [(item["host"], int(item.get("slots", 1))) for item in payload["workers"]],
+            )
 
     def test_worker_set_same_total_restarts_missing_slots(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -10324,7 +10419,7 @@ console.log(JSON.stringify({band, domain, maxBandRadius, zero, last, delta: zero
                 stderr="",
             )
             with (
-                self.patch_runs_dir(runs),
+                mock.patch("forge_lib.workers.config_workers_path", return_value=workers),
                 mock.patch("forge_lib.workers.run_worker_shell", return_value=result) as run_mock,
             ):
                 rc = forge.cmd_update(
