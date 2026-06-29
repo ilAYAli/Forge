@@ -77,6 +77,8 @@ forge start manifest.json --workers workers.json --replace
 `start` materializes `runs/<run>/manifest.json` and `workers.json`, syncs inputs,
 checks prerequisites, launches workers, and optionally waits/merges. If another
 run is active, the new run is queued and shown in status/web.
+Worker setup runs in parallel and waits for each host's real success, failure,
+or `--remote-timeout-seconds`; a faster host never cancels slower setup.
 
 ## Templates
 

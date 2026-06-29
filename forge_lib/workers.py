@@ -11,8 +11,6 @@ from .labeling import VERIFIED_MARKER_NAME, marker_matches
 DEFAULT_INLINE_WORKER_SLOTS = 8
 SSH_CONFIG_TIMEOUT_SECONDS = 5.0
 DEPLOY_BOOTSTRAP_TIMEOUT_SECONDS = 60.0
-DEPLOY_SETUP_READY_GRACE_SECONDS = 15.0
-DEPLOY_SETUP_CANCEL_WAIT_SECONDS = 2.0
 DEPLOY_STARTUP_TIMEOUT_SECONDS = 20.0
 DEPLOY_STARTUP_POLL_SECONDS = 0.5
 QUEUE_LAUNCHER_POLL_SECONDS = 1.0
@@ -1985,84 +1983,15 @@ def cmd_deploy(args: argparse.Namespace) -> int:
                 for line in output.splitlines():
                     status(f"         {line}")
 
-    def setup_timeout_payloads(group: list[tuple[int, dict[str, Any]]]) -> list[dict[str, Any]]:
-        message = (
-            f"setup did not finish within {DEPLOY_SETUP_READY_GRACE_SECONDS:g}s "
-            "after workers were ready; launching ready workers"
-        )
-        payloads = []
-        for index, worker in group:
-            payloads.append(
-                result_payload(
-                    index,
-                    worker,
-                    "setup",
-                    subprocess.CompletedProcess(["deploy", str(worker["host"])], 124, stdout="", stderr=message),
-                )
-            )
-        return payloads
-
     def collect_setup_results(
         future_to_group: dict[concurrent.futures.Future[Any], list[tuple[int, dict[str, Any]]]],
-        *,
-        allow_ready_grace: bool,
-    ) -> tuple[list[dict[str, Any]], bool]:
-        if not allow_ready_grace:
-            setup_results_list: list[dict[str, Any]] = []
-            for future in concurrent.futures.as_completed(future_to_group):
-                group_results = future.result()
-                setup_results_list.extend(group_results)
-                print_results(group_results, show_success=bool(args.verbose))
-            return setup_results_list, False
-
-        pending = set(future_to_group)
+    ) -> list[dict[str, Any]]:
         setup_results_list: list[dict[str, Any]] = []
-        first_ready_at: float | None = None
-        abandoned_setup = False
-
-        while pending:
-            timeout = None
-            if allow_ready_grace and first_ready_at is not None:
-                remaining = first_ready_at + DEPLOY_SETUP_READY_GRACE_SECONDS - time.monotonic()
-                if remaining <= 0:
-                    abandoned_setup = True
-                    break
-                timeout = remaining
-            done, pending = concurrent.futures.wait(
-                pending,
-                timeout=timeout,
-                return_when=concurrent.futures.FIRST_COMPLETED,
-            )
-            if not done:
-                if allow_ready_grace and first_ready_at is not None:
-                    abandoned_setup = True
-                    break
-                continue
-            for future in done:
-                group_results = future.result()
-                setup_results_list.extend(group_results)
-                print_results(group_results, show_success=bool(args.verbose))
-                if allow_ready_grace and first_ready_at is None and any(item["ok"] for item in group_results):
-                    first_ready_at = time.monotonic()
-
-        if abandoned_setup and pending:
-            tracker.terminate_all()
-            done, pending = concurrent.futures.wait(
-                pending,
-                timeout=DEPLOY_SETUP_CANCEL_WAIT_SECONDS,
-                return_when=concurrent.futures.ALL_COMPLETED,
-            )
-            for future in done:
-                group_results = future.result()
-                setup_results_list.extend(group_results)
-                print_results(group_results, show_success=bool(args.verbose))
-            for future in pending:
-                future.cancel()
-                group_results = setup_timeout_payloads(future_to_group[future])
-                setup_results_list.extend(group_results)
-                print_results(group_results, show_success=bool(args.verbose))
-
-        return setup_results_list, abandoned_setup
+        for future in concurrent.futures.as_completed(future_to_group):
+            group_results = future.result()
+            setup_results_list.extend(group_results)
+            print_results(group_results, show_success=bool(args.verbose))
+        return setup_results_list
 
     status(colorize(f"deploy: run={run_dir.name} workers={len(workers)} jobs={jobs}", "cyan", enabled=color_enabled))
     task_count = len(manifest.get("tasks") or [])
@@ -2090,10 +2019,7 @@ def cmd_deploy(args: argparse.Namespace) -> int:
             for group in setup_groups
         }
         futures = list(future_to_group)
-        setup_results_list, setup_abandoned = collect_setup_results(
-            future_to_group,
-            allow_ready_grace=has_tasks and bool(getattr(args, "launch_only", False)),
-        )
+        setup_results_list = collect_setup_results(future_to_group)
         setup_failed = sum(1 for item in setup_results_list if not item["ok"])
         setup_failed_results = [item for item in setup_results_list if not item["ok"]]
         ready_worker_items = [
@@ -2112,7 +2038,7 @@ def cmd_deploy(args: argparse.Namespace) -> int:
                         enabled=color_enabled,
                     ),
                 )
-            executor.shutdown(wait=not setup_abandoned, cancel_futures=setup_abandoned)
+            executor.shutdown(wait=True)
             executor = concurrent.futures.ThreadPoolExecutor(max_workers=max(1, len(ready_worker_items)))
             if bool(getattr(args, "launch_only", False)):
                 if not bool(getattr(args, "resume", False)):

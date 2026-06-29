@@ -12,6 +12,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from unittest import mock
 from pathlib import Path
@@ -11818,7 +11819,7 @@ console.log(JSON.stringify({band, domain, maxBandRadius, zero, last, delta: zero
             self.assertEqual(1, len([script for script in scripts if " work " in script and "--worker worker-a" in script]))
             self.assertEqual(0, len([script for script in scripts if " work " in script and "--worker worker-b" in script]))
 
-    def test_deploy_launch_only_starts_ready_workers_when_setup_hangs(self) -> None:
+    def test_deploy_launch_only_waits_for_slow_successful_setup(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             runs = root / "runs"
@@ -11847,18 +11848,16 @@ console.log(JSON.stringify({band, domain, maxBandRadius, zero, last, delta: zero
             commands = []
             slow_setup_started = threading.Event()
             slow_setup_finished = threading.Event()
-            launch_started = threading.Event()
 
             def fake_run(self, command, **kwargs):
                 commands.append(command)
                 script = command[-1]
                 if str(root / "cache-b") in script and " doctor " in script:
                     slow_setup_started.set()
-                    launch_started.wait(1.0)
+                    time.sleep(0.02)
                     slow_setup_finished.set()
                     return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
                 if "--worker worker-a" in script and " work " in script:
-                    launch_started.set()
                     manifest = forge.load_manifest(runs / "slow-setup" / "manifest.json")
                     task = manifest["tasks"][0]
                     forge.write_json(forge.task_running_path(manifest, task), {
@@ -11884,8 +11883,6 @@ console.log(JSON.stringify({band, domain, maxBandRadius, zero, last, delta: zero
             with (
                 self.patch_runs_dir(runs),
                 mock.patch("forge.ProcessTracker.run", fake_run),
-                mock.patch("forge_lib.workers.DEPLOY_SETUP_READY_GRACE_SECONDS", 0.01),
-                mock.patch("forge_lib.workers.DEPLOY_SETUP_CANCEL_WAIT_SECONDS", 0.01),
                 mock.patch("forge_lib.workers.DEPLOY_STARTUP_TIMEOUT_SECONDS", 0.01),
                 mock.patch("forge_lib.workers.DEPLOY_STARTUP_POLL_SECONDS", 0.01),
             ):
@@ -11897,14 +11894,13 @@ console.log(JSON.stringify({band, domain, maxBandRadius, zero, last, delta: zero
             self.assertTrue(slow_setup_started.is_set())
             self.assertTrue(slow_setup_finished.wait(1.0))
             output = stdout.getvalue()
-            self.assertIn("FAILED worker-b: setup rc=124", output)
-            self.assertIn("deploy: setup partial; 1/2 slots ready", output)
-            self.assertIn("deploy: setup partial; launching ready workers", output)
+            self.assertNotIn("FAILED worker-b", output)
+            self.assertIn("deploy: setup complete; launching workers", output)
             self.assertIn("deploy: workers active", output)
             self.assertIn("deploy: launch complete", output)
             scripts = [command[-1] for command in commands if command[0] == "sh"]
             self.assertEqual(1, len([script for script in scripts if " work " in script and "--worker worker-a" in script]))
-            self.assertEqual(0, len([script for script in scripts if " work " in script and "--worker worker-b" in script]))
+            self.assertEqual(1, len([script for script in scripts if " work " in script and "--worker worker-b" in script]))
 
     def test_deploy_launch_only_cleans_up_when_workers_do_not_start(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
