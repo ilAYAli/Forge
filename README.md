@@ -105,8 +105,10 @@ Notes:
   `--notify-command`, `--comment`.
 - SPRT flags are passed through. Use `--` only if a flag name conflicts.
 - Missing SPRT flags come from template defaults.
-- Candidate/reference engines, the opening book, and `nnue_file` UCI options
-  are hashed, synchronized, and verified on every selected worker.
+- The opening book and `nnue_file` UCI options are hashed, synchronized, and
+  verified on every selected worker. Engine executables are not copied between
+  platforms; `enyo_<commit>` engines are built and deployed locally when a
+  worker does not already have a compatible executable.
 - `pwa-mbp:4` means 4 Forge worker slots on `pwa-mbp`.
 - `--concurrency` and `--threads` affect SPRT/engine work inside each shard.
 - Without `--shards`, Forge chooses 8 shards per worker slot, capped by

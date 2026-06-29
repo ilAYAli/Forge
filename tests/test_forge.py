@@ -3010,7 +3010,7 @@ console.log(JSON.stringify({band, domain, maxBandRadius, zero, last, delta: zero
                 ],
             )
 
-    def test_sprt_template_materializes_engine_book_and_nnue_inputs(self) -> None:
+    def test_sprt_template_syncs_data_but_not_engine_executables(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             paths = {
@@ -3039,13 +3039,21 @@ console.log(JSON.stringify({band, domain, maxBandRadius, zero, last, delta: zero
             forge.materialize_template_inputs(template, manifest, params)
 
             inputs = manifest["requirements"]["inputs"]
-            self.assertEqual(5, len(inputs))
+            self.assertEqual(3, len(inputs))
             self.assertEqual(
-                {"candidate", "reference", "book", "candidate_uci.nnue_file", "reference_uci.nnue_file"},
+                {"book", "candidate_uci.nnue_file", "reference_uci.nnue_file"},
                 {item["name"] for item in inputs},
             )
-            self.assertEqual(set(paths.values()), {Path(item["path"]) for item in inputs})
+            self.assertEqual(
+                {paths["book.epd"], paths["candidate.nn"], paths["reference.nn"]},
+                {Path(item["path"]) for item in inputs},
+            )
             self.assertTrue(all(item["bytes"] > 0 and len(item["sha256"]) == 64 for item in inputs))
+
+            commands = {item["name"]: item for item in manifest["requirements"]["commands"]}
+            self.assertIn("./scripts/deploy.sh --candidate", commands["candidate"]["command"])
+            self.assertIn("./scripts/deploy.sh --candidate", commands["reference"]["command"])
+            self.assertEqual(900, commands["candidate"]["timeout_s"])
 
     def test_subcommand_help_is_available(self) -> None:
         commands = [
