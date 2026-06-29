@@ -14,7 +14,7 @@ connect out through SSH/rsync; no daemon or database is required.
 ## Install
 
 ```sh
-git clone git@github.com:ilAYAli/forge.git ~/code/cpp/chess/forge
+git clone git@github.com:ilAYAli/Forge.git ~/code/cpp/chess/forge
 ln -s ~/code/cpp/chess/forge/forge.py ~/.local/bin/forge
 ```
 
