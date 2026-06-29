@@ -1166,13 +1166,8 @@ _HTML = r"""<!DOCTYPE html>
     function graphPointMarkers(name, color, points, extras = [], w = GRAPH_W, h = GRAPH_H, xTotal = null) {
       if (!points || points.length < 2) return '';
       const scale = graphScale(name, points, extras, w, h, xTotal);
-      const count = Math.min(48, points.length);
-      const minX = points[0].x, maxX = points[points.length - 1].x;
-      const markers = Array.from({length: count}, (_, index) => {
-        const x = minX + (maxX - minX) * index / (count - 1);
-        return {x, y: interpolatedGraphY(points, x)};
-      });
-      return markers.map(point =>
+      const stride = Math.max(1, Math.ceil(points.length / 48));
+      return points.filter((_, index) => index % stride === 0 || index === points.length - 1).map(point =>
         `<ellipse class="graph-point" style="fill:${esc(color)}" cx="${scale.x(point.x).toFixed(1)}" cy="${scale.y(point.y).toFixed(1)}" rx="2.2" ry="2.2"></ellipse>`
       ).join('');
     }
