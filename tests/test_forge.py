@@ -3182,6 +3182,40 @@ console.log(JSON.stringify({band, domain, maxBandRadius, zero, last, delta: zero
             self.assertIn("localhost: synced", first_stdout.getvalue())
             self.assertIn("localhost: current", second_stdout.getvalue())
 
+    def test_sync_directory_preserves_layout_and_skips_matching_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "agents"
+            (source / "nested").mkdir(parents=True)
+            (source / "one.toml").write_text("one\n", encoding="utf-8")
+            (source / "nested" / "two.toml").write_text("two\n", encoding="utf-8")
+            destination = root / "worker"
+            workers = root / "workers.json"
+            forge.write_json(workers, {
+                "schema": "forge.workers.v1",
+                "workers": [{"host": "localhost", "local": True, "slots": 8}],
+            })
+            args = argparse.Namespace(
+                source=str(source),
+                destination=str(destination) + "/",
+                workers=str(workers),
+                jobs=4,
+                remote_timeout_seconds=1800.0,
+            )
+
+            with contextlib.redirect_stdout(io.StringIO()) as first_stdout:
+                self.assertEqual(0, forge.cmd_sync(args))
+            with contextlib.redirect_stdout(io.StringIO()) as second_stdout:
+                self.assertEqual(0, forge.cmd_sync(args))
+
+            copied = destination / "agents"
+            self.assertEqual("one\n", (copied / "one.toml").read_text(encoding="utf-8"))
+            self.assertEqual("two\n", (copied / "nested" / "two.toml").read_text(encoding="utf-8"))
+            self.assertIn(f"syncing agents from ", first_stdout.getvalue())
+            self.assertIn(f" to {copied}\n", first_stdout.getvalue())
+            self.assertIn("localhost: synced", first_stdout.getvalue())
+            self.assertIn("localhost: current", second_stdout.getvalue())
+
     def test_sh_prints_grouped_output_and_preserves_command(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             runs = Path(tmp) / "runs"

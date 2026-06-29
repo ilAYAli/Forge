@@ -134,26 +134,44 @@ def cmd_sh(args: argparse.Namespace) -> int:
 
 def cmd_sync(args: argparse.Namespace) -> int:
     source = expand_path(args.source)
-    if not source.is_file():
-        raise SystemExit(f"sync source is not a file: {source}")
-    destination = worker_path_parameter(args.destination)
+    if not source.exists():
+        raise SystemExit(f"sync source does not exist: {source}")
+
+    if source.is_dir():
+        source_files = sorted(path for path in source.rglob("*") if path.is_file())
+        if not source_files:
+            raise SystemExit(f"sync source directory contains no files: {source}")
+        destination_arg = args.destination
+        if destination_arg.endswith("/"):
+            destination_arg = destination_arg.rstrip("/") + "/" + source.name
+        destination = worker_path_parameter(destination_arg)
+        destinations = {
+            str(path): destination.rstrip("/") + "/" + path.relative_to(source).as_posix()
+            for path in source_files
+        }
+    elif source.is_file():
+        source_files = [source]
+        destination = worker_path_parameter(args.destination)
+        destinations = {str(source): destination}
+    else:
+        raise SystemExit(f"sync source is not a file or directory: {source}")
+
     workers_payload = one_slot_per_host_payload(args.workers)
     workers = worker_records_from_payload(workers_payload, label="sync workers")
     timeout = bounded_timeout(args.remote_timeout_seconds)
     jobs = max(1, int(args.jobs))
     tracker = ProcessTracker()
-    source_path = str(source)
     manifest = {
         "schema": SCHEMA,
         "name": "sync",
-        "requirements": {"inputs": [file_record(source)]},
+        "requirements": {"inputs": [file_record(path) for path in source_files]},
         "tasks": [],
     }
     sync_workers = []
     for index, worker in enumerate(workers):
         record = dict(worker)
         record["profile"] = f"sync-{index}"
-        record["path_map"] = {**worker_path_map(record), source_path: destination}
+        record["path_map"] = {**worker_path_map(record), **destinations}
         sync_workers.append(record)
 
     coordinator = socket.gethostname().split(".", 1)[0]

@@ -261,15 +261,15 @@ def build_parser() -> argparse.ArgumentParser:
 
     sync = sub.add_parser(
         "sync",
-        help="Synchronize a file to each worker host.",
+        help="Synchronize a file or directory to each worker host.",
         formatter_class=ForgeHelpFormatter,
         description=(
-            "Synchronize one local file to the same destination on each selected "
-            "worker. Matching size and SHA-256 content is skipped."
+            "Synchronize a local file or directory to the same destination on each "
+            "selected worker. Matching size and SHA-256 content is skipped."
         ),
     )
-    sync.add_argument("source", help="Local source file.")
-    sync.add_argument("destination", help="Destination file path on each worker.")
+    sync.add_argument("source", help="Local source file or directory.")
+    sync.add_argument("destination", help="Destination path on each worker.")
     sync.add_argument("--workers", help=WORKERS_ARG_HELP_WITH_DEFAULT)
     sync.add_argument("--jobs", type=int, default=4, help="Maximum hosts to synchronize concurrently.")
     sync.add_argument("--remote-timeout-seconds", type=float, default=1800.0, help="Timeout for each host.")
