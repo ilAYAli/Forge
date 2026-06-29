@@ -8198,7 +8198,7 @@ console.log(JSON.stringify({band, domain, maxBandRadius, zero, last, delta: zero
             self.assertEqual([0.0, 2.0, 4.0], [point["x"] for point in series["llr"]])
             self.assertEqual(2, len((state / "progress-history.jsonl").read_text(encoding="utf-8").splitlines()))
 
-    def test_sprt_run_graph_delays_volatile_early_elo_for_large_runs(self) -> None:
+    def test_sprt_run_graph_shows_elo_from_first_valid_aggregate(self) -> None:
         points = forge.sprt_aggregate_graph_points(
             [
                 {"x": 26.0, "done": 26, "fields": {"elo": "-70.0", "llr": "-0.05/2.20"}},
@@ -8211,7 +8211,7 @@ console.log(JSON.stringify({band, domain, maxBandRadius, zero, last, delta: zero
         )
 
         self.assertEqual([0.0, 26.0, 52.0, 78.0, 104.0], [point["x"] for point in points["llr"]])
-        self.assertEqual([0.0, 104.0], [point["x"] for point in points["elo"]])
+        self.assertEqual([0.0, 26.0, 52.0, 78.0, 104.0], [point["x"] for point in points["elo"]])
 
     def test_status_sprt_header_shows_aggregated_elo(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

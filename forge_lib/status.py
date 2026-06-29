@@ -2445,11 +2445,6 @@ def score_rate_elo(score_rate: float) -> float:
     bounded = min(1.0 - 1e-12, max(1e-12, score_rate))
     return 400.0 * math.log10(bounded / (1.0 - bounded))
 
-def sprt_elo_graph_min_games(x_total: int | None) -> int:
-    if not isinstance(x_total, int) or x_total <= 100:
-        return 2
-    return min(100, max(20, int(x_total * 0.05)))
-
 def sprt_aggregate_graph_points(
     rows: list[dict[str, Any]],
     series_names: dict[str, str],
@@ -2467,7 +2462,6 @@ def sprt_aggregate_graph_points(
     weighted_ci_squares = 0.0
     ci_weight_total = 0
     cumulative_done = 0
-    elo_min_games = sprt_elo_graph_min_games(x_total)
     llr_total = 0.0
     llr_seen = False
     def row_x(row: dict[str, Any]) -> float:
@@ -2499,7 +2493,7 @@ def sprt_aggregate_graph_points(
             llr_total += llr
             llr_seen = True
         for name, field_name in series_names.items():
-            if field_name == "elo" and weight_total >= elo_min_games:
+            if field_name == "elo" and weight_total > 0:
                 points[name].append({"x": x, "y": score_rate_elo(weighted_score / weight_total)})
             elif field_name == "llr" and llr_seen:
                 points[name].append({"x": x, "y": llr_total})
