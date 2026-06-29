@@ -2581,6 +2581,7 @@ console.log(JSON.stringify({band, domain, maxBandRadius, zero, last, delta: zero
 
             with (
                 mock.patch.dict(os.environ, {"FORGE_CONFIG": str(config), "FORGE_NOTIFY_COMMAND": ""}, clear=False),
+                mock.patch("forge_lib.workers.default_workers_path", side_effect=SystemExit("no workers")),
                 mock.patch("forge_lib.workers.cmd_run_job", side_effect=fake_run_job),
             ):
                 stdout = io.StringIO()
@@ -2758,6 +2759,7 @@ console.log(JSON.stringify({band, domain, maxBandRadius, zero, last, delta: zero
 
             with (
                 mock.patch.dict(os.environ, {"FORGE_CONFIG": str(config), "FORGE_NOTIFY_COMMAND": ""}, clear=False),
+                mock.patch("forge_lib.workers.default_workers_path", side_effect=SystemExit("no workers")),
                 mock.patch("forge_lib.workers.cmd_run_job", side_effect=fake_run_job),
             ):
                 rc = forge.cmd_template_run(argparse.Namespace(
@@ -2769,6 +2771,16 @@ console.log(JSON.stringify({band, domain, maxBandRadius, zero, last, delta: zero
             self.assertEqual("worker-a:2", captured["args"].workers)
             self.assertEqual("coordinator-a", captured["args"].coordinator_host)
             self.assertIsNone(captured["args"].notify_command)
+
+    def test_run_template_prefers_workers_file_over_config_default(self) -> None:
+        run_options = argparse.Namespace(workers=None)
+        config = {"default_workers": "stale-worker:2"}
+        workers_path = Path("/tmp/forge-runs/workers.json")
+
+        with mock.patch("forge_lib.workers.default_workers_path", return_value=workers_path):
+            workers = forge.resolved_workers_arg(run_options, config)
+
+        self.assertEqual(str(workers_path), workers)
 
     def test_sprt_template_uses_candidate_executable_path(self) -> None:
         template_path = ROOT / "templates" / "sprt.template.json"
