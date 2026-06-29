@@ -1115,7 +1115,7 @@ def active_worker_summary(summary: dict[str, Any]) -> str:
     values = list(metrics.values())
     output_values = [metric for metric in values if bool(metric.get("output_seen"))]
     rate_values = [metric for metric in values if bool(metric.get("progress_rate_seen"))]
-    prefer_rates = str((summary.get("metadata") or {}).get("kind") or "").lower() == "lc0-label"
+    prefer_rates = str((summary.get("metadata") or {}).get("kind") or "").lower() == "label"
     if prefer_rates and len(rate_values) > 1:
         total_rate = sum(float(metric.get("progress_rate", 0.0)) for metric in rate_values)
         parts = [f"workers={len(values)}"]
@@ -1162,7 +1162,7 @@ def active_worker_summary_payload(summary: dict[str, Any]) -> dict[str, Any]:
         return {}
     values = list(metrics.values())
     rate_values = [metric for metric in values if bool(metric.get("progress_rate_seen"))]
-    prefer_rates = str((summary.get("metadata") or {}).get("kind") or "").lower() == "lc0-label"
+    prefer_rates = str((summary.get("metadata") or {}).get("kind") or "").lower() == "label"
     payload: dict[str, Any] = {
         "workers": len(values),
         "tasks": sum(int(metric.get("tasks", 0)) for metric in values),
@@ -1239,7 +1239,7 @@ def run_speedup_field(summary: dict[str, Any]) -> str:
     if len(metrics) <= 1:
         return ""
     values = list(metrics.values())
-    prefer_rates = str((summary.get("metadata") or {}).get("kind") or "").lower() == "lc0-label"
+    prefer_rates = str((summary.get("metadata") or {}).get("kind") or "").lower() == "label"
     rates = [
         float(metric.get("progress_rate", 0.0))
         for metric in values
@@ -2213,7 +2213,7 @@ def progress_series_specs(config: dict[str, Any], *, kind: str | None = None) ->
                 {"name": "elo", "field": "elo", "x": "done", **sprt_progress_series_options("elo")},
                 {"name": "ci", "field": "ci", "x": "done"},
             ]
-        if str(kind or "").lower() == "lc0-label":
+        if str(kind or "").lower() == "label":
             return [
                 {"name": "read", "field": "done", "x": "done", "scale": "linear"},
                 {"name": "selected", "field": "selected", "x": "done", "scale": "linear"},
@@ -2342,9 +2342,9 @@ def run_progress_graph_from_rows(
     sprt_llr_bound: float | None = None
     kind = str(manifest_metadata(manifest).get("kind") or "").lower()
     is_sprt = kind == "sprt"
-    is_lc0_label = kind == "lc0-label"
-    lc0_x = 0.0
-    lc0_worker_rates: dict[str, float] = {}
+    is_labeling = kind == "label"
+    label_x = 0.0
+    label_worker_rates: dict[str, float] = {}
     x_unit = ""
     for row in rows:
         task = tasks_by_id.get(str(row.get("id") or ""))
@@ -2374,14 +2374,14 @@ def run_progress_graph_from_rows(
             if offset_unit == unit:
                 graph_data.setdefault("global_done", offset + int(data["done"]))
                 graph_data.setdefault("global_total", progress_unit_totals.get(unit, task_total))
-        if is_lc0_label:
+        if is_labeling:
             done = progress_numeric_value("done", graph_data, fields)
             if done is not None:
-                lc0_x += done
+                label_x += done
             rate = progress_numeric_value("rate", graph_data, fields)
             if row.get("state") == "running" and rate is not None and rate > 0:
                 worker = worker_group_name(str(row.get("worker") or "unknown"))
-                lc0_worker_rates[worker] = lc0_worker_rates.get(worker, 0.0) + rate
+                label_worker_rates[worker] = label_worker_rates.get(worker, 0.0) + rate
             continue
         sprt_x: float | None = None
         for spec in specs:
@@ -2404,10 +2404,10 @@ def run_progress_graph_from_rows(
         if sprt_x is not None and isinstance(done, int) and done > 0:
             sprt_rows.append({"x": sprt_x, "done": done, "fields": fields})
 
-    if is_lc0_label and lc0_x > 0 and lc0_worker_rates:
-        points_by_name["total"] = [{"x": lc0_x, "y": sum(lc0_worker_rates.values())}]
-        for worker, rate in sorted(lc0_worker_rates.items()):
-            points_by_name[worker] = [{"x": lc0_x, "y": rate}]
+    if is_labeling and label_x > 0 and label_worker_rates:
+        points_by_name["total"] = [{"x": label_x, "y": sum(label_worker_rates.values())}]
+        for worker, rate in sorted(label_worker_rates.items()):
+            points_by_name[worker] = [{"x": label_x, "y": rate}]
 
     x_total = progress_unit_totals.get(x_unit) if x_unit else None
     for name, points in sprt_aggregate_graph_points(
@@ -2425,7 +2425,7 @@ def run_progress_graph_from_rows(
     series = []
     for name, points in points_by_name.items():
         points.sort(key=lambda point: point["x"])
-        if len(points) >= 2 or (is_lc0_label and points) or (name.lower() == "ci" and points):
+        if len(points) >= 2 or (is_labeling and points) or (name.lower() == "ci" and points):
             series.append(graph_series_with_options(name, points, options_by_name.get(name)))
     if not series:
         return None
@@ -3409,14 +3409,14 @@ def cmd_wait(args: argparse.Namespace) -> int:
         if event == "run_done" and state == "ok" and isinstance(manifest.get("finalize"), dict):
             try:
                 verify_manifest(manifest, verify_requirements=False)
-                from .lc0 import finalize_lc0
+                from .labeling import finalize_labeling
 
-                finalization = finalize_lc0(manifest_path, manifest)
+                finalization = finalize_labeling(manifest_path, manifest)
             except (OSError, ValueError, json.JSONDecodeError, SystemExit) as exc:
                 print(f"finalization failed: {exc}", file=sys.stderr)
                 event, state, rc = "run_finalize_fail", "failed", 1
         if state != "ok":
-            from .lc0 import cleanup_partials
+            from .labeling import cleanup_partials
 
             finalizer = manifest.get("finalize")
             if isinstance(finalizer, dict):

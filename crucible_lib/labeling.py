@@ -12,7 +12,7 @@ from .tasks import task_outputs
 
 
 INVENTORY_SCHEMA = "crucible.lc0-inventory.v1"
-STATS_SCHEMA = "enyo.lc0-label-stats.v1"
+STATS_SCHEMA = "enyo.label-stats.v1"
 RECORD_BYTES = 32
 HASH_CACHE_NAME = "lc0-inventory-hashes.json"
 VERIFIED_MARKER_NAME = ".verified.json"
@@ -144,9 +144,9 @@ def cleanup_partials(manifest: dict[str, Any], finalizer: dict[str, Any]) -> Non
             partial.unlink(missing_ok=True)
 
 
-def finalize_lc0(manifest_path: Path, manifest: dict[str, Any]) -> dict[str, Any] | None:
+def finalize_labeling(manifest_path: Path, manifest: dict[str, Any]) -> dict[str, Any] | None:
     finalizer = manifest.get("finalize")
-    if not isinstance(finalizer, dict) or finalizer.get("type") != "lc0-bullet":
+    if not isinstance(finalizer, dict) or finalizer.get("type") != "bullet-labels":
         return None
     output = expand_path(str(finalizer["output"]))
     summary_path = manifest_path.parent / "dataset-summary.json"
@@ -161,7 +161,7 @@ def finalize_lc0(manifest_path: Path, manifest: dict[str, Any]) -> dict[str, Any
     shard_rows = []
     for expected_index, task in enumerate(tasks):
         if int(task.get("index", -1)) != expected_index:
-            raise ValueError("LC0 shard indices are not contiguous")
+            raise ValueError("labeling shard indices are not contiguous")
         outputs = task_outputs(task)
         if len(outputs) != 2:
             raise ValueError(f"{task['id']}: expected Bullet and stats outputs")
@@ -206,7 +206,7 @@ def finalize_lc0(manifest_path: Path, manifest: dict[str, Any]) -> dict[str, Any
         temp.unlink(missing_ok=True)
 
     summary = {
-        "schema": "crucible.lc0-label-summary.v1",
+        "schema": "crucible.label-summary.v1",
         "completed_at": now(),
         "output": str(output),
         "merged_bytes": expected_bytes,

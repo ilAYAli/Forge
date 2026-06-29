@@ -90,25 +90,25 @@ Notes:
 - Without `--shards`, Crucible chooses 8 shards per worker slot, capped by
   `--games`.
 
-### Distributed LC0 labeling
+### Distributed labeling
 
-`lc0-label` streams LC0 V6 gzip records directly through Stockfish into a
+`label` streams LC0 V6 gzip records directly through Stockfish into a
 merged BulletFormat dataset. The default run uses 152 shards across
 `pwa-5090:20,pwa-mbp:8,pwa-mbp0:10`.
 
 ```sh
-crucible lc0-label \
+crucible label \
   --source ~/code/cpp/chess/nnue/data/lc0/test91/training-run2-test91-20260128-1817 \
   --output ~/code/cpp/chess/nnue/data/labeled/test91-depth12.bullet \
   --workers pwa-5090:20,pwa-mbp:8,pwa-mbp0:10,pwa-rce:8,pwa-wsl:8 \
-  --run lc0-test91-depth12 \
+  --run test91-depth12 \
   --comment "9M raw LC0 records, quiet positions from ply 16"
 ```
 
 Add or restore worker slots on an incomplete run without relaunching it:
 
 ```sh
-crucible worker set pwa-wsl:8 lc0-test91-depth12 --remote-timeout-seconds 1800
+crucible worker set pwa-wsl:8 test91-depth12 --remote-timeout-seconds 1800
 ```
 
 The first setup on a host may appear idle while its corpus cache is transferred

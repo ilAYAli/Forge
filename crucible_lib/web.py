@@ -1539,8 +1539,8 @@ _HTML = r"""<!DOCTYPE html>
       const ciSeries = graphSeriesByName(allSeries, 'ci');
       const eloSeries = graphSeriesByName(allSeries, 'elo');
       const llrSeries = graphSeriesByName(allSeries, 'llr');
-      const isLc0Graph = Boolean(graphSeriesByName(allSeries, 'total'));
-      const lc0Series = isLc0Graph ? allSeries : [];
+      const isLabelingGraph = Boolean(graphSeriesByName(allSeries, 'total'));
+      const labelingSeries = isLabelingGraph ? allSeries : [];
       const primary = eloSeries || allSeries.find(s => graphSeriesName(s.name) !== 'ci') || null;
       if (!primary) return '';
       const configuredTotal = graphXTotal(graph);
@@ -1552,17 +1552,18 @@ _HTML = r"""<!DOCTYPE html>
       const genericSeries = !eloSeries && !llrSeries
         ? allSeries.filter(s => graphSeriesName(s.name) !== 'ci')
         : [primary];
-      const rows = isLc0Graph
-        ? graphCombinedRowHtml(lc0Series, graph, xTotal)
+      const rows = isLabelingGraph
+        ? graphCombinedRowHtml(labelingSeries, graph, xTotal)
         : genericSeries.map(s => s === primary
           ? graphRowHtml(s, options, graph, xTotal, bandSeries, overlay)
           : graphRowHtml(s, options, graph, xTotal)).join('');
-      const unit = isLc0Graph
+      const graphTitle = isLabelingGraph ? 'labeling' : title;
+      const unit = isLabelingGraph
         ? ' · aggregate records/s over records scanned'
         : (graph?.x_unit ? ` · x: ${graph.x_unit}` : '');
       const stopLabel = earlyStop ? ` · stopped at ${fmtGraphNumber(earlyStop.observed)} / ${fmtGraphNumber(earlyStop.target)}` : '';
       return `<div class="task-graph">`
-        + `<div class="graph-title"><span class="graph-title-main">${esc(title + unit + stopLabel)}</span></div>`
+        + `<div class="graph-title"><span class="graph-title-main">${esc(graphTitle + unit + stopLabel)}</span></div>`
         + rows
         + `</div>`;
     }

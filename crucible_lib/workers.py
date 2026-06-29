@@ -5,7 +5,7 @@ from .core import *
 from .manifest import *
 from .tasks import *
 from .status import *
-from .lc0 import VERIFIED_MARKER_NAME, marker_matches
+from .labeling import VERIFIED_MARKER_NAME, marker_matches
 
 
 DEFAULT_INLINE_WORKER_SLOTS = 8
@@ -936,7 +936,7 @@ def sync_lc0_inventory_tree(
         if src.resolve() != target.resolve():
             copy_dir_to_worker(worker, src, dst, timeout=timeout, tracker=tracker, retries=retries)
         if not marker_matches(target, digest):
-            from .lc0 import verify_inventory_tree
+            from .labeling import verify_inventory_tree
 
             verify_inventory_tree(target, digest)
         return src.resolve() != target.resolve()

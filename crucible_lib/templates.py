@@ -5,7 +5,7 @@ import tempfile
 
 from .config import *
 from .manifest import *
-from .lc0 import build_inventory
+from .labeling import build_inventory
 
 
 TEMPLATE_SCHEMA = "crucible.template.v1"
@@ -658,7 +658,7 @@ def cmd_template_run(args: argparse.Namespace) -> int:
     else:
         params = parse_template_parameters(template_name, template, template_args)
     inventory_info: dict[str, Any] | None = None
-    if template_name == "lc0-label":
+    if template_name == "label":
         inventory_info = build_inventory(str(params["source"]))
         params = dict(params)
         params["source_cache"] = "~/.cache/crucible/inputs/" + str(inventory_info["digest"])

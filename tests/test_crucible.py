@@ -70,6 +70,16 @@ class CrucibleTests(unittest.TestCase):
             env=process_env,
         )
 
+    def test_label_command_expands_to_label_template(self) -> None:
+        self.assertEqual(
+            ["run", "label", "--depth", "12"],
+            crucible.expand_template_command_aliases(["label", "--depth", "12"]),
+        )
+        self.assertEqual(
+            ["unknown", "--depth", "12"],
+            crucible.expand_template_command_aliases(["unknown", "--depth", "12"]),
+        )
+
     def test_worker_runtime_paths_avoid_new_zip_strict_keyword(self) -> None:
         for rel_path in ("crucible_lib/tasks.py", "crucible_lib/workers.py"):
             text = (ROOT / rel_path).read_text(encoding="utf-8")
@@ -656,8 +666,9 @@ except SystemExit as exc:
         self.assertIn("function graphCombinedRowHtml", web._HTML)
         self.assertIn("function combinedGraphLegendHtml", web._HTML)
         self.assertIn("function setCombinedGraphPointReadout", web._HTML)
-        self.assertIn("const isLc0Graph = Boolean(graphSeriesByName(allSeries, 'total'))", web._HTML)
-        self.assertIn("graphCombinedRowHtml(lc0Series, graph, xTotal)", web._HTML)
+        self.assertIn("const isLabelingGraph = Boolean(graphSeriesByName(allSeries, 'total'))", web._HTML)
+        self.assertIn("graphCombinedRowHtml(labelingSeries, graph, xTotal)", web._HTML)
+        self.assertIn("const graphTitle = isLabelingGraph ? 'labeling' : title", web._HTML)
         self.assertIn("aggregate records/s over records scanned", web._HTML)
         self.assertIn("const primary = graphSeriesByName(series, 'total') || series[0]", web._HTML)
         self.assertIn("const plotted = [primary]", web._HTML)
@@ -6150,7 +6161,7 @@ console.log(JSON.stringify({band, domain, maxBandRadius, zero, last, delta: zero
     def test_task_execution_checksum_excludes_routing_but_tracks_execution(self) -> None:
         manifest = {
             "schema": "crucible.task.v1",
-            "kind": "lc0-label",
+            "kind": "label",
             "name": "checksum-test",
             "created_at": "2026-01-01T00:00:00+0000",
             "work_dir": "/work",

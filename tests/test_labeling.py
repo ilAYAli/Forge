@@ -8,11 +8,11 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from crucible_lib.lc0 import (
+from crucible_lib.labeling import (
     INVENTORY_SCHEMA,
     build_inventory,
     canonical_inventory_bytes,
-    finalize_lc0,
+    finalize_labeling,
     inventory_digest,
     marker_matches,
     verify_inventory_tree,
@@ -24,8 +24,19 @@ from crucible_lib.tasks import task_done_path
 
 
 class Lc0InventoryTests(unittest.TestCase):
+    def test_template_uses_source_neutral_labeling_name(self) -> None:
+        template_path = Path(__file__).resolve().parents[1] / "templates" / "label.template.json"
+        template = json.loads(template_path.read_text(encoding="utf-8"))
+
+        self.assertEqual("label", template["name"])
+        self.assertEqual("label", template["kind"])
+        self.assertTrue(template["run_name"].startswith("label-"))
+        self.assertEqual("label:{shard}", template["task"]["label"])
+        self.assertIn("tools/score/label.py", template["task"]["command"])
+        self.assertEqual("bullet-labels", template["finalize"]["type"])
+
     def test_template_keeps_wsl_corpus_cache_on_native_ext4(self) -> None:
-        template_path = Path(__file__).resolve().parents[1] / "templates" / "lc0-label.template.json"
+        template_path = Path(__file__).resolve().parents[1] / "templates" / "label.template.json"
         template = json.loads(template_path.read_text(encoding="utf-8"))
 
         self.assertEqual(
@@ -50,7 +61,7 @@ class Lc0InventoryTests(unittest.TestCase):
             (source / "training.1.gz").write_bytes(b"one")
             (source / "training.2.gz").write_bytes(b"two")
             first = build_inventory(source, cache_home=cache)
-            with mock.patch("crucible_lib.lc0.sha256_file", side_effect=AssertionError("rehash")):
+            with mock.patch("crucible_lib.labeling.sha256_file", side_effect=AssertionError("rehash")):
                 second = build_inventory(source, cache_home=cache)
             self.assertEqual(first["digest"], second["digest"])
             self.assertTrue(marker_matches(Path(second["cache_root"]), str(second["digest"])))
@@ -76,7 +87,7 @@ class Lc0InventoryTests(unittest.TestCase):
             self.assertFalse((root / ".verified.json").exists())
 
 
-class Lc0FinalizationTests(unittest.TestCase):
+class LabelingFinalizationTests(unittest.TestCase):
     def make_run(self, root: Path, *, replace: bool = False) -> tuple[Path, dict]:
         outputs = root / "outputs"
         outputs.mkdir()
@@ -86,7 +97,7 @@ class Lc0FinalizationTests(unittest.TestCase):
             stats = outputs / f"shard-{index}.stats.json"
             bullet.write_bytes(marker * 32)
             stats.write_text(json.dumps({
-                "schema": "enyo.lc0-label-stats.v1",
+                "schema": "enyo.label-stats.v1",
                 "shard_index": index,
                 "read": index + 2,
                 "selected": 1,
@@ -94,7 +105,7 @@ class Lc0FinalizationTests(unittest.TestCase):
                 "skipped_min_ply": index,
             }), encoding="utf-8")
             tasks.append({
-                "id": f"lc0_{index:04d}",
+                "id": f"label_{index:04d}",
                 "index": index,
                 "outputs": [str(bullet), str(stats)],
             })
@@ -103,7 +114,7 @@ class Lc0FinalizationTests(unittest.TestCase):
             "schema": "crucible.task.v1",
             "tasks": tasks,
             "finalize": {
-                "type": "lc0-bullet",
+                "type": "bullet-labels",
                 "output": str(final),
                 "inventory_digest": "d" * 64,
                 "replace": replace,
@@ -114,11 +125,12 @@ class Lc0FinalizationTests(unittest.TestCase):
     def test_merges_in_numeric_order_and_aggregates_stats(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             manifest_path, manifest = self.make_run(Path(tmp))
-            summary = finalize_lc0(manifest_path, manifest)
+            summary = finalize_labeling(manifest_path, manifest)
             assert summary is not None
             output = Path(str(summary["output"]))
             self.assertEqual(b"a" * 32 + b"b" * 32 + b"c" * 32, output.read_bytes())
             self.assertEqual(96, summary["merged_bytes"])
+            self.assertEqual("crucible.label-summary.v1", summary["schema"])
             self.assertEqual(3, summary["positions"])
             self.assertEqual(9, summary["task_totals"]["read"])
             self.assertEqual(summary, json.loads((Path(tmp) / "dataset-summary.json").read_text()))
@@ -129,21 +141,21 @@ class Lc0FinalizationTests(unittest.TestCase):
             manifest_path, manifest = self.make_run(Path(tmp))
             Path(manifest["finalize"]["output"]).write_bytes(b"old")
             with self.assertRaisesRegex(ValueError, "--replace"):
-                finalize_lc0(manifest_path, manifest)
+                finalize_labeling(manifest_path, manifest)
 
     def test_rejects_invalid_shard_size(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             manifest_path, manifest = self.make_run(Path(tmp))
             Path(manifest["tasks"][1]["outputs"][0]).write_bytes(b"x")
             with self.assertRaisesRegex(ValueError, "invalid Bullet shard"):
-                finalize_lc0(manifest_path, manifest)
+                finalize_labeling(manifest_path, manifest)
 
     def test_detached_wait_finalizes_before_success_summary(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             manifest_path, manifest = self.make_run(root)
             manifest.update({
-                "name": "lc0-test",
+                "name": "label-test",
                 "created_at": "2026-01-01T00:00:00Z",
                 "work_dir": str(root),
                 "state_dir": str(root / "state"),
@@ -178,9 +190,9 @@ class Lc0FinalizationTests(unittest.TestCase):
             self.assertTrue((root / "dataset.bullet").is_file())
 
 
-class Lc0ProgressTests(unittest.TestCase):
+class LabelingProgressTests(unittest.TestCase):
     def test_template_graphs_counters_and_reports_speedup(self) -> None:
-        template_path = Path(__file__).resolve().parents[1] / "templates" / "lc0-label.template.json"
+        template_path = Path(__file__).resolve().parents[1] / "templates" / "label.template.json"
         progress = json.loads(template_path.read_text(encoding="utf-8"))["task"]["progress"]
         progress.pop("series")
         progress["log_regex"] = (
@@ -197,7 +209,7 @@ class Lc0ProgressTests(unittest.TestCase):
             for index, host in enumerate(("worker-a", "worker-b")):
                 task_progress = copy.deepcopy(progress)
                 task_progress["total"] = 200
-                task_id = f"lc0_{index}"
+                task_id = f"label_{index}"
                 tasks.append({
                     "id": task_id,
                     "index": index,
@@ -216,8 +228,8 @@ class Lc0ProgressTests(unittest.TestCase):
                 )
             manifest = {
                 "schema": "crucible.task.v1",
-                "name": "lc0-progress",
-                "kind": "lc0-label",
+                "name": "label-progress",
+                "kind": "label",
                 "work_dir": str(root),
                 "state_dir": str(state),
                 "log_dir": str(logs),
@@ -236,7 +248,7 @@ class Lc0ProgressTests(unittest.TestCase):
             self.assertIn("speedup=2.0x", active_worker_summary(summary))
 
             for index in range(2):
-                with (logs / f"lc0_{index}.log").open("a", encoding="utf-8") as file:
+                with (logs / f"label_{index}.log").open("a", encoding="utf-8") as file:
                     file.write(
                         f"shard 0/2 read=201 selected=151 written=121 rate={(index + 1) * 12}/s\n"
                     )
@@ -260,7 +272,7 @@ class Lc0ProgressTests(unittest.TestCase):
 
     def test_speedup_uses_current_rates_instead_of_accumulated_output(self) -> None:
         summary = {
-            "metadata": {"kind": "lc0-label"},
+            "metadata": {"kind": "label"},
             "active": [
                 {"worker": "early", "progress_data": {"kind": "metadata", "rate": 10.0}},
                 {"worker": "late", "progress_data": {"kind": "metadata", "rate": 8.0}},
