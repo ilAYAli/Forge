@@ -229,6 +229,9 @@ _HTML = r"""<!DOCTYPE html>
                              font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
       .mobile-metric-value { display: block; color: var(--text); font-size: 17px;
                              font-weight: 700; line-height: 1.2; white-space: nowrap; }
+      .mobile-metric-value.elo-pos { color: var(--grn); }
+      .mobile-metric-value.elo-neu { color: var(--yel); }
+      .mobile-metric-value.elo-neg { color: var(--red); }
       .mobile-metric.elo .mobile-metric-value { font-size: 20px; }
       .mobile-llr-track { height: 2px; margin-top: 3px; background: var(--bg3);
                           border-radius: 2px; overflow: hidden; }
@@ -370,6 +373,7 @@ _HTML = r"""<!DOCTYPE html>
       const llrMatch = llr.match(/^([+-]?(?:\d+(?:\.\d+)?|\.\d+))\s*\/\s*([+-]?(?:\d+(?:\.\d+)?|\.\d+))(.*)$/);
       const llrCurrent = llrMatch ? Number(llrMatch[1]) : NaN;
       const llrBound = llrMatch ? Math.abs(Number(llrMatch[2])) : NaN;
+      const llrDisplay = llrMatch ? `${llrMatch[1]}${llrMatch[3]}`.trim() : llr;
       const llrPct = Number.isFinite(llrCurrent) && Number.isFinite(llrBound) && llrBound > 0
         ? Math.min(100, Math.abs(llrCurrent) / llrBound * 100) : 0;
       const llrTone = llrCurrent > 0 ? 'positive' : llrCurrent < 0 ? 'negative' : '';
@@ -386,7 +390,7 @@ _HTML = r"""<!DOCTYPE html>
         + `<div class="mobile-metric elo"><span class="mobile-metric-label">Elo</span>`
         + `<span class="mobile-metric-value ${eloClass(elo).trim()}">${esc(elo || '—')}${ci ? ` ± ${esc(ci)}` : ''}</span></div>`
         + `<div class="mobile-metric llr"><span class="mobile-metric-label">LLR</span>`
-        + `<span class="mobile-metric-value">${esc(llr || '—')}</span>`
+        + `<span class="mobile-metric-value ${eloClass(llrCurrent).trim()}">${esc(llrDisplay || '—')}</span>`
         + `<div class="mobile-llr-track"><span class="mobile-llr-fill ${llrTone}" style="width:${llrPct.toFixed(1)}%"></span></div></div>`
         + `${secondary ? `<div class="mobile-score-secondary">${esc(secondary)}</div>` : ''}`
         + `</div>`;
