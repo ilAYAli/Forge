@@ -3040,6 +3040,10 @@ console.log(JSON.stringify({band, domain, maxBandRadius, zero, last, delta: zero
 
             inputs = manifest["requirements"]["inputs"]
             self.assertEqual(5, len(inputs))
+            self.assertEqual(
+                {"candidate", "reference", "book", "candidate_uci.nnue_file", "reference_uci.nnue_file"},
+                {item["name"] for item in inputs},
+            )
             self.assertEqual(set(paths.values()), {Path(item["path"]) for item in inputs})
             self.assertTrue(all(item["bytes"] > 0 and len(item["sha256"]) == 64 for item in inputs))
 

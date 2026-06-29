@@ -5,9 +5,7 @@
   "description": "Run distributed SPRT game shards",
   "run_name": "sprt-{candidate_stem}-{games}-{timestamp}",
   "work_dir": "~",
-  "uci_file_options": [
-    "nnue_file"
-  ],
+  "materialize_inputs": true,
   "parameters": {
     "candidate": {
       "required": true,
@@ -29,12 +27,18 @@
       "repeatable": true,
       "arg": "--candidate-uci",
       "quote": false,
+      "file_options": [
+        "nnue_file"
+      ],
       "help": "Extra candidate UCI option NAME=VALUE. Repeatable."
     },
     "reference_uci": {
       "repeatable": true,
       "arg": "--reference-uci",
       "quote": false,
+      "file_options": [
+        "nnue_file"
+      ],
       "help": "Extra reference UCI option NAME=VALUE. Repeatable."
     },
     "book": {
