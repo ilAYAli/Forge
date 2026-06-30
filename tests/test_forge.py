@@ -846,6 +846,36 @@ console.log(JSON.stringify({band, domain, maxBandRadius, zero, last, delta: zero
         self.assertEqual([0, 38, 142, 496, 500], [point["x"] for point in payload["band"]])
         self.assertAlmostEqual(27.25, payload["hoverCi"])
 
+    def test_web_sorts_named_fallback_in_local_time(self) -> None:
+        import forge_lib.web as web
+
+        start = web._HTML.index("    function parseTimestampEpoch")
+        end = web._HTML.index("    let soundEnabled", start)
+        probe = web._HTML[start:end] + """
+const runs = [
+  {run: 'native-4.20.0-rc1-sprt-1500-20260630-141436'},
+  {run: 'sprt-enyo_f908b4b-1000-20260630-152429', created_at: '2026-06-30T15:24:29+0200'},
+];
+console.log(runs.sort(compareRunsByCreated).map(run => run.run).join('\\n'));
+"""
+        result = subprocess.run(
+            ["node", "-e", probe],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env={**os.environ, "TZ": "Europe/Oslo"},
+            check=False,
+        )
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual(
+            [
+                "sprt-enyo_f908b4b-1000-20260630-152429",
+                "native-4.20.0-rc1-sprt-1500-20260630-141436",
+            ],
+            result.stdout.splitlines(),
+        )
+
     def test_web_favicon_asset_is_available(self) -> None:
         import forge_lib.web as web
 

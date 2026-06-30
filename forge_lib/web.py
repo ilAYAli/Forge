@@ -444,7 +444,7 @@ _HTML = r"""<!DOCTYPE html>
     function runNameEpoch(r) {
       const m = String(r?.run || '').match(/(?:^|-)(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(\d{2})?(?:$|-)/);
       if (!m) return null;
-      return Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]), Number(m[4]), Number(m[5]), Number(m[6] || 0)) / 1000;
+      return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), Number(m[4]), Number(m[5]), Number(m[6] || 0)).getTime() / 1000;
     }
 
     function runSortEpoch(r) {
