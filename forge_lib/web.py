@@ -433,27 +433,10 @@ _HTML = r"""<!DOCTYPE html>
       return max;
     }
 
-    function statePri(r) {
-      return {queued:0,current:1,failed:2,stopped:3,done:4,empty:5}[r.state]??6;
-    }
-
-    function numericField(value, fallback=0) {
-      const n = Number(value);
-      return Number.isFinite(n) ? n : fallback;
-    }
-
-    function queuedEpoch(r) {
-      return numericField(r?.queued_epoch ?? r?.queue?.requested_epoch, 0);
-    }
-
-    function completedEpoch(r) {
-      return numericField(r?.completed_epoch, 0);
-    }
-
     function parseTimestampEpoch(value) {
       const text = String(value || '').trim();
       if (!text) return null;
-      const parsed = Date.parse(text);
+      const parsed = Date.parse(text.replace(/([+-]\d{2})(\d{2})$/, '$1:$2'));
       if (Number.isFinite(parsed)) return parsed / 1000;
       return null;
     }
@@ -469,10 +452,13 @@ _HTML = r"""<!DOCTYPE html>
       if (created !== null) return created;
       const named = runNameEpoch(r);
       if (named !== null) return named;
-      const queued = queuedEpoch(r);
-      if (queued > 0) return queued;
-      const completed = completedEpoch(r);
-      return completed > 0 ? completed : 0;
+      return 0;
+    }
+
+    function compareRunsByCreated(a, b) {
+      const ea = runSortEpoch(a), eb = runSortEpoch(b);
+      if (ea !== eb) return eb - ea;
+      return a.run < b.run ? -1 : a.run > b.run ? 1 : 0;
     }
 
     let soundEnabled = localStorage.getItem('forge.sound') === '1';
@@ -1991,13 +1977,7 @@ _HTML = r"""<!DOCTYPE html>
           .filter(r => !hiddenRunNames.has(String(r.run || '')))
           .filter(r => showInactiveRuns || runIsActive(r))
           .slice()
-          .sort((a,b) => {
-            const ea=runSortEpoch(a), eb=runSortEpoch(b);
-            if (ea!==eb) return eb-ea;
-            const dp = statePri(a)-statePri(b);
-            if (dp) return dp;
-            return a.run<b.run?-1:a.run>b.run?1:0;
-          });
+          .sort(compareRunsByCreated);
 
         if (shouldDeferRefreshForSelection()) return;
         saveState();
