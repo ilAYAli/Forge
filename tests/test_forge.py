@@ -94,6 +94,26 @@ class ForgeTests(unittest.TestCase):
         self.assertIsNone(forge.parse_int(True))
         self.assertIsNone(forge.parse_float(False))
 
+    def test_command_requirement_can_create_missing_executable(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            executable = Path(tmp) / "generated-tool"
+            command = [
+                sys.executable,
+                "-c",
+                "import os,sys; open(sys.argv[1], 'w').close(); os.chmod(sys.argv[1], 0o755); print('ready')",
+                str(executable),
+            ]
+
+            forge.check_command_requirement({
+                "name": "generated",
+                "path": str(executable),
+                "command": command,
+                "contains": "ready",
+            })
+
+            self.assertTrue(executable.is_file())
+            self.assertTrue(os.access(executable, os.X_OK))
+
     def test_schema_matching_accepts_prior_namespaces(self) -> None:
         self.assertTrue(forge.schema_matches("forge.task.v1", "task"))
         self.assertTrue(forge.schema_matches("previous.task.v1", "task"))

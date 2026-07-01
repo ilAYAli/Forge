@@ -217,7 +217,10 @@ def check_command_requirement(item: dict[str, Any]) -> None:
         raise SystemExit("requirements.commands entries must be objects")
     label = str(item.get("name") or item.get("path") or item.get("command") or "command")
     path = str(item.get("path") or "").strip()
-    if path:
+
+    def check_path() -> None:
+        if not path:
+            return
         resolved = shutil.which(path) if os.path.sep not in path else str(expand_path(path))
         if not resolved or not Path(resolved).exists():
             raise SystemExit(f"{label}: required command not found: {path}")
@@ -225,6 +228,8 @@ def check_command_requirement(item: dict[str, Any]) -> None:
             raise SystemExit(f"{label}: required command is not executable: {resolved}")
 
     command = item.get("command")
+    if command is None:
+        check_path()
     if command is None and path and (item.get("contains") or item.get("regex")):
         command = [path, "--version"]
     if command is None:
@@ -236,6 +241,7 @@ def check_command_requirement(item: dict[str, Any]) -> None:
     output = result.stdout
     if result.returncode != int(item.get("rc", 0)):
         raise SystemExit(f"{label}: command failed rc={result.returncode}: {output.strip()}")
+    check_path()
     contains = str(item.get("contains") or "")
     if contains and contains not in output:
         raise SystemExit(f"{label}: output does not contain {contains!r}: {output.strip()}")
