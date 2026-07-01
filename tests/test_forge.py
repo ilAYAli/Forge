@@ -12757,6 +12757,41 @@ console.log(runs.sort(compareRunsByCreated).map(run => run.run).join('\\n'));
                 retries=0,
             )
 
+    def test_sync_inputs_checks_tunneled_worker_with_matching_local_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "source.jsonl"
+            source.write_text("{\"x\":1}\n", encoding="utf-8")
+            manifest = {
+                "schema": "forge.task.v1",
+                "name": "tunneled-worker-input",
+                "requirements": {"inputs": [forge.file_record(source)]},
+                "tasks": [],
+            }
+            worker = {"host": "remote", "profile": "remote", "local": False}
+
+            with (
+                mock.patch("forge_lib.workers.worker_is_current_host", return_value=True),
+                mock.patch(
+                    "forge_lib.workers.run_worker_shell",
+                    side_effect=[
+                        subprocess.CompletedProcess(["check"], 1, stdout="", stderr=""),
+                        subprocess.CompletedProcess(["mkdir"], 0, stdout="", stderr=""),
+                    ],
+                ),
+                mock.patch("forge_lib.workers.copy_to_worker") as copy_to_worker,
+            ):
+                synced = forge.sync_inputs_to_worker(worker, manifest)
+
+            self.assertEqual(1, synced)
+            copy_to_worker.assert_called_once_with(
+                worker,
+                source,
+                str(source),
+                timeout=None,
+                tracker=None,
+                retries=0,
+            )
+
     def test_deploy_passes_matching_profile_and_runs_tasks(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

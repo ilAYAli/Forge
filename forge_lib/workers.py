@@ -897,8 +897,6 @@ def sync_inputs_to_worker(
             copy_to_worker(worker, src, dst, timeout=timeout, tracker=tracker, retries=retries)
             synced += 1
             continue
-        if worker_is_current_host(worker) and src.resolve() == expand_path(dst).resolve():
-            continue
         if worker_input_matches(worker, dst, remote_item, timeout=timeout, tracker=tracker, retries=retries):
             continue
         mkdir = run_worker_shell(
