@@ -11431,7 +11431,7 @@ console.log(runs.sort(compareRunsByCreated).map(run => run.run).join('\\n'));
 
             self.assertEqual(0, rc)
             output = stdout.getvalue()
-            self.assertIn("deploy: setup complete; launching workers", output)
+            self.assertIn("deploy: worker-b ready; launching now", output)
             self.assertNotIn("  OK     worker-b: launch", output)
             self.assertIn("deploy: workers active", output)
             self.assertIn("deploy: launch complete", output)
@@ -11871,14 +11871,14 @@ console.log(runs.sort(compareRunsByCreated).map(run => run.run).join('\\n'));
             self.assertEqual(1, output.count("missing worker-b engine"))
             self.assertNotIn("FAILED worker-b#1: setup", output)
             self.assertIn("deploy: setup partial; 1/4 slots ready", output)
-            self.assertIn("deploy: setup partial; launching ready workers", output)
+            self.assertIn("deploy: worker-a ready; launching now", output)
             self.assertNotIn("  OK     worker-a: launch", output)
             self.assertIn("deploy: launch complete", output)
             scripts = [command[-1] for command in commands if command[0] == "sh"]
             self.assertEqual(1, len([script for script in scripts if " work " in script and "--worker worker-a" in script]))
             self.assertEqual(0, len([script for script in scripts if " work " in script and "--worker worker-b" in script]))
 
-    def test_deploy_launch_only_waits_for_slow_successful_setup(self) -> None:
+    def test_deploy_launches_ready_worker_before_slow_setup_finishes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             runs = root / "runs"
@@ -11907,16 +11907,20 @@ console.log(runs.sort(compareRunsByCreated).map(run => run.run).join('\\n'));
             commands = []
             slow_setup_started = threading.Event()
             slow_setup_finished = threading.Event()
+            fast_worker_launched = threading.Event()
+            slow_setup_saw_fast_launch = False
 
             def fake_run(self, command, **kwargs):
+                nonlocal slow_setup_saw_fast_launch
                 commands.append(command)
                 script = command[-1]
                 if str(root / "cache-b") in script and " doctor " in script:
                     slow_setup_started.set()
-                    time.sleep(0.02)
+                    slow_setup_saw_fast_launch = fast_worker_launched.wait(1.0)
                     slow_setup_finished.set()
                     return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
                 if "--worker worker-a" in script and " work " in script:
+                    fast_worker_launched.set()
                     manifest = forge.load_manifest(runs / "slow-setup" / "manifest.json")
                     task = manifest["tasks"][0]
                     forge.write_json(forge.task_running_path(manifest, task), {
@@ -11952,9 +11956,11 @@ console.log(runs.sort(compareRunsByCreated).map(run => run.run).join('\\n'));
             self.assertEqual(0, rc)
             self.assertTrue(slow_setup_started.is_set())
             self.assertTrue(slow_setup_finished.wait(1.0))
+            self.assertTrue(slow_setup_saw_fast_launch)
             output = stdout.getvalue()
             self.assertNotIn("FAILED worker-b", output)
-            self.assertIn("deploy: setup complete; launching workers", output)
+            self.assertIn("deploy: worker-a ready; launching now", output)
+            self.assertIn("deploy: worker-b ready; launching now", output)
             self.assertIn("deploy: workers active", output)
             self.assertIn("deploy: launch complete", output)
             scripts = [command[-1] for command in commands if command[0] == "sh"]

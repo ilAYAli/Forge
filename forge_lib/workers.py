@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from .config import config_workers_path, default_coordinator_host, default_notify_command
 from .core import *
 from .manifest import *
@@ -1985,12 +1987,15 @@ def cmd_deploy(args: argparse.Namespace) -> int:
 
     def collect_setup_results(
         future_to_group: dict[concurrent.futures.Future[Any], list[tuple[int, dict[str, Any]]]],
+        on_ready: Callable[[list[dict[str, Any]]], None] | None = None,
     ) -> list[dict[str, Any]]:
         setup_results_list: list[dict[str, Any]] = []
         for future in concurrent.futures.as_completed(future_to_group):
             group_results = future.result()
             setup_results_list.extend(group_results)
             print_results(group_results, show_success=bool(args.verbose))
+            if on_ready is not None and all(item["ok"] for item in group_results):
+                on_ready(group_results)
         return setup_results_list
 
     status(colorize(f"deploy: run={run_dir.name} workers={len(workers)} jobs={jobs}", "cyan", enabled=color_enabled))
@@ -2010,16 +2015,46 @@ def cmd_deploy(args: argparse.Namespace) -> int:
     if has_tasks and bool(getattr(args, "launch_only", False)):
         setup_jobs = max(setup_jobs, len(setup_groups))
     executor: concurrent.futures.ThreadPoolExecutor | None = concurrent.futures.ThreadPoolExecutor(max_workers=setup_jobs)
+    launch_executor: concurrent.futures.ThreadPoolExecutor | None = None
     interrupted = False
     startup_failed = False
     futures: list[concurrent.futures.Future[Any]] = []
+    launch_futures: list[concurrent.futures.Future[Any]] = []
+    launch_only = has_tasks and bool(getattr(args, "launch_only", False))
+    before_started = 0
+    before_pending = 0
+    if launch_only:
+        if not bool(getattr(args, "resume", False)):
+            kill_run_workers(run_dir)
+        before_launch = status_summary(manifest, lease_seconds=600)
+        before_counts = before_launch["counts"]
+        before_started = started_task_count(before_counts)
+        before_pending = before_counts["pending"]
+        launch_executor = concurrent.futures.ThreadPoolExecutor(max_workers=max(1, len(workers)))
+
+    def launch_ready_workers(group_results: list[dict[str, Any]]) -> None:
+        assert launch_executor is not None
+        status(
+            colorize(
+                f"deploy: {result_label(group_results)} ready; launching now",
+                "green",
+                enabled=color_enabled,
+            )
+        )
+        for item in group_results:
+            index = int(item["index"])
+            launch_futures.append(launch_executor.submit(launch_worker, index, workers[index]))
+
     try:
         future_to_group = {
             executor.submit(setup_worker_group, group): group
             for group in setup_groups
         }
         futures = list(future_to_group)
-        setup_results_list = collect_setup_results(future_to_group)
+        setup_results_list = collect_setup_results(
+            future_to_group,
+            launch_ready_workers if launch_only else None,
+        )
         setup_failed = sum(1 for item in setup_results_list if not item["ok"])
         setup_failed_results = [item for item in setup_results_list if not item["ok"]]
         ready_worker_items = [
@@ -2039,25 +2074,10 @@ def cmd_deploy(args: argparse.Namespace) -> int:
                     ),
                 )
             executor.shutdown(wait=True)
-            executor = concurrent.futures.ThreadPoolExecutor(max_workers=max(1, len(ready_worker_items)))
-            if bool(getattr(args, "launch_only", False)):
-                if not bool(getattr(args, "resume", False)):
-                    kill_run_workers(run_dir)
-                launch_message = (
-                    "deploy: setup complete; launching workers"
-                    if setup_failed == 0
-                    else "deploy: setup partial; launching ready workers"
-                )
-                status(colorize(launch_message, "green" if setup_failed == 0 else "yellow", enabled=color_enabled))
-                before_launch = status_summary(manifest, lease_seconds=600)
-                before_counts = before_launch["counts"]
-                before_started = started_task_count(before_counts)
-                expected_new_started = min(before_counts["pending"], len(ready_worker_items))
-                futures = [
-                    executor.submit(launch_worker, index, worker)
-                    for index, worker in ready_worker_items
-                ]
-                launch_results = [future.result() for future in concurrent.futures.as_completed(futures)]
+            executor = None
+            if launch_only:
+                expected_new_started = min(before_pending, len(ready_worker_items))
+                launch_results = [future.result() for future in concurrent.futures.as_completed(launch_futures)]
                 results = setup_failed_results + launch_results
                 print_results(launch_results, show_success=bool(args.verbose))
                 if all(item["ok"] for item in launch_results):
@@ -2095,6 +2115,7 @@ def cmd_deploy(args: argparse.Namespace) -> int:
                             )
                             cleanup_failed_launch(launch_results, "workers did not become active after launch")
             else:
+                executor = concurrent.futures.ThreadPoolExecutor(max_workers=max(1, len(ready_worker_items)))
                 task_message = (
                     "deploy: setup complete; starting tasks"
                     if setup_failed == 0
@@ -2112,9 +2133,20 @@ def cmd_deploy(args: argparse.Namespace) -> int:
         interrupted = True
         status(colorize("deploy: interrupted; stopping active worker commands", "yellow", enabled=color_enabled), error=True)
         tracker.terminate_all()
-        concurrent.futures.wait(futures, timeout=2)
-        for future in futures:
+        all_futures = futures + launch_futures
+        concurrent.futures.wait(all_futures, timeout=2)
+        for future in all_futures:
             future.cancel()
+        launched = []
+        for future in launch_futures:
+            if not future.done() or future.cancelled():
+                continue
+            try:
+                launched.append(future.result())
+            except BaseException:
+                continue
+        if launched:
+            cleanup_failed_launch(launched, "deploy interrupted")
         if launch_marker_written:
             clear_launch_request(manifest)
         return 130
@@ -2125,6 +2157,8 @@ def cmd_deploy(args: argparse.Namespace) -> int:
     finally:
         if executor is not None:
             executor.shutdown(wait=not interrupted, cancel_futures=interrupted)
+        if launch_executor is not None:
+            launch_executor.shutdown(wait=not interrupted, cancel_futures=interrupted)
 
     command_stage_started = any(item["stage"] in ("launch", "tasks") for item in results)
     if not has_tasks:
