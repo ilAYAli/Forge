@@ -18,6 +18,53 @@ git clone git@github.com:ilAYAli/Forge.git ~/code/cpp/chess/forge
 ln -s ~/code/cpp/chess/forge/forge.py ~/.local/bin/forge
 ```
 
+
+example config:
+~/.config/forge/config.yml
+```
+coordinator_host: "pwa-5090"
+notify_command: "/home/petter/code/cpp/chess/forge/scripts/forge_event_ntfy.sh"
+template_dirs:
+  - "~/.config/forge/templates"
+```
+
+default workers:
+~/.config/forge/workers.json
+```
+{
+  "schema": "forge.workers.v1",
+  "workers": [
+    {
+      "host": "pwa-5090",
+      "profile": "pwa-5090",
+      "slots": 11
+    },
+    {
+      "host": "pwa-mbp",
+      "profile": "pwa-mbp",
+      "python": "/opt/homebrew/bin/python3",
+      "slots": 5
+    },
+    {
+      "host": "pwa-mbp0",
+      "profile": "pwa-mbp0",
+      "python": "/opt/homebrew/bin/python3",
+      "slots": 5
+    },
+    {
+      "host": "pwa-rce",
+      "profile": "linux",
+      "slots": 4
+    },
+    {
+      "host": "pwa-wsl",
+      "profile": "linux",
+      "slots": 8
+    }
+  ]
+}
+```
+
 ## Basic Commands
 
 ```sh
@@ -46,12 +93,12 @@ size and SHA-256 are skipped. Extra destination files are not deleted.
 
 ## One-Shot Shell Commands
 
-Run the same shell command once on each selected host:
+Run a shell command once selected workers:
 
 ```sh
-forge hostname
+forge hostname --workers pwa-5090,pwa-mbp0,pwa-mbp
 ```
-or multiple commands at once:
+or multiple commands at once using the configured workers:
 ```
 forge '
     cd ~/path/to/forge
