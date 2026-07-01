@@ -61,6 +61,11 @@
       "default": 1,
       "help": "Engine threads per game"
     },
+    "hash": {
+      "type": "int",
+      "default": 128,
+      "help": "Hash size in MiB for each candidate and reference engine process"
+    },
     "tc": {
       "default": "10+0.1",
       "help": "SPRT time control"
@@ -154,7 +159,7 @@
     },
     "label": "sprt:{shard}",
     "output": "{output_dir}/{task_name}/logs/{task_name}.log",
-    "command": "~/.local/bin/sprt {sprt_args} --games {shard} --fastchess ~/.local/bin/fastchess --log-dir {output_dir}/{task_name}/logs --name {task_name} --no-ntfy --no-eta",
+    "command": "~/.local/bin/sprt --candidate-uci Hash={hash} --reference-uci Hash={hash} {sprt_args} --games {shard} --fastchess ~/.local/bin/fastchess --log-dir {output_dir}/{task_name}/logs --name {task_name} --no-ntfy --no-eta",
     "progress": {
       "unit": "games",
       "log_regex": "\\[\\s*(?P<done>\\d+)\\/(?P<total>\\d+)\\].*?Elo\\s+(?P<elo>[-+]?(?:\\d+(?:\\.\\d+)?|inf|nan))\\s+\\+/-\\s+(?P<ci>[-+]?(?:\\d+(?:\\.\\d+)?|inf|nan))\\s+\\|\\s+LLR\\s+(?P<llr>[+-]?\\d+(?:\\.\\d+)?/[+-]?(?:\\d+(?:\\.\\d+)?|inf|nan)\\s+\\(\\s*[+-]?\\d+(?:\\.\\d+)?%\\))\\s+\\|\\s+LOS\\s+(?P<los>[-+]?(?:\\d+(?:\\.\\d+)?|inf|nan))%\\s+\\|\\s+draw\\s+(?P<draw>[-+]?(?:\\d+(?:\\.\\d+)?|inf|nan))%(?:.*?ETA\\s+(?P<eta>\\S+))?",

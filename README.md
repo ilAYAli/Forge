@@ -113,6 +113,9 @@ Notes:
   worker does not already have a compatible executable.
 - `pwa-mbp:4` means 4 Forge worker slots on `pwa-mbp`.
 - `--concurrency` and `--threads` affect SPRT/engine work inside each shard.
+- Candidate and reference engines default to `--hash 128` MiB per process.
+  Override it with `--hash MIB` or an engine-specific `--candidate-uci Hash=MIB`
+  or `--reference-uci Hash=MIB` option.
 - Without `--shards`, Forge chooses 8 shards per worker slot, capped by
   `--games`.
 

@@ -3076,7 +3076,7 @@ console.log(runs.sort(compareRunsByCreated).map(run => run.run).join('\\n'));
                 "--games", "50",
                 "--shards", "1",
                 "--candidate-uci", "nnue_file=~/code/cpp/chess/enyo/net/candidate.nn",
-                "--candidate-uci", "Hash=128",
+                "--candidate-uci", "Hash=256",
                 "--reference-uci", "nnue_file=~/code/cpp/chess/enyo/net/reference.nn",
             ],
         )
@@ -3085,7 +3085,30 @@ console.log(runs.sort(compareRunsByCreated).map(run => run.run).join('\\n'));
 
         self.assertIn("--candidate-uci nnue_file=~/code/cpp/chess/enyo/net/candidate.nn", command)
         self.assertIn("--candidate-uci Hash=128", command)
+        self.assertIn("--reference-uci Hash=128", command)
+        self.assertIn("--candidate-uci Hash=256", command)
+        self.assertLess(command.index("--candidate-uci Hash=128"), command.index("--candidate-uci Hash=256"))
         self.assertIn("--reference-uci nnue_file=~/code/cpp/chess/enyo/net/reference.nn", command)
+
+    def test_sprt_template_hash_override_applies_to_both_engines(self) -> None:
+        template_path = ROOT / "templates" / "sprt.template.json"
+        template = forge.load_template(template_path)
+        params = forge.parse_template_parameters(
+            "sprt",
+            template,
+            [
+                "--candidate", "~/assets/engines/enyo_9696dac",
+                "--games", "50",
+                "--shards", "1",
+                "--hash", "64",
+            ],
+        )
+        manifest = forge.expand_template("sprt", template_path, template, params)
+        command = manifest["tasks"][0]["command"]
+
+        self.assertIn("--candidate-uci Hash=64", command)
+        self.assertIn("--reference-uci Hash=64", command)
+        self.assertNotIn("--hash", command)
 
     def test_sprt_template_rejects_empty_uci_option_values(self) -> None:
         template_path = ROOT / "templates" / "sprt.template.json"

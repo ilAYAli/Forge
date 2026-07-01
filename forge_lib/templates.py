@@ -151,7 +151,7 @@ def repeatable_arg_shell_values(template: dict[str, Any], values: dict[str, Any]
     return result
 
 
-SPRT_TEMPLATE_CONTROL_ARGS = {"games", "shards"}
+SPRT_TEMPLATE_CONTROL_ARGS = {"games", "hash", "shards"}
 
 
 def sprt_shell_word(value: str) -> str:
