@@ -51,7 +51,7 @@ if not status_line:
         fields.extend(str(field) for field in progress_fields if str(field).strip())
     status_line = " ".join(fields)
 
-lines = ["<output>", title, f"  • Run: {event.get('run', '')}"]
+lines = [title, f"  • Run: {event.get('run', '')}"]
 if comment:
     lines.append(f"  • Comment: {comment}")
 if status_line:
@@ -62,7 +62,6 @@ if failed:
         for item in failed[:6]
     )
     lines.append(f"  • Failed workers: {summary}")
-lines.append("</output>")
 print("\n".join(lines))
 PY
 )

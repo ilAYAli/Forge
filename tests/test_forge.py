@@ -149,6 +149,8 @@ class ForgeTests(unittest.TestCase):
         self.assertEqual(0, result.returncode, result.stderr)
         self.assertIn("Forge sprt failed", result.stdout)
         self.assertIn("pwa-mbp:setup:rc=1", result.stdout)
+        self.assertNotIn("<output>", result.stdout)
+        self.assertNotIn("</output>", result.stdout)
 
     @contextlib.contextmanager
     def patch_runs_dir(self, path: Path):
