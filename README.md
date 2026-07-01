@@ -111,6 +111,8 @@ Notes:
   verified on every selected worker. Engine executables are not copied between
   platforms; `enyo_<commit>` engines are built and deployed locally when a
   worker does not already have a compatible executable.
+- Pinned SPRT and fastchess revisions use commit-specific cache directories, so
+  updating a working checkout cannot alter or stop an active run.
 - `pwa-mbp:4` means 4 Forge worker slots on `pwa-mbp`.
 - `--concurrency` and `--threads` affect SPRT/engine work inside each shard.
 - Candidate and reference engines default to `--hash 128` MiB per process.

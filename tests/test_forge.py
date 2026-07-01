@@ -3110,6 +3110,26 @@ console.log(runs.sort(compareRunsByCreated).map(run => run.run).join('\\n'));
         self.assertIn("--reference-uci Hash=64", command)
         self.assertNotIn("--hash", command)
 
+    def test_sprt_template_uses_commit_scoped_tool_paths(self) -> None:
+        template_path = ROOT / "templates" / "sprt.template.json"
+        template = forge.load_template(template_path)
+        repos = {item["name"]: item for item in template["requirements"]["repos"]}
+
+        for repo in repos.values():
+            self.assertIn(repo["commit"], repo["path"])
+
+        params = forge.parse_template_parameters(
+            "sprt",
+            template,
+            ["--candidate", "~/assets/engines/enyo_9696dac", "--games", "2", "--shards", "1"],
+        )
+        manifest = forge.expand_template("sprt", template_path, template, params)
+        command = manifest["tasks"][0]["command"]
+
+        self.assertIn(repos["sprt"]["path"] + "/sprt", command)
+        self.assertIn(repos["fastchess"]["path"] + "/fastchess", command)
+        self.assertNotIn("~/.local/bin", command)
+
     def test_sprt_template_rejects_empty_uci_option_values(self) -> None:
         template_path = ROOT / "templates" / "sprt.template.json"
         template = forge.load_template(template_path)

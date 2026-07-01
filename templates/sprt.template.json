@@ -82,22 +82,18 @@
       {
         "name": "sprt",
         "url": "git@github.com:ilAYAli/sprt.git",
-        "path": "~/code/cpp/chess/sprt",
+        "path": "~/.cache/forge/tools/sprt/a42658d7ff09c8334777fccd61e0928cf3108b57",
         "remote": "origin",
-        "commit": "49dbc0f69c15423def645150e5449588beef6f60",
+        "commit": "a42658d7ff09c8334777fccd61e0928cf3108b57",
         "allow_untracked": true,
-        "install": [
-          "mkdir -p ~/.local/bin",
-          "ln -sf \"$PWD/sprt\" ~/.local/bin/sprt"
-        ],
         "probe": [
-          "~/.local/bin/sprt --help | grep -- '--no-ntfy'"
+          "./sprt --help | grep -- '--no-ntfy'"
         ]
       },
       {
         "name": "fastchess",
         "url": "https://github.com/Disservin/fastchess.git",
-        "path": "~/source/fastchess",
+        "path": "~/.cache/forge/tools/fastchess/3de44228aec904e688a4ad71c554eb9d461a5a2a",
         "remote": "origin",
         "commit": "3de44228aec904e688a4ad71c554eb9d461a5a2a",
         "allow_untracked": true,
@@ -107,26 +103,22 @@
         "build": [
           "make -j build=release"
         ],
-        "install": [
-          "mkdir -p ~/.local/bin",
-          "ln -sf \"$PWD/fastchess\" ~/.local/bin/fastchess"
-        ],
         "probe": [
-          "~/.local/bin/fastchess -version | grep fastchess"
+          "./fastchess -version | grep fastchess"
         ]
       }
     ],
     "commands": [
       {
         "name": "sprt",
-        "path": "~/.local/bin/sprt",
-        "command": "~/.local/bin/sprt --help",
+        "path": "~/.cache/forge/tools/sprt/a42658d7ff09c8334777fccd61e0928cf3108b57/sprt",
+        "command": "~/.cache/forge/tools/sprt/a42658d7ff09c8334777fccd61e0928cf3108b57/sprt --help",
         "contains": "--no-ntfy",
         "timeout_s": 20
       },
       {
         "name": "fastchess",
-        "path": "~/.local/bin/fastchess",
+        "path": "~/.cache/forge/tools/fastchess/3de44228aec904e688a4ad71c554eb9d461a5a2a/fastchess",
         "timeout_s": 20
       },
       {
@@ -159,7 +151,7 @@
     },
     "label": "sprt:{shard}",
     "output": "{output_dir}/{task_name}/logs/{task_name}.log",
-    "command": "~/.local/bin/sprt --candidate-uci Hash={hash} --reference-uci Hash={hash} {sprt_args} --games {shard} --fastchess ~/.local/bin/fastchess --log-dir {output_dir}/{task_name}/logs --name {task_name} --no-ntfy --no-eta",
+    "command": "~/.cache/forge/tools/sprt/a42658d7ff09c8334777fccd61e0928cf3108b57/sprt --candidate-uci Hash={hash} --reference-uci Hash={hash} {sprt_args} --games {shard} --fastchess ~/.cache/forge/tools/fastchess/3de44228aec904e688a4ad71c554eb9d461a5a2a/fastchess --log-dir {output_dir}/{task_name}/logs --name {task_name} --no-ntfy --no-eta",
     "progress": {
       "unit": "games",
       "log_regex": "\\[\\s*(?P<done>\\d+)\\/(?P<total>\\d+)\\].*?Elo\\s+(?P<elo>[-+]?(?:\\d+(?:\\.\\d+)?|inf|nan))\\s+\\+/-\\s+(?P<ci>[-+]?(?:\\d+(?:\\.\\d+)?|inf|nan))\\s+\\|\\s+LLR\\s+(?P<llr>[+-]?\\d+(?:\\.\\d+)?/[+-]?(?:\\d+(?:\\.\\d+)?|inf|nan)\\s+\\(\\s*[+-]?\\d+(?:\\.\\d+)?%\\))\\s+\\|\\s+LOS\\s+(?P<los>[-+]?(?:\\d+(?:\\.\\d+)?|inf|nan))%\\s+\\|\\s+draw\\s+(?P<draw>[-+]?(?:\\d+(?:\\.\\d+)?|inf|nan))%(?:.*?ETA\\s+(?P<eta>\\S+))?",
