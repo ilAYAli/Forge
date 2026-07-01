@@ -49,8 +49,15 @@ size and SHA-256 are skipped. Extra destination files are not deleted.
 Run the same shell command once on each selected host:
 
 ```sh
-forge "pwd"
-forge sh "cd ~/code/cpp/chess/enyo; git switch main; git pull; cmake --build build && ./scripts/deploy.sh --candidate"
+forge hostname
+```
+or multiple commands at once:
+```
+forge '
+    cd ~/path/to/forge
+    git pull
+    cmake --build build
+'
 ```
 
 `sh` waits, prints grouped output per host, and does not create run history.
