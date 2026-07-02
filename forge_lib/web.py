@@ -221,10 +221,13 @@ _HTML = r"""<!DOCTYPE html>
     @media (max-width: 640px) {
       #runs { padding: 8px 6px; }
       .run-hdr { padding: 8px 9px; }
-      .mobile-score { display: block; margin: 6px 0 2px 18px; color: var(--text);
-                      font-size: 13px; line-height: 1.4;
+      .mobile-score { display: grid; grid-template-columns: repeat(5, max-content);
+                      column-gap: 9px; row-gap: 1px; margin: 6px 0 2px 18px;
+                      color: var(--text); font-size: 12px; line-height: 1.25;
                       font-variant-numeric: tabular-nums; }
-      .mobile-score-metric { white-space: nowrap; }
+      .mobile-score-label { color: var(--dim); font-size: 9px; font-weight: 700;
+                            letter-spacing: .04em; text-transform: uppercase; }
+      .mobile-score-value { font-weight: 600; white-space: nowrap; }
       .mobile-score + .run-summary { display: none; }
       .run-summary .field-elo, .run-summary .field-ci, .run-summary .field-llr,
       .run-summary .field-games, .run-summary .field-workers,
@@ -359,12 +362,21 @@ _HTML = r"""<!DOCTYPE html>
       const llrCurrent = llr.split('/', 1)[0].trim();
       const los = value('los');
       const games = value('games');
-      const metrics = [];
-      if (elo) metrics.push(`Elo=<span class="${eloClass(elo).trim()}">${esc(elo)}${ci ? `±${esc(ci)}` : ''}</span>`);
-      if (llrCurrent) metrics.push(`LLR=<span class="${eloClass(llrCurrent).trim()}">${esc(llrCurrent)}</span>`);
-      if (los) metrics.push(`LOS=${esc(los)}`);
-      if (games) metrics.push(`Games=${esc(games)}`);
-      return `<div class="mobile-score">${metrics.map(metric => `<span class="mobile-score-metric">${metric}</span>`).join(', ')}</div>`;
+      const eloValue = elo.replace(/^\+/, '');
+      const ciValue = ci ? `±${ci}` : '';
+      const losValue = los.replace(/%$/, '');
+      return `<div class="mobile-score">`
+        + `<span class="mobile-score-label">Elo</span>`
+        + `<span class="mobile-score-label">CI</span>`
+        + `<span class="mobile-score-label">LLR</span>`
+        + `<span class="mobile-score-label">LOS</span>`
+        + `<span class="mobile-score-label">#</span>`
+        + `<span class="mobile-score-value ${eloClass(elo).trim()}">${esc(eloValue || '—')}</span>`
+        + `<span class="mobile-score-value">${esc(ciValue || '—')}</span>`
+        + `<span class="mobile-score-value ${eloClass(llrCurrent).trim()}">${esc(llrCurrent || '—')}</span>`
+        + `<span class="mobile-score-value">${esc(losValue || '—')}</span>`
+        + `<span class="mobile-score-value games-current">${esc(games || '—')}</span>`
+        + `</div>`;
     }
 
     function mobileLayout() {
