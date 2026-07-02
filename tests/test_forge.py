@@ -601,8 +601,9 @@ except SystemExit as exc:
         self.assertIn("function graphDomain", web._HTML)
         self.assertIn("function graphDisplayPoints", web._HTML)
         self.assertIn("const w = 3 - Math.abs(j - i)", web._HTML)
-        self.assertIn("const GRAPH_LEAD_IN = 24", web._HTML)
-        self.assertIn("displayed[0].x + GRAPH_LEAD_IN * unitsPerPixel", web._HTML)
+        self.assertIn("const GRAPH_LEAD_IN = 40", web._HTML)
+        self.assertIn("const leadX = originX + GRAPH_LEAD_IN * unitsPerPixel", web._HTML)
+        self.assertIn("originX + (leadX - originX) * 3", web._HTML)
         self.assertIn("function graphNumberOption", web._HTML)
         self.assertIn("function graphScaleMode", web._HTML)
         self.assertIn("function graphXTotal", web._HTML)
@@ -790,30 +791,33 @@ except SystemExit as exc:
             + """
 const raw = [
   {x: 0, y: 0},
-  {x: 2, y: 120},
-  {x: 40, y: 110},
-  {x: 100, y: 90},
+  {x: 2, y: 0},
+  {x: 10, y: 35},
+  {x: 14, y: 50},
+  {x: 22, y: 48},
+  {x: 40, y: 35},
+  {x: 80, y: 10},
+  {x: 120, y: 5},
+  {x: 160, y: 0},
+  {x: 200, y: -5},
 ];
-const elo = graphDisplayPoints({name: 'elo', smooth: false}, raw, 704);
+const elo = graphDisplayPoints({name: 'elo', smooth: true}, raw, 704);
 const loss = graphDisplayPoints({name: 'loss', smooth: false}, raw, 704);
-const crowded = graphDisplayPoints(
-  {name: 'elo', smooth: false},
-  [{x: 0, y: 0}, {x: 2, y: 120}, {x: 20, y: 110}, {x: 38, y: 90}],
-  1000,
-);
 const band = graphConfidenceBandPoints(
   {name: 'elo'},
   elo,
-  [{x: 2, y: 40}, {x: 40, y: 10}, {x: 100, y: 8}],
+  [{x: 10, y: 40}, {x: 40, y: 10}, {x: 200, y: 8}],
   null,
   raw,
 );
 console.log(JSON.stringify({
   raw: raw.map(point => point.x),
-  elo: elo.map(point => point.x),
+  elo: elo.map(point => Number(point.x.toFixed(3))),
+  leadZero: elo[1],
   loss: loss.map(point => point.x),
-  crowdedLeadIn: crowded[1].x > 18 && crowded[1].x < crowded[2].x,
-  secondBand: band[1],
+  ordered: elo.every((point, index) => index === 0 || point.x > elo[index - 1].x),
+  firstBandX: band[2].x,
+  firstBandRadius: Number(((band[2].hi - band[2].lo) / 2).toFixed(1)),
 }));
 """
         )
@@ -828,11 +832,13 @@ console.log(JSON.stringify({
         self.assertEqual(0, result.returncode, result.stderr)
         self.assertEqual(
             {
-                "raw": [0, 2, 40, 100],
-                "elo": [0, 24, 40, 100],
-                "loss": [0, 2, 40, 100],
-                "crowdedLeadIn": True,
-                "secondBand": {"x": 24, "lo": 80, "hi": 160},
+                "raw": [0, 2, 10, 14, 22, 40, 80, 120, 160, 200],
+                "elo": [0, 2, 40, 42.909, 48.727, 61.818, 90.909, 120, 160, 200],
+                "leadZero": {"x": 2, "y": 0},
+                "loss": [0, 2, 10, 14, 22, 40, 80, 120, 160, 200],
+                "ordered": True,
+                "firstBandX": 40,
+                "firstBandRadius": 40,
             },
             json.loads(result.stdout),
         )

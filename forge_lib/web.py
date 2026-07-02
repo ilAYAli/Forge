@@ -903,7 +903,7 @@ _HTML = r"""<!DOCTYPE html>
     const GRAPH_COLORS = ['var(--blu)', 'var(--yel)', 'var(--grn)', 'var(--red)', '#b58cff', '#50c9c3'];
     const GRAPH_W = 720;
     const GRAPH_H = 280;
-    const GRAPH_LEAD_IN = 24;
+    const GRAPH_LEAD_IN = 40;
 
     function graphPoints(series) {
       return (series?.points || [])
@@ -993,28 +993,40 @@ _HTML = r"""<!DOCTYPE html>
           return {x: point.x, y: weighted / weight};
         });
       if (
-        signedGraphSeries(graphSeriesName(series))
-        && displayed.length >= 2
-        && displayed[0].x === 0
-        && displayed[0].y === 0
-        && displayed[1].x > displayed[0].x
-      ) {
-        const xs = displayed.map(point => point.x);
-        const total = Number(xTotal);
-        const minX = Number.isFinite(total) && total > 0 ? 0 : Math.min(...xs);
-        const maxX = Number.isFinite(total) && total > 0
-          ? Math.max(total, ...xs)
-          : Math.max(...xs);
-        const unitsPerPixel = (maxX - minX) / Math.max(1, GRAPH_W - 16);
-        const second = displayed[1];
-        const nextLimit = displayed.length >= 3
-          ? displayed[2].x - unitsPerPixel
-          : maxX;
-        const shiftedX = Math.min(displayed[0].x + GRAPH_LEAD_IN * unitsPerPixel, nextLimit);
-        if (shiftedX > second.x) {
-          // The zero sample is synthetic; spread only its visual lead-in.
-          displayed[1] = {...second, x: shiftedX};
-        }
+        !signedGraphSeries(graphSeriesName(series))
+        || displayed.length < 2
+        || displayed[0].x !== 0
+        || displayed[0].y !== 0
+      ) return displayed;
+
+      let leadIndex = 1;
+      while (leadIndex < points.length && points[leadIndex].y === points[0].y) {
+        displayed[leadIndex] = {...displayed[leadIndex], y: points[leadIndex].y};
+        leadIndex++;
+      }
+      if (leadIndex >= displayed.length) return displayed;
+
+      const xs = displayed.map(point => point.x);
+      const total = Number(xTotal);
+      const minX = Number.isFinite(total) && total > 0 ? 0 : Math.min(...xs);
+      const maxX = Number.isFinite(total) && total > 0
+        ? Math.max(total, ...xs)
+        : Math.max(...xs);
+      const unitsPerPixel = (maxX - minX) / Math.max(1, GRAPH_W - 16);
+      const originX = displayed[0].x;
+      const leadX = originX + GRAPH_LEAD_IN * unitsPerPixel;
+      const rawLeadX = displayed[leadIndex].x;
+      if (leadX <= rawLeadX) return displayed;
+
+      // Compress the early prefix as one unit so the lead-in is diagonal
+      // without reversing or stacking the following samples.
+      const anchorX = Math.min(maxX, originX + (leadX - originX) * 3);
+      for (let i = leadIndex; i < displayed.length && displayed[i].x < anchorX; i++) {
+        const fraction = (displayed[i].x - rawLeadX) / (anchorX - rawLeadX);
+        displayed[i] = {
+          ...displayed[i],
+          x: leadX + Math.max(0, Math.min(1, fraction)) * (anchorX - leadX),
+        };
       }
       return displayed;
     }
