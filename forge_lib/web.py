@@ -1052,7 +1052,7 @@ _HTML = r"""<!DOCTYPE html>
       return interpolatedGraphY(sorted, x);
     }
 
-    function graphConfidenceBandPoints(points, ciPoints) {
+    function graphConfidenceBandPoints(name, points, ciPoints, maxBandRadius = null) {
       if (!ciPoints || !ciPoints.length) return [];
       const sortedCi = ciPoints
         .map(p => ({x: Number(p.x), y: Number(p.y)}))
@@ -1065,7 +1065,11 @@ _HTML = r"""<!DOCTYPE html>
         if (exact === undefined && p.x === firstX) return null;
         const ci = Number(exact === undefined ? interpolatedGraphY(sortedCi, p.x) : exact);
         if (!Number.isFinite(ci) || ci <= 0) return null;
-        return {x: p.x, lo: p.y - ci, hi: p.y + ci};
+        const bandScale = graphNumberOption(name, ['band_scale']) ?? 1.0;
+        const radius = Number.isFinite(maxBandRadius) && maxBandRadius > 0
+          ? Math.min(ci * bandScale, maxBandRadius)
+          : ci * bandScale;
+        return {x: p.x, lo: p.y - radius, hi: p.y + radius};
       }).filter(Boolean);
       if (band.length && points.length && band[0].x > points[0].x) {
         band.unshift({x: points[0].x, lo: points[0].y, hi: points[0].y});
@@ -1443,8 +1447,11 @@ _HTML = r"""<!DOCTYPE html>
       const h = GRAPH_H;
       const rawPoints = s.rawPoints || s.points;
       const yExtras = graphYExtras(s.name, options, s.points);
-      const band = bandSeries ? graphConfidenceBandPoints(s.points, bandSeries.points || []) : [];
-      const scaleExtras = yExtras;
+      const [minY, maxY] = graphYDomain(s.name, s.points.map(p => p.y), yExtras);
+      const bandMaxFraction = graphNumberOption(s, ['band_max_fraction']) ?? 0.30;
+      const maxBandRadius = bandSeries ? (maxY - minY) * bandMaxFraction : null;
+      const band = bandSeries ? graphConfidenceBandPoints(s, s.points, bandSeries.points || [], maxBandRadius) : [];
+      const scaleExtras = yExtras.concat(band.flatMap(point => [point.lo, point.hi]));
       const path = sparkPath(s.name, s.points, scaleExtras, GRAPH_W, h, xTotal);
       const markers = graphPointMarkers(s.name, s.color, s.points, scaleExtras, GRAPH_W, h, xTotal);
       const bandPath = confidenceBandPath(s.name, s.points, band, scaleExtras, GRAPH_W, h, xTotal);
@@ -1553,6 +1560,8 @@ _HTML = r"""<!DOCTYPE html>
             name: s.name || '',
             color: graphColor(s.name, i),
             band_series: String(s.band_series || '').trim(),
+            band_max_fraction: graphNumberOption(s, ['band_max_fraction']),
+            band_scale: graphNumberOption(s, ['band_scale']),
             max: graphNumberOption(s, ['max', 'y_max']),
             min: graphNumberOption(s, ['min', 'y_min']),
             scale: String(s.scale || '').trim(),
@@ -2305,7 +2314,7 @@ def _progress_graph_needs_refresh(payload: dict[str, Any]) -> bool:
     elo = series.get("elo")
     ci = series.get("ci")
     if isinstance(elo, dict) and isinstance(ci, dict):
-        for key in ("band_series", "scale"):
+        for key in ("band_series", "band_scale", "band_max_fraction", "scale"):
             if key not in elo:
                 return True
     llr = series.get("llr")
