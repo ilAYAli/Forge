@@ -1053,24 +1053,29 @@ _HTML = r"""<!DOCTYPE html>
     }
 
     function graphConfidenceBandPoints(points, ciPoints) {
-      if (!ciPoints || !ciPoints.length) return [];
+      if (!points || !points.length || !ciPoints || !ciPoints.length) return [];
+      const sortedPoints = points
+        .map(p => ({x: Number(p.x), y: Number(p.y)}))
+        .filter(p => Number.isFinite(p.x) && Number.isFinite(p.y))
+        .sort((a, b) => a.x - b.x);
       const sortedCi = ciPoints
         .map(p => ({x: Number(p.x), y: Number(p.y)}))
         .filter(p => Number.isFinite(p.x) && Number.isFinite(p.y))
         .sort((a, b) => a.x - b.x);
-      const ciByX = new Map(sortedCi.map(p => [String(p.x), p.y]));
-      const firstX = points[0]?.x;
-      const band = points.map(p => {
-        const exact = ciByX.get(String(p.x));
-        if (exact === undefined && p.x === firstX) return null;
-        const ci = Number(exact === undefined ? interpolatedGraphY(sortedCi, p.x) : exact);
+      if (!sortedPoints.length || !sortedCi.length) return [];
+      const minX = Math.max(sortedPoints[0].x, sortedCi[0].x);
+      const maxX = Math.min(sortedPoints[sortedPoints.length - 1].x, sortedCi[sortedCi.length - 1].x);
+      if (minX > maxX) return [];
+      const xs = [...new Set(sortedPoints.concat(sortedCi).map(p => p.x))]
+        .filter(x => x >= minX && x <= maxX)
+        .sort((a, b) => a - b);
+      return xs.map(x => {
+        const y = Number(interpolatedGraphY(sortedPoints, x));
+        const ci = Number(interpolatedGraphY(sortedCi, x));
+        if (!Number.isFinite(y)) return null;
         if (!Number.isFinite(ci) || ci <= 0) return null;
-        return {x: p.x, lo: p.y - ci, hi: p.y + ci};
+        return {x, lo: y - ci, hi: y + ci};
       }).filter(Boolean);
-      if (band.length && points.length && band[0].x > points[0].x) {
-        band.unshift({x: points[0].x, lo: points[0].y, hi: points[0].y});
-      }
-      return band;
     }
 
     function graphXTotal(graph) {
