@@ -22,42 +22,44 @@ ln -s ~/code/cpp/chess/forge/forge.py ~/.local/bin/forge
 example config:
 ~/.config/forge/config.yml
 ```
-coordinator_host: "pwa-5090"
+coordinator_host: "worker1"
 notify_command: "/home/petter/code/cpp/chess/forge/scripts/forge_event_ntfy.sh"
 template_dirs:
   - "~/.config/forge/templates"
 ```
 
 default workers:
+The name of the respective workers should likely be a hostname rather than worker1..workerN
+
 ~/.config/forge/workers.json
 ```
 {
   "schema": "forge.workers.v1",
   "workers": [
     {
-      "host": "pwa-5090",
-      "profile": "pwa-5090",
+      "host": "worker1",
+      "profile": "worker1",
       "slots": 11
     },
     {
-      "host": "pwa-mbp",
-      "profile": "pwa-mbp",
+      "host": "worker2",
+      "profile": "worker2",
       "python": "/opt/homebrew/bin/python3",
       "slots": 5
     },
     {
-      "host": "pwa-mbp0",
-      "profile": "pwa-mbp0",
+      "host": "worker3",
+      "profile": "worker3",
       "python": "/opt/homebrew/bin/python3",
       "slots": 5
     },
     {
-      "host": "pwa-rce",
+      "host": "worker4",
       "profile": "linux",
       "slots": 4
     },
     {
-      "host": "pwa-wsl",
+      "host": "worker5",
       "profile": "linux",
       "slots": 8
     }
@@ -96,7 +98,7 @@ size and SHA-256 are skipped. Extra destination files are not deleted.
 Run a shell command once selected workers:
 
 ```sh
-forge hostname --workers pwa-5090,pwa-mbp0,pwa-mbp
+forge hostname --workers worker1,worker3,worker2
 ```
 or multiple commands at once using the configured workers:
 ```
@@ -115,7 +117,7 @@ command, so `forge "sprt foo bar"` runs that shell command while
 `forge sprt ...` selects the `sprt` template.
 
 ```sh
-forge sh --workers pwa-5090,pwa-mbp0,pwa-mbp "hostname; git --version"
+forge sh --workers worker1,worker3,worker2 "hostname; git --version"
 ```
 
 ## Start Work
@@ -146,9 +148,9 @@ forge sprt --candidate ~/assets/engines/enyo_9696dac --games 1000
 forge sprt --candidate ~/assets/engines/enyo_9696dac --games 1000 \
   --comment "quick smoke"
 forge sprt --candidate ~/assets/engines/enyo_9696dac --games 1000 \
-  --workers pwa-5090:8,pwa-mbp0:5,pwa-mbp:4
+  --workers worker1:8,worker3:5,worker2:4
 forge sprt --candidate ~/assets/engines/enyo_9696dac --games 1000 \
-  --workers pwa-5090:8,pwa-mbp0:5,pwa-mbp:4 --shards 136
+  --workers worker1:8,worker3:5,worker2:4 --shards 136
 forge sprt --candidate ~/assets/engines/enyo_9696dac --games 1000 \
   --candidate-uci nnue_file=~/code/cpp/chess/enyo/net/candidate.nn \
   --reference-uci nnue_file=~/code/cpp/chess/enyo/net/reference.nn
@@ -167,7 +169,7 @@ Notes:
   worker does not already have a compatible executable.
 - Pinned SPRT and fastchess revisions use commit-specific cache directories, so
   updating a working checkout cannot alter or stop an active run.
-- `pwa-mbp:4` means 4 Forge worker slots on `pwa-mbp`.
+- `worker2:4` means 4 Forge worker slots on `worker2`.
 - `--concurrency` and `--threads` affect SPRT/engine work inside each shard.
 - Candidate and reference engines default to `--hash 128` MiB per process.
   Override it with `--hash MIB` or an engine-specific `--candidate-uci Hash=MIB`
@@ -179,13 +181,13 @@ Notes:
 
 `label` streams LC0 V6 gzip records directly through Stockfish into a
 merged BulletFormat dataset. The default run uses 152 shards across
-`pwa-5090:20,pwa-mbp:8,pwa-mbp0:10`.
+`worker1:20,worker2:8,worker3:10`.
 
 ```sh
 forge label \
   --source ~/code/cpp/chess/nnue/data/lc0/test91/training-run2-test91-20260128-1817 \
   --output ~/code/cpp/chess/nnue/data/labeled/test91-depth12.bullet \
-  --workers pwa-5090:20,pwa-mbp:8,pwa-mbp0:10,pwa-rce:8,pwa-wsl:8 \
+  --workers worker1:20,worker2:8,worker3:10,worker4:8,worker5:8 \
   --run test91-depth12 \
   --comment "9M raw LC0 records, quiet positions from ply 16"
 ```
@@ -193,12 +195,12 @@ forge label \
 Add or restore worker slots on an incomplete run without relaunching it:
 
 ```sh
-forge worker set pwa-wsl:8 test91-depth12 --remote-timeout-seconds 1800
+forge worker set worker5:8 test91-depth12 --remote-timeout-seconds 1800
 ```
 
 The first setup on a host may appear idle while its corpus cache is transferred
 and verified. Add `--verbose` to show setup progress. Existing workers and
-completed shards remain untouched. The `pwa-wsl` profile stores this many-file
+completed shards remain untouched. The `worker5` profile stores this many-file
 cache on native WSL ext4 under `/home/petter/.cache/forge`; putting it under
 `/mnt/c` or `/mnt/d` makes verification prohibitively slow.
 
@@ -214,8 +216,8 @@ Default workers are stored in `~/.config/forge/workers.json`:
 {
   "schema": "forge.workers.v1",
   "workers": [
-    {"host": "pwa-5090", "profile": "linux", "slots": 8},
-    {"host": "pwa-mbp", "profile": "mac", "python": "/opt/homebrew/bin/python3", "slots": 4}
+    {"host": "worker1", "profile": "linux", "slots": 8},
+    {"host": "worker2", "profile": "mac", "python": "/opt/homebrew/bin/python3", "slots": 4}
   ]
 }
 ```
@@ -223,7 +225,7 @@ Default workers are stored in `~/.config/forge/workers.json`:
 Other defaults remain in `~/.config/forge/config.yml`:
 
 ```yaml
-coordinator_host: "pwa-5090"
+coordinator_host: "worker1"
 notify_command: "/path/to/notify-script"
 template_dirs:
   - "~/.config/forge/templates"
