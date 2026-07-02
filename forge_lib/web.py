@@ -1053,28 +1053,31 @@ _HTML = r"""<!DOCTYPE html>
     }
 
     function graphConfidenceBandPoints(name, points, ciPoints, maxBandRadius = null) {
-      if (!ciPoints || !ciPoints.length) return [];
+      if (!points || !points.length || !ciPoints || !ciPoints.length) return [];
       const sortedCi = ciPoints
         .map(p => ({x: Number(p.x), y: Number(p.y)}))
         .filter(p => Number.isFinite(p.x) && Number.isFinite(p.y))
         .sort((a, b) => a.x - b.x);
+      if (!sortedCi.length) return [];
       const ciByX = new Map(sortedCi.map(p => [String(p.x), p.y]));
-      const firstX = points[0]?.x;
-      const band = points.map(p => {
-        const exact = ciByX.get(String(p.x));
-        if (exact === undefined && p.x === firstX) return null;
-        const ci = Number(exact === undefined ? interpolatedGraphY(sortedCi, p.x) : exact);
-        if (!Number.isFinite(ci) || ci <= 0) return null;
-        const bandScale = graphNumberOption(name, ['band_scale']) ?? 1.0;
-        const radius = Number.isFinite(maxBandRadius) && maxBandRadius > 0
-          ? Math.min(ci * bandScale, maxBandRadius)
-          : ci * bandScale;
+      const bandScale = graphNumberOption(name, ['band_scale']) ?? 1.0;
+      let radius = 0;
+      let hasWidth = false;
+      const band = points.map((p, index) => {
+        if (index > 0 && p.x >= sortedCi[0].x) {
+          const exact = ciByX.get(String(p.x));
+          const ci = Number(exact === undefined ? interpolatedGraphY(sortedCi, p.x) : exact);
+          if (Number.isFinite(ci) && ci > 0) {
+            const scaled = ci * bandScale;
+            radius = Number.isFinite(maxBandRadius) && maxBandRadius > 0
+              ? Math.min(scaled, maxBandRadius)
+              : scaled;
+            hasWidth = radius > 0;
+          }
+        }
         return {x: p.x, lo: p.y - radius, hi: p.y + radius};
-      }).filter(Boolean);
-      if (band.length && points.length && band[0].x > points[0].x) {
-        band.unshift({x: points[0].x, lo: points[0].y, hi: points[0].y});
-      }
-      return band;
+      });
+      return hasWidth ? band : [];
     }
 
     function graphXTotal(graph) {
@@ -1234,9 +1237,18 @@ _HTML = r"""<!DOCTYPE html>
       if (!band || band.length < 2) return '';
       const scale = graphScale(name, points, extras, w, h, xTotal);
       const clampY = y => Math.max(0, Math.min(h, y));
-      const upper = band.map(p => ({x: scale.x(p.x), y: clampY(scale.y(p.hi))}));
-      const lower = band.slice().reverse().map(p => ({x: scale.x(p.x), y: clampY(scale.y(p.lo))}));
-      return `${scaledLinePath(upper)} ${scaledLinePath(lower, false)} Z`;
+      const scaled = band.map(p => ({
+        x: scale.x(p.x),
+        upper: clampY(scale.y(p.hi)),
+        lower: clampY(scale.y(p.lo)),
+      }));
+      return scaled.slice(1).map((current, index) => {
+        const previous = scaled[index];
+        return `M${previous.x.toFixed(1)},${previous.upper.toFixed(1)}`
+          + ` L${current.x.toFixed(1)},${current.upper.toFixed(1)}`
+          + ` L${current.x.toFixed(1)},${current.lower.toFixed(1)}`
+          + ` L${previous.x.toFixed(1)},${previous.lower.toFixed(1)} Z`;
+      }).join(' ');
     }
 
     function setGraphReadoutText(el, text) {

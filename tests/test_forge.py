@@ -617,8 +617,10 @@ except SystemExit as exc:
         self.assertIn("function confidenceBandPath", web._HTML)
         self.assertIn("function graphAxisHtml", web._HTML)
         self.assertNotIn("function toggleGraphLlr", web._HTML)
-        self.assertIn("band.unshift({x: points[0].x, lo: points[0].y, hi: points[0].y})", web._HTML)
-        self.assertIn("ci <= 0) return null", web._HTML)
+        self.assertIn("let radius = 0", web._HTML)
+        self.assertIn("return hasWidth ? band : []", web._HTML)
+        self.assertIn("return scaled.slice(1).map((current, index)", web._HTML)
+        self.assertIn("const previous = scaled[index]", web._HTML)
         self.assertNotIn("maxCi", web._HTML)
         self.assertNotIn("graphBandYValues", web._HTML)
         self.assertIn("const clampY = y => Math.max(0, Math.min(h, y))", web._HTML)
@@ -811,27 +813,29 @@ function graphValueAt(points, x) {
   return interpolatedGraphY(sorted, x);
 }
 function graphConfidenceBandPoints(name, points, ciPoints, maxBandRadius = null) {
-  if (graphSeriesName(name) !== 'elo' || !ciPoints || !ciPoints.length) return [];
+  if (graphSeriesName(name) !== 'elo' || !points || !points.length || !ciPoints || !ciPoints.length) return [];
   const sortedCi = ciPoints
     .map(p => ({x: Number(p.x), y: Number(p.y)}))
     .filter(p => Number.isFinite(p.x) && Number.isFinite(p.y))
     .sort((a, b) => a.x - b.x);
+  if (!sortedCi.length) return [];
   const ciByX = new Map(sortedCi.map(p => [String(p.x), p.y]));
-  const firstX = points[0]?.x;
-  const band = points.map(p => {
-    const exact = ciByX.get(String(p.x));
-    if (exact === undefined && p.x === firstX) return null;
-    const ci = Number(exact === undefined ? interpolatedGraphY(sortedCi, p.x) : exact);
-    if (!Number.isFinite(ci) || ci <= 0) return null;
-    const radius = Number.isFinite(maxBandRadius) && maxBandRadius > 0
-      ? Math.min(ci, maxBandRadius)
-      : ci;
+  let radius = 0;
+  let hasWidth = false;
+  const band = points.map((p, index) => {
+    if (index > 0 && p.x >= sortedCi[0].x) {
+      const exact = ciByX.get(String(p.x));
+      const ci = Number(exact === undefined ? interpolatedGraphY(sortedCi, p.x) : exact);
+      if (Number.isFinite(ci) && ci > 0) {
+        radius = Number.isFinite(maxBandRadius) && maxBandRadius > 0
+          ? Math.min(ci, maxBandRadius)
+          : ci;
+        hasWidth = radius > 0;
+      }
+    }
     return {x: p.x, lo: p.y - radius, hi: p.y + radius};
-  }).filter(Boolean);
-  if (band.length && points.length && band[0].x > points[0].x) {
-    band.unshift({x: points[0].x, lo: points[0].y, hi: points[0].y});
-  }
-  return band;
+  });
+  return hasWidth ? band : [];
 }
 const points = [
   {x: 0, y: 0},
@@ -873,6 +877,8 @@ console.log(JSON.stringify({band, domain, maxBandRadius, zero, last, delta: zero
         self.assertGreater(payload["maxBandRadius"], 0)
         self.assertEqual([], payload["misses"])
         self.assertEqual([0, 38, 142, 496, 500], [point["x"] for point in payload["band"]])
+        self.assertEqual(payload["band"][1]["lo"], payload["band"][1]["hi"])
+        self.assertAlmostEqual(34.85, payload["band"][1]["lo"])
         self.assertAlmostEqual(27.25, payload["hoverCi"])
 
     def test_web_sorts_named_fallback_in_local_time(self) -> None:
