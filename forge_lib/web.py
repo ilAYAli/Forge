@@ -78,7 +78,7 @@ _HTML = r"""<!DOCTYPE html>
     .arrow.open { transform: rotate(90deg); }
     .run-date { color: var(--dim); font-size: 12px; font-variant-numeric: tabular-nums; flex-shrink: 0; }
     .run-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis;
-                white-space: nowrap; font-weight: 600; cursor: text; }
+                white-space: nowrap; font-weight: 600; cursor: text; text-align: right; }
     .badge { font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 10px; flex-shrink: 0; }
     .badge.current { background: rgba(212,168,34,.15); color: var(--yel); }
     .badge.failed  { background: rgba(217,95,95,.15);  color: var(--red); }
@@ -383,14 +383,6 @@ _HTML = r"""<!DOCTYPE html>
       return Boolean(window.matchMedia && window.matchMedia('(max-width: 640px)').matches);
     }
 
-    function runDatePrefix(r) {
-      const text = String(r?.created_at || '');
-      let m = text.match(/^(\d{4}-\d{2}-\d{2})T(\d{2}):(\d{2})/);
-      if (m) return `${m[1]}-${m[2]}:${m[3]}`;
-      m = String(r?.run || '').match(/(?:^|-)(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(?:\d{2})?(?:$|-)/);
-      return m ? `${m[1]}-${m[2]}-${m[3]}-${m[4]}:${m[5]}` : '';
-    }
-
     function fmtAge(s) {
       if (s < 0) return '';
       if (s < 60) return Math.round(s) + 's';
@@ -436,6 +428,21 @@ _HTML = r"""<!DOCTYPE html>
       const named = runNameEpoch(r);
       if (named !== null) return named;
       return 0;
+    }
+
+    function runDatePrefix(r, mobile = mobileLayout()) {
+      const start = runSortEpoch(r);
+      if (!start) return '';
+      const end = parseTimestampEpoch(r?.completed_at);
+      const stamp = epoch => {
+        const d = new Date(epoch * 1000);
+        const pad = n => String(n).padStart(2, '0');
+        const clock = `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+        return mobile ? clock : `${pad(d.getDate())} ${'Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec'.split(' ')[d.getMonth()]} ${clock}`;
+      };
+      return end !== null && end >= start
+        ? `${stamp(start)} → ${stamp(end)} · ${fmtAge(end - start)}`
+        : stamp(start);
     }
 
     function compareRunsByCreated(a, b) {

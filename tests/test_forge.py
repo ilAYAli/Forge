@@ -985,7 +985,7 @@ console.log(JSON.stringify({band, domain, maxBandRadius, zero, last, delta: zero
     def test_web_sorts_named_fallback_in_local_time(self) -> None:
         import forge_lib.web as web
 
-        start = web._HTML.index("    function parseTimestampEpoch")
+        start = web._HTML.index("    function fmtAge")
         end = web._HTML.index("    let soundEnabled", start)
         probe = web._HTML[start:end] + """
 const runs = [
@@ -993,6 +993,9 @@ const runs = [
   {run: 'sprt-enyo_f908b4b-1000-20260630-152429', created_at: '2026-06-30T15:24:29+0200'},
 ];
 console.log(runs.sort(compareRunsByCreated).map(run => run.run).join('\\n'));
+const done = {state:'done', created_at:'2026-07-02T21:16:00+0200', completed_at:'2026-07-03T00:42:00+0200'};
+console.log(runDatePrefix(done, false));
+console.log(runDatePrefix(done, true));
 """
         result = subprocess.run(
             ["node", "-e", probe],
@@ -1008,6 +1011,8 @@ console.log(runs.sort(compareRunsByCreated).map(run => run.run).join('\\n'));
             [
                 "sprt-enyo_f908b4b-1000-20260630-152429",
                 "native-4.20.0-rc1-sprt-1500-20260630-141436",
+                "02 Jul 21:16 → 03 Jul 00:42 · 3h26m",
+                "21:16 → 00:42 · 3h26m",
             ],
             result.stdout.splitlines(),
         )
@@ -1053,7 +1058,9 @@ console.log(runs.sort(compareRunsByCreated).map(run => run.run).join('\\n'));
         self.assertIn('<div class="run-hdr" onclick="toggleRunHeader(event,', web._HTML)
         self.assertIn("function runDatePrefix", web._HTML)
         self.assertIn(".run-date", web._HTML)
+        self.assertIn("text-align: right", web._HTML)
         self.assertIn("r?.created_at", web._HTML)
+        self.assertIn("r?.completed_at", web._HTML)
         self.assertIn("function runNameEpoch", web._HTML)
         self.assertIn("function runSortEpoch", web._HTML)
         self.assertIn("text.replace(/([+-]\\d{2})(\\d{2})$/, '$1:$2')", web._HTML)
