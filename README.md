@@ -49,17 +49,6 @@ The name of the respective workers should likely be a hostname rather than worke
     },
     {
       "host": "worker3",
-      "profile": "worker3",
-      "python": "/opt/homebrew/bin/python3",
-      "slots": 5
-    },
-    {
-      "host": "worker4",
-      "profile": "linux",
-      "slots": 4
-    },
-    {
-      "host": "worker5",
       "profile": "linux",
       "slots": 8
     }
@@ -74,12 +63,12 @@ forge --help
 forge "cd ~/repo; git pull; cmake --build build"
 forge sync /tmp/foo ~/bar
 forge sync "$PWD/.codex/agents" ~/code/cpp/chess/nnue/
-forge start manifest.json --workers worker-a,worker-b:4
+forge start manifest.json --workers worker1,worker2:4
 forge stop my-run
 forge resume my-run
 forge retry
-forge worker set worker-c:4
-forge del --worker worker-c
+forge worker set worker3:4
+forge del --worker worker3
 forge status
 watch 'forge status --verbose'
 forge update
@@ -123,9 +112,9 @@ forge sh --workers worker1,worker3,worker2 "hostname; git --version"
 ## Start Work
 
 ```sh
-forge start manifest.json --workers worker-a,worker-b:4
+forge start manifest.json --workers worker1,worker2:4
 forge start manifest.json --workers workers.json --run my-run --wait
-forge start manifest.json --workers worker-a,worker-b:4 --run my-run
+forge start manifest.json --workers worker1,worker2:4 --run my-run
 forge start manifest.json --workers workers.json --merge merged.txt
 forge start manifest.json --workers workers.json --replace
 ```
@@ -270,19 +259,19 @@ Use `retry` for failed tasks.
 Set worker slots for an incomplete run:
 
 ```sh
-forge worker set worker-c:4 my-run
+forge worker set worker3:4 my-run
 ```
 
-`worker set worker-c:4` seeds `<run>/workers.json` from the configured defaults
-when absent, then updates or adds only `worker-c`. Missing workers are started;
+`worker set worker3:4` seeds `<run>/workers.json` from the configured defaults
+when absent, then updates or adds only `worker3`. Missing workers are started;
 existing workers keep running.
 
 Drain a worker from a run:
 
 ```sh
-forge del --worker worker-c
-forge del --worker worker-c my-run
-forge worker del worker-c my-run
+forge del --worker worker3
+forge del --worker worker3 my-run
+forge worker del worker3 my-run
 ```
 
 `del --worker` drains the host: no new claims, reserved claims released, running
@@ -294,7 +283,7 @@ tasks left alone. Add `--keep-claims` to keep already reserved claims. Without
 ```sh
 forge retry
 forge retry my-run
-forge retry my-run --workers worker-c,worker-d:4
+forge retry my-run --workers worker3,worker4:4
 forge retry my-run --workers alternate-workers.json
 ```
 
@@ -312,10 +301,10 @@ Inline workers are comma-separated. `:N` sets slots for that invocation. `:0`
 omits a host.
 
 ```sh
-forge start manifest.json --workers worker-a,worker-b
-forge start manifest.json --workers worker-a:8,worker-b:4
-forge start manifest.json --workers worker-a=linux:8,worker-b=mac:4
-forge start manifest.json --workers worker-a:0,worker-b
+forge start manifest.json --workers worker1,worker2
+forge start manifest.json --workers worker1:8,worker2:4
+forge start manifest.json --workers worker1=linux:8,worker2=mac:4
+forge start manifest.json --workers worker1:0,worker2
 ```
 
 Workers files as JSON:
@@ -324,19 +313,19 @@ Workers files as JSON:
 {
   "schema": "forge.workers.v1",
   "workers": [
-    "worker-a",
+    "worker1",
     {
-      "host": "worker-b",
+      "host": "worker2",
       "profile": "linux"
     },
     {
-      "host": "worker-c",
+      "host": "worker3",
       "profile": "mac",
       "python": "/opt/homebrew/bin/python3",
       "slots": 2
     },
     {
-      "host": "worker-d",
+      "host": "worker4",
       "enabled": false
     }
   ]
@@ -453,7 +442,7 @@ It updates workers to the coordinator's exact current Forge commit.
 
 ```sh
 forge update
-forge update worker-a,worker-b:4
+forge update worker1,worker2:4
 forge update workers.json
 forge update --all
 ```
@@ -472,8 +461,8 @@ forge verify my-run
 forge merge my-run --output merged.txt
 forge stop my-run
 forge doctor --manifest runs/my-run/manifest.json
-forge sync-repos --manifest runs/my-run/manifest.json --profile worker-a
-forge work --coordinator host:/path/to/manifest.json --profile worker-a
+forge sync-repos --manifest runs/my-run/manifest.json --profile worker1
+forge work --coordinator host:/path/to/manifest.json --profile worker1
 forge run-task --manifest runs/my-run/manifest.json --index 0
 ```
 
