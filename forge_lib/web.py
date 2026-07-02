@@ -903,6 +903,7 @@ _HTML = r"""<!DOCTYPE html>
     const GRAPH_COLORS = ['var(--blu)', 'var(--yel)', 'var(--grn)', 'var(--red)', '#b58cff', '#50c9c3'];
     const GRAPH_W = 720;
     const GRAPH_H = 280;
+    const GRAPH_LEAD_IN = 24;
 
     function graphPoints(series) {
       return (series?.points || [])
@@ -971,24 +972,51 @@ _HTML = r"""<!DOCTYPE html>
       return GRAPH_COLORS[index % GRAPH_COLORS.length];
     }
 
-    function graphDisplayPoints(series, points) {
+    function graphDisplayPoints(series, points, xTotal = null) {
       const smooth = series && typeof series === 'object' && series.smooth !== undefined
         ? Boolean(series.smooth)
         : graphSeriesName(series) === 'elo';
-      if (!smooth || !points || points.length < 5) return points;
+      if (!points || !points.length) return points;
       const last = points.length - 1;
-      return points.map((point, i) => {
-        if (i === 0 || i === last) return point;
-        let weighted = 0, weight = 0;
-        const start = Math.max(0, i - 2);
-        const end = Math.min(last, i + 2);
-        for (let j = start; j <= end; j++) {
-          const w = 3 - Math.abs(j - i);
-          weighted += points[j].y * w;
-          weight += w;
+      const displayed = !smooth || points.length < 5
+        ? points.map(point => ({...point}))
+        : points.map((point, i) => {
+          if (i === 0 || i === last) return {...point};
+          let weighted = 0, weight = 0;
+          const start = Math.max(0, i - 2);
+          const end = Math.min(last, i + 2);
+          for (let j = start; j <= end; j++) {
+            const w = 3 - Math.abs(j - i);
+            weighted += points[j].y * w;
+            weight += w;
+          }
+          return {x: point.x, y: weighted / weight};
+        });
+      if (
+        signedGraphSeries(graphSeriesName(series))
+        && displayed.length >= 2
+        && displayed[0].x === 0
+        && displayed[0].y === 0
+        && displayed[1].x > displayed[0].x
+      ) {
+        const xs = displayed.map(point => point.x);
+        const total = Number(xTotal);
+        const minX = Number.isFinite(total) && total > 0 ? 0 : Math.min(...xs);
+        const maxX = Number.isFinite(total) && total > 0
+          ? Math.max(total, ...xs)
+          : Math.max(...xs);
+        const unitsPerPixel = (maxX - minX) / Math.max(1, GRAPH_W - 16);
+        const second = displayed[1];
+        const nextLimit = displayed.length >= 3
+          ? displayed[2].x - unitsPerPixel
+          : maxX;
+        const shiftedX = Math.min(displayed[0].x + GRAPH_LEAD_IN * unitsPerPixel, nextLimit);
+        if (shiftedX > second.x) {
+          // The zero sample is synthetic; spread only its visual lead-in.
+          displayed[1] = {...second, x: shiftedX};
         }
-        return {x: point.x, y: weighted / weight};
-      });
+      }
+      return displayed;
     }
 
     function graphYDomain(name, values, extras = []) {
@@ -1052,7 +1080,7 @@ _HTML = r"""<!DOCTYPE html>
       return interpolatedGraphY(sorted, x);
     }
 
-    function graphConfidenceBandPoints(name, points, ciPoints, maxBandRadius = null) {
+    function graphConfidenceBandPoints(name, points, ciPoints, maxBandRadius = null, rawPoints = points) {
       if (!points || !points.length || !ciPoints || !ciPoints.length) return [];
       const sortedCi = ciPoints
         .map(p => ({x: Number(p.x), y: Number(p.y)}))
@@ -1064,9 +1092,11 @@ _HTML = r"""<!DOCTYPE html>
       let radius = 0;
       let hasWidth = false;
       const band = points.map((p, index) => {
-        if (index > 0 && p.x >= sortedCi[0].x) {
-          const exact = ciByX.get(String(p.x));
-          const ci = Number(exact === undefined ? interpolatedGraphY(sortedCi, p.x) : exact);
+        const rawX = Number(rawPoints?.[index]?.x);
+        const sampleX = Number.isFinite(rawX) ? rawX : p.x;
+        if (index > 0 && sampleX >= sortedCi[0].x) {
+          const exact = ciByX.get(String(sampleX));
+          const ci = Number(exact === undefined ? interpolatedGraphY(sortedCi, sampleX) : exact);
           if (Number.isFinite(ci) && ci > 0) {
             const scaled = ci * bandScale;
             radius = Number.isFinite(maxBandRadius) && maxBandRadius > 0
@@ -1297,17 +1327,18 @@ _HTML = r"""<!DOCTYPE html>
       if (!box || box.width <= 0) return;
       const viewX = Math.max(0, Math.min(graphW, ((event.clientX - box.left) / box.width) * graphW));
       const scale = graphScale(name, points, extras, graphW, graphH, xTotal);
-      let best = points[0], bestDist = Infinity;
-      for (const point of points) {
+      let best = points[0], bestIndex = 0, bestDist = Infinity;
+      for (const [index, point] of points.entries()) {
         const distance = Math.abs(scale.x(point.x) - viewX);
         if (distance < bestDist) {
           best = point;
+          bestIndex = index;
           bestDist = distance;
         }
       }
       const x = scale.x(best.x);
       const y = scale.y(best.y);
-      const rawBest = rawPoints.length ? nearestGraphPoint(rawPoints, best.x) : best;
+      const rawBest = rawPoints[bestIndex] || (rawPoints.length ? nearestGraphPoint(rawPoints, best.x) : best);
       const overlay = overlayPoints.length && overlayName ? nearestGraphPoint(overlayPoints, rawBest.x) : null;
       const overlayText = overlay ? ` ${overlayName}=${fmtGraphValue(overlayName, overlay.y)}` : '';
       const ciValue = graphValueAt(graphDataPoints(el, 'data-ci-points'), rawBest.x);
@@ -1347,7 +1378,7 @@ _HTML = r"""<!DOCTYPE html>
       const payload = attrEsc(JSON.stringify(points));
       const rawPayload = attrEsc(JSON.stringify(rawPoints || points));
       const extraPayload = attrEsc(JSON.stringify(extras.map(y => ({x: 0, y}))));
-      const overlayPoints = overlay?.points || [];
+      const overlayPoints = overlay?.rawPoints || overlay?.points || [];
       const overlayPayload = attrEsc(JSON.stringify(overlayPoints));
       const overlayName = overlayPoints.length ? String(overlay.name || '') : '';
       const ciPayload = attrEsc(JSON.stringify(ci?.points || []));
@@ -1462,7 +1493,7 @@ _HTML = r"""<!DOCTYPE html>
       const [minY, maxY] = graphYDomain(s.name, s.points.map(p => p.y), yExtras);
       const bandMaxFraction = graphNumberOption(s, ['band_max_fraction']) ?? 0.30;
       const maxBandRadius = bandSeries ? (maxY - minY) * bandMaxFraction : null;
-      const band = bandSeries ? graphConfidenceBandPoints(s, s.points, bandSeries.points || [], maxBandRadius) : [];
+      const band = bandSeries ? graphConfidenceBandPoints(s, s.points, bandSeries.points || [], maxBandRadius, rawPoints) : [];
       const scaleExtras = yExtras.concat(band.flatMap(point => [point.lo, point.hi]));
       const path = sparkPath(s.name, s.points, scaleExtras, GRAPH_W, h, xTotal);
       const markers = graphPointMarkers(s.name, s.color, s.points, scaleExtras, GRAPH_W, h, xTotal);
@@ -1578,12 +1609,18 @@ _HTML = r"""<!DOCTYPE html>
             min: graphNumberOption(s, ['min', 'y_min']),
             scale: String(s.scale || '').trim(),
             smooth: s.smooth,
-            points: graphDisplayPoints(s, rawPoints),
+            points: rawPoints,
             rawPoints,
           };
         })
         .filter(s => s.points.length >= 2);
       if (!allSeries.length) return '';
+      const configuredTotal = graphXTotal(graph);
+      const earlyStop = graphEarlyStop(run, allSeries, configuredTotal);
+      const xTotal = earlyStop?.observed || configuredTotal;
+      allSeries.forEach(s => {
+        s.points = graphDisplayPoints(s, s.rawPoints, xTotal);
+      });
       const ciSeries = graphSeriesByName(allSeries, 'ci');
       const eloSeries = graphSeriesByName(allSeries, 'elo');
       const llrSeries = graphSeriesByName(allSeries, 'llr');
@@ -1591,9 +1628,6 @@ _HTML = r"""<!DOCTYPE html>
       const labelingSeries = isLabelingGraph ? allSeries : [];
       const primary = eloSeries || allSeries.find(s => graphSeriesName(s.name) !== 'ci') || null;
       if (!primary) return '';
-      const configuredTotal = graphXTotal(graph);
-      const earlyStop = graphEarlyStop(run, allSeries, configuredTotal);
-      const xTotal = earlyStop?.observed || configuredTotal;
       const overlay = llrSeries && llrSeries !== primary ? llrSeries : null;
       const bandName = primary.band_series || (graphSeriesName(primary) === 'elo' ? 'ci' : '');
       const bandSeries = bandName ? graphSeriesByName(allSeries, bandName) : null;

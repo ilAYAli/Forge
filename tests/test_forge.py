@@ -601,6 +601,8 @@ except SystemExit as exc:
         self.assertIn("function graphDomain", web._HTML)
         self.assertIn("function graphDisplayPoints", web._HTML)
         self.assertIn("const w = 3 - Math.abs(j - i)", web._HTML)
+        self.assertIn("const GRAPH_LEAD_IN = 24", web._HTML)
+        self.assertIn("displayed[0].x + GRAPH_LEAD_IN * unitsPerPixel", web._HTML)
         self.assertIn("function graphNumberOption", web._HTML)
         self.assertIn("function graphScaleMode", web._HTML)
         self.assertIn("function graphXTotal", web._HTML)
@@ -638,13 +640,14 @@ except SystemExit as exc:
         self.assertIn("const yExtras = graphYExtras(s.name, options, s.points)", web._HTML)
         self.assertIn("const bandMaxFraction = graphNumberOption(s, ['band_max_fraction']) ?? 0.30", web._HTML)
         self.assertIn("const maxBandRadius = bandSeries ? (maxY - minY) * bandMaxFraction : null", web._HTML)
-        self.assertIn("const band = bandSeries ? graphConfidenceBandPoints(s, s.points, bandSeries.points || [], maxBandRadius) : []", web._HTML)
+        self.assertIn("const band = bandSeries ? graphConfidenceBandPoints(s, s.points, bandSeries.points || [], maxBandRadius, rawPoints) : []", web._HTML)
         self.assertIn("const path = sparkPath(s.name, s.points, scaleExtras, GRAPH_W, h, xTotal)", web._HTML)
         self.assertIn("const zero = zeroLine(s.name, s.points, scaleExtras, GRAPH_W, h)", web._HTML)
         self.assertIn("graphHoverZones(s.name, s.points, scaleExtras", web._HTML)
         self.assertIn("const rawPoints = s.rawPoints || s.points", web._HTML)
         self.assertIn("const rawPoints = graphDataPoints(el, 'data-raw-points')", web._HTML)
-        self.assertIn("const rawBest = rawPoints.length ? nearestGraphPoint(rawPoints, best.x) : best", web._HTML)
+        self.assertIn("const rawBest = rawPoints[bestIndex] || (rawPoints.length ? nearestGraphPoint(rawPoints, best.x) : best)", web._HTML)
+        self.assertIn("const overlayPoints = overlay?.rawPoints || overlay?.points || []", web._HTML)
         self.assertIn("const ciValue = graphValueAt(graphDataPoints(el, 'data-ci-points'), rawBest.x)", web._HTML)
         self.assertIn("` ci=${fmtGraphNumber(ciValue)}`", web._HTML)
         self.assertIn("const minX = useTotal ? 0 : dataMinX", web._HTML)
@@ -761,6 +764,78 @@ except SystemExit as exc:
         self.assertIn("runCmd('${runArg}','del',this)", web._HTML)
         self.assertIn(".act.del", web._HTML)
         self.assertIn("function runStoppedEarly", web._HTML)
+
+    def test_web_spreads_first_sprt_sample_away_from_origin(self) -> None:
+        import forge_lib.web as web
+
+        names_start = web._HTML.index("    function signedGraphSeries")
+        names_end = web._HTML.index("    function graphNumberOption", names_start)
+        option_start = names_end
+        option_end = web._HTML.index("    function graphScaleMode", option_start)
+        constants_start = web._HTML.index("    const GRAPH_W")
+        constants_end = web._HTML.index("    function graphPoints", constants_start)
+        display_start = web._HTML.index("    function graphDisplayPoints")
+        display_end = web._HTML.index("    function graphYDomain", display_start)
+        interpolate_start = web._HTML.index("    function interpolatedGraphY")
+        interpolate_end = web._HTML.index("    function graphValueAt", interpolate_start)
+        band_start = web._HTML.index("    function graphConfidenceBandPoints")
+        band_end = web._HTML.index("    function graphXTotal", band_start)
+        probe = (
+            web._HTML[constants_start:constants_end]
+            + web._HTML[names_start:names_end]
+            + web._HTML[option_start:option_end]
+            + web._HTML[display_start:display_end]
+            + web._HTML[interpolate_start:interpolate_end]
+            + web._HTML[band_start:band_end]
+            + """
+const raw = [
+  {x: 0, y: 0},
+  {x: 2, y: 120},
+  {x: 40, y: 110},
+  {x: 100, y: 90},
+];
+const elo = graphDisplayPoints({name: 'elo', smooth: false}, raw, 704);
+const loss = graphDisplayPoints({name: 'loss', smooth: false}, raw, 704);
+const crowded = graphDisplayPoints(
+  {name: 'elo', smooth: false},
+  [{x: 0, y: 0}, {x: 2, y: 120}, {x: 20, y: 110}, {x: 38, y: 90}],
+  1000,
+);
+const band = graphConfidenceBandPoints(
+  {name: 'elo'},
+  elo,
+  [{x: 2, y: 40}, {x: 40, y: 10}, {x: 100, y: 8}],
+  null,
+  raw,
+);
+console.log(JSON.stringify({
+  raw: raw.map(point => point.x),
+  elo: elo.map(point => point.x),
+  loss: loss.map(point => point.x),
+  crowdedLeadIn: crowded[1].x > 18 && crowded[1].x < crowded[2].x,
+  secondBand: band[1],
+}));
+"""
+        )
+        result = subprocess.run(
+            ["node", "-e", probe],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual(
+            {
+                "raw": [0, 2, 40, 100],
+                "elo": [0, 24, 40, 100],
+                "loss": [0, 2, 40, 100],
+                "crowdedLeadIn": True,
+                "secondBand": {"x": 24, "lo": 80, "hi": 160},
+            },
+            json.loads(result.stdout),
+        )
 
     def test_web_graph_ci_outliers_do_not_flatten_elo_scale(self) -> None:
         import forge_lib.web as web
