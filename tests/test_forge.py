@@ -601,9 +601,9 @@ except SystemExit as exc:
         self.assertIn("function graphDomain", web._HTML)
         self.assertIn("function graphDisplayPoints", web._HTML)
         self.assertIn("const w = 3 - Math.abs(j - i)", web._HTML)
-        self.assertIn("const GRAPH_LEAD_IN = 40", web._HTML)
-        self.assertIn("const leadX = originX + GRAPH_LEAD_IN * unitsPerPixel", web._HTML)
-        self.assertIn("originX + (leadX - originX) * 3", web._HTML)
+        self.assertNotIn("GRAPH_LEAD_IN", web._HTML)
+        self.assertIn("function graphConfidenceAlignedPoints", web._HTML)
+        self.assertIn("eloSeries.rawPoints = graphConfidenceAlignedPoints", web._HTML)
         self.assertIn("function graphNumberOption", web._HTML)
         self.assertIn("function graphScaleMode", web._HTML)
         self.assertIn("function graphXTotal", web._HTML)
@@ -769,7 +769,7 @@ except SystemExit as exc:
         self.assertIn(".act.del", web._HTML)
         self.assertIn("function runStoppedEarly", web._HTML)
 
-    def test_web_spreads_first_sprt_sample_away_from_origin(self) -> None:
+    def test_web_starts_sprt_graph_at_first_valid_ci(self) -> None:
         import forge_lib.web as web
 
         names_start = web._HTML.index("    function signedGraphSeries")
@@ -782,6 +782,8 @@ except SystemExit as exc:
         display_end = web._HTML.index("    function graphYDomain", display_start)
         interpolate_start = web._HTML.index("    function interpolatedGraphY")
         interpolate_end = web._HTML.index("    function graphValueAt", interpolate_start)
+        align_start = web._HTML.index("    function graphConfidenceAlignedPoints")
+        align_end = web._HTML.index("    function graphConfidenceBandPoints", align_start)
         band_start = web._HTML.index("    function graphConfidenceBandPoints")
         band_end = web._HTML.index("    function graphXTotal", band_start)
         probe = (
@@ -790,6 +792,7 @@ except SystemExit as exc:
             + web._HTML[option_start:option_end]
             + web._HTML[display_start:display_end]
             + web._HTML[interpolate_start:interpolate_end]
+            + web._HTML[align_start:align_end]
             + web._HTML[band_start:band_end]
             + """
 const raw = [
@@ -804,30 +807,36 @@ const raw = [
   {x: 160, y: 0},
   {x: 200, y: -5},
 ];
-const elo = graphDisplayPoints({name: 'elo', smooth: true}, raw, 704);
-const loss = graphDisplayPoints({name: 'loss', smooth: false}, raw, 704);
+const ci = [{x: 2, y: 0}, {x: 10, y: 40}, {x: 40, y: 10}, {x: 200, y: 8}];
+const aligned = graphConfidenceAlignedPoints(raw, ci);
+const elo = graphDisplayPoints({name: 'elo', smooth: true}, aligned);
+const loss = graphDisplayPoints({name: 'loss', smooth: false}, raw);
 const band = graphConfidenceBandPoints(
   {name: 'elo'},
   elo,
-  [{x: 10, y: 40}, {x: 40, y: 10}, {x: 200, y: 8}],
+  ci,
   null,
-  raw,
+  aligned,
 );
-const conePoints = [0, 20, 40, 60, 80, 100, 200].map(x => ({x, y: 10}));
+const conePoints = [0, 20, 40, 60, 80, 100, 200].map(x => ({x, y: x === 0 ? 0 : 10}));
 const cone = graphConfidenceBandPoints(
   {name: 'elo'},
+  conePoints,
+  [{x: 20, y: 0}, {x: 40, y: 0}, {x: 100, y: 50}, {x: 200, y: 20}],
+);
+const alignedZeroPrefix = graphConfidenceAlignedPoints(
   conePoints,
   [{x: 20, y: 0}, {x: 40, y: 0}, {x: 100, y: 50}, {x: 200, y: 20}],
 );
 console.log(JSON.stringify({
   raw: raw.map(point => point.x),
   elo: elo.map(point => Number(point.x.toFixed(3))),
-  leadZero: elo[1],
   loss: loss.map(point => point.x),
   ordered: elo.every((point, index) => index === 0 || point.x > elo[index - 1].x),
-  firstBandX: band[2].x,
-  firstBandRadius: Number(((band[2].hi - band[2].lo) / 2).toFixed(1)),
+  firstBandX: band[1].x,
+  firstBandRadius: Number(((band[1].hi - band[1].lo) / 2).toFixed(1)),
   coneRadii: cone.map(point => Number(((point.hi - point.lo) / 2).toFixed(1))),
+  alignedZeroPrefix: alignedZeroPrefix.map(point => point.x),
 }));
 """
         )
@@ -843,13 +852,13 @@ console.log(JSON.stringify({
         self.assertEqual(
             {
                 "raw": [0, 2, 10, 14, 22, 40, 80, 120, 160, 200],
-                "elo": [0, 2, 40, 42.909, 48.727, 61.818, 90.909, 120, 160, 200],
-                "leadZero": {"x": 2, "y": 0},
+                "elo": [0, 10, 14, 22, 40, 80, 120, 160, 200],
                 "loss": [0, 2, 10, 14, 22, 40, 80, 120, 160, 200],
                 "ordered": True,
-                "firstBandX": 40,
+                "firstBandX": 10,
                 "firstBandRadius": 40,
                 "coneRadii": [0, 10, 20, 30, 40, 50, 20],
+                "alignedZeroPrefix": [0, 100, 200],
             },
             json.loads(result.stdout),
         )
@@ -9069,9 +9078,9 @@ console.log(runs.sort(compareRunsByCreated).map(run => run.run).join('\\n'));
                 )
                 self.assertEqual(0, rc)
                 text = stdout.getvalue()
-                self.assertIn("tasks=1/4", text)
-                self.assertNotIn("tasks=1/4 speedup=", text)
-                self.assertIn("active: 3 rows=177k/500k workers=2 output=68k min=worker-b:20k max=worker-a:48k speedup=0.3x", text)
+                self.assertIn("tasks=1/4 speedup=0.3x", text)
+                self.assertIn("active: 3 rows=177k/500k workers=2 output=68k min=worker-b:20k max=worker-a:48k", text)
+                self.assertNotIn("max=worker-a:48k speedup=", text)
                 self.assertNotIn("active workers:", text)
                 self.assertNotIn("tasks=2 output=48k", text)
                 self.assertNotIn("tasks=1 output=20k", text)
@@ -9101,7 +9110,8 @@ console.log(runs.sort(compareRunsByCreated).map(run => run.run).join('\\n'));
                     if "active:" in line and "workers=" in line
                 )
                 self.assertIn("active: \033[33m3\033[0m", color_line)
-                self.assertIn(f"workers=2 output=68k min=worker-b:20k max=worker-a:48k speedup=\033[{forge.STATUS_BLUE_SGR}m0.3x\033[0m", color_line)
+                self.assertIn("workers=2 output=68k min=worker-b:20k max=worker-a:48k", color_line)
+                self.assertIn(f"speedup=\033[{forge.STATUS_BLUE_SGR}m0.3x\033[0m", color_stdout.getvalue())
                 self.assertNotIn("workers=\033[", color_line)
                 self.assertNotIn("output=\033[", color_line)
                 self.assertNotIn("min=\033[", color_line)
@@ -9324,7 +9334,7 @@ console.log(runs.sort(compareRunsByCreated).map(run => run.run).join('\\n'));
             "metadata": {},
         }
         self.assertEqual(
-            "workers=2 rate=4/s min=slow:1/s max=fast:3/s speedup=0.4x",
+            "workers=2 rate=4/s min=slow:1/s max=fast:3/s",
             forge.active_worker_summary(summary),
         )
         self.assertEqual("speedup=0.4x", forge.run_speedup_field(summary))
@@ -9333,7 +9343,8 @@ console.log(runs.sort(compareRunsByCreated).map(run => run.run).join('\\n'));
         self.assertEqual("0.4x", payload["display"]["active_summary"]["speedup_text"])
         self.assertEqual("rate", payload["display"]["active_summary"]["rate_name"])
         self.assertEqual("4/s", payload["display"]["active_summary"]["rate_text"])
-        self.assertIn("speedup=0.4x", payload["display"]["active_summary_text"])
+        self.assertNotIn("speedup=", payload["display"]["active_summary_text"])
+        self.assertIn("speedup=0.4x", payload["display"]["fields"])
 
     def test_status_speedup_uses_configurable_single_host_baseline(self) -> None:
         summary = {

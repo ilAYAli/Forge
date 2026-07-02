@@ -903,7 +903,6 @@ _HTML = r"""<!DOCTYPE html>
     const GRAPH_COLORS = ['var(--blu)', 'var(--yel)', 'var(--grn)', 'var(--red)', '#b58cff', '#50c9c3'];
     const GRAPH_W = 720;
     const GRAPH_H = 280;
-    const GRAPH_LEAD_IN = 40;
 
     function graphPoints(series) {
       return (series?.points || [])
@@ -972,13 +971,13 @@ _HTML = r"""<!DOCTYPE html>
       return GRAPH_COLORS[index % GRAPH_COLORS.length];
     }
 
-    function graphDisplayPoints(series, points, xTotal = null) {
+    function graphDisplayPoints(series, points) {
       const smooth = series && typeof series === 'object' && series.smooth !== undefined
         ? Boolean(series.smooth)
         : graphSeriesName(series) === 'elo';
       if (!points || !points.length) return points;
       const last = points.length - 1;
-      const displayed = !smooth || points.length < 5
+      return !smooth || points.length < 5
         ? points.map(point => ({...point}))
         : points.map((point, i) => {
           if (i === 0 || i === last) return {...point};
@@ -992,43 +991,6 @@ _HTML = r"""<!DOCTYPE html>
           }
           return {x: point.x, y: weighted / weight};
         });
-      if (
-        !signedGraphSeries(graphSeriesName(series))
-        || displayed.length < 2
-        || displayed[0].x !== 0
-        || displayed[0].y !== 0
-      ) return displayed;
-
-      let leadIndex = 1;
-      while (leadIndex < points.length && points[leadIndex].y === points[0].y) {
-        displayed[leadIndex] = {...displayed[leadIndex], y: points[leadIndex].y};
-        leadIndex++;
-      }
-      if (leadIndex >= displayed.length) return displayed;
-
-      const xs = displayed.map(point => point.x);
-      const total = Number(xTotal);
-      const minX = Number.isFinite(total) && total > 0 ? 0 : Math.min(...xs);
-      const maxX = Number.isFinite(total) && total > 0
-        ? Math.max(total, ...xs)
-        : Math.max(...xs);
-      const unitsPerPixel = (maxX - minX) / Math.max(1, GRAPH_W - 16);
-      const originX = displayed[0].x;
-      const leadX = originX + GRAPH_LEAD_IN * unitsPerPixel;
-      const rawLeadX = displayed[leadIndex].x;
-      if (leadX <= rawLeadX) return displayed;
-
-      // Compress the early prefix as one unit so the lead-in is diagonal
-      // without reversing or stacking the following samples.
-      const anchorX = Math.min(maxX, originX + (leadX - originX) * 3);
-      for (let i = leadIndex; i < displayed.length && displayed[i].x < anchorX; i++) {
-        const fraction = (displayed[i].x - rawLeadX) / (anchorX - rawLeadX);
-        displayed[i] = {
-          ...displayed[i],
-          x: leadX + Math.max(0, Math.min(1, fraction)) * (anchorX - leadX),
-        };
-      }
-      return displayed;
     }
 
     function graphYDomain(name, values, extras = []) {
@@ -1090,6 +1052,20 @@ _HTML = r"""<!DOCTYPE html>
         .sort((a, b) => a.x - b.x);
       if (!sorted.length || x < sorted[0].x) return null;
       return interpolatedGraphY(sorted, x);
+    }
+
+    function graphConfidenceAlignedPoints(points, ciPoints) {
+      if (!points || points.length < 2 || !ciPoints || !ciPoints.length) return points;
+      const firstCi = ciPoints
+        .map(point => ({x: Number(point.x), y: Number(point.y)}))
+        .filter(point => Number.isFinite(point.x) && Number.isFinite(point.y) && point.y > 0)
+        .sort((a, b) => a.x - b.x)[0];
+      if (!firstCi) return points;
+      const stable = points.filter(point => Number(point.x) >= firstCi.x);
+      const first = points[0];
+      const origin = Number(first?.x) === 0 && Number(first?.y) === 0 ? first : null;
+      const aligned = origin && firstCi.x > 0 ? [origin, ...stable] : stable;
+      return aligned.length >= 2 ? aligned : points;
     }
 
     function graphConfidenceBandPoints(name, points, ciPoints, maxBandRadius = null, rawPoints = points) {
@@ -1640,15 +1616,18 @@ _HTML = r"""<!DOCTYPE html>
         })
         .filter(s => s.points.length >= 2);
       if (!allSeries.length) return '';
+      const ciSeries = graphSeriesByName(allSeries, 'ci');
+      const eloSeries = graphSeriesByName(allSeries, 'elo');
+      const llrSeries = graphSeriesByName(allSeries, 'llr');
+      if (eloSeries && ciSeries) {
+        eloSeries.rawPoints = graphConfidenceAlignedPoints(eloSeries.rawPoints, ciSeries.rawPoints);
+      }
       const configuredTotal = graphXTotal(graph);
       const earlyStop = graphEarlyStop(run, allSeries, configuredTotal);
       const xTotal = earlyStop?.observed || configuredTotal;
       allSeries.forEach(s => {
-        s.points = graphDisplayPoints(s, s.rawPoints, xTotal);
+        s.points = graphDisplayPoints(s, s.rawPoints);
       });
-      const ciSeries = graphSeriesByName(allSeries, 'ci');
-      const eloSeries = graphSeriesByName(allSeries, 'elo');
-      const llrSeries = graphSeriesByName(allSeries, 'llr');
       const isLabelingGraph = Boolean(graphSeriesByName(allSeries, 'total'));
       const labelingSeries = isLabelingGraph ? allSeries : [];
       const primary = eloSeries || allSeries.find(s => graphSeriesName(s.name) !== 'ci') || null;

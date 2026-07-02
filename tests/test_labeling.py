@@ -19,7 +19,7 @@ from forge_lib.labeling import (
 )
 from forge_lib.core import file_record, write_json
 from forge_lib.status import cmd_wait
-from forge_lib.status import active_worker_summary, status_summary
+from forge_lib.status import active_worker_summary, run_speedup_field, status_summary
 from forge_lib.tasks import task_done_path
 
 
@@ -250,7 +250,8 @@ class LabelingProgressTests(unittest.TestCase):
             self.assertEqual([{"x": 100.0, "y": 60.0}, {"x": 200.0, "y": 120.0}], series["written"])
             self.assertIn("workers=2", active_worker_summary(summary))
             self.assertIn("output=240", active_worker_summary(summary))
-            self.assertIn("speedup=0.3x", active_worker_summary(summary))
+            self.assertNotIn("speedup=", active_worker_summary(summary))
+            self.assertEqual("speedup=0.3x", run_speedup_field(summary))
 
             for index in range(2):
                 with (logs / f"label_{index}.log").open("a", encoding="utf-8") as file:
@@ -295,7 +296,8 @@ class LabelingProgressTests(unittest.TestCase):
         self.assertIn("rate=18.0/s", text)
         self.assertIn("min=late:8/s", text)
         self.assertIn("max=early:10.0/s", text)
-        self.assertIn("speedup=0.4x", text)
+        self.assertNotIn("speedup=", text)
+        self.assertEqual("speedup=0.4x", run_speedup_field(summary))
 
 
 if __name__ == "__main__":

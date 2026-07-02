@@ -1148,8 +1148,6 @@ def active_worker_summary(summary: dict[str, Any]) -> str:
         max_rate = float(ordered[-1]["progress_rate"])
         parts.append(f"min={str(ordered[0]['worker'])}:{compact_rate_per_second(float(ordered[0]['progress_rate']))}")
         parts.append(f"max={str(ordered[-1]['worker'])}:{compact_rate_per_second(max_rate)}")
-        if speedup := run_speedup_field(summary):
-            parts.append(speedup)
         return " ".join(parts)
     if output_values:
         total_output = sum(int(metric["output"]) for metric in values)
@@ -1160,8 +1158,6 @@ def active_worker_summary(summary: dict[str, Any]) -> str:
         max_output = int(ordered[-1]["output"])
         parts.append(f"min={str(ordered[0]['worker'])}:{compact_count(int(ordered[0]['output']))}")
         parts.append(f"max={str(ordered[-1]['worker'])}:{compact_count(max_output)}")
-        if speedup := run_speedup_field(summary):
-            parts.append(speedup)
         return " ".join(parts)
 
     if not rate_values:
@@ -1174,8 +1170,6 @@ def active_worker_summary(summary: dict[str, Any]) -> str:
     max_rate = float(ordered[-1]["progress_rate"])
     parts.append(f"min={str(ordered[0]['worker'])}:{compact_rate_per_second(float(ordered[0]['progress_rate']))}")
     parts.append(f"max={str(ordered[-1]['worker'])}:{compact_rate_per_second(max_rate)}")
-    if speedup := run_speedup_field(summary):
-        parts.append(speedup)
     return " ".join(parts)
 
 def active_worker_summary_payload(summary: dict[str, Any]) -> dict[str, Any]:
@@ -1600,6 +1594,8 @@ def run_display_fields(summary: dict[str, Any]) -> list[str]:
         *remaining,
         f"tasks={counts['done']}/{summary['tasks']}",
     ]
+    if speedup := run_speedup_field(summary):
+        fields.append(speedup)
     if counts["fail"]:
         fields.append(f"fail={counts['fail']}")
     if counts["stale"]:
