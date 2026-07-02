@@ -8624,11 +8624,29 @@ console.log(runs.sort(compareRunsByCreated).map(run => run.run).join('\\n'));
             status = self.run_cli("status", str(run))
 
             self.assertEqual(0, status.returncode, status.stderr)
-            self.assertIn("elo=+1.0 llr=-0.12/2.94 (-4%) los=58.8% ci=9.0 draw=43.8% games=400/2000 tasks=0/2", status.stdout)
+            # los is pooled from aggregate elo/ci (Phi(elo/sigma)), not a
+            # weighted mean of per-shard LOS values.
+            self.assertIn("elo=+1.0 llr=-0.12/2.94 (-4%) los=58.6% ci=9.0 draw=43.8% games=400/2000 tasks=0/2", status.stdout)
             self.assertIn("active: 2", status.stdout)
             self.assertNotIn("active: 2 games=400/2000", status.stdout)
             self.assertIn("worker-a sprt shard=0 [games=100/1000, elo=10.0, ci=20.0, llr=0.12/2.94 (4%), los=70.0, draw=40.0]", status.stdout)
             self.assertIn("worker-b sprt shard=1 [games=300/1000, elo=-2.0, ci=10.0, llr=-0.24/2.94 (-8%), los=55.0, draw=45.0]", status.stdout)
+
+    def test_pooled_los_percent_tracks_pooled_evidence(self) -> None:
+        from forge_lib.status import pooled_los_percent
+
+        # Regression: sprt-tag-3855cbf-vs-be211e3 showed elo=+7.4 ci=14.8
+        # but los=54.6% because per-shard LOS values (each ~55% at 26
+        # games/shard) were averaged. The pooled LOS must reflect the
+        # pooled evidence instead.
+        self.assertAlmostEqual(83.6, pooled_los_percent(7.4, 14.8), places=1)
+        self.assertAlmostEqual(50.0, pooled_los_percent(0.0, 14.8), places=1)
+        self.assertAlmostEqual(16.4, pooled_los_percent(-7.4, 14.8), places=1)
+        self.assertAlmostEqual(
+            100.0 - pooled_los_percent(5.0, 10.0),
+            pooled_los_percent(-5.0, 10.0),
+            places=9,
+        )
 
     def test_status_sprt_progress_does_not_require_eta(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -8671,7 +8689,9 @@ console.log(runs.sort(compareRunsByCreated).map(run => run.run).join('\\n'));
             status = self.run_cli("status", str(run))
 
             self.assertEqual(0, status.returncode, status.stderr)
-            self.assertIn("elo=-18.3 llr=-0.09/2.94 (-3%) los=34.1% ci=89.8 draw=36.8% games=38/50 tasks=0/1", status.stdout)
+            # Aggregate los is derived from pooled elo/ci, so it can differ
+            # slightly from the shard's own W/L-based LOS (34.1%).
+            self.assertIn("elo=-18.3 llr=-0.09/2.94 (-3%) los=34.5% ci=89.8 draw=36.8% games=38/50 tasks=0/1", status.stdout)
             self.assertIn("worker-a sprt shard=0 [games=38/50, elo=-18.3, ci=89.8, llr=-0.09/2.94 (-3%), los=34.1, draw=36.8]", status.stdout)
 
     def test_status_header_shows_games_before_tasks(self) -> None:

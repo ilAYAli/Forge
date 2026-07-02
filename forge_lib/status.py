@@ -2804,24 +2804,40 @@ def sprt_aggregate_stats(summary: dict[str, Any]) -> dict[str, Any]:
         "llr_mixed_bound": llr_mixed_bound,
     }
 
+def pooled_los_percent(elo: float, ci: float) -> float:
+    """LOS from a pooled elo estimate and its 95% half-width.
+
+    LOS = Phi(elo / sigma) with sigma = ci / 1.96. Per-shard LOS values
+    cannot be averaged: with ~26-game shards each one sits near 50% no
+    matter how strong the pooled evidence is, so the mean regresses to
+    50% (observed: elo=+7.4 ci=14.8 displayed los=54.6%, true ~84%).
+    """
+    z = elo / (ci / 1.96)
+    return 50.0 * (1.0 + math.erf(z / math.sqrt(2.0)))
+
 def sprt_aggregate_fields(summary: dict[str, Any]) -> list[str]:
     stats = sprt_aggregate_stats(summary)
     if not stats:
         return []
     weight_total = int(stats["weight_total"])
-    fields = [f"elo={score_rate_elo(float(stats['weighted_score']) / weight_total):+.1f}"]
+    pooled_elo = score_rate_elo(float(stats["weighted_score"]) / weight_total)
+    fields = [f"elo={pooled_elo:+.1f}"]
     ci_weight_total = int(stats["ci_weight_total"])
+    pooled_ci = 0.0
     if ci_weight_total > 0:
-        fields.append(f"ci={math.sqrt(float(stats['weighted_ci_squares'])) / ci_weight_total:.1f}")
+        pooled_ci = math.sqrt(float(stats["weighted_ci_squares"])) / ci_weight_total
+        fields.append(f"ci={pooled_ci:.1f}")
     if int(stats["llr_count"]) > 0:
         fields.append(format_llr_field(
             float(stats["llr_total"]),
             stats.get("llr_bound") if isinstance(stats.get("llr_bound"), (int, float)) else None,
             bool(stats.get("llr_mixed_bound")),
         ))
-    los_weight_total = int(stats["los_weight_total"])
-    if los_weight_total > 0:
-        fields.append(f"los={float(stats['weighted_los']) / los_weight_total:.1f}%")
+    # LOS is only emitted when it can be pooled from elo and ci; the
+    # per-shard average kept in weighted_los is misleading (see
+    # pooled_los_percent) so a run without ci gets no los field at all.
+    if math.isfinite(pooled_elo) and pooled_ci > 0:
+        fields.append(f"los={pooled_los_percent(pooled_elo, pooled_ci):.1f}%")
     draw_weight_total = int(stats["draw_weight_total"])
     if draw_weight_total > 0:
         fields.append(f"draw={float(stats['weighted_draw']) / draw_weight_total:.1f}%")
