@@ -163,8 +163,11 @@ Notes:
 - Candidate and reference engines default to `--hash 128` MiB per process.
   Override it with `--hash MIB` or an engine-specific `--candidate-uci Hash=MIB`
   or `--reference-uci Hash=MIB` option.
-- Without `--shards`, Forge chooses 8 shards per worker slot, capped by
-  `--games`.
+- Without `--shards`, Forge targets roughly 25 games per shard, then rounds
+  up to a whole multiple of the configured worker slots with at least two
+  complete worker waves. Very small runs are capped to preserve at least two
+  games per shard. Slow worker startup does not affect this calculation;
+  explicit `--shards` still overrides it.
 
 ### Distributed labeling
 

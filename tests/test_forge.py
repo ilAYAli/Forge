@@ -2836,7 +2836,7 @@ console.log(runs.sort(compareRunsByCreated).map(run => run.run).join('\\n'));
             "--games", "256",
         ], template_args)
 
-    def test_sprt_command_auto_sizes_shards_by_target_games(self) -> None:
+    def test_sprt_command_auto_sizes_shards_to_worker_multiple(self) -> None:
         stdout = io.StringIO()
         with contextlib.redirect_stdout(stdout):
             rc = forge.cmd_template_run(argparse.Namespace(
@@ -2853,12 +2853,35 @@ console.log(runs.sort(compareRunsByCreated).map(run => run.run).join('\\n'));
 
         self.assertEqual(0, rc)
         self.assertEqual("quick smoke", manifest["comment"])
-        self.assertEqual(10, manifest["template"]["parameters"]["shards"])
-        self.assertEqual(10, len(manifest["tasks"]))
+        self.assertEqual(30, manifest["template"]["parameters"]["shards"])
+        self.assertEqual(30, len(manifest["tasks"]))
         totals = [task["progress"]["total"] for task in manifest["tasks"]]
         self.assertEqual(256, sum(totals))
-        self.assertEqual(24, min(totals))
-        self.assertEqual(26, max(totals))
+        self.assertEqual(8, min(totals))
+        self.assertEqual(10, max(totals))
+
+    def test_sprt_command_rounds_fifty_target_shards_to_two_worker_waves(self) -> None:
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            rc = forge.cmd_template_run(argparse.Namespace(
+                template="sprt",
+                template_args=[
+                    "--dry-run",
+                    "--workers", "pwa-5090:11,pwa-mbp:5,pwa-mbp0:5,pwa-wrk:16,pwa-wsl:7",
+                    "--candidate", "~/assets/engines/enyo_91ede5f",
+                    "--games", "1250",
+                ],
+            ))
+        manifest = json.loads(stdout.getvalue())
+        totals = [task["progress"]["total"] for task in manifest["tasks"]]
+
+        self.assertEqual(0, rc)
+        self.assertEqual(88, manifest["template"]["parameters"]["shards"])
+        self.assertEqual(88, len(manifest["tasks"]))
+        self.assertEqual(0, len(manifest["tasks"]) % 44)
+        self.assertEqual(1250, sum(totals))
+        self.assertEqual(14, min(totals))
+        self.assertEqual(16, max(totals))
 
     def test_sprt_command_preserves_explicit_shards(self) -> None:
         stdout = io.StringIO()
@@ -2895,11 +2918,11 @@ console.log(runs.sort(compareRunsByCreated).map(run => run.run).join('\\n'));
         totals = [task["progress"]["total"] for task in manifest["tasks"]]
 
         self.assertEqual(0, rc)
-        self.assertEqual(16, manifest["template"]["parameters"]["shards"])
-        self.assertEqual(16, len(manifest["tasks"]))
+        self.assertEqual(32, manifest["template"]["parameters"]["shards"])
+        self.assertEqual(32, len(manifest["tasks"]))
         self.assertEqual(400, sum(totals))
-        self.assertEqual(24, min(totals))
-        self.assertEqual(26, max(totals))
+        self.assertEqual(12, min(totals))
+        self.assertEqual(14, max(totals))
 
     def test_sprt_command_auto_shards_large_runs_by_target_games(self) -> None:
         stdout = io.StringIO()

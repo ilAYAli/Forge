@@ -49,7 +49,7 @@
     "shards": {
       "type": "int",
       "aliases": ["shard_count"],
-      "help": "Number of Forge shards"
+      "help": "Number of Forge shards; defaults to about 25 games each and at least two complete configured worker-slot waves"
     },
     "concurrency": {
       "type": "int",

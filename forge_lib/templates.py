@@ -698,9 +698,18 @@ def sprt_worker_slot_count(payload: dict[str, Any]) -> int:
     return total
 
 
-def auto_sprt_shards(params: dict[str, Any], _worker_payload: dict[str, Any]) -> int:
+def auto_sprt_shards(params: dict[str, Any], worker_payload: dict[str, Any]) -> int:
     games = as_int(params.get("games"), label="sprt.games")
-    return max(1, games // SPRT_AUTO_TARGET_GAMES_PER_SHARD)
+    target = max(1, games // SPRT_AUTO_TARGET_GAMES_PER_SHARD)
+    slots = sprt_worker_slot_count(worker_payload)
+    if slots <= 0:
+        return target
+    paired_limit = max(1, games // 2)
+    rounded = max(slots * 2, ((target + slots - 1) // slots) * slots)
+    if rounded <= paired_limit:
+        return rounded
+    largest_multiple = (paired_limit // slots) * slots
+    return largest_multiple if largest_multiple > 0 else paired_limit
 
 
 def cmd_template_run(args: argparse.Namespace) -> int:
