@@ -267,10 +267,16 @@ forge stop my-run
 forge resume my-run
 ```
 
-`stop` prevents new claims and releases incomplete active claims.
+`stop` prevents new claims, terminates every local and remote worker slot,
+releases incomplete active claims, and removes their partial outputs and
+transient state. Completed tasks and the materialized run are preserved.
 `resume` restarts incomplete non-failed work using `<run>/workers.json` when
 present, otherwise `~/.config/forge/workers.json`.
 Use `retry` for failed tasks.
+
+Ctrl+C during setup or `--wait` performs the same cleanup before returning
+status 130. Coordinator temporary files are removed, and the stopped run can be
+continued with `forge resume <run>` without duplicate output.
 
 Set worker slots for an incomplete run:
 
@@ -494,8 +500,9 @@ also wires together wait, verify, and merge.
 - Stale claims can be reclaimed after their lease expires.
 - Wrong Git commits, missing commands, or mismatched input checksums fail before
   a task command starts.
-- Ctrl+C in `deploy` signals active SSH/rsync commands and wraps remote commands
-  so worker child processes are also terminated.
+- Ctrl+C propagates through the coordinator, kills every detached worker
+  process group, resets interrupted tasks to pending, and removes temporary and
+  partial files while preserving completed tasks for resume.
 
 ## Examples
 

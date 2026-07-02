@@ -1109,32 +1109,24 @@ def detached_shell_command(worker: dict[str, Any], script: str, *, pid_file: str
     )
     return shell_join([worker_python(worker), "-c", launcher, script, pid_file, log_file])
 
-def cleanup_detached_shell_command(pid_file: str) -> str:
-    quoted = shlex.quote(pid_file)
-    return (
-        f"pid_file={quoted}; "
-        "if test -s \"$pid_file\"; then "
-        "pid=$(sed -n '1p' \"$pid_file\" 2>/dev/null); "
-        "case \"$pid\" in ''|*[!0-9]*) exit 0;; esac; "
-        "kill -TERM -\"$pid\" 2>/dev/null || kill -TERM \"$pid\" 2>/dev/null || true; "
-        "sleep 1; "
-        "kill -KILL -\"$pid\" 2>/dev/null || kill -KILL \"$pid\" 2>/dev/null || true; "
-        "rm -f \"$pid_file\"; "
-        "fi"
-    )
-
 def cleanup_run_pid_files_command(cache_dir: str, run_name: str) -> str:
     quoted_cache = shlex.quote(cache_dir)
     quoted_run = shlex.quote(run_name)
     return (
-        f"cache_dir={quoted_cache}; "
+        f"cache_dir={quoted_cache}; found=0; "
         f"for pid_file in \"$cache_dir\"/{quoted_run}-*.pid; do "
         "test -e \"$pid_file\" || continue; "
         "pid=$(sed -n '1p' \"$pid_file\" 2>/dev/null || true); "
         "case \"$pid\" in ''|*[!0-9]*) rm -f \"$pid_file\"; continue;; esac; "
+        "found=1; "
         "printf '%s\\n' \"$pid_file\"; "
         "kill -TERM -\"$pid\" 2>/dev/null || kill -TERM \"$pid\" 2>/dev/null || true; "
-        "sleep 1; "
+        "done; "
+        "test \"$found\" -eq 0 || sleep 1; "
+        f"for pid_file in \"$cache_dir\"/{quoted_run}-*.pid; do "
+        "test -e \"$pid_file\" || continue; "
+        "pid=$(sed -n '1p' \"$pid_file\" 2>/dev/null || true); "
+        "case \"$pid\" in ''|*[!0-9]*) rm -f \"$pid_file\"; continue;; esac; "
         "kill -KILL -\"$pid\" 2>/dev/null || kill -KILL \"$pid\" 2>/dev/null || true; "
         "rm -f \"$pid_file\"; "
         "done"
@@ -1149,30 +1141,38 @@ def kill_run_workers(run_dir: Path, *, timeout: float = 15.0) -> int:
             return 0
     workers = load_workers(workers_path)
     run_name = run_dir.name
-    host_scripts: dict[str, list[str]] = {}
-    seen: set[tuple[str, str]] = set()
+    targets: dict[tuple[bool, str], list[str]] = {}
+    seen: set[tuple[bool, str, str]] = set()
     for worker in workers:
-        if is_local_worker(worker):
-            continue
+        local = is_local_worker(worker)
         host = str(worker["host"])
         cache_dir = worker_cache_dir(worker)
-        key = (host, cache_dir)
+        key = (local, host, cache_dir)
         if key in seen:
             continue
         seen.add(key)
-        host_scripts.setdefault(host, []).append(cleanup_run_pid_files_command(cache_dir, run_name))
+        targets.setdefault((local, host), []).append(cleanup_run_pid_files_command(cache_dir, run_name))
 
-    killed = 0
-    for host, scripts in host_scripts.items():
+    def kill_target(target: tuple[tuple[bool, str], list[str]]) -> int:
+        (local, host), scripts = target
         script = "; ".join(scripts)
-        command = ["ssh", *SSH_OPTS, host, managed_remote_script(script)]
+        command = (
+            ["sh", "-lc", script]
+            if local
+            else ["ssh", *SSH_OPTS, host, managed_remote_script(script)]
+        )
         try:
             result = subprocess.run(command, capture_output=True, text=True, timeout=timeout)
             if result.returncode == 0:
-                killed += len([line for line in result.stdout.splitlines() if line.strip()])
+                return len([line for line in result.stdout.splitlines() if line.strip()])
         except (subprocess.TimeoutExpired, OSError):
             pass
-    return killed
+        return 0
+
+    if not targets:
+        return 0
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(targets)) as executor:
+        return sum(executor.map(kill_target, targets.items()))
 
 
 def start_wait_monitor(
@@ -1637,6 +1637,36 @@ def materialize_run(
     return run_dir, manifest_path, workers_snapshot
 
 def cmd_deploy(args: argparse.Namespace) -> int:
+    template_path = expand_path(args.manifest)
+    _run_dir, manifest_path = planned_run_paths(template_path, getattr(args, "run", None))
+    manifest_existed = manifest_path.exists()
+    try:
+        return run_deploy(args)
+    except KeyboardInterrupt:
+        coordinator_host, _runs_path = parse_coordinator(configured_coordinator_runs() or "")
+        owns_run = (
+            bool(getattr(args, "resume", False))
+            or bool(getattr(args, "replace", False))
+            or not manifest_existed
+        )
+        if not coordinator_host and owns_run and manifest_path.exists():
+            manifest = load_manifest(manifest_path)
+            if not stop_request_path(manifest).exists():
+                cleanup = request_stop_for_run(
+                    manifest_path,
+                    manifest,
+                    lease_seconds=int(getattr(args, "lease_seconds", 600)),
+                    reason="deploy interrupted",
+                )
+                print(
+                    f"deploy: interrupt cleanup complete killed={cleanup['killed']} "
+                    f"released={len(cleanup['released'])} reset={len(cleanup['reset'])}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+        raise
+
+def run_deploy(args: argparse.Namespace) -> int:
     delegated = deploy_on_coordinator(args, configured_coordinator_runs() or "")
     if delegated is not None:
         return delegated
@@ -1877,34 +1907,13 @@ def cmd_deploy(args: argparse.Namespace) -> int:
         verbose_status(f"{label}: launch FAILED rc={result.returncode}", error=True)
         return result_payload(index, worker, "launch", result, {"pid_file": pid_file, "log_file": log_file})
 
-    def cleanup_launched_workers(items: list[dict[str, Any]]) -> None:
-        for item in items:
-            if item.get("stage") != "launch" or not item.get("pid_file"):
-                continue
-            worker = workers[int(item["index"])]
-            try:
-                run_worker_shell(
-                    worker,
-                    cleanup_detached_shell_command(str(item["pid_file"])),
-                    timeout=10.0,
-                    tracker=tracker,
-                    retries=setup_retries,
-                )
-            except Exception as exc:
-                verbose_status(f"{worker_label(str(item['host']), str(item['profile']), item.get('slot'), item.get('slots'))}: cleanup failed: {exc}", error=True)
-
-    def cleanup_failed_launch(items: list[dict[str, Any]], reason: str) -> None:
-        payload = {
-            "schema": SCHEMA,
-            "run": run_dir.name,
-            "requested_at": now(),
-            "requested_epoch": epoch(),
-            "host": socket.gethostname(),
-            "reason": reason,
-        }
-        write_json(stop_request_path(manifest), payload)
-        release_active_claims(manifest, lease_seconds=600)
-        cleanup_launched_workers(items)
+    def cleanup_failed_launch(reason: str) -> dict[str, Any]:
+        return request_stop_for_run(
+            manifest_path,
+            manifest,
+            lease_seconds=lease_seconds,
+            reason=reason,
+        )
 
     def started_task_count(counts: dict[str, int]) -> int:
         return counts["done"] + counts["fail"] + counts["running"] + counts["claimed"] + counts["stale"]
@@ -2024,8 +2033,6 @@ def cmd_deploy(args: argparse.Namespace) -> int:
     before_started = 0
     before_pending = 0
     if launch_only:
-        if not bool(getattr(args, "resume", False)):
-            kill_run_workers(run_dir)
         before_launch = status_summary(manifest, lease_seconds=600)
         before_counts = before_launch["counts"]
         before_started = started_task_count(before_counts)
@@ -2113,7 +2120,7 @@ def cmd_deploy(args: argparse.Namespace) -> int:
                                 ),
                                 error=True,
                             )
-                            cleanup_failed_launch(launch_results, "workers did not become active after launch")
+                            cleanup_failed_launch("workers did not become active after launch")
             else:
                 executor = concurrent.futures.ThreadPoolExecutor(max_workers=max(1, len(ready_worker_items)))
                 task_message = (
@@ -2137,18 +2144,13 @@ def cmd_deploy(args: argparse.Namespace) -> int:
         concurrent.futures.wait(all_futures, timeout=2)
         for future in all_futures:
             future.cancel()
-        launched = []
-        for future in launch_futures:
-            if not future.done() or future.cancelled():
-                continue
-            try:
-                launched.append(future.result())
-            except BaseException:
-                continue
-        if launched:
-            cleanup_failed_launch(launched, "deploy interrupted")
-        if launch_marker_written:
-            clear_launch_request(manifest)
+        cleanup = cleanup_failed_launch("deploy interrupted")
+        status(
+            "deploy: interrupt cleanup complete "
+            f"killed={cleanup['killed']} released={len(cleanup['released'])} "
+            f"reset={len(cleanup['reset'])}",
+            error=True,
+        )
         return 130
     except BaseException:
         if launch_marker_written:
@@ -2271,24 +2273,39 @@ def run_control_command_args(name: str, args: argparse.Namespace) -> list[str]:
     command.extend(["--lease-seconds", str(args.lease_seconds)])
     return command
 
+def interruptible_coordinator_command(
+    host: str,
+    runs_path: str,
+    command: list[str],
+) -> subprocess.CompletedProcess[str]:
+    pid_file = f"/tmp/forge-control-{uuid.uuid4().hex}.pid"
+    reset_sigint_exec = (
+        "import os, signal, sys; "
+        "signal.signal(signal.SIGINT, signal.SIG_DFL); "
+        "os.execvp(sys.argv[1], sys.argv[1:])"
+    )
+    child = (
+        f"exec env {shlex.quote(COORDINATOR_RUNS_ENV)}= "
+        f"{shlex.quote(RUNS_DIR_ENV)}={shlex.quote(runs_path)} "
+        f"python3 -c {shlex.quote(reset_sigint_exec)} forge {shell_join(command)}"
+    )
+    remote = (
+        "command -v forge >/dev/null 2>&1 || "
+        "{ echo 'forge not found in PATH on coordinator' >&2; exit 127; }; "
+        f"pid_file={shlex.quote(pid_file)}; rm -f \"$pid_file\"; "
+        f"sh -lc {shlex.quote(child)} & pid=$!; "
+        "printf '%s\\n' \"$pid\" > \"$pid_file\"; "
+        "trap 'kill -INT \"$pid\" 2>/dev/null; wait \"$pid\" 2>/dev/null; "
+        "rm -f \"$pid_file\"; exit 130' INT TERM HUP; "
+        "wait \"$pid\"; rc=$?; rm -f \"$pid_file\"; exit $rc"
+    )
+    return run_interruptible_coordinator_process(host, remote, pid_file)
+
 def run_control_on_coordinator(name: str, args: argparse.Namespace, coordinator_runs: str) -> int:
     host, runs_path = parse_coordinator(coordinator_runs)
     command = run_control_command_args(name, args)
     if host:
-        remote = (
-            "command -v forge >/dev/null 2>&1 || "
-            "{ echo 'forge not found in PATH on coordinator' >&2; exit 127; }; "
-            f"exec env {shlex.quote(COORDINATOR_RUNS_ENV)}= "
-            f"{shlex.quote(RUNS_DIR_ENV)}={shlex.quote(runs_path)} "
-            f"forge {shell_join(command)}"
-        )
-        result = subprocess.run(
-            ["ssh", *SSH_OPTS, host, remote],
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=False,
-        )
+        result = interruptible_coordinator_command(host, runs_path, command)
     else:
         env = os.environ.copy()
         env[COORDINATOR_RUNS_ENV] = ""
@@ -2325,13 +2342,33 @@ def coordinator_temp_file(host: str) -> str:
 
 def copy_file_to_coordinator(host: str, path: Path) -> str:
     remote_path = coordinator_temp_file(host)
-    result = run_process_command_with_retries(
-        ["rsync", "-a", "-e", RSYNC_SSH, str(path), f"{host}:{remote_path}"],
-        retries=SSH_TRANSIENT_RETRY_COUNT,
-    )
+    try:
+        result = run_process_command_with_retries(
+            ["rsync", "-a", "-e", RSYNC_SSH, str(path), f"{host}:{remote_path}"],
+            retries=SSH_TRANSIENT_RETRY_COUNT,
+        )
+    except BaseException:
+        remove_coordinator_temp_files(host, [remote_path])
+        raise
     if result.returncode != 0:
+        remove_coordinator_temp_files(host, [remote_path])
         raise SystemExit(result.stderr.strip() or f"failed to copy {path} to {host}")
     return remote_path
+
+def remove_coordinator_temp_files(host: str, paths: list[str]) -> None:
+    safe_paths = [path for path in paths if path.startswith("/tmp/forge.")]
+    if not safe_paths:
+        return
+    try:
+        subprocess.run(
+            ["ssh", *SSH_OPTS, host, shell_join(["rm", "-f", "--", *safe_paths])],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+            timeout=15,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        pass
 
 def coordinator_workers_arg(host: str, workers_arg: str) -> str:
     path = expand_path(workers_arg)
@@ -2379,20 +2416,7 @@ def run_launch_on_coordinator(command: list[str], coordinator_runs: str) -> int:
     host, runs_path = parse_coordinator(coordinator_runs)
     if not host:
         return 0
-    remote = (
-        "command -v forge >/dev/null 2>&1 || "
-        "{ echo 'forge not found in PATH on coordinator' >&2; exit 127; }; "
-        f"exec env {shlex.quote(COORDINATOR_RUNS_ENV)}= "
-        f"{shlex.quote(RUNS_DIR_ENV)}={shlex.quote(runs_path)} "
-        f"forge {shell_join(command)}"
-    )
-    result = subprocess.run(
-        ["ssh", *SSH_OPTS, host, remote],
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        check=False,
-    )
+    result = interruptible_coordinator_command(host, runs_path, command)
     print(f"coordinator: {coordinator_runs}")
     if result.stdout:
         print(result.stdout, end="")
@@ -2404,11 +2428,18 @@ def deploy_on_coordinator(args: argparse.Namespace, coordinator_runs: str) -> in
     host, _ = parse_coordinator(coordinator_runs)
     if not host:
         return None
-    remote_manifest = copy_file_to_coordinator(host, expand_path(args.manifest))
-    remote_workers = coordinator_workers_arg(host, str(args.workers))
-    command = ["deploy", remote_workers, remote_manifest]
-    append_deploy_options(command, args, coordinator_host=host)
-    return run_launch_on_coordinator(command, coordinator_runs)
+    temporary_paths: list[str] = []
+    try:
+        remote_manifest = copy_file_to_coordinator(host, expand_path(args.manifest))
+        temporary_paths.append(remote_manifest)
+        remote_workers = coordinator_workers_arg(host, str(args.workers))
+        if remote_workers.startswith("/tmp/forge."):
+            temporary_paths.append(remote_workers)
+        command = ["deploy", remote_workers, remote_manifest]
+        append_deploy_options(command, args, coordinator_host=host)
+        return run_launch_on_coordinator(command, coordinator_runs)
+    finally:
+        remove_coordinator_temp_files(host, temporary_paths)
 
 def start_on_coordinator(args: argparse.Namespace, coordinator_runs: str) -> int | None:
     host, _ = parse_coordinator(coordinator_runs)
@@ -2418,11 +2449,18 @@ def start_on_coordinator(args: argparse.Namespace, coordinator_runs: str) -> int
         planned_run_name(expand_path(args.manifest), getattr(args, "run", None)),
         coordinator_runs=coordinator_runs,
     )
-    remote_manifest = copy_file_to_coordinator(host, expand_path(args.manifest))
-    remote_workers = coordinator_workers_arg(host, str(args.workers))
-    command = ["start", remote_manifest, "--workers", remote_workers]
-    append_start_options(command, args, coordinator_host=host)
-    return run_launch_on_coordinator(command, coordinator_runs)
+    temporary_paths: list[str] = []
+    try:
+        remote_manifest = copy_file_to_coordinator(host, expand_path(args.manifest))
+        temporary_paths.append(remote_manifest)
+        remote_workers = coordinator_workers_arg(host, str(args.workers))
+        if remote_workers.startswith("/tmp/forge."):
+            temporary_paths.append(remote_workers)
+        command = ["start", remote_manifest, "--workers", remote_workers]
+        append_start_options(command, args, coordinator_host=host)
+        return run_launch_on_coordinator(command, coordinator_runs)
+    finally:
+        remove_coordinator_temp_files(host, temporary_paths)
 
 def run_coordinator_command(coordinator_runs: str, command: list[str]) -> subprocess.CompletedProcess[str]:
     host, runs_path = parse_coordinator(coordinator_runs)
@@ -2543,28 +2581,7 @@ def run_worker_control_on_coordinator(action: str, args: argparse.Namespace, coo
     host, runs_path = parse_coordinator(coordinator_runs)
     command = worker_control_command_args(action, args)
     if host:
-        pid_file = f"/tmp/forge-control-{uuid.uuid4().hex}.pid"
-        reset_sigint_exec = (
-            "import os, signal, sys; "
-            "signal.signal(signal.SIGINT, signal.SIG_DFL); "
-            "os.execvp(sys.argv[1], sys.argv[1:])"
-        )
-        child = (
-            f"exec env {shlex.quote(COORDINATOR_RUNS_ENV)}= "
-            f"{shlex.quote(RUNS_DIR_ENV)}={shlex.quote(runs_path)} "
-            f"python3 -c {shlex.quote(reset_sigint_exec)} forge {shell_join(command)}"
-        )
-        remote = (
-            "command -v forge >/dev/null 2>&1 || "
-            "{ echo 'forge not found in PATH on coordinator' >&2; exit 127; }; "
-            f"pid_file={shlex.quote(pid_file)}; rm -f \"$pid_file\"; "
-            f"sh -lc {shlex.quote(child)} & pid=$!; "
-            "printf '%s\\n' \"$pid\" > \"$pid_file\"; "
-            "trap 'kill -INT \"$pid\" 2>/dev/null; wait \"$pid\" 2>/dev/null; "
-            "rm -f \"$pid_file\"; exit 130' INT TERM HUP; "
-            "wait \"$pid\"; rc=$?; rm -f \"$pid_file\"; exit $rc"
-        )
-        result = run_interruptible_coordinator_process(host, remote, pid_file)
+        result = interruptible_coordinator_command(host, runs_path, command)
     else:
         env = os.environ.copy()
         env[COORDINATOR_RUNS_ENV] = ""
@@ -2641,6 +2658,35 @@ def cmd_run_job(args: argparse.Namespace) -> int:
     if delegated is not None:
         return delegated
 
+    template_path = expand_path(args.manifest)
+    _run_dir, manifest_path = planned_run_paths(template_path, getattr(args, "run", None))
+    manifest_existed = manifest_path.exists()
+    try:
+        return run_local_job(args)
+    except KeyboardInterrupt:
+        owns_run = (
+            bool(getattr(args, "resume", False))
+            or bool(getattr(args, "replace", False))
+            or not manifest_existed
+        )
+        if owns_run and manifest_path.exists():
+            manifest = load_manifest(manifest_path)
+            if not stop_request_path(manifest).exists():
+                cleanup = request_stop_for_run(
+                    manifest_path,
+                    manifest,
+                    lease_seconds=int(args.lease_seconds),
+                    reason="start interrupted",
+                )
+                print(
+                    f"start: interrupt cleanup complete killed={cleanup['killed']} "
+                    f"released={len(cleanup['released'])} reset={len(cleanup['reset'])}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+        raise
+
+def run_local_job(args: argparse.Namespace) -> int:
     label = str(getattr(args, "command_label", "start"))
     template_path = expand_path(args.manifest)
     run_dir, manifest_path = planned_run_paths(template_path, getattr(args, "run", None))

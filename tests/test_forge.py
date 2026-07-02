@@ -3818,6 +3818,126 @@ console.log(runs.sort(compareRunsByCreated).map(run => run.run).join('\\n'));
             verify.assert_not_called()
             self.assertIn("start: ok; status: forge status launch-default --verbose", stdout.getvalue())
 
+    def test_start_ctrl_c_cleans_and_resumes_without_duplicate_output(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            runs = root / "runs"
+            cache = root / "worker-cache"
+            template = root / "template.json"
+            template.write_text(
+                json.dumps({
+                    "schema": "forge.task.v1",
+                    "name": "ctrl-c-cleanup",
+                    "work_dir": str(root),
+                    "requirements": {"python_min": "3.11", "git_min": "2.38"},
+                    "tasks": [{
+                        "id": "task",
+                        "index": 0,
+                        "command": (
+                            "if test -f gate; then test ! -e {output} && printf complete > {output}; "
+                            "else printf partial > {output}; sleep 30; fi"
+                        ),
+                        "outputs": ["{output_dir}/task.txt"],
+                    }],
+                }),
+                encoding="utf-8",
+            )
+            workers = root / "workers.json"
+            forge.write_json(workers, {
+                "schema": "forge.workers.v1",
+                "workers": [{
+                    "host": "localhost",
+                    "profile": "localhost",
+                    "local": True,
+                    "cache_dir": str(cache),
+                    "python": sys.executable,
+                }],
+            })
+            env = os.environ.copy()
+            env.update({
+                "FORGE_RUNS_DIR": str(runs),
+                "FORGE_COORDINATOR_RUNS": "",
+                "FORGE_NOTIFY_COMMAND": "",
+            })
+            command = [
+                sys.executable,
+                str(CLI),
+                "start",
+                str(template),
+                "--workers",
+                str(workers),
+                "--wait",
+                "--interval-seconds",
+                "0.02",
+                "--timeout-seconds",
+                "10",
+            ]
+            process = subprocess.Popen(
+                command,
+                cwd=ROOT,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=env,
+            )
+            try:
+                running = runs / "ctrl-c-cleanup" / "state" / "task.running.json"
+                deadline = time.monotonic() + 10
+                while not running.exists() and process.poll() is None and time.monotonic() < deadline:
+                    time.sleep(0.02)
+                self.assertTrue(running.exists(), "task never reached running state")
+
+                process.send_signal(signal.SIGINT)
+                stdout, stderr = process.communicate(timeout=15)
+                self.assertEqual(130, process.returncode, stdout + stderr)
+                self.assertIn("interrupt cleanup complete", stderr)
+
+                run = runs / "ctrl-c-cleanup"
+                manifest = forge.load_manifest(run / "manifest.json")
+                task = manifest["tasks"][0]
+                self.assertTrue(forge.stop_request_path(manifest).exists())
+                self.assertEqual(
+                    "pending",
+                    forge.task_state(manifest, task, lease_seconds=600),
+                    stdout + stderr + "\n" + "\n".join(str(path) for path in (run / "state").iterdir()),
+                )
+                self.assertFalse(Path(task["outputs"][0]).exists())
+                self.assertEqual([], list(cache.glob("ctrl-c-cleanup-*.pid")))
+
+                (root / "gate").write_text("resume\n", encoding="utf-8")
+                resumed = subprocess.run(
+                    [
+                        sys.executable,
+                        str(CLI),
+                        "resume",
+                        "ctrl-c-cleanup",
+                        "--wait",
+                        "--interval-seconds",
+                        "0.02",
+                        "--timeout-seconds",
+                        "10",
+                    ],
+                    cwd=ROOT,
+                    text=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    check=False,
+                    timeout=20,
+                    env=env,
+                )
+                self.assertEqual(0, resumed.returncode, resumed.stdout + resumed.stderr)
+                self.assertEqual("complete", Path(task["outputs"][0]).read_text(encoding="utf-8"))
+            finally:
+                if process.poll() is None:
+                    process.kill()
+                    process.communicate()
+                for pid_file in cache.glob("ctrl-c-cleanup-*.pid"):
+                    try:
+                        pid = int(pid_file.read_text(encoding="utf-8").splitlines()[0])
+                        os.killpg(pid, signal.SIGKILL)
+                    except (OSError, ValueError, IndexError):
+                        pass
+
     def test_start_queues_new_run_when_another_run_is_active(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -4386,7 +4506,10 @@ console.log(runs.sort(compareRunsByCreated).map(run => run.run).join('\\n'));
         with mock.patch.dict(
             os.environ,
             {"FORGE_COORDINATOR_RUNS": "pwa-5090:/home/petter/code/cpp/chess/forge/runs"},
-        ), mock.patch("forge.subprocess.run", return_value=remote_result) as run_mock:
+        ), mock.patch(
+            "forge_lib.workers.run_interruptible_coordinator_process",
+            return_value=remote_result,
+        ) as run_mock:
             stdout = io.StringIO()
             with contextlib.redirect_stdout(stdout):
                 rc = forge.cmd_retry(self.retry_args(run="failed-a"))
@@ -4396,12 +4519,12 @@ console.log(runs.sort(compareRunsByCreated).map(run => run.run).join('\\n'));
             "coordinator: pwa-5090:/home/petter/code/cpp/chess/forge/runs\nremote retry\n",
             stdout.getvalue(),
         )
-        command = run_mock.call_args.args[0]
-        self.assertEqual("ssh", command[0])
-        self.assertIn("pwa-5090", command)
-        self.assertIn("FORGE_RUNS_DIR=/home/petter/code/cpp/chess/forge/runs", command[-1])
-        self.assertIn("FORGE_COORDINATOR_RUNS=", command[-1])
-        self.assertIn("forge retry failed-a", command[-1])
+        host, remote, pid_file = run_mock.call_args.args
+        self.assertEqual("pwa-5090", host)
+        self.assertIn("FORGE_RUNS_DIR=/home/petter/code/cpp/chess/forge/runs", remote)
+        self.assertIn("FORGE_COORDINATOR_RUNS=", remote)
+        self.assertIn("forge retry failed-a", remote)
+        self.assertIn(pid_file, remote)
 
     def test_retry_without_failed_runs_errors(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -4611,7 +4734,10 @@ console.log(runs.sort(compareRunsByCreated).map(run => run.run).join('\\n'));
         with mock.patch.dict(
             os.environ,
             {"FORGE_COORDINATOR_RUNS": "pwa-5090:/home/petter/code/cpp/chess/forge/runs"},
-        ), mock.patch("forge.subprocess.run", return_value=remote_result) as run_mock:
+        ), mock.patch(
+            "forge_lib.workers.run_interruptible_coordinator_process",
+            return_value=remote_result,
+        ) as run_mock:
             stdout = io.StringIO()
             with contextlib.redirect_stdout(stdout):
                 rc = forge.cmd_resume(self.retry_args(run="paused"))
@@ -4621,12 +4747,12 @@ console.log(runs.sort(compareRunsByCreated).map(run => run.run).join('\\n'));
             "coordinator: pwa-5090:/home/petter/code/cpp/chess/forge/runs\nremote resume\n",
             stdout.getvalue(),
         )
-        command = run_mock.call_args.args[0]
-        self.assertEqual("ssh", command[0])
-        self.assertIn("pwa-5090", command)
-        self.assertIn("FORGE_RUNS_DIR=/home/petter/code/cpp/chess/forge/runs", command[-1])
-        self.assertIn("FORGE_COORDINATOR_RUNS=", command[-1])
-        self.assertIn("forge resume paused", command[-1])
+        host, remote, pid_file = run_mock.call_args.args
+        self.assertEqual("pwa-5090", host)
+        self.assertIn("FORGE_RUNS_DIR=/home/petter/code/cpp/chess/forge/runs", remote)
+        self.assertIn("FORGE_COORDINATOR_RUNS=", remote)
+        self.assertIn("forge resume paused", remote)
+        self.assertIn(pid_file, remote)
 
     def test_resume_without_run_requires_single_incomplete_run(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -5886,6 +6012,59 @@ console.log(runs.sort(compareRunsByCreated).map(run => run.run).join('\\n'));
             payload = json.loads((run / "summary.json").read_text(encoding="utf-8"))
             self.assertEqual("run_launch_failed", payload["event"])
             self.assertEqual("failed", payload["state"])
+
+    def test_wait_interrupt_stops_run_and_resets_active_task(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run = root / "runs" / "wait-interrupt"
+            output = run / "outputs" / "task.txt"
+            task = {"id": "task", "index": 0, "command": "true", "outputs": [str(output)]}
+            manifest = {
+                "schema": "forge.task.v1",
+                "name": run.name,
+                "work_dir": str(run),
+                "state_dir": str(run / "state"),
+                "log_dir": str(run / "logs"),
+                "claim_dir": str(run / "claims"),
+                "tasks": [task],
+            }
+            run.mkdir(parents=True)
+            forge.write_json(run / "manifest.json", manifest)
+            forge.write_json(run / "workers.json", {
+                "schema": "forge.workers.v1",
+                "workers": [{"host": "localhost", "local": True}],
+            })
+            forge.claim_task(
+                manifest,
+                worker="localhost",
+                profile=None,
+                lease_seconds=600,
+                retry_failed=False,
+            )
+            forge.write_json(forge.task_running_path(manifest, task), {"task": "task"})
+            output.parent.mkdir(parents=True)
+            output.write_text("partial", encoding="utf-8")
+            args = argparse.Namespace(
+                manifest=str(run / "manifest.json"),
+                profile=None,
+                lease_seconds=600,
+                interval_seconds=0.1,
+                timeout_seconds=0.0,
+                fail_on_fail=True,
+                notify_command=None,
+            )
+
+            with (
+                mock.patch("forge_lib.status.time.sleep", side_effect=KeyboardInterrupt),
+                mock.patch("forge_lib.workers.kill_run_workers", return_value=1),
+                self.assertRaises(KeyboardInterrupt),
+            ):
+                forge.cmd_wait(args)
+
+            self.assertTrue(forge.stop_request_path(manifest).exists())
+            self.assertFalse(output.exists())
+            self.assertFalse(forge.task_claim_dir(manifest, task).exists())
+            self.assertEqual("pending", forge.task_state(manifest, task, lease_seconds=600))
 
     def test_wait_sends_done_notification_payload(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -11252,8 +11431,11 @@ console.log(runs.sort(compareRunsByCreated).map(run => run.run).join('\\n'));
             ssh_results = [
                 subprocess.CompletedProcess(["ssh"], 0, stdout="/tmp/forge.manifest\n", stderr=""),
                 subprocess.CompletedProcess(["ssh"], 0, stdout="/tmp/forge.workers\n", stderr=""),
-                subprocess.CompletedProcess(["ssh"], 0, stdout="remote start\n", stderr=""),
+                subprocess.CompletedProcess(["ssh"], 0, stdout="", stderr=""),
             ]
+            remote_result = subprocess.CompletedProcess(
+                ["ssh"], 0, stdout="remote start\n", stderr="",
+            )
 
             with (
                 mock.patch.dict(
@@ -11265,6 +11447,10 @@ console.log(runs.sort(compareRunsByCreated).map(run => run.run).join('\\n'));
                     "forge_lib.workers.run_process_command_with_retries",
                     return_value=subprocess.CompletedProcess(["rsync"], 0, stdout="", stderr=""),
                 ) as rsync_mock,
+                mock.patch(
+                    "forge_lib.workers.run_interruptible_coordinator_process",
+                    return_value=remote_result,
+                ) as launch_mock,
                 mock.patch("forge_lib.workers.remember_run_for_web") as remember_web,
             ):
                 stdout = io.StringIO()
@@ -11304,14 +11490,35 @@ console.log(runs.sort(compareRunsByCreated).map(run => run.run).join('\\n'));
             )
             self.assertIn("coordinator: pwa-5090:/home/petter/code/cpp/chess/forge/runs", stdout.getvalue())
             self.assertEqual(2, rsync_mock.call_count)
-            command = run_mock.call_args_list[-1].args[0]
-            self.assertEqual("ssh", command[0])
-            self.assertIn("pwa-5090", command)
-            self.assertIn("FORGE_COORDINATOR_RUNS=", command[-1])
-            self.assertIn("FORGE_RUNS_DIR=/home/petter/code/cpp/chess/forge/runs", command[-1])
-            self.assertIn("forge start /tmp/forge.manifest --workers /tmp/forge.workers", command[-1])
-            self.assertIn("--coordinator-host pwa-5090", command[-1])
-            self.assertNotIn(str(root), command[-1])
+            host, remote, pid_file = launch_mock.call_args.args
+            self.assertEqual("pwa-5090", host)
+            self.assertIn("FORGE_COORDINATOR_RUNS=", remote)
+            self.assertIn("FORGE_RUNS_DIR=/home/petter/code/cpp/chess/forge/runs", remote)
+            self.assertIn("forge start /tmp/forge.manifest --workers /tmp/forge.workers", remote)
+            self.assertIn("--coordinator-host pwa-5090", remote)
+            self.assertIn("signal.SIG_DFL", remote)
+            self.assertIn("kill -INT", remote)
+            self.assertIn(pid_file, remote)
+            self.assertNotIn(str(root), remote)
+            cleanup_command = run_mock.call_args_list[-1].args[0]
+            self.assertIn("rm -f -- /tmp/forge.manifest /tmp/forge.workers", cleanup_command[-1])
+
+    def test_coordinator_copy_interrupt_removes_allocated_temp_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "manifest.json"
+            source.write_text("{}\n", encoding="utf-8")
+            with (
+                mock.patch("forge_lib.workers.coordinator_temp_file", return_value="/tmp/forge.abcd"),
+                mock.patch(
+                    "forge_lib.workers.run_process_command_with_retries",
+                    side_effect=KeyboardInterrupt,
+                ),
+                mock.patch("forge_lib.workers.remove_coordinator_temp_files") as remove_temps,
+                self.assertRaises(KeyboardInterrupt),
+            ):
+                forge.copy_file_to_coordinator("pwa-5090", source)
+
+            remove_temps.assert_called_once_with("pwa-5090", ["/tmp/forge.abcd"])
 
     def test_deploy_materializes_contained_run(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -12248,6 +12455,7 @@ console.log(runs.sort(compareRunsByCreated).map(run => run.run).join('\\n'));
                 mock.patch("forge.ProcessTracker.run", fake_run),
                 mock.patch("forge_lib.workers.DEPLOY_STARTUP_TIMEOUT_SECONDS", 0.01),
                 mock.patch("forge_lib.workers.DEPLOY_STARTUP_POLL_SECONDS", 0.01),
+                mock.patch("forge_lib.workers.kill_run_workers", return_value=1) as kill_workers,
             ):
                 stdout = io.StringIO()
                 stderr = io.StringIO()
@@ -12260,8 +12468,7 @@ console.log(runs.sort(compareRunsByCreated).map(run => run.run).join('\\n'));
             self.assertIn("deploy: launch failed", output)
             manifest = forge.load_manifest(runs / "failed-launch" / "manifest.json")
             self.assertTrue(forge.stop_request_path(manifest).exists())
-            scripts = [command[-1] for command in commands if command[0] == "sh"]
-            self.assertTrue(any("kill -TERM" in script for script in scripts))
+            kill_workers.assert_called_once_with(runs / "failed-launch")
 
     def test_kill_run_workers_cleans_slot_pid_glob(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -12303,7 +12510,37 @@ console.log(runs.sort(compareRunsByCreated).map(run => run.run).join('\\n'));
             self.assertEqual(1, len(commands))
             script = commands[0][-1]
             self.assertIn("slot-stop-*.pid", script)
-            self.assertIn("kill -TERM", script)
+
+    def test_kill_run_workers_cleans_local_pid_glob(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run = root / "runs" / "local-stop"
+            run.mkdir(parents=True)
+            cache = root / "cache"
+            forge.write_json(run / "workers.json", {
+                "schema": "forge.workers.v1",
+                "workers": [{
+                    "host": "localhost",
+                    "profile": "localhost",
+                    "local": True,
+                    "cache_dir": str(cache),
+                    "slots": 2,
+                }],
+            })
+            pid_path = cache / "local-stop-0-localhost_1.pid"
+
+            with mock.patch(
+                "forge_lib.workers.subprocess.run",
+                return_value=subprocess.CompletedProcess(["sh"], 0, stdout=f"{pid_path}\n", stderr=""),
+            ) as run_mock:
+                killed = forge.kill_run_workers(run)
+
+            self.assertEqual(1, killed)
+            command = run_mock.call_args.args[0]
+            self.assertEqual(["sh", "-lc"], command[:2])
+            self.assertIn("local-stop-*.pid", command[-1])
+            self.assertEqual(1, command[-1].count("sleep 1"))
+            self.assertIn("kill -TERM", command[-1])
 
     def test_deploy_launch_only_starts_wait_monitor_for_notifications(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -13383,6 +13620,7 @@ console.log(runs.sort(compareRunsByCreated).map(run => run.run).join('\\n'));
                 self.patch_runs_dir(root / "runs"),
                 mock.patch("forge.ProcessTracker.run", return_value=subprocess.CompletedProcess(["sh"], 0, stdout="", stderr="")),
                 mock.patch.object(forge.ProcessTracker, "terminate_all") as terminate_all,
+                mock.patch("forge_lib.workers.kill_run_workers", return_value=0) as kill_workers,
                 mock.patch("forge.concurrent.futures.as_completed", side_effect=KeyboardInterrupt),
             ):
                 stdout = io.StringIO()
@@ -13404,7 +13642,11 @@ console.log(runs.sort(compareRunsByCreated).map(run => run.run).join('\\n'));
 
             self.assertEqual(130, rc)
             terminate_all.assert_called_once()
+            kill_workers.assert_called_once()
             self.assertIn("deploy: interrupted; stopping active worker commands", stderr.getvalue())
+            self.assertIn("deploy: interrupt cleanup complete", stderr.getvalue())
+            materialized = forge.load_manifest(root / "runs" / "deploy-interrupt-test" / "manifest.json")
+            self.assertTrue(forge.stop_request_path(materialized).exists())
 
     def test_prepare_command_is_removed(self) -> None:
         result = self.run_cli("prepare", "manifest.json")

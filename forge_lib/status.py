@@ -1740,9 +1740,15 @@ def request_stop_for_run(
     manifest: dict[str, Any],
     *,
     lease_seconds: int,
+    reason: str | None = None,
 ) -> dict[str, Any]:
     from .workers import kill_run_workers
 
+    active_tasks = [
+        task
+        for task in manifest["tasks"]
+        if task_state(manifest, task, lease_seconds=lease_seconds) in {"claimed", "running", "stale"}
+    ]
     payload = {
         "schema": SCHEMA,
         "run": manifest_path.parent.name,
@@ -1750,6 +1756,8 @@ def request_stop_for_run(
         "requested_epoch": epoch(),
         "host": socket.gethostname(),
     }
+    if reason:
+        payload["reason"] = reason
     write_json(stop_request_path(manifest), payload)
     cleared: list[str] = []
     queue_path = queue_request_path(manifest)
@@ -1760,12 +1768,39 @@ def request_stop_for_run(
     if launch_path.exists():
         launch_path.unlink()
         cleared.append("launch")
-    released = release_active_claims(manifest, lease_seconds=lease_seconds)
     killed = kill_run_workers(manifest_path.parent)
+    released = release_active_claims(manifest, lease_seconds=lease_seconds)
+    for task in active_tasks:
+        task_id = str(task["id"])
+        if task_id in released:
+            continue
+        release_claim(manifest, task)
+        released.append(task_id)
+    reset: list[str] = []
+    for task in active_tasks:
+        if task_complete(manifest, task):
+            continue
+        task_done_path(manifest, task).unlink(missing_ok=True)
+        task_fail_path(manifest, task).unlink(missing_ok=True)
+        task_running_path(manifest, task).unlink(missing_ok=True)
+        task_cancel_path(manifest, task).unlink(missing_ok=True)
+        shutil.rmtree(task_claim_dir(manifest, task), ignore_errors=True)
+        for output in task_outputs(task):
+            if output.is_dir() and not output.is_symlink():
+                shutil.rmtree(output, ignore_errors=True)
+            else:
+                output.unlink(missing_ok=True)
+        reset.append(str(task["id"]))
+    finalizer = manifest.get("finalize")
+    if isinstance(finalizer, dict):
+        from .labeling import cleanup_partials
+
+        cleanup_partials(manifest, finalizer)
     return {
         "cleared": cleared,
         "killed": killed,
         "released": released,
+        "reset": reset,
     }
 
 def soft_cancel_done_payload(
@@ -3417,7 +3452,7 @@ def print_compact_status(
         indent="  ",
     )
 
-def cmd_wait(args: argparse.Namespace) -> int:
+def _cmd_wait(args: argparse.Namespace) -> int:
     started_at = time.monotonic()
     manifest_path = expand_path(args.manifest)
     deadline = time.monotonic() + args.timeout_seconds if args.timeout_seconds > 0 else None
@@ -3517,6 +3552,27 @@ def cmd_wait(args: argparse.Namespace) -> int:
             print("timeout waiting for tasks", file=sys.stderr)
             return finish("run_timeout", "timeout", 124, manifest)
         time.sleep(max(0.1, args.interval_seconds))
+
+def cmd_wait(args: argparse.Namespace) -> int:
+    manifest_path = expand_path(args.manifest)
+    try:
+        return _cmd_wait(args)
+    except KeyboardInterrupt:
+        if manifest_path.exists():
+            manifest = load_manifest(manifest_path)
+            cleanup = request_stop_for_run(
+                manifest_path,
+                manifest,
+                lease_seconds=int(args.lease_seconds),
+                reason="wait interrupted",
+            )
+            print(
+                f"wait: interrupt cleanup complete killed={cleanup['killed']} "
+                f"released={len(cleanup['released'])} reset={len(cleanup['reset'])}",
+                file=sys.stderr,
+                flush=True,
+            )
+        raise
 
 def run_notify_command(command_text: str | None, payload: dict[str, Any]) -> int:
     if not command_text:

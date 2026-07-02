@@ -263,6 +263,10 @@ def run_task(
     log_dir(manifest).mkdir(parents=True, exist_ok=True)
     for output in task_outputs(task):
         output.parent.mkdir(parents=True, exist_ok=True)
+        if output.is_dir() and not output.is_symlink():
+            shutil.rmtree(output)
+        else:
+            output.unlink(missing_ok=True)
 
     task_fail_path(manifest, task).unlink(missing_ok=True)
     task_done_path(manifest, task).unlink(missing_ok=True)
