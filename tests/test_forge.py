@@ -580,7 +580,7 @@ except SystemExit as exc:
         self.assertIn('<span class="mobile-score-label">CI</span>', web._HTML)
         self.assertIn('<span class="mobile-score-label">LLR</span>', web._HTML)
         self.assertIn('<span class="mobile-score-label">LOS</span>', web._HTML)
-        self.assertIn('<span class="mobile-score-label">#</span>', web._HTML)
+        self.assertIn('<span class="mobile-score-label">Games</span>', web._HTML)
         self.assertIn("const eloValue = elo.replace(/^\\+/, '')", web._HTML)
         self.assertIn("const ciValue = ci ? `±${ci}` : ''", web._HTML)
         self.assertIn("const losValue = los.replace(/%$/, '')", web._HTML)
