@@ -221,25 +221,11 @@ _HTML = r"""<!DOCTYPE html>
     @media (max-width: 640px) {
       #runs { padding: 8px 6px; }
       .run-hdr { padding: 8px 9px; }
-      .mobile-score { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.25fr);
-                      gap: 6px 14px; margin: 8px 0 2px 18px; align-items: end;
+      .mobile-score { display: block; margin: 6px 0 2px 18px; color: var(--text);
+                      font-size: 13px; line-height: 1.4;
                       font-variant-numeric: tabular-nums; }
-      .mobile-metric { min-width: 0; }
-      .mobile-metric-label { display: block; color: var(--dim); font-size: 10px;
-                             font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
-      .mobile-metric-value { display: block; color: var(--text); font-size: 17px;
-                             font-weight: 700; line-height: 1.2; white-space: nowrap; }
-      .mobile-metric-value.elo-pos { color: var(--grn); }
-      .mobile-metric-value.elo-neu { color: var(--yel); }
-      .mobile-metric-value.elo-neg { color: var(--red); }
-      .mobile-metric.elo .mobile-metric-value { font-size: 20px; }
-      .mobile-llr-track { height: 2px; margin-top: 3px; background: var(--bg3);
-                          border-radius: 2px; overflow: hidden; }
-      .mobile-llr-fill { display: block; height: 100%; background: var(--yel); }
-      .mobile-llr-fill.positive { background: var(--grn); }
-      .mobile-llr-fill.negative { background: var(--red); }
-      .mobile-score-secondary { grid-column: 1 / -1; color: var(--dim); font-size: 11px;
-                                white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .mobile-score-metric { white-space: nowrap; }
+      .mobile-score + .run-summary { display: none; }
       .run-summary .field-elo, .run-summary .field-ci, .run-summary .field-llr,
       .run-summary .field-games, .run-summary .field-workers,
       .run-summary .field-speedup, .run-summary .run-eta { display: none; }
@@ -359,7 +345,7 @@ _HTML = r"""<!DOCTYPE html>
       return `<span class="field${semantic}">${esc(field)}</span>`;
     }
 
-    function mobileScoreStrip(fields, activeFields, eta) {
+    function mobileScoreStrip(fields, activeFields) {
       const all = [...(fields || []), ...(activeFields || [])].map(String);
       const find = name => all.find(field => field.toLowerCase().startsWith(name + '='));
       const value = name => {
@@ -370,30 +356,15 @@ _HTML = r"""<!DOCTYPE html>
       const ci = value('ci');
       const llr = value('llr');
       if (!elo && !llr) return '';
-      const llrMatch = llr.match(/^([+-]?(?:\d+(?:\.\d+)?|\.\d+))\s*\/\s*([+-]?(?:\d+(?:\.\d+)?|\.\d+))(.*)$/);
-      const llrCurrent = llrMatch ? Number(llrMatch[1]) : NaN;
-      const llrBound = llrMatch ? Math.abs(Number(llrMatch[2])) : NaN;
-      const llrDisplay = llrMatch ? `${llrMatch[1]}${llrMatch[3]}`.trim() : llr;
-      const llrPct = Number.isFinite(llrCurrent) && Number.isFinite(llrBound) && llrBound > 0
-        ? Math.min(100, Math.abs(llrCurrent) / llrBound * 100) : 0;
-      const llrTone = llrCurrent > 0 ? 'positive' : llrCurrent < 0 ? 'negative' : '';
+      const llrCurrent = llr.split('/', 1)[0].trim();
+      const los = value('los');
       const games = value('games');
-      const workers = value('workers');
-      const speedup = value('speedup');
-      const secondary = [
-        games ? `${games} games` : '',
-        eta ? `ETA ${eta}` : '',
-        workers ? `${workers} workers` : '',
-        speedup ? `${speedup.replace(/x$/i, '')}×` : '',
-      ].filter(Boolean).join(' · ');
-      return `<div class="mobile-score">`
-        + `<div class="mobile-metric elo"><span class="mobile-metric-label">Elo</span>`
-        + `<span class="mobile-metric-value ${eloClass(elo).trim()}">${esc(elo || '—')}${ci ? ` ± ${esc(ci)}` : ''}</span></div>`
-        + `<div class="mobile-metric llr"><span class="mobile-metric-label">LLR</span>`
-        + `<span class="mobile-metric-value ${eloClass(llrCurrent).trim()}">${esc(llrDisplay || '—')}</span>`
-        + `<div class="mobile-llr-track"><span class="mobile-llr-fill ${llrTone}" style="width:${llrPct.toFixed(1)}%"></span></div></div>`
-        + `${secondary ? `<div class="mobile-score-secondary">${esc(secondary)}</div>` : ''}`
-        + `</div>`;
+      const metrics = [];
+      if (elo) metrics.push(`Elo=<span class="${eloClass(elo).trim()}">${esc(elo)}${ci ? `±${esc(ci)}` : ''}</span>`);
+      if (llrCurrent) metrics.push(`LLR=<span class="${eloClass(llrCurrent).trim()}">${esc(llrCurrent)}</span>`);
+      if (los) metrics.push(`LOS=${esc(los)}`);
+      if (games) metrics.push(`Games=${esc(games)}`);
+      return `<div class="mobile-score">${metrics.map(metric => `<span class="mobile-score-metric">${metric}</span>`).join(', ')}</div>`;
     }
 
     function mobileLayout() {
@@ -1790,7 +1761,7 @@ _HTML = r"""<!DOCTYPE html>
           <span class="badge ${state}">${stateLabel}</span>
         </div>
         ${meta}
-        ${mobileScoreStrip(nonEtaFields, activeFields, eta)}
+        ${mobileScoreStrip(nonEtaFields, activeFields)}
         <div class="run-summary">
           ${stateField}
           <span class="run-fields">${nonEtaFields.map(renderField).join(' &nbsp;')}</span>
