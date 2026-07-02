@@ -634,9 +634,9 @@ except SystemExit as exc:
         self.assertIn("function graphDataPoints", web._HTML)
         self.assertIn("const [minY, maxY] = graphYDomain(name, values, extras)", web._HTML)
         self.assertIn("const yExtras = graphYExtras(s.name, options, s.points)", web._HTML)
-        self.assertIn("const bandMaxFraction = graphNumberOption(s, ['band_max_fraction']) ?? 0.30", web._HTML)
-        self.assertIn("const maxBandRadius = bandSeries ? (maxY - minY) * bandMaxFraction : null", web._HTML)
-        self.assertIn("const band = bandSeries ? graphConfidenceBandPoints(s, s.points, bandSeries.points || [], maxBandRadius) : []", web._HTML)
+        self.assertIn("const band = bandSeries ? graphConfidenceBandPoints(s.points, bandSeries.points || []) : []", web._HTML)
+        self.assertNotIn("band_max_fraction", web._HTML)
+        self.assertNotIn("band_scale", web._HTML)
         self.assertIn("const path = sparkPath(s.name, s.points, scaleExtras, GRAPH_W, h, xTotal)", web._HTML)
         self.assertIn("const zero = zeroLine(s.name, s.points, scaleExtras, GRAPH_W, h)", web._HTML)
         self.assertIn("graphHoverZones(s.name, s.points, scaleExtras", web._HTML)
@@ -668,7 +668,7 @@ except SystemExit as exc:
         self.assertIn("function graphTicks", web._HTML)
         self.assertIn("function graphXAxisHtml", web._HTML)
         self.assertIn("function graphPointMarkers", web._HTML)
-        self.assertIn("const scaleExtras = yExtras.concat(band.flatMap", web._HTML)
+        self.assertIn("const scaleExtras = yExtras", web._HTML)
         self.assertIn("font-variant-numeric: tabular-nums", web._HTML)
         self.assertIn("label.textContent = text", web._HTML)
         self.assertIn("label.style.left = `${left}px`", web._HTML)
@@ -810,8 +810,8 @@ function graphValueAt(points, x) {
   if (!sorted.length || x < sorted[0].x) return null;
   return interpolatedGraphY(sorted, x);
 }
-function graphConfidenceBandPoints(name, points, ciPoints, maxBandRadius = null) {
-  if (graphSeriesName(name) !== 'elo' || !ciPoints || !ciPoints.length) return [];
+function graphConfidenceBandPoints(points, ciPoints) {
+  if (!ciPoints || !ciPoints.length) return [];
   const sortedCi = ciPoints
     .map(p => ({x: Number(p.x), y: Number(p.y)}))
     .filter(p => Number.isFinite(p.x) && Number.isFinite(p.y))
@@ -823,10 +823,7 @@ function graphConfidenceBandPoints(name, points, ciPoints, maxBandRadius = null)
     if (exact === undefined && p.x === firstX) return null;
     const ci = Number(exact === undefined ? interpolatedGraphY(sortedCi, p.x) : exact);
     if (!Number.isFinite(ci) || ci <= 0) return null;
-    const radius = Number.isFinite(maxBandRadius) && maxBandRadius > 0
-      ? Math.min(ci, maxBandRadius)
-      : ci;
-    return {x: p.x, lo: p.y - radius, hi: p.y + radius};
+    return {x: p.x, lo: p.y - ci, hi: p.y + ci};
   }).filter(Boolean);
   if (band.length && points.length && band[0].x > points[0].x) {
     band.unshift({x: points[0].x, lo: points[0].y, hi: points[0].y});
@@ -849,14 +846,13 @@ const ci = [
 ];
 const values = points.map(p => p.y);
 const domain = graphYDomain('elo', values, []);
-const maxBandRadius = (domain[1] - domain[0]) * 0.30;
-const band = graphConfidenceBandPoints('elo', points, ci, maxBandRadius);
+const band = graphConfidenceBandPoints(points, ci);
 const zero = graphY('elo', values, 0, [], 220);
 const last = graphY('elo', values, 43.33, [], 220);
 const byX = new Map(points.map(p => [p.x, p.y]));
 const misses = band.filter(p => byX.has(p.x) && (byX.get(p.x) < p.lo || byX.get(p.x) > p.hi));
 const hoverCi = graphValueAt(ci, 496);
-console.log(JSON.stringify({band, domain, maxBandRadius, zero, last, delta: zero - last, misses, hoverCi}));
+console.log(JSON.stringify({band, domain, zero, last, delta: zero - last, misses, hoverCi}));
 """
         result = subprocess.run(
             ["node", "-e", probe],
@@ -870,10 +866,28 @@ console.log(JSON.stringify({band, domain, maxBandRadius, zero, last, delta: zero
         payload = json.loads(result.stdout)
         self.assertGreater(payload["delta"], 35)
         self.assertLess(abs(payload["domain"][1]), 140)
-        self.assertGreater(payload["maxBandRadius"], 0)
         self.assertEqual([], payload["misses"])
         self.assertEqual([0, 38, 142, 496, 500], [point["x"] for point in payload["band"]])
+        self.assertAlmostEqual(16.24, payload["band"][-1]["lo"])
+        self.assertAlmostEqual(70.42, payload["band"][-1]["hi"])
         self.assertAlmostEqual(27.25, payload["hoverCi"])
+
+    def test_sprt_graph_ignores_legacy_ci_distortion_options(self) -> None:
+        options = forge.progress_series_options(
+            {
+                "band_max_fraction": 0.24,
+                "band_scale": 0.35,
+                "band_series": "ci",
+                "scale": "symmetric",
+            },
+            kind="sprt",
+            field="elo",
+        )
+
+        self.assertEqual("ci", options["band_series"])
+        self.assertEqual("symmetric", options["scale"])
+        self.assertNotIn("band_scale", options)
+        self.assertNotIn("band_max_fraction", options)
 
     def test_web_sorts_named_fallback_in_local_time(self) -> None:
         import forge_lib.web as web
@@ -1897,8 +1911,6 @@ console.log(runs.sort(compareRunsByCreated).map(run => run.run).join('\\n'));
             }
             fresh = copy.deepcopy(stale)
             fresh["progress_graph"]["series"][1].update({
-                "band_max_fraction": 0.24,
-                "band_scale": 0.35,
                 "band_series": "ci",
                 "scale": "symmetric",
             })
@@ -1928,8 +1940,8 @@ console.log(runs.sort(compareRunsByCreated).map(run => run.run).join('\\n'));
             named.assert_called_once_with("done-run", None)
             series = {item["name"]: item for item in merged["runs"][0]["progress_graph"]["series"]}
             self.assertEqual("ci", series["elo"]["band_series"])
-            self.assertEqual(0.35, series["elo"]["band_scale"])
-            self.assertEqual(0.24, series["elo"]["band_max_fraction"])
+            self.assertNotIn("band_scale", series["elo"])
+            self.assertNotIn("band_max_fraction", series["elo"])
             self.assertEqual(fresh["progress_graph"], state["lingering_runs"]["done-run"]["progress_graph"])
             self.assertEqual(web._WEB_RUN_SNAPSHOT_VERSION, state["lingering_runs"]["done-run"]["web_snapshot_version"])
 
@@ -8434,8 +8446,8 @@ console.log(runs.sort(compareRunsByCreated).map(run => run.run).join('\\n'));
             self.assertEqual(2.94, meta["llr"]["max"])
             self.assertEqual("symmetric", meta["llr"]["scale"])
             self.assertEqual("ci", meta["elo"]["band_series"])
-            self.assertEqual(0.35, meta["elo"]["band_scale"])
-            self.assertEqual(0.24, meta["elo"]["band_max_fraction"])
+            self.assertNotIn("band_scale", meta["elo"])
+            self.assertNotIn("band_max_fraction", meta["elo"])
             self.assertTrue(meta["elo"]["smooth"])
 
     def test_status_sprt_run_graph_uses_processed_game_positions(self) -> None:

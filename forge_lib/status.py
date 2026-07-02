@@ -11,11 +11,9 @@ from .tasks import *
 
 QUEUE_MONITOR_NAME = "queue-monitor.json"
 PROGRESS_HISTORY_NAME = "progress-history.jsonl"
-PROGRESS_GRAPH_VERSION = 4
+PROGRESS_GRAPH_VERSION = 5
 SIGNED_PROGRESS_SERIES = {"elo", "llr"}
 PROGRESS_GRAPH_SERIES_OPTION_KEYS = {
-    "band_max_fraction",
-    "band_scale",
     "band_series",
     "max",
     "min",
@@ -2198,8 +2196,6 @@ def sprt_progress_series_options(field: str) -> dict[str, Any]:
     key = field.lower()
     if key == "elo":
         return {
-            "band_max_fraction": 0.24,
-            "band_scale": 0.35,
             "band_series": "ci",
             "scale": "symmetric",
             "smooth": True,
