@@ -6223,7 +6223,9 @@ console.log(runs.sort(compareRunsByCreated).map(run => run.run).join('\\n'));
             self.assertEqual(0, status.returncode)
             self.assertIn("active: 1", status.stdout)
             self.assertIn("new shard=0", status.stdout)
-            self.assertIn("fail: 0", status.stdout)
+            self.assertIn("command: true", status.stdout)
+            self.assertNotIn("pending: 0", status.stdout)
+            self.assertNotIn("fail: 0", status.stdout)
 
     def test_newer_fail_marker_wins_over_old_running_marker(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -7459,6 +7461,9 @@ console.log(runs.sort(compareRunsByCreated).map(run => run.run).join('\\n'));
             self.assertIn("active", verbose_status.stdout)
             self.assertIn("waiting", verbose_status.stdout)
             self.assertNotIn("queued", verbose_status.stdout)
+            self.assertIn("command: true", verbose_status.stdout)
+            self.assertNotIn("active: 0", verbose_status.stdout)
+            self.assertNotIn("fail: 0", verbose_status.stdout)
 
             failed = write_run("aaa-failed")
             failed_state = failed / "state"
@@ -7695,6 +7700,9 @@ console.log(runs.sort(compareRunsByCreated).map(run => run.run).join('\\n'));
 
         self.assertIn("state=queued", status.stdout)
         self.assertIn("state=queued", named_status.stdout)
+        self.assertIn("command: true", named_status.stdout)
+        self.assertNotIn("active: 0", named_status.stdout)
+        self.assertNotIn("fail: 0", named_status.stdout)
         payload = json.loads(payload_result.stdout)
         self.assertEqual("queued", payload["runs"][0]["state"])
         self.assertIn("state=queued", payload["runs"][0]["display"]["fields"])

@@ -49,6 +49,7 @@ def cmd_status(args: argparse.Namespace) -> int:
                     collapse_inactive_failures=False,
                     show_details=True,
                     show_done=bool(getattr(args, "show_done", False)),
+                    show_commands=bool(getattr(args, "verbose", False)),
                 )
         if args.run is None and filter_name is None:
             summaries = load_run_summaries(
@@ -65,6 +66,7 @@ def cmd_status(args: argparse.Namespace) -> int:
                     collapse_inactive_failures=bool(not getattr(args, "verbose", False)),
                     show_details=True,
                     show_done=bool(getattr(args, "show_done", False)),
+                    show_commands=bool(getattr(args, "verbose", False)),
                 )
         return run_status_on_coordinator(args, coordinator_runs)
     if args.run is None:
@@ -81,6 +83,7 @@ def cmd_status(args: argparse.Namespace) -> int:
             collapse_inactive_failures=bool(filter_name is None and not getattr(args, "verbose", False)),
             show_details=bool(filter_name is None or args.all or args.done or args.failed or getattr(args, "show_done", False) or getattr(args, "verbose", False)),
             show_done=bool(args.done or getattr(args, "show_done", False)),
+            show_commands=bool(getattr(args, "verbose", False)),
         )
     if selected:
         raise SystemExit("--all, --done, and --failed cannot be used with a run name")
@@ -300,6 +303,7 @@ def print_delegated_status_payload(args: argparse.Namespace, payload: Any, *, ru
             collapse_inactive_failures=bool(filter_name is None and not getattr(args, "verbose", False)),
             show_details=bool(filter_name is None or args.all or args.done or args.failed or getattr(args, "show_done", False) or getattr(args, "verbose", False)),
             show_done=bool(args.done or getattr(args, "show_done", False)),
+            show_commands=bool(getattr(args, "verbose", False)),
             runs_label=runs_label,
         )
     if args.run is not None and isinstance(payload, dict) and isinstance(payload.get("counts"), dict):
@@ -1382,6 +1386,19 @@ def run_command_groups(manifest: dict[str, Any]) -> list[dict[str, Any]]:
         group["count"] = int(group["count"]) + 1
     return list(groups.values())
 
+def status_command_groups(summary: dict[str, Any]) -> list[dict[str, Any]]:
+    commands = summary.get("commands")
+    if isinstance(commands, list):
+        return [item for item in commands if isinstance(item, dict)]
+    manifest = summary.get("manifest_payload")
+    return run_command_groups(manifest) if isinstance(manifest, dict) else []
+
+def print_status_commands(summary: dict[str, Any], *, indent: str = "") -> None:
+    for item in status_command_groups(summary):
+        command = str(item.get("command") or "").strip()
+        if command:
+            print(f"{indent}command: {command}")
+
 def run_status_payload(summary: dict[str, Any]) -> dict[str, Any]:
     counts = summary["counts"]
     fields = run_display_fields(summary)
@@ -1637,6 +1654,7 @@ def print_run_status(
     collapse_inactive_failures: bool = False,
     show_details: bool = False,
     show_done: bool = False,
+    show_commands: bool = False,
     runs_label: str | None = None,
 ) -> int:
     filtered = filtered_run_summaries(
@@ -1691,6 +1709,8 @@ def print_run_status(
                 print(f"  {color_status_field(description, summary=summary, color_enabled=color_enabled)}")
             if comment := run_comment_field(summary):
                 print(f"  {color_status_field(comment, summary=summary, color_enabled=color_enabled)}")
+            if show_commands:
+                print_status_commands(summary, indent="  ")
         if show_details:
             fields = run_display_fields(summary)
         else:
@@ -3330,7 +3350,7 @@ def print_status_details(
     show_diagnostics: bool = False,
     indent: str = "",
 ) -> None:
-    show_empty = show_diagnostics
+    show_empty = False
     if show_done:
         print_status_group("done", summary["groups"]["done"], color_enabled=color_enabled, show_empty=show_empty, indent=indent)
     active_rows = [row for row in summary["active"] if row.get("state") != "stale"]
@@ -3385,6 +3405,8 @@ def print_compact_status(
         print(f"  {color_status_field(description, summary=summary, color_enabled=color_enabled)}")
     if comment := run_comment_field(summary):
         print(f"  {color_status_field(comment, summary=summary, color_enabled=color_enabled)}")
+    if show_diagnostics:
+        print_status_commands(summary, indent="  ")
     fields = run_display_fields(summary)
     print(f"  {' '.join(color_status_fields(fields, summary=summary, color_enabled=color_enabled))}")
     print_status_details(
