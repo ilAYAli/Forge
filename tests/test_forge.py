@@ -617,8 +617,7 @@ except SystemExit as exc:
         self.assertIn("function confidenceBandPath", web._HTML)
         self.assertIn("function graphAxisHtml", web._HTML)
         self.assertNotIn("function toggleGraphLlr", web._HTML)
-        self.assertNotIn("band.unshift({x: points[0].x, lo: points[0].y, hi: points[0].y})", web._HTML)
-        self.assertIn("const minX = Math.max(sortedPoints[0].x, sortedCi[0].x)", web._HTML)
+        self.assertIn("band.unshift({x: points[0].x, lo: points[0].y, hi: points[0].y})", web._HTML)
         self.assertIn("ci <= 0) return null", web._HTML)
         self.assertNotIn("maxCi", web._HTML)
         self.assertNotIn("graphBandYValues", web._HTML)
@@ -812,29 +811,24 @@ function graphValueAt(points, x) {
   return interpolatedGraphY(sorted, x);
 }
 function graphConfidenceBandPoints(points, ciPoints) {
-  if (!points || !points.length || !ciPoints || !ciPoints.length) return [];
-  const sortedPoints = points
-    .map(p => ({x: Number(p.x), y: Number(p.y)}))
-    .filter(p => Number.isFinite(p.x) && Number.isFinite(p.y))
-    .sort((a, b) => a.x - b.x);
+  if (!ciPoints || !ciPoints.length) return [];
   const sortedCi = ciPoints
     .map(p => ({x: Number(p.x), y: Number(p.y)}))
     .filter(p => Number.isFinite(p.x) && Number.isFinite(p.y))
     .sort((a, b) => a.x - b.x);
-  if (!sortedPoints.length || !sortedCi.length) return [];
-  const minX = Math.max(sortedPoints[0].x, sortedCi[0].x);
-  const maxX = Math.min(sortedPoints[sortedPoints.length - 1].x, sortedCi[sortedCi.length - 1].x);
-  if (minX > maxX) return [];
-  const xs = [...new Set(sortedPoints.concat(sortedCi).map(p => p.x))]
-    .filter(x => x >= minX && x <= maxX)
-    .sort((a, b) => a - b);
-  return xs.map(x => {
-    const y = Number(interpolatedGraphY(sortedPoints, x));
-    const ci = Number(interpolatedGraphY(sortedCi, x));
-    if (!Number.isFinite(y)) return null;
+  const ciByX = new Map(sortedCi.map(p => [String(p.x), p.y]));
+  const firstX = points[0]?.x;
+  const band = points.map(p => {
+    const exact = ciByX.get(String(p.x));
+    if (exact === undefined && p.x === firstX) return null;
+    const ci = Number(exact === undefined ? interpolatedGraphY(sortedCi, p.x) : exact);
     if (!Number.isFinite(ci) || ci <= 0) return null;
-    return {x, lo: y - ci, hi: y + ci};
+    return {x: p.x, lo: p.y - ci, hi: p.y + ci};
   }).filter(Boolean);
+  if (band.length && points.length && band[0].x > points[0].x) {
+    band.unshift({x: points[0].x, lo: points[0].y, hi: points[0].y});
+  }
+  return band;
 }
 const points = [
   {x: 0, y: 0},
@@ -873,9 +867,7 @@ console.log(JSON.stringify({band, domain, zero, last, delta: zero - last, misses
         self.assertGreater(payload["delta"], 35)
         self.assertLess(abs(payload["domain"][1]), 140)
         self.assertEqual([], payload["misses"])
-        self.assertEqual([54, 60, 142, 496, 500], [point["x"] for point in payload["band"]])
-        self.assertAlmostEqual(-529.1838461538461, payload["band"][0]["lo"])
-        self.assertAlmostEqual(599.4961538461538, payload["band"][0]["hi"])
+        self.assertEqual([0, 38, 142, 496, 500], [point["x"] for point in payload["band"]])
         self.assertAlmostEqual(16.24, payload["band"][-1]["lo"])
         self.assertAlmostEqual(70.42, payload["band"][-1]["hi"])
         self.assertAlmostEqual(27.25, payload["hoverCi"])
