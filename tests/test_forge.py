@@ -620,6 +620,9 @@ except SystemExit as exc:
         self.assertIn("function confidenceBandPath", web._HTML)
         self.assertIn("function graphAxisHtml", web._HTML)
         self.assertNotIn("function toggleGraphLlr", web._HTML)
+        self.assertIn("p.y > 0", web._HTML)
+        self.assertIn("const firstRadius = scaledRadius(firstCi.y)", web._HTML)
+        self.assertIn("radius = firstRadius * fraction", web._HTML)
         self.assertIn("let radius = 0", web._HTML)
         self.assertIn("return hasWidth ? band : []", web._HTML)
         self.assertIn("return scaled.slice(1).map((current, index)", web._HTML)
@@ -810,6 +813,12 @@ const band = graphConfidenceBandPoints(
   null,
   raw,
 );
+const conePoints = [0, 20, 40, 60, 80, 100, 200].map(x => ({x, y: 10}));
+const cone = graphConfidenceBandPoints(
+  {name: 'elo'},
+  conePoints,
+  [{x: 20, y: 0}, {x: 40, y: 0}, {x: 100, y: 50}, {x: 200, y: 20}],
+);
 console.log(JSON.stringify({
   raw: raw.map(point => point.x),
   elo: elo.map(point => Number(point.x.toFixed(3))),
@@ -818,6 +827,7 @@ console.log(JSON.stringify({
   ordered: elo.every((point, index) => index === 0 || point.x > elo[index - 1].x),
   firstBandX: band[2].x,
   firstBandRadius: Number(((band[2].hi - band[2].lo) / 2).toFixed(1)),
+  coneRadii: cone.map(point => Number(((point.hi - point.lo) / 2).toFixed(1))),
 }));
 """
         )
@@ -839,6 +849,7 @@ console.log(JSON.stringify({
                 "ordered": True,
                 "firstBandX": 40,
                 "firstBandRadius": 40,
+                "coneRadii": [0, 10, 20, 30, 40, 50, 20],
             },
             json.loads(result.stdout),
         )

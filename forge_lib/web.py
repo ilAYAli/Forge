@@ -1096,27 +1096,40 @@ _HTML = r"""<!DOCTYPE html>
       if (!points || !points.length || !ciPoints || !ciPoints.length) return [];
       const sortedCi = ciPoints
         .map(p => ({x: Number(p.x), y: Number(p.y)}))
-        .filter(p => Number.isFinite(p.x) && Number.isFinite(p.y))
+        .filter(p => Number.isFinite(p.x) && Number.isFinite(p.y) && p.y > 0)
         .sort((a, b) => a.x - b.x);
       if (!sortedCi.length) return [];
       const ciByX = new Map(sortedCi.map(p => [String(p.x), p.y]));
       const bandScale = graphNumberOption(name, ['band_scale']) ?? 1.0;
+      const scaledRadius = ci => {
+        const scaled = ci * bandScale;
+        return Number.isFinite(maxBandRadius) && maxBandRadius > 0
+          ? Math.min(scaled, maxBandRadius)
+          : scaled;
+      };
+      const firstCi = sortedCi[0];
+      const firstRawX = Number(rawPoints?.[0]?.x);
+      const originX = Number.isFinite(firstRawX) ? firstRawX : Number(points[0].x);
+      const firstRadius = scaledRadius(firstCi.y);
       let radius = 0;
       let hasWidth = false;
       const band = points.map((p, index) => {
         const rawX = Number(rawPoints?.[index]?.x);
         const sampleX = Number.isFinite(rawX) ? rawX : p.x;
-        if (index > 0 && sampleX >= sortedCi[0].x) {
+        if (index > 0 && sampleX < firstCi.x) {
+          const span = firstCi.x - originX;
+          const fraction = span > 0
+            ? Math.max(0, Math.min(1, (sampleX - originX) / span))
+            : 1;
+          radius = firstRadius * fraction;
+        } else if (index > 0) {
           const exact = ciByX.get(String(sampleX));
           const ci = Number(exact === undefined ? interpolatedGraphY(sortedCi, sampleX) : exact);
           if (Number.isFinite(ci) && ci > 0) {
-            const scaled = ci * bandScale;
-            radius = Number.isFinite(maxBandRadius) && maxBandRadius > 0
-              ? Math.min(scaled, maxBandRadius)
-              : scaled;
-            hasWidth = radius > 0;
+            radius = scaledRadius(ci);
           }
         }
+        hasWidth = hasWidth || radius > 0;
         return {x: p.x, lo: p.y - radius, hi: p.y + radius};
       });
       return hasWidth ? band : [];
