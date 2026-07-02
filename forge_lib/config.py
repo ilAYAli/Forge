@@ -7,6 +7,7 @@ CONFIG_ENV = "FORGE_CONFIG"
 WORKERS_ENV = "FORGE_WORKERS"
 COORDINATOR_HOST_ENV = "FORGE_COORDINATOR_HOST"
 NOTIFY_ENV = "FORGE_NOTIFY_COMMAND"
+SPEEDUP_SINGLE_HOST_WORKERS_ENV = "FORGE_SPEEDUP_SINGLE_HOST_WORKERS"
 CONFIG_DIR = Path("~/.config/forge")
 CONFIG_YML = "config.yml"
 CONFIG_TOML = "config.toml"
@@ -159,3 +160,17 @@ def default_notify_command(config: dict[str, Any] | None = None) -> str | None:
     config = config if config is not None else load_config()
     value = config.get("notify_command") or config.get("default_notify_command")
     return str(value).strip() if value else None
+
+
+def speedup_single_host_workers(config: dict[str, Any] | None = None) -> int:
+    raw = os.environ.get(SPEEDUP_SINGLE_HOST_WORKERS_ENV)
+    if raw is None:
+        config = config if config is not None else load_config()
+        raw = config.get("speedup.single_host_workers", config.get("speedup_single_host_workers", 5))
+    try:
+        workers = int(raw)
+    except (TypeError, ValueError):
+        raise SystemExit("config speedup.single_host_workers must be a positive integer") from None
+    if workers <= 0:
+        raise SystemExit("config speedup.single_host_workers must be a positive integer")
+    return workers

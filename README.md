@@ -216,9 +216,22 @@ Other defaults remain in `~/.config/forge/config.yml`:
 ```yaml
 coordinator_host: "worker1"
 notify_command: "/path/to/notify-script"
+speedup.single_host_workers: 5
 template_dirs:
   - "~/.config/forge/templates"
 ```
+
+Forge reports distributed speedup against a configurable single-host
+baseline:
+
+```text
+single-host throughput = speedup.single_host_workers × fastest active task rate
+speedup = total active task rate ÷ single-host throughput
+```
+
+The default models one host as five workers. For example, 40 equally fast
+active workers report `8.0x`. Set `speedup.single_host_workers` to the worker
+count that should represent one host.
 
 ## Status
 

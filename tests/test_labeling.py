@@ -191,6 +191,11 @@ class LabelingFinalizationTests(unittest.TestCase):
 
 
 class LabelingProgressTests(unittest.TestCase):
+    def setUp(self) -> None:
+        patcher = mock.patch("forge_lib.status.speedup_single_host_workers", return_value=5)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_template_graphs_counters_and_reports_speedup(self) -> None:
         template_path = Path(__file__).resolve().parents[1] / "templates" / "label.template.json"
         progress = json.loads(template_path.read_text(encoding="utf-8"))["task"]["progress"]
@@ -245,7 +250,7 @@ class LabelingProgressTests(unittest.TestCase):
             self.assertEqual([{"x": 100.0, "y": 60.0}, {"x": 200.0, "y": 120.0}], series["written"])
             self.assertIn("workers=2", active_worker_summary(summary))
             self.assertIn("output=240", active_worker_summary(summary))
-            self.assertIn("speedup=2.0x", active_worker_summary(summary))
+            self.assertIn("speedup=0.3x", active_worker_summary(summary))
 
             for index in range(2):
                 with (logs / f"label_{index}.log").open("a", encoding="utf-8") as file:
@@ -290,7 +295,7 @@ class LabelingProgressTests(unittest.TestCase):
         self.assertIn("rate=18.0/s", text)
         self.assertIn("min=late:8/s", text)
         self.assertIn("max=early:10.0/s", text)
-        self.assertIn("speedup=1.8x", text)
+        self.assertIn("speedup=0.4x", text)
 
 
 if __name__ == "__main__":

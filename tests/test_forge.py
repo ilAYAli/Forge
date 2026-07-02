@@ -2439,6 +2439,7 @@ console.log(runs.sort(compareRunsByCreated).map(run => run.run).join('\\n'));
                 f'default_workers: "worker-a:2,worker-b:3"\n'
                 f'coordinator_host: "coordinator-a"\n'
                 f'notify_command: "notify-me"\n'
+                f'speedup.single_host_workers: 7\n'
                 f"template_dirs:\n"
                 f"  - \"{root / 'templates'}\"\n",
                 encoding="utf-8",
@@ -2448,6 +2449,7 @@ console.log(runs.sort(compareRunsByCreated).map(run => run.run).join('\\n'));
                 self.assertEqual("worker-a:2,worker-b:3", forge.default_workers_arg(payload))
                 self.assertEqual("coordinator-a", forge.default_coordinator_host(payload))
                 self.assertEqual("notify-me", forge.default_notify_command(payload))
+                self.assertEqual(7, forge.speedup_single_host_workers(payload))
                 self.assertEqual(root / "templates", forge.config_template_dirs(payload)[0])
 
     def test_empty_coordinator_env_does_not_hide_file_default(self) -> None:
@@ -9058,7 +9060,7 @@ console.log(runs.sort(compareRunsByCreated).map(run => run.run).join('\\n'));
                 text = stdout.getvalue()
                 self.assertIn("tasks=1/4", text)
                 self.assertNotIn("tasks=1/4 speedup=", text)
-                self.assertIn("active: 3 rows=177k/500k workers=2 output=68k min=worker-b:20k max=worker-a:48k speedup=1.4x", text)
+                self.assertIn("active: 3 rows=177k/500k workers=2 output=68k min=worker-b:20k max=worker-a:48k speedup=0.3x", text)
                 self.assertNotIn("active workers:", text)
                 self.assertNotIn("tasks=2 output=48k", text)
                 self.assertNotIn("tasks=1 output=20k", text)
@@ -9088,7 +9090,7 @@ console.log(runs.sort(compareRunsByCreated).map(run => run.run).join('\\n'));
                     if "active:" in line and "workers=" in line
                 )
                 self.assertIn("active: \033[33m3\033[0m", color_line)
-                self.assertIn(f"workers=2 output=68k min=worker-b:20k max=worker-a:48k speedup=\033[{forge.STATUS_BLUE_SGR}m1.4x\033[0m", color_line)
+                self.assertIn(f"workers=2 output=68k min=worker-b:20k max=worker-a:48k speedup=\033[{forge.STATUS_BLUE_SGR}m0.3x\033[0m", color_line)
                 self.assertNotIn("workers=\033[", color_line)
                 self.assertNotIn("output=\033[", color_line)
                 self.assertNotIn("min=\033[", color_line)
@@ -9222,7 +9224,7 @@ console.log(runs.sort(compareRunsByCreated).map(run => run.run).join('\\n'));
         }
         self.assertEqual("progress=rows=50/200, eta=15s", forge.summary_progress(summary))
 
-    def test_status_speedup_uses_output_share(self) -> None:
+    def test_status_speedup_requires_task_rates(self) -> None:
         summary = {
             "run": "run-a",
             "manifest": "runs/run-a/manifest.json",
@@ -9249,13 +9251,13 @@ console.log(runs.sort(compareRunsByCreated).map(run => run.run).join('\\n'));
             "metadata": {},
         }
         self.assertEqual(
-            "workers=2 output=90k min=slow:10k max=fast:80k speedup=1.1x",
+            "workers=2 output=90k min=slow:10k max=fast:80k",
             forge.active_worker_summary(summary),
         )
-        self.assertEqual("speedup=1.1x", forge.run_speedup_field(summary))
+        self.assertEqual("", forge.run_speedup_field(summary))
         payload = forge.run_status_payload(summary)
-        self.assertEqual(1.125, payload["display"]["active_summary"]["speedup"])
-        self.assertEqual("1.1x", payload["display"]["active_summary"]["speedup_text"])
+        self.assertNotIn("speedup", payload["display"]["active_summary"])
+        self.assertNotIn("speedup_text", payload["display"]["active_summary"])
         self.assertEqual("90k", payload["display"]["active_summary"]["output_text"])
         self.assertEqual("slow", payload["sections"]["active"]["summary"]["min"]["worker"])
 
@@ -9311,16 +9313,37 @@ console.log(runs.sort(compareRunsByCreated).map(run => run.run).join('\\n'));
             "metadata": {},
         }
         self.assertEqual(
-            "workers=2 rate=4/s min=slow:1/s max=fast:3/s speedup=1.3x",
+            "workers=2 rate=4/s min=slow:1/s max=fast:3/s speedup=0.4x",
             forge.active_worker_summary(summary),
         )
-        self.assertEqual("speedup=1.3x", forge.run_speedup_field(summary))
+        self.assertEqual("speedup=0.4x", forge.run_speedup_field(summary))
         payload = forge.run_status_payload(summary)
-        self.assertEqual(1.333, payload["display"]["active_summary"]["speedup"])
-        self.assertEqual("1.3x", payload["display"]["active_summary"]["speedup_text"])
+        self.assertEqual(0.4, payload["display"]["active_summary"]["speedup"])
+        self.assertEqual("0.4x", payload["display"]["active_summary"]["speedup_text"])
         self.assertEqual("rate", payload["display"]["active_summary"]["rate_name"])
         self.assertEqual("4/s", payload["display"]["active_summary"]["rate_text"])
-        self.assertIn("speedup=1.3x", payload["display"]["active_summary_text"])
+        self.assertIn("speedup=0.4x", payload["display"]["active_summary_text"])
+
+    def test_status_speedup_uses_configurable_single_host_baseline(self) -> None:
+        summary = {
+            "active": [
+                {
+                    "worker": f"worker-{index % 5}",
+                    "progress_data": {"kind": "metadata", "rate": 1.0},
+                }
+                for index in range(44)
+            ],
+            "worker_outputs": {},
+            "worker_rates": {},
+            "metadata": {},
+        }
+
+        with mock.patch("forge_lib.status.speedup_single_host_workers", return_value=5):
+            self.assertEqual(8.8, forge.run_speedup_value(summary))
+            self.assertEqual("speedup=8.8x", forge.run_speedup_field(summary))
+        with mock.patch("forge_lib.status.speedup_single_host_workers", return_value=4):
+            self.assertEqual(11.0, forge.run_speedup_value(summary))
+            self.assertEqual("speedup=11.0x", forge.run_speedup_field(summary))
 
     def test_status_single_worker_summary_omits_redundant_fields(self) -> None:
         summary = {

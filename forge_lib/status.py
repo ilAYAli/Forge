@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 import shlex
 
-from .config import default_notify_command
+from .config import default_notify_command, speedup_single_host_workers
 from .core import *
 from .manifest import *
 from .tasks import *
@@ -1112,6 +1112,24 @@ def active_worker_metrics(summary: dict[str, Any]) -> dict[str, dict[str, Any]]:
 def compact_rate_per_second(value: float) -> str:
     return f"{compact_rate(value)}/s"
 
+def active_task_rates(summary: dict[str, Any]) -> list[float]:
+    rates: list[float] = []
+    for row in summary.get("active", []):
+        if row.get("state") == "stale":
+            continue
+        data = row.get("progress_data")
+        rate = data.get("rate") if isinstance(data, dict) and data.get("kind") == "metadata" else None
+        if isinstance(rate, (int, float)) and rate > 0:
+            rates.append(float(rate))
+    return rates
+
+def run_speedup_value(summary: dict[str, Any]) -> float | None:
+    rates = active_task_rates(summary)
+    if not rates:
+        return None
+    baseline = speedup_single_host_workers() * max(rates)
+    return sum(rates) / baseline if baseline > 0 else None
+
 def active_worker_summary(summary: dict[str, Any]) -> str:
     metrics = active_worker_metrics(summary)
     if not metrics:
@@ -1130,8 +1148,8 @@ def active_worker_summary(summary: dict[str, Any]) -> str:
         max_rate = float(ordered[-1]["progress_rate"])
         parts.append(f"min={str(ordered[0]['worker'])}:{compact_rate_per_second(float(ordered[0]['progress_rate']))}")
         parts.append(f"max={str(ordered[-1]['worker'])}:{compact_rate_per_second(max_rate)}")
-        if max_rate > 0:
-            parts.append(f"speedup={total_rate / max_rate:.1f}x")
+        if speedup := run_speedup_field(summary):
+            parts.append(speedup)
         return " ".join(parts)
     if output_values:
         total_output = sum(int(metric["output"]) for metric in values)
@@ -1187,11 +1205,6 @@ def active_worker_summary_payload(summary: dict[str, Any]) -> dict[str, Any]:
                 "output": int(ordered[-1]["output"]),
                 "output_text": compact_count(int(ordered[-1]["output"])),
             }
-            max_output = int(ordered[-1]["output"])
-            if max_output > 0:
-                speedup = total_output / max_output
-                payload["speedup"] = round(speedup, 3)
-                payload["speedup_text"] = f"{speedup:.1f}x"
         if prefer_rates and len(rate_values) > 1:
             total_rate = sum(float(metric.get("progress_rate", 0.0)) for metric in rate_values)
             ordered = sorted(rate_values, key=lambda metric: (float(metric["progress_rate"]), str(metric["worker"])))
@@ -1209,10 +1222,6 @@ def active_worker_summary_payload(summary: dict[str, Any]) -> dict[str, Any]:
                 "rate": max_rate,
                 "rate_text": compact_rate_per_second(max_rate),
             }
-            if max_rate > 0:
-                speedup = total_rate / max_rate
-                payload["speedup"] = round(speedup, 3)
-                payload["speedup_text"] = f"{speedup:.1f}x"
     elif any(bool(metric.get("progress_rate_seen")) for metric in values):
         rate_values = [metric for metric in values if bool(metric.get("progress_rate_seen"))]
         total_rate = sum(float(metric.get("progress_rate", 0.0)) for metric in rate_values)
@@ -1231,39 +1240,18 @@ def active_worker_summary_payload(summary: dict[str, Any]) -> dict[str, Any]:
                 "rate": float(ordered[-1]["progress_rate"]),
                 "rate_text": compact_rate_per_second(float(ordered[-1]["progress_rate"])),
             }
-            max_rate = float(ordered[-1]["progress_rate"])
-            if max_rate > 0:
-                speedup = total_rate / max_rate
-                payload["speedup"] = round(speedup, 3)
-                payload["speedup_text"] = f"{speedup:.1f}x"
+    speedup = run_speedup_value(summary)
+    if speedup is not None:
+        payload["speedup"] = round(speedup, 3)
+        payload["speedup_text"] = f"{speedup:.1f}x"
     return payload
 
 def run_speedup_field(summary: dict[str, Any]) -> str:
     metrics = active_worker_metrics(summary)
     if len(metrics) <= 1:
         return ""
-    values = list(metrics.values())
-    prefer_rates = str((summary.get("metadata") or {}).get("kind") or "").lower() == "label"
-    rates = [
-        float(metric.get("progress_rate", 0.0))
-        for metric in values
-        if bool(metric.get("progress_rate_seen"))
-    ]
-    if prefer_rates and len(rates) > 1:
-        max_rate = max(rates)
-        return f"speedup={sum(rates) / max_rate:.1f}x" if max_rate > 0 else ""
-    if any(bool(metric.get("output_seen")) for metric in values):
-        outputs = [int(metric.get("output", 0)) for metric in values]
-        max_output = max(outputs)
-        if max_output <= 0:
-            return ""
-        return f"speedup={sum(outputs) / max_output:.1f}x"
-    if not rates:
-        return ""
-    max_rate = max(rates)
-    if max_rate <= 0:
-        return ""
-    return f"speedup={sum(rates) / max_rate:.1f}x"
+    speedup = run_speedup_value(summary)
+    return f"speedup={speedup:.1f}x" if speedup is not None else ""
 
 def command_display_word(value: Any) -> str:
     text = str(value)
