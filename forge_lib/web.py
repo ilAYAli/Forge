@@ -76,9 +76,11 @@ _HTML = r"""<!DOCTYPE html>
     .run-hdr-top { display: flex; align-items: center; gap: 8px; }
     .arrow { color: var(--dim); cursor: pointer; font-size: 10px; flex-shrink: 0; transition: transform .15s; user-select: none; }
     .arrow.open { transform: rotate(90deg); }
-    .run-date { color: var(--dim); font-size: 12px; font-variant-numeric: tabular-nums; flex-shrink: 0; }
     .run-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis;
-                white-space: nowrap; font-weight: 600; cursor: text; text-align: right; }
+                white-space: nowrap; font-weight: 600; cursor: text; }
+    .run-start, .run-elapsed { color: var(--dim); font-size: 12px; font-variant-numeric: tabular-nums; flex-shrink: 0; }
+    .run-start { width: 12ch; }
+    .run-elapsed { width: 7ch; text-align: right; }
     .badge { font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 10px; flex-shrink: 0; }
     .badge.current { background: rgba(212,168,34,.15); color: var(--yel); }
     .badge.failed  { background: rgba(217,95,95,.15);  color: var(--red); }
@@ -221,6 +223,7 @@ _HTML = r"""<!DOCTYPE html>
     @media (max-width: 640px) {
       #runs { padding: 8px 6px; }
       .run-hdr { padding: 8px 9px; }
+      .run-start { width: 5ch; }
       .mobile-score { display: grid; grid-template-columns: repeat(5, max-content);
                       column-gap: 9px; row-gap: 1px; margin: 6px 0 2px 18px;
                       color: var(--text); font-size: 12px; line-height: 1.25;
@@ -430,19 +433,15 @@ _HTML = r"""<!DOCTYPE html>
       return 0;
     }
 
-    function runDatePrefix(r, mobile = mobileLayout()) {
+    function runTiming(r, mobile = mobileLayout(), now = Date.now() / 1000) {
       const start = runSortEpoch(r);
-      if (!start) return '';
+      if (!start) return {start:'—', elapsed:'—'};
       const end = parseTimestampEpoch(r?.completed_at);
-      const stamp = epoch => {
-        const d = new Date(epoch * 1000);
-        const pad = n => String(n).padStart(2, '0');
-        const clock = `${pad(d.getHours())}:${pad(d.getMinutes())}`;
-        return mobile ? clock : `${pad(d.getDate())} ${'Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec'.split(' ')[d.getMonth()]} ${clock}`;
-      };
-      return end !== null && end >= start
-        ? `${stamp(start)} → ${stamp(end)} · ${fmtAge(end - start)}`
-        : stamp(start);
+      const d = new Date(start * 1000);
+      const pad = n => String(n).padStart(2, '0');
+      const clock = `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+      const started = mobile ? clock : `${pad(d.getDate())} ${'Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec'.split(' ')[d.getMonth()]} ${clock}`;
+      return {start:started, elapsed:fmtAge(Math.max(0, (end ?? now) - start))};
     }
 
     function compareRunsByCreated(a, b) {
@@ -1797,7 +1796,7 @@ _HTML = r"""<!DOCTYPE html>
       const activeFields = display.active_fields || active.fields || [];
       const commentText = display.comment || '';
       const descText = runDescriptionText(display.description, Boolean(commentText));
-      const runDate = runDatePrefix(r);
+      const timing = runTiming(r);
       const stoppedEarly = runStoppedEarly(r, pending, fail, display);
       const stateField = stoppedEarly ? '<span class="run-state stopped-early">stopped</span>' : '';
       const stateLabel = state === 'current' ? 'active' : state === 'done' ? 'completed' : state;
@@ -1824,8 +1823,9 @@ _HTML = r"""<!DOCTYPE html>
       const hdr = `
         <div class="run-hdr-top">
           <span class="arrow${bodyOpen?' open':''}" onclick="event.stopPropagation();toggleId('${rId}')">&#9654;</span>
-          ${runDate ? `<span class="run-date">${esc(runDate)}</span>` : ''}
           <span class="run-name">${esc(r.run)}</span>
+          <span class="run-start" title="started">${esc(timing.start)}</span>
+          <span class="run-elapsed" title="elapsed">${esc(timing.elapsed)}</span>
           <div class="run-actions">${actions.join('')}</div>
           <span class="badge ${state}">${stateLabel}</span>
         </div>

@@ -994,8 +994,8 @@ const runs = [
 ];
 console.log(runs.sort(compareRunsByCreated).map(run => run.run).join('\\n'));
 const done = {state:'done', created_at:'2026-07-02T21:16:00+0200', completed_at:'2026-07-03T00:42:00+0200'};
-console.log(runDatePrefix(done, false));
-console.log(runDatePrefix(done, true));
+console.log(JSON.stringify(runTiming(done, false)));
+console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.parse(done.completed_at) / 1000)));
 """
         result = subprocess.run(
             ["node", "-e", probe],
@@ -1011,8 +1011,8 @@ console.log(runDatePrefix(done, true));
             [
                 "sprt-enyo_f908b4b-1000-20260630-152429",
                 "native-4.20.0-rc1-sprt-1500-20260630-141436",
-                "02 Jul 21:16 → 03 Jul 00:42 · 3h26m",
-                "21:16 → 00:42 · 3h26m",
+                '{"start":"02 Jul 21:16","elapsed":"3h26m"}',
+                '{"start":"21:16","elapsed":"3h26m"}',
             ],
             result.stdout.splitlines(),
         )
@@ -1056,9 +1056,9 @@ console.log(runDatePrefix(done, true));
         self.assertIn("event.target.closest('button,a,input,select,textarea,.arrow')", web._HTML)
         self.assertIn("window.getSelection", web._HTML)
         self.assertIn('<div class="run-hdr" onclick="toggleRunHeader(event,', web._HTML)
-        self.assertIn("function runDatePrefix", web._HTML)
-        self.assertIn(".run-date", web._HTML)
-        self.assertIn("text-align: right", web._HTML)
+        self.assertIn("function runTiming", web._HTML)
+        self.assertIn(".run-start", web._HTML)
+        self.assertIn(".run-elapsed", web._HTML)
         self.assertIn("r?.created_at", web._HTML)
         self.assertIn("r?.completed_at", web._HTML)
         self.assertIn("function runNameEpoch", web._HTML)
@@ -1067,7 +1067,9 @@ console.log(runDatePrefix(done, true));
         self.assertIn("function compareRunsByCreated", web._HTML)
         self.assertIn("if (ea !== eb) return eb - ea", web._HTML)
         self.assertIn(".sort(compareRunsByCreated)", web._HTML)
-        self.assertIn('${runDate ? `<span class="run-date">${esc(runDate)}</span>` : \'\'}', web._HTML)
+        self.assertIn('<span class="run-name">${esc(r.run)}</span>', web._HTML)
+        self.assertIn('<span class="run-start" title="started">${esc(timing.start)}</span>', web._HTML)
+        self.assertIn('<span class="run-elapsed" title="elapsed">${esc(timing.elapsed)}</span>', web._HTML)
         self.assertIn("restartWeb(this)", web._HTML)
         self.assertIn("cmd: 'restart-web'", web._HTML)
         self.assertIn("await waitForRestart()", web._HTML)
