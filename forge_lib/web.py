@@ -76,11 +76,12 @@ _HTML = r"""<!DOCTYPE html>
     .run-hdr-top { display: flex; align-items: center; gap: 8px; }
     .arrow { color: var(--dim); cursor: pointer; font-size: 10px; flex-shrink: 0; transition: transform .15s; user-select: none; }
     .arrow.open { transform: rotate(90deg); }
-    .run-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+    .run-name { min-width: 0; overflow: hidden; text-overflow: ellipsis;
                 white-space: nowrap; font-weight: 600; cursor: text; }
     .run-start, .run-elapsed { color: var(--dim); font-size: 12px; font-variant-numeric: tabular-nums; flex-shrink: 0; }
     .run-start { width: 12ch; }
-    .run-elapsed { width: 7ch; text-align: right; }
+    .run-elapsed { width: 7ch; margin-left: 8px; }
+    .run-spacer { flex: 1; min-width: 0; }
     .badge { font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 10px; flex-shrink: 0; }
     .badge.current { background: rgba(212,168,34,.15); color: var(--yel); }
     .badge.failed  { background: rgba(217,95,95,.15);  color: var(--red); }
@@ -1824,8 +1825,9 @@ _HTML = r"""<!DOCTYPE html>
         <div class="run-hdr-top">
           <span class="arrow${bodyOpen?' open':''}" onclick="event.stopPropagation();toggleId('${rId}')">&#9654;</span>
           <span class="run-name">${esc(r.run)}</span>
-          <span class="run-start" title="started">${esc(timing.start)}</span>
           <span class="run-elapsed" title="elapsed">${esc(timing.elapsed)}</span>
+          <span class="run-spacer"></span>
+          <span class="run-start" title="started">${esc(timing.start)}</span>
           <div class="run-actions">${actions.join('')}</div>
           <span class="badge ${state}">${stateLabel}</span>
         </div>

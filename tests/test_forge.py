@@ -1070,6 +1070,7 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
         self.assertIn('<span class="run-name">${esc(r.run)}</span>', web._HTML)
         self.assertIn('<span class="run-start" title="started">${esc(timing.start)}</span>', web._HTML)
         self.assertIn('<span class="run-elapsed" title="elapsed">${esc(timing.elapsed)}</span>', web._HTML)
+        self.assertIn('<span class="run-spacer"></span>', web._HTML)
         self.assertIn("restartWeb(this)", web._HTML)
         self.assertIn("cmd: 'restart-web'", web._HTML)
         self.assertIn("await waitForRestart()", web._HTML)
