@@ -337,7 +337,7 @@ def run_task(
                     if cancel_payload := current_cancel_payload():
                         soft_cancel = cancel_payload
                         terminate_process_group(proc, log, "soft cancel")
-                        rc = 0
+                        rc = int(task.get("cancel_rc", 0))
                         break
                     if deadline is not None:
                         remaining = deadline - time.monotonic()
@@ -995,6 +995,9 @@ def check_coordinator_cli(coordinator: str) -> None:
         raise SystemExit(detail)
 
 def cmd_work(args: argparse.Namespace) -> int:
+    os.environ["FORGE_COORDINATOR"] = str(args.coordinator)
+    os.environ["FORGE_RUNNER"] = str(script_path())
+    os.environ["FORGE_PYTHON"] = sys.executable
     local_manifest_path = expand_path(args.manifest)
     local_manifest_base = load_manifest(local_manifest_path)
     coordinator_manifest = load_coordinator_manifest(args.coordinator)

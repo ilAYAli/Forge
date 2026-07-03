@@ -1,0 +1,166 @@
+{
+  "schema": "forge.template.v1",
+  "name": "spsa",
+  "kind": "spsa",
+  "description": "Tune UCI parameters with distributed fixed-game SPSA matches",
+  "run_name": "spsa-{engine_stem}-{iterations}-{timestamp}",
+  "work_dir": "~",
+  "materialize_inputs": true,
+  "parameters": {
+    "engine": {
+      "default": "~/assets/engines/candidate",
+      "worker_path": true,
+      "directory_executable": "build/enyo",
+      "help": "UCI engine executable or Enyo checkout directory available on all workers"
+    },
+    "params": {
+      "default": "~/code/cpp/chess/enyo/spsa/params.txt",
+      "worker_path": true,
+      "help": "SPSA parameter definitions"
+    },
+    "state": {
+      "default": "~/code/cpp/chess/enyo/spsa/state.json",
+      "worker_path": true,
+      "help": "Resumable final-theta state written on the coordinator"
+    },
+    "iterations": {
+      "type": "int",
+      "default": 1500,
+      "help": "Total sequential SPSA iterations"
+    },
+    "rounds": {
+      "type": "int",
+      "default": 14,
+      "help": "Paired opening rounds per iteration; games are twice this value"
+    },
+    "shards": {
+      "type": "int",
+      "help": "Fixed-game match shards per iteration; defaults to available slots, capped at rounds"
+    },
+    "concurrency": {
+      "type": "int",
+      "default": 1,
+      "help": "Concurrent games inside each shard"
+    },
+    "threads": {
+      "type": "int",
+      "default": 1,
+      "help": "Engine threads per game"
+    },
+    "hash": {
+      "type": "int",
+      "default": 64,
+      "help": "Hash size in MiB for each engine process"
+    },
+    "tc": {
+      "default": "5+0.05",
+      "help": "Fastchess time control"
+    },
+    "restart": {
+      "default": "on",
+      "help": "Engine restart mode"
+    },
+    "book": {
+      "default": "~/assets/books/AntiDraw_V2.1/WOMP_Openings_V1/WOMP_V1_+150_+159/WOMP_V1_6mvs_big_+140_+169.epd",
+      "worker_path": true,
+      "help": "EPD opening book"
+    },
+    "fastchess": {
+      "default": "~/.cache/forge/tools/fastchess/3de44228aec904e688a4ad71c554eb9d461a5a2a/fastchess",
+      "worker_path": true,
+      "help": "Fastchess executable"
+    },
+    "uci": {
+      "repeatable": true,
+      "arg": "--uci",
+      "file_options": [
+        "nnue_file"
+      ],
+      "help": "Extra UCI option applied to both perturbations as NAME=VALUE"
+    },
+    "seed": {
+      "type": "int",
+      "default": 1,
+      "help": "Deterministic perturbation and opening seed"
+    },
+    "match_timeout": {
+      "type": "int",
+      "default": 3600,
+      "help": "Timeout in seconds for one shard match"
+    },
+    "poll_seconds": {
+      "type": "float",
+      "default": 1.0,
+      "help": "Barrier polling interval between iterations"
+    }
+  },
+  "requirements": {
+    "python_min": "3.11",
+    "git_min": "2.38",
+    "repos": [
+      {
+        "name": "fastchess",
+        "url": "https://github.com/Disservin/fastchess.git",
+        "path": "~/.cache/forge/tools/fastchess/3de44228aec904e688a4ad71c554eb9d461a5a2a",
+        "remote": "origin",
+        "commit": "3de44228aec904e688a4ad71c554eb9d461a5a2a",
+        "allow_untracked": true,
+        "build_timeout_s": 900,
+        "install_timeout_s": 120,
+        "probe_timeout_s": 30,
+        "build": [
+          "make -j build=release"
+        ],
+        "probe": [
+          "./fastchess -version | grep fastchess"
+        ]
+      }
+    ],
+    "commands": [
+      {
+        "name": "fastchess",
+        "path": "{fastchess}",
+        "timeout_s": 20
+      },
+      {
+        "name": "engine",
+        "path": "{engine}",
+        "command": "engine={engine}; if probe=$(printf '%s\\n' uci quit | \"$engine\" 2>/dev/null) && printf '%s\\n' \"$probe\" | grep -q uciok; then printf '%s\\n' \"$probe\"; exit 0; fi; name=$(basename \"$engine\"); case \"$name\" in enyo_*) commit=$(printf '%s\\n' \"$name\" | sed 's/^enyo_//') ;; *) echo \"engine is unavailable and cannot be built automatically: $engine\" >&2; exit 1 ;; esac; cd ~/code/cpp/chess/enyo && git fetch origin && git -c advice.detachedHead=false checkout -f \"$commit\" && ./scripts/deploy.sh --candidate && test -x \"$engine\" && printf '%s\\n' uci quit | \"$engine\"",
+        "contains": "uciok",
+        "timeout_s": 900
+      }
+    ],
+    "inputs": [
+      {
+        "name": "book",
+        "path": "{book}"
+      }
+    ]
+  },
+  "task": {
+    "split": {
+      "total": "games",
+      "count": "shards",
+      "unit": "games"
+    },
+    "prefix": "spsa",
+    "label": "spsa:{shard}",
+    "cancel_rc": 130,
+    "output": "{output_dir}/{task_name}.json",
+    "command": "$FORGE_PYTHON \"$FORGE_RUNNER\" spsa-worker --coordinator \"$FORGE_COORDINATOR\" --shard-index {task_index} --games {shard} --engine {engine_shell} --book {book_shell} --fastchess {fastchess_shell} --tc {tc_shell} --hash {hash} --threads {threads} --concurrency {concurrency} --restart {restart_shell} --match-timeout {match_timeout} --poll-seconds {poll_seconds} --output \"{output_dir}/{task_name}.json\" {uci_args}",
+    "progress": {
+      "unit": "iterations",
+      "total": "{iterations}",
+      "games": "{shard}",
+      "log_regex": "SPSA iteration (?P<done>\\d+)/(?P<total>\\d+).*?result=(?P<result>[-+]?(?:\\d+(?:\\.\\d+)?|\\.\\d+))",
+      "series": [
+        {
+          "name": "result",
+          "field": "result",
+          "x": "done",
+          "scale": "symmetric"
+        }
+      ]
+    }
+  }
+}

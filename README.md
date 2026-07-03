@@ -169,6 +169,40 @@ Notes:
   games per shard. Slow worker startup does not affect this calculation;
   explicit `--shards` still overrides it.
 
+### Distributed SPSA
+
+`spsa` runs exact fixed-game matches rather than SPRTs. One long-lived Forge
+task owns each shard; all shards synchronize after every iteration, the
+coordinator aggregates W/L/D, updates theta, and atomically checkpoints the
+state. Interrupted or retried shards rejoin the active iteration without
+submitting a second gradient result.
+
+```sh
+forge spsa \
+  --engine ~/assets/engines/candidate \
+  --params ~/code/cpp/chess/enyo/spsa/params.txt \
+  --state ~/code/cpp/chess/enyo/spsa/state.json \
+  --iterations 1500 \
+  --rounds 14 \
+  --tc 5+0.05 \
+  --uci nnue_file=~/code/cpp/chess/enyo/net/default.nn \
+  --uci use_syzygy=false \
+  --run enyo-search-spsa \
+  --wait
+```
+
+The state file contains the last fully aggregated theta and is compatible with
+Enyo's `spsa/promote.py`. Rerunning the same command resumes from that state.
+To resume the materialized Forge run after interruption, preserve its run name:
+
+```sh
+forge spsa --run enyo-search-spsa --resume --wait
+```
+
+Without `--shards`, Forge uses the available worker slots capped at `--rounds`,
+because each shard must own at least one color-swapped game pair. Remove or
+rename a completed state file before intentionally starting a fresh tuning run.
+
 ### Distributed labeling
 
 `label` streams LC0 V6 gzip records directly through Stockfish into a

@@ -10,6 +10,7 @@ from .status import *
 from .workers import *
 from .templates import *
 from .shell import *
+from .spsa import *
 
 try:
     from .web import cmd_web
@@ -37,6 +38,7 @@ COMMON_COMMANDS = [
     "run",
     "label",
     "sprt",
+    "spsa",
     "sync",
     "sh",
     "start",
@@ -83,12 +85,21 @@ COMMAND_GROUPS = [
     ),
 ]
 
-RESERVED_COMMANDS = {"add", "list", "web"}
+RESERVED_COMMANDS = {
+    "add",
+    "list",
+    "spsa-next",
+    "spsa-submit",
+    "spsa-worker",
+    "web",
+}
 
 
 def expand_template_command_aliases(args: list[str]) -> list[str]:
     if args and args[0] == "sprt":
         return ["run", "sprt", *args[1:]]
+    if args and args[0] == "spsa":
+        return ["run", "spsa", *args[1:]]
     if args and args[0] == "label":
         return ["run", "label", *args[1:]]
     return args
@@ -239,6 +250,51 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sprt.add_argument("template_args", nargs=argparse.REMAINDER, help="Run options and SPRT arguments.")
     sprt.set_defaults(func=cmd_template_run, template="sprt")
+
+    spsa = sub.add_parser(
+        "spsa",
+        help="Run distributed SPSA tuning.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+        description=(
+            "Run the built-in adaptive SPSA template. Forge keeps one long-lived "
+            "task per match shard and synchronizes theta updates between iterations."
+        ),
+    )
+    spsa.add_argument("template_args", nargs=argparse.REMAINDER, help="Run options and SPSA arguments.")
+    spsa.set_defaults(func=cmd_template_run, template="spsa")
+
+    spsa_next = sub.add_parser("spsa-next", help=argparse.SUPPRESS)
+    spsa_next.add_argument("--manifest", required=True)
+    spsa_next.add_argument("--shard-index", required=True, type=int)
+    spsa_next.set_defaults(func=cmd_spsa_next)
+
+    spsa_submit = sub.add_parser("spsa-submit", help=argparse.SUPPRESS)
+    spsa_submit.add_argument("--manifest", required=True)
+    spsa_submit.add_argument("--shard-index", required=True, type=int)
+    spsa_submit.add_argument("--iteration", required=True, type=int)
+    spsa_submit.add_argument("--wins", required=True, type=int)
+    spsa_submit.add_argument("--losses", required=True, type=int)
+    spsa_submit.add_argument("--draws", required=True, type=int)
+    spsa_submit.add_argument("--games", required=True, type=int)
+    spsa_submit.set_defaults(func=cmd_spsa_submit)
+
+    spsa_worker = sub.add_parser("spsa-worker", help=argparse.SUPPRESS)
+    spsa_worker.add_argument("--coordinator", required=True)
+    spsa_worker.add_argument("--shard-index", required=True, type=int)
+    spsa_worker.add_argument("--games", required=True, type=int)
+    spsa_worker.add_argument("--engine", required=True)
+    spsa_worker.add_argument("--book", required=True)
+    spsa_worker.add_argument("--fastchess", required=True)
+    spsa_worker.add_argument("--tc", required=True)
+    spsa_worker.add_argument("--hash", required=True, type=int)
+    spsa_worker.add_argument("--threads", required=True, type=int)
+    spsa_worker.add_argument("--concurrency", required=True, type=int)
+    spsa_worker.add_argument("--restart", choices=("on", "off"), required=True)
+    spsa_worker.add_argument("--match-timeout", required=True, type=float)
+    spsa_worker.add_argument("--poll-seconds", required=True, type=float)
+    spsa_worker.add_argument("--output", required=True)
+    spsa_worker.add_argument("--uci", action="append", default=[])
+    spsa_worker.set_defaults(func=cmd_spsa_worker)
 
     shell = sub.add_parser(
         "sh",

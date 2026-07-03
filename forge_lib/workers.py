@@ -2009,7 +2009,12 @@ def run_deploy(args: argparse.Namespace) -> int:
 
     status(colorize(f"deploy: run={run_dir.name} workers={len(workers)} jobs={jobs}", "cyan", enabled=color_enabled))
     task_count = len(manifest.get("tasks") or [])
-    if has_tasks and len(workers) > 1 and task_count < len(workers) * 4:
+    if (
+        has_tasks
+        and str(manifest.get("kind") or "") != "spsa"
+        and len(workers) > 1
+        and task_count < len(workers) * 4
+    ):
         status(
             colorize(
                 f"deploy: warning: {task_count} shard(s) for {len(workers)} worker slot(s); "

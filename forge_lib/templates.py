@@ -6,6 +6,13 @@ import tempfile
 from .config import *
 from .manifest import *
 from .labeling import build_inventory
+from .spsa import (
+    attach_spsa_manifest_config,
+    auto_spsa_shards,
+    cap_spsa_worker_slots,
+    prepare_spsa_template_parameters,
+    spsa_worker_slots_payload,
+)
 
 
 TEMPLATE_SCHEMA = "forge.template.v1"
@@ -597,6 +604,8 @@ def expand_template(template_name: str, template_path_: Path, template: dict[str
                 for output_template in output_templates
             ],
         }
+        if "cancel_rc" in task_template:
+            task["cancel_rc"] = int(template_value(task_template["cancel_rc"], task_values))
         label = task_template.get("label")
         if label is not None:
             task["label"] = clean_manifest_text(str(safe_format(label, task_values)), label=f"{task_name}.label")
@@ -639,6 +648,8 @@ def expand_template(template_name: str, template_path_: Path, template: dict[str
         if not isinstance(finalizer, dict):
             raise SystemExit(f"{template_name}: finalize must be an object")
         manifest["finalize"] = safe_format(finalizer, values)
+    if template_name == "spsa":
+        attach_spsa_manifest_config(manifest, params)
     validate_manifest_payload(manifest, label=f"template {template_name}")
     return manifest
 
@@ -720,6 +731,7 @@ def cmd_template_run(args: argparse.Namespace) -> int:
     template_name = template_display_name(path, template)
     workers_arg: str | None = None
     sprt_workers_payload: dict[str, Any] | None = None
+    spsa_workers_payload: dict[str, Any] | None = None
     if template_name == "sprt":
         params = parse_sprt_template_parameters(template_name, template, template_args)
         shards_supplied = template_parameter_supplied(template, template_args, {"shards"})
@@ -733,6 +745,27 @@ def cmd_template_run(args: argparse.Namespace) -> int:
         if not shards_supplied:
             params = dict(params)
             params["shards"] = auto_sprt_shards(params, sprt_workers_payload or {})
+    elif template_name == "spsa":
+        params = parse_template_parameters(template_name, template, template_args)
+        shards_supplied = template_parameter_supplied(template, template_args, {"shards"})
+        needs_workers = (
+            not (run_options.print_manifest or run_options.dry_run)
+            or not shards_supplied
+        )
+        if needs_workers:
+            workers_arg = resolved_workers_arg(run_options, config)
+            spsa_workers_payload = spsa_worker_slots_payload(workers_arg)
+        if not shards_supplied:
+            params = dict(params)
+            params["shards"] = auto_spsa_shards(params, spsa_workers_payload or {})
+        params = prepare_spsa_template_parameters(params)
+        if spsa_workers_payload is not None:
+            spsa_workers_payload = cap_spsa_worker_slots(
+                spsa_workers_payload,
+                int(params["shards"]),
+            )
+        if run_options.resume:
+            run_options.retry_failed = True
     else:
         params = parse_template_parameters(template_name, template, template_args)
     inventory_info: dict[str, Any] | None = None
@@ -768,9 +801,14 @@ def cmd_template_run(args: argparse.Namespace) -> int:
     with tempfile.TemporaryDirectory(prefix="forge-template-") as tmp:
         manifest_path = Path(tmp) / f"{manifest['name']}.manifest.json"
         write_json(manifest_path, manifest)
-        if template_name == "sprt":
+        if template_name in {"sprt", "spsa"}:
             workers_path = Path(tmp) / "workers.json"
-            write_json(workers_path, sprt_workers_payload or sprt_worker_slots_payload(workers_arg))
+            worker_payload = (
+                sprt_workers_payload or sprt_worker_slots_payload(workers_arg)
+                if template_name == "sprt"
+                else spsa_workers_payload or spsa_worker_slots_payload(workers_arg)
+            )
+            write_json(workers_path, worker_payload)
             workers_arg = str(workers_path)
         from .workers import cmd_run_job
 

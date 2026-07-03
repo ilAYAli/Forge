@@ -6,4 +6,5 @@ from .status import *
 from .workers import *
 from .templates import *
 from .shell import *
+from .spsa import *
 from .cli import *
