@@ -78,7 +78,7 @@ _HTML = r"""<!DOCTYPE html>
     .arrow.open { transform: rotate(90deg); }
     .run-name { min-width: 0; overflow: hidden; text-overflow: ellipsis;
                 white-space: nowrap; font-weight: 600; cursor: text; }
-    .run-start, .run-elapsed { color: var(--dim); font-size: 12px; font-variant-numeric: tabular-nums; flex-shrink: 0; }
+    .run-start, .run-elapsed, .run-time-separator { color: var(--dim); font-size: 12px; font-variant-numeric: tabular-nums; flex-shrink: 0; }
     .run-start { width: 12ch; margin-left: 8px; }
     .run-elapsed { width: 7ch; }
     .run-spacer { flex: 1; min-width: 0; }
@@ -1826,6 +1826,7 @@ _HTML = r"""<!DOCTYPE html>
           <span class="arrow${bodyOpen?' open':''}" onclick="event.stopPropagation();toggleId('${rId}')">&#9654;</span>
           <span class="run-name">${esc(r.run)}</span>
           <span class="run-start" title="started">${esc(timing.start)}</span>
+          <span class="run-time-separator">·</span>
           <span class="run-elapsed" title="elapsed">${esc(timing.elapsed)}</span>
           <span class="run-spacer"></span>
           <div class="run-actions">${actions.join('')}</div>
