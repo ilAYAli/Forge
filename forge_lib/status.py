@@ -919,6 +919,9 @@ def spsa_summary_progress(summary: dict[str, Any]) -> str:
         return ""
     manifest = summary.get("manifest_payload")
     if not isinstance(manifest, dict):
+        progress = str(summary.get("progress") or "")
+        if progress.startswith("progress=iterations="):
+            return progress
         return ""
     config = manifest.get("spsa")
     if not isinstance(config, dict):

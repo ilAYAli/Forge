@@ -176,6 +176,18 @@ class SpsaCoordinatorTests(unittest.TestCase):
             )
             self.assertIsNone(forge.run_speedup_value(summary))
 
+    def test_delegated_status_preserves_coordinator_spsa_eta(self) -> None:
+        summary = {
+            "metadata": {"kind": "spsa"},
+            "progress": "progress=iterations=41/169, eta=52m47s",
+            "active": [],
+        }
+
+        self.assertEqual(
+            "progress=iterations=41/169, eta=52m47s",
+            forge.summary_progress(summary),
+        )
+
 
 class SpsaTemplateTests(unittest.TestCase):
     def test_spsa_defaults_are_self_contained(self) -> None:
