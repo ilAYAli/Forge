@@ -184,7 +184,8 @@ forge spsa
 This starts a detached 1,000-iteration batch from the theta in the default
 state file and reports progress in `forge web`. The default worker pool and an
 automatic run name are used. Pass `--wait` only when foreground waiting is
-useful.
+useful. SPSA progress and ETA follow completed coordinator barriers rather than
+summing the synchronized shard counters.
 
 | SPSA option | Default | Purpose |
 | --- | --- | --- |

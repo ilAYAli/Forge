@@ -10,6 +10,7 @@ import tempfile
 import threading
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import forge
 
@@ -126,6 +127,54 @@ class SpsaCoordinatorTests(unittest.TestCase):
             self.assertEqual(1501, first["iteration"])
             self.assertEqual(1, first["batch_iteration"])
             self.assertEqual(2, first["iterations"])
+
+    def test_iteration_timing_uses_exponential_average(self) -> None:
+        state: dict = {}
+        with mock.patch("forge_lib.spsa.time.time", return_value=116.0):
+            forge.update_iteration_timing(state, {"created_epoch": 100.0})
+        with mock.patch("forge_lib.spsa.time.time", return_value=220.0):
+            forge.update_iteration_timing(state, {"created_epoch": 200.0})
+
+        self.assertAlmostEqual(16.8, state["iteration_seconds_ema"])
+        self.assertEqual(2, state["iteration_samples"])
+
+    def test_status_uses_coordinator_progress_and_eta(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="forge-spsa-status-") as tmp:
+            root = Path(tmp)
+            manifest_path = root / "manifest.json"
+            forge.write_json(root / "spsa-state.json", {
+                "run": "spsa-status",
+                "k": 2340,
+                "start_iteration": 2331,
+                "target_iteration": 2500,
+                "iterations": 169,
+                "iteration_seconds_ema": 16.5,
+            })
+            summary = {
+                "run": "spsa-status",
+                "manifest": str(manifest_path),
+                "metadata": {"kind": "spsa"},
+                "manifest_payload": {
+                    "name": "spsa-status",
+                    "kind": "spsa",
+                    "spsa": {
+                        "iterations": 169,
+                        "start_iteration": 2331,
+                        "target_iteration": 2500,
+                    },
+                },
+                "active": [],
+            }
+
+            self.assertEqual(
+                "progress=iterations=9/169, eta=44m00s",
+                forge.summary_progress(summary),
+            )
+            self.assertEqual(
+                ["iterations=9/169", "eta=44m00s"],
+                forge.run_progress_fields(summary),
+            )
+            self.assertIsNone(forge.run_speedup_value(summary))
 
 
 class SpsaTemplateTests(unittest.TestCase):

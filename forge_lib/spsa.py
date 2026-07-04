@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import datetime
 import fcntl
 import hashlib
 import json
@@ -432,7 +433,7 @@ def load_coordinator_state(manifest_path: Path, manifest: dict[str, Any]) -> dic
 
 
 def public_state(state: dict[str, Any]) -> dict[str, Any]:
-    return {
+    public = {
         "k": int(state["k"]),
         "iterations": int(state["iterations"]),
         "start_iteration": int(state["start_iteration"]),
@@ -442,6 +443,11 @@ def public_state(state: dict[str, Any]) -> dict[str, Any]:
         "run": str(state["run"]),
         "updated_at": str(state["updated_at"]),
     }
+    iteration_seconds = state.get("iteration_seconds_ema")
+    if isinstance(iteration_seconds, (int, float)) and iteration_seconds > 0:
+        public["iteration_seconds_ema"] = float(iteration_seconds)
+        public["iteration_samples"] = int(state.get("iteration_samples", 0))
+    return public
 
 
 def save_coordinator_state(
@@ -489,7 +495,33 @@ def create_iteration(config: dict[str, Any], state: dict[str, Any]) -> dict[str,
         "minus": minus,
         "results": {},
         "created_at": now(),
+        "created_epoch": time.time(),
     }
+
+
+def iteration_elapsed_seconds(current: dict[str, Any]) -> float | None:
+    started = current.get("created_epoch")
+    if not isinstance(started, (int, float)):
+        try:
+            started = datetime.datetime.strptime(
+                str(current.get("created_at") or ""),
+                "%Y-%m-%dT%H:%M:%S%z",
+            ).timestamp()
+        except ValueError:
+            return None
+    elapsed = time.time() - float(started)
+    return elapsed if elapsed > 0 else None
+
+
+def update_iteration_timing(state: dict[str, Any], current: dict[str, Any]) -> None:
+    elapsed = iteration_elapsed_seconds(current)
+    if elapsed is None:
+        return
+    previous = state.get("iteration_seconds_ema")
+    if isinstance(previous, (int, float)) and previous > 0:
+        elapsed = float(previous) * 0.8 + elapsed * 0.2
+    state["iteration_seconds_ema"] = elapsed
+    state["iteration_samples"] = int(state.get("iteration_samples", 0)) + 1
 
 
 def spsa_next_payload(manifest_path: Path, shard_index: int) -> dict[str, Any]:
@@ -574,6 +606,7 @@ def advance_iteration(
         theta[index] = min(float(parameter["max"]), max(float(parameter["min"]), value))
     state["theta"] = theta
     state["k"] = iteration
+    update_iteration_timing(state, current)
     state["current"] = None
     save_coordinator_state(manifest_path, manifest, state)
     append_spsa_csv(manifest_path, config, state, result, games)

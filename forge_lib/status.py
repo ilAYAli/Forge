@@ -905,7 +905,57 @@ def progress_text(data: dict[str, Any]) -> str:
         parts.append(eta)
     return ", ".join(parts)
 
+
+def summary_kind(summary: dict[str, Any]) -> str:
+    metadata = summary.get("metadata")
+    if isinstance(metadata, dict) and metadata.get("kind"):
+        return str(metadata["kind"]).lower()
+    manifest = summary.get("manifest_payload")
+    return str(manifest.get("kind") or "").lower() if isinstance(manifest, dict) else ""
+
+
+def spsa_summary_progress(summary: dict[str, Any]) -> str:
+    if summary_kind(summary) != "spsa":
+        return ""
+    manifest = summary.get("manifest_payload")
+    if not isinstance(manifest, dict):
+        return ""
+    config = manifest.get("spsa")
+    if not isinstance(config, dict):
+        return ""
+
+    manifest_path = summary.get("manifest")
+    if isinstance(manifest_path, str) and manifest_path:
+        state_path = Path(manifest_path).parent / "spsa-state.json"
+    else:
+        state_path = expand_path(str(config.get("state") or ""))
+    state = read_state_json(state_path)
+    if not isinstance(state, dict) or state.get("run") != manifest.get("name"):
+        return ""
+
+    start = int(state.get("start_iteration", config.get("start_iteration", 0)))
+    total = int(state.get("iterations", config.get("iterations", 0)))
+    done = min(total, max(0, int(state.get("k", start)) - start))
+    parts = [f"iterations={done}/{total}"]
+
+    iteration_seconds = state.get("iteration_seconds_ema")
+    rate = (
+        1.0 / float(iteration_seconds)
+        if isinstance(iteration_seconds, (int, float)) and iteration_seconds > 0
+        else None
+    )
+    if rate is None:
+        rates = active_task_rates(summary)
+        rate = min(rates) if rates else None
+    eta = progress_eta_text(done, total, rate)
+    if eta:
+        parts.append(eta)
+    return f"progress={', '.join(parts)}"
+
+
 def summary_progress(summary: dict[str, Any]) -> str:
+    if progress := spsa_summary_progress(summary):
+        return progress
     subtask_done = 0
     subtask_total = 0
     subtask_rate = 0.0
@@ -1124,6 +1174,8 @@ def active_task_rates(summary: dict[str, Any]) -> list[float]:
     return rates
 
 def run_speedup_value(summary: dict[str, Any]) -> float | None:
+    if summary_kind(summary) == "spsa":
+        return None
     rates = active_task_rates(summary)
     if not rates:
         return None
@@ -1565,6 +1617,12 @@ def color_status_fields(
 
 def run_progress_fields(summary: dict[str, Any]) -> list[str]:
     fields = summary_progress_fields(summary)
+    if summary_kind(summary) == "spsa":
+        return split_eta_last([
+            field
+            for field in fields
+            if field.startswith("eta=") or field.startswith("iterations=")
+        ])
     return split_eta_last([
         field
         for field in fields
