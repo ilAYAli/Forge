@@ -25,6 +25,7 @@ ALPHA = 0.602
 GAMMA = 0.101
 STATE_SCHEMA = "forge.spsa-state.v1"
 CONFIG_SCHEMA = "forge.spsa-config.v1"
+DEFAULT_NNUE_FILE = "~/code/cpp/chess/enyo/net/default.net"
 SCORE_RE = re.compile(
     r"Games:\s*(\d+),\s*Wins:\s*(\d+),\s*Losses:\s*(\d+),\s*Draws:\s*(\d+)"
 )
@@ -137,6 +138,45 @@ def normalize_common_uci(items: list[str]) -> list[str]:
     return [f"{name}={value}" for name, value in options.values()]
 
 
+def portable_home_path(value: str) -> str:
+    expanded = os.path.expandvars(os.path.expanduser(value))
+    home = str(Path.home())
+    if expanded == home:
+        return "~"
+    if expanded.startswith(home + os.sep):
+        return "~/" + expanded[len(home) + 1:]
+    return value
+
+
+def uci_value(value: Any) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return str(value)
+
+
+def spsa_uci_defaults(settings_path: Path) -> list[str]:
+    options: dict[str, Any] = {}
+    if settings_path.exists():
+        settings = read_json(settings_path)
+        configured = settings.get("uci_options")
+        if configured is not None and not isinstance(configured, dict):
+            raise SystemExit(f"{settings_path}: uci_options must be an object")
+        options = configured or {}
+
+    by_name = {str(name).lower(): (str(name), value) for name, value in options.items()}
+    nnue_name, nnue_file = by_name.get("nnue_file", ("nnue_file", DEFAULT_NNUE_FILE))
+    if not str(nnue_file):
+        nnue_file = DEFAULT_NNUE_FILE
+    defaults = [f"{nnue_name}={portable_home_path(str(nnue_file))}"]
+
+    syzygy_name, use_syzygy = by_name.get("use_syzygy", ("use_syzygy", False))
+    defaults.append(f"{syzygy_name}={uci_value(use_syzygy)}")
+    if str(use_syzygy).lower() == "true" and "syzygypath" in by_name:
+        path_name, path = by_name["syzygypath"]
+        defaults.append(f"{path_name}={portable_home_path(str(path))}")
+    return defaults
+
+
 def prepare_spsa_template_parameters(params: dict[str, Any]) -> dict[str, Any]:
     prepared = dict(params)
     iterations = positive_int(prepared.get("iterations"), label="spsa.iterations")
@@ -161,15 +201,20 @@ def prepare_spsa_template_parameters(params: dict[str, Any]) -> dict[str, Any]:
 
     params_path = expand_path(str(prepared["params"]))
     state_path = expand_path(str(prepared["state"]))
+    settings_path = expand_path(str(prepared["settings"]))
     parameters = parse_spsa_parameters(params_path)
     initial = initial_theta(state_path, parameters)
     start_iteration = int(initial["k"])
+    common_uci = [
+        *spsa_uci_defaults(settings_path),
+        *list(prepared.get("uci") or []),
+    ]
     prepared.update({
         "games": rounds * 2,
         "seed": seed,
         "start_iteration": start_iteration,
         "target_iteration": start_iteration + iterations,
-        "uci": normalize_common_uci(list(prepared.get("uci") or [])),
+        "uci": normalize_common_uci(common_uci),
         "parameter_definitions": parameters,
         "parameter_source": {
             "path": str(prepared["params"]),

@@ -23,6 +23,10 @@
       "worker_path": true,
       "help": "Resumable final-theta state written on the coordinator"
     },
+    "settings": {
+      "default": "~/.config/enyo/settings.json",
+      "help": "Enyo settings used to resolve reproducible NNUE and Syzygy defaults"
+    },
     "iterations": {
       "type": "int",
       "default": 1000,
@@ -73,14 +77,10 @@
     "uci": {
       "repeatable": true,
       "arg": "--uci",
-      "default": [
-        "nnue_file=~/code/cpp/chess/enyo/net/default.net",
-        "use_syzygy=false"
-      ],
       "file_options": [
         "nnue_file"
       ],
-      "help": "Common UCI option applied to both perturbations as NAME=VALUE; repeat to override defaults"
+      "help": "Common UCI option applied to both perturbations as NAME=VALUE; repeat to override settings"
     },
     "seed": {
       "type": "int",

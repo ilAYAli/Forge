@@ -191,6 +191,7 @@ useful.
 | `--engine` | `~/assets/engines/candidate` | Engine used for both perturbations |
 | `--params` | `~/code/cpp/chess/enyo/spsa/params.txt` | Parameter ranges and schedules |
 | `--state` | `~/code/cpp/chess/enyo/spsa/state.json` | Input theta and atomic checkpoints |
+| `--settings` | `~/.config/enyo/settings.json` | Source of NNUE and Syzygy defaults |
 | `--iterations` | `1000` | New iterations added to the loaded state |
 | `--rounds` | `14` | Paired rounds per iteration; 28 games |
 | `--shards` | available slots, capped at `--rounds` | Distributed match shards |
@@ -201,16 +202,18 @@ useful.
 | `--restart` | `on` | Restart engines between games |
 | `--book` | WOMP `+140_+169` EPD | Opening book |
 | `--fastchess` | Forge-pinned fastchess | Match executable |
-| `--uci` | `nnue_file=.../net/default.net`, `use_syzygy=false` | Common UCI options; repeat to override |
+| `--uci` | values resolved from `--settings` | Common UCI options; repeat to override |
 | `--seed` | `1` | Perturbation and opening seed |
 | `--match-timeout` | `3600` | Per-shard match timeout in seconds |
 | `--poll-seconds` | `1.0` | Iteration-barrier polling interval |
 
-The canonical NNUE is hashed and synchronized to every worker. The state file
-contains the last fully aggregated theta and is compatible with Enyo's
-`spsa/promote.py`. Each new `forge spsa` invocation adds another batch. To
-resume an interrupted materialized run without creating a new batch, use its
-run name:
+Forge reads `nnue_file`, `use_syzygy`, and an enabled `SyzygyPath` from the
+configured Enyo settings. If settings are absent, it uses `net/default.net` and
+disables Syzygy. The resolved NNUE is hashed and synchronized to every worker.
+The state file contains the last fully aggregated theta and is compatible with
+Enyo's `spsa/promote.py`. Each new `forge spsa` invocation adds another batch.
+To resume an interrupted materialized run without creating a new batch, use
+its run name:
 
 ```sh
 forge spsa --run <run-name> --resume

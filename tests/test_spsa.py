@@ -133,10 +133,26 @@ class SpsaTemplateTests(unittest.TestCase):
         template = forge.load_template(ROOT / "templates" / "spsa.template.json")
 
         self.assertEqual(1000, template["parameters"]["iterations"]["default"])
-        self.assertEqual([
-            "nnue_file=~/code/cpp/chess/enyo/net/default.net",
-            "use_syzygy=false",
-        ], template["parameters"]["uci"]["default"])
+        self.assertEqual(
+            "~/.config/enyo/settings.json",
+            template["parameters"]["settings"]["default"],
+        )
+        self.assertNotIn("default", template["parameters"]["uci"])
+
+    def test_uci_defaults_are_read_from_enyo_settings(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="forge-spsa-settings-") as tmp:
+            settings = Path(tmp) / "settings.json"
+            settings.write_text(json.dumps({
+                "uci_options": {
+                    "nnue_file": "/tmp/current.nn",
+                    "use_syzygy": False,
+                },
+            }))
+
+            self.assertEqual([
+                "nnue_file=/tmp/current.nn",
+                "use_syzygy=false",
+            ], forge.spsa_uci_defaults(settings))
 
     def test_explicit_uci_options_override_defaults(self) -> None:
         self.assertEqual([
@@ -174,11 +190,18 @@ class SpsaTemplateTests(unittest.TestCase):
             root = Path(tmp)
             params_path = root / "params.txt"
             state_path = root / "state.json"
+            settings_path = root / "settings.json"
             params_path.write_text("alpha, 5, 0, 10, 1, 0.03\n")
             state_path.write_text(json.dumps({
                 "k": 7,
                 "names": ["alpha"],
                 "theta": [5.0],
+            }))
+            settings_path.write_text(json.dumps({
+                "uci_options": {
+                    "nnue_file": "/tmp/current.nn",
+                    "use_syzygy": False,
+                },
             }))
             template_path = ROOT / "templates" / "spsa.template.json"
             template = forge.load_template(template_path)
@@ -186,6 +209,7 @@ class SpsaTemplateTests(unittest.TestCase):
                 "--engine", str(root / "engine"),
                 "--params", str(params_path),
                 "--state", str(state_path),
+                "--settings", str(settings_path),
                 "--book", str(root / "book.epd"),
                 "--iterations", "3",
                 "--rounds", "3",
@@ -220,12 +244,21 @@ class SpsaTemplateTests(unittest.TestCase):
             fastchess = root / "fastchess"
             workers = root / "workers.json"
             config = root / "config.yml"
+            settings = root / "settings.json"
+            network = root / "current.nn"
             template_path = root / "spsa.template.json"
             params.write_text("alpha, 5, 0, 10, 1, 0.03\n")
             state.write_text(json.dumps({
                 "k": 5,
                 "names": ["alpha"],
                 "theta": [5.0],
+            }))
+            network.write_text("network\n")
+            settings.write_text(json.dumps({
+                "uci_options": {
+                    "nnue_file": str(network),
+                    "use_syzygy": False,
+                },
             }))
             book.write_text("startpos\n")
             engine.write_text("#!/bin/sh\nexit 0\n")
@@ -258,7 +291,6 @@ class SpsaTemplateTests(unittest.TestCase):
                 ],
                 "inputs": [{"name": "book", "path": "{book}"}],
             }
-            template["parameters"]["uci"]["default"] = ["use_syzygy=false"]
             forge.write_json(template_path, template)
             environment = os.environ.copy()
             environment.update({
@@ -281,6 +313,7 @@ class SpsaTemplateTests(unittest.TestCase):
                 "--fastchess", str(fastchess),
                 "--params", str(params),
                 "--state", str(state),
+                "--settings", str(settings),
                 "--book", str(book),
                 "--iterations", "2",
                 "--rounds", "2",
