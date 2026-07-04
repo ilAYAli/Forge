@@ -25,8 +25,8 @@
     },
     "iterations": {
       "type": "int",
-      "default": 1500,
-      "help": "Total sequential SPSA iterations"
+      "default": 1000,
+      "help": "New sequential SPSA iterations to run from the loaded state"
     },
     "rounds": {
       "type": "int",
@@ -73,10 +73,14 @@
     "uci": {
       "repeatable": true,
       "arg": "--uci",
+      "default": [
+        "nnue_file=~/code/cpp/chess/enyo/net/default.net",
+        "use_syzygy=false"
+      ],
       "file_options": [
         "nnue_file"
       ],
-      "help": "Extra UCI option applied to both perturbations as NAME=VALUE"
+      "help": "Common UCI option applied to both perturbations as NAME=VALUE; repeat to override defaults"
     },
     "seed": {
       "type": "int",

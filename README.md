@@ -169,7 +169,7 @@ Notes:
   games per shard. Slow worker startup does not affect this calculation;
   explicit `--shards` still overrides it.
 
-### Distributed SPSA
+### Distributed SPSA (“Simultaneous Perturbation Stochastic Approximation.”)
 
 `spsa` runs exact fixed-game matches rather than SPRTs. One long-lived Forge
 task owns each shard; all shards synchronize after every iteration, the
@@ -178,25 +178,42 @@ state. Interrupted or retried shards rejoin the active iteration without
 submitting a second gradient result.
 
 ```sh
-forge spsa \
-  --engine ~/assets/engines/candidate \
-  --params ~/code/cpp/chess/enyo/spsa/params.txt \
-  --state ~/code/cpp/chess/enyo/spsa/state.json \
-  --iterations 1500 \
-  --rounds 14 \
-  --tc 5+0.05 \
-  --uci nnue_file=~/code/cpp/chess/enyo/net/default.nn \
-  --uci use_syzygy=false \
-  --run enyo-search-spsa \
-  --wait
+forge spsa
 ```
 
-The state file contains the last fully aggregated theta and is compatible with
-Enyo's `spsa/promote.py`. Rerunning the same command resumes from that state.
-To resume the materialized Forge run after interruption, preserve its run name:
+This starts a detached 1,000-iteration batch from the theta in the default
+state file and reports progress in `forge web`. The default worker pool and an
+automatic run name are used. Pass `--wait` only when foreground waiting is
+useful.
+
+| SPSA option | Default | Purpose |
+| --- | --- | --- |
+| `--engine` | `~/assets/engines/candidate` | Engine used for both perturbations |
+| `--params` | `~/code/cpp/chess/enyo/spsa/params.txt` | Parameter ranges and schedules |
+| `--state` | `~/code/cpp/chess/enyo/spsa/state.json` | Input theta and atomic checkpoints |
+| `--iterations` | `1000` | New iterations added to the loaded state |
+| `--rounds` | `14` | Paired rounds per iteration; 28 games |
+| `--shards` | available slots, capped at `--rounds` | Distributed match shards |
+| `--concurrency` | `1` | Concurrent games inside each shard |
+| `--threads` | `1` | Engine threads per game |
+| `--hash` | `64` | Engine hash MiB per game |
+| `--tc` | `5+0.05` | Fastchess time control |
+| `--restart` | `on` | Restart engines between games |
+| `--book` | WOMP `+140_+169` EPD | Opening book |
+| `--fastchess` | Forge-pinned fastchess | Match executable |
+| `--uci` | `nnue_file=.../net/default.net`, `use_syzygy=false` | Common UCI options; repeat to override |
+| `--seed` | `1` | Perturbation and opening seed |
+| `--match-timeout` | `3600` | Per-shard match timeout in seconds |
+| `--poll-seconds` | `1.0` | Iteration-barrier polling interval |
+
+The canonical NNUE is hashed and synchronized to every worker. The state file
+contains the last fully aggregated theta and is compatible with Enyo's
+`spsa/promote.py`. Each new `forge spsa` invocation adds another batch. To
+resume an interrupted materialized run without creating a new batch, use its
+run name:
 
 ```sh
-forge spsa --run enyo-search-spsa --resume --wait
+forge spsa --run <run-name> --resume
 ```
 
 Without `--shards`, Forge uses the available worker slots capped at `--rounds`,

@@ -98,7 +98,6 @@ def parse_spsa_parameters(path: Path) -> list[dict[str, Any]]:
 def initial_theta(
     state_path: Path,
     parameters: list[dict[str, Any]],
-    iterations: int,
 ) -> dict[str, Any]:
     names = [str(parameter["name"]) for parameter in parameters]
     defaults = [float(parameter["default"]) for parameter in parameters]
@@ -108,7 +107,7 @@ def initial_theta(
     state = read_json(state_path)
     k = state.get("k")
     theta = state.get("theta")
-    if isinstance(k, bool) or not isinstance(k, int) or not 0 <= k <= iterations:
+    if isinstance(k, bool) or not isinstance(k, int) or k < 0:
         raise SystemExit(f"{state_path}: invalid SPSA iteration k")
     if state.get("names") != names:
         raise SystemExit(f"{state_path}: SPSA parameter names do not match {names}")
@@ -126,6 +125,16 @@ def initial_theta(
 
 def shell_value(value: Any) -> str:
     return shlex.quote(str(value))
+
+
+def normalize_common_uci(items: list[str]) -> list[str]:
+    options: dict[str, tuple[str, str]] = {}
+    for item in items:
+        name, separator, value = str(item).partition("=")
+        if not separator or not name or value == "":
+            raise SystemExit(f"invalid --uci option {item!r}; expected NAME=VALUE")
+        options[name.lower()] = (name, value)
+    return [f"{name}={value}" for name, value in options.values()]
 
 
 def prepare_spsa_template_parameters(params: dict[str, Any]) -> dict[str, Any]:
@@ -153,10 +162,14 @@ def prepare_spsa_template_parameters(params: dict[str, Any]) -> dict[str, Any]:
     params_path = expand_path(str(prepared["params"]))
     state_path = expand_path(str(prepared["state"]))
     parameters = parse_spsa_parameters(params_path)
-    initial = initial_theta(state_path, parameters, iterations)
+    initial = initial_theta(state_path, parameters)
+    start_iteration = int(initial["k"])
     prepared.update({
         "games": rounds * 2,
         "seed": seed,
+        "start_iteration": start_iteration,
+        "target_iteration": start_iteration + iterations,
+        "uci": normalize_common_uci(list(prepared.get("uci") or [])),
         "parameter_definitions": parameters,
         "parameter_source": {
             "path": str(prepared["params"]),
@@ -182,6 +195,8 @@ def attach_spsa_manifest_config(manifest: dict[str, Any], params: dict[str, Any]
     manifest["spsa"] = {
         "schema": CONFIG_SCHEMA,
         "iterations": int(params["iterations"]),
+        "start_iteration": int(params["start_iteration"]),
+        "target_iteration": int(params["target_iteration"]),
         "rounds": int(params["rounds"]),
         "shards": int(params["shards"]),
         "shard_games": shard_games,
@@ -197,6 +212,8 @@ def attach_spsa_manifest_config(manifest: dict[str, Any], params: dict[str, Any]
             "parameter_definitions",
             "parameter_source",
             "initial_state",
+            "start_iteration",
+            "target_iteration",
             "engine_shell",
             "book_shell",
             "fastchess_shell",
@@ -291,11 +308,33 @@ def spsa_csv_path(manifest_path: Path) -> Path:
     return manifest_path.parent / "spsa.csv"
 
 
+def spsa_start_iteration(config: dict[str, Any]) -> int:
+    initial = config.get("initial_state")
+    fallback = int(initial.get("k", 0)) if isinstance(initial, dict) else 0
+    return int(config.get("start_iteration", fallback))
+
+
+def spsa_target_iteration(config: dict[str, Any]) -> int:
+    # Manifests created before relative iteration counts used `iterations`
+    # directly as the lifetime target.
+    return int(config.get("target_iteration", config["iterations"]))
+
+
+def spsa_progress_iteration(config: dict[str, Any], iteration: int) -> int:
+    if "target_iteration" not in config:
+        return iteration
+    return iteration - spsa_start_iteration(config)
+
+
 def config_digest(config: dict[str, Any]) -> str:
     stable = {
         key: config[key]
         for key in ("iterations", "rounds", "shards", "shard_games", "seed", "parameters")
     }
+    if "start_iteration" in config:
+        stable["start_iteration"] = spsa_start_iteration(config)
+    if "target_iteration" in config:
+        stable["target_iteration"] = spsa_target_iteration(config)
     encoded = json.dumps(stable, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
 
@@ -322,6 +361,8 @@ def new_coordinator_state(manifest: dict[str, Any]) -> dict[str, Any]:
         "run": str(manifest["name"]),
         "config_sha256": config_digest(config),
         "iterations": int(config["iterations"]),
+        "start_iteration": spsa_start_iteration(config),
+        "target_iteration": spsa_target_iteration(config),
         "k": int(initial["k"]),
         "names": list(initial["names"]),
         "theta": [float(value) for value in initial["theta"]],
@@ -339,6 +380,9 @@ def load_coordinator_state(manifest_path: Path, manifest: dict[str, Any]) -> dic
         raise SystemExit(f"{path}: SPSA state belongs to another run")
     if state.get("config_sha256") != config_digest(spsa_config(manifest)):
         raise SystemExit(f"{path}: SPSA configuration changed")
+    config = spsa_config(manifest)
+    state.setdefault("start_iteration", spsa_start_iteration(config))
+    state.setdefault("target_iteration", spsa_target_iteration(config))
     return state
 
 
@@ -346,6 +390,8 @@ def public_state(state: dict[str, Any]) -> dict[str, Any]:
     return {
         "k": int(state["k"]),
         "iterations": int(state["iterations"]),
+        "start_iteration": int(state["start_iteration"]),
+        "target_iteration": int(state["target_iteration"]),
         "names": list(state["names"]),
         "theta": list(state["theta"]),
         "run": str(state["run"]),
@@ -377,7 +423,7 @@ def schedules(parameter: dict[str, Any], k: int, total: int) -> tuple[float, flo
 
 def create_iteration(config: dict[str, Any], state: dict[str, Any]) -> dict[str, Any]:
     k = int(state["k"]) + 1
-    total = int(config["iterations"])
+    total = spsa_target_iteration(config)
     rng = random.Random(f"forge-spsa:{config['seed']}:{k}")
     flips: list[int] = []
     plus: dict[str, int] = {}
@@ -409,7 +455,7 @@ def spsa_next_payload(manifest_path: Path, shard_index: int) -> dict[str, Any]:
         raise SystemExit(f"SPSA shard index {shard_index} is outside 0..{shards - 1}")
     with locked_spsa_state(manifest_path):
         state = load_coordinator_state(manifest_path, manifest)
-        if int(state["k"]) >= int(config["iterations"]):
+        if int(state["k"]) >= spsa_target_iteration(config):
             save_coordinator_state(manifest_path, manifest, state)
             return {"status": "done", **public_state(state)}
         current = state.get("current")
@@ -430,6 +476,9 @@ def spsa_next_payload(manifest_path: Path, shard_index: int) -> dict[str, Any]:
         return {
             "status": "work",
             "iteration": int(current["iteration"]),
+            "batch_iteration": spsa_progress_iteration(
+                config, int(current["iteration"])
+            ),
             "iterations": int(config["iterations"]),
             "plus": dict(current["plus"]),
             "minus": dict(current["minus"]),
@@ -475,7 +524,7 @@ def advance_iteration(
     iteration = int(current["iteration"])
     theta = list(state["theta"])
     for index, (parameter, flip) in enumerate(zip(config["parameters"], current["flips"])):
-        a_k, c_k = schedules(parameter, iteration, int(config["iterations"]))
+        a_k, c_k = schedules(parameter, iteration, spsa_target_iteration(config))
         value = float(theta[index]) + (a_k / c_k) * int(flip) * result
         theta[index] = min(float(parameter["max"]), max(float(parameter["min"]), value))
     state["theta"] = theta
@@ -485,6 +534,7 @@ def advance_iteration(
     append_spsa_csv(manifest_path, config, state, result, games)
     return {
         "iteration": iteration,
+        "batch_iteration": spsa_progress_iteration(config, iteration),
         "iterations": int(config["iterations"]),
         "games": games,
         "wins": wins,
@@ -662,8 +712,10 @@ def cmd_spsa_worker(args: argparse.Namespace) -> int:
         status = assignment.get("status")
         if status == "done":
             write_json(expand_path(args.output), assignment)
+            completed = int(assignment["k"]) - int(assignment["start_iteration"])
             print(
-                f"SPSA complete {assignment['k']}/{assignment['iterations']} shard={args.shard_index}",
+                f"SPSA complete {completed}/{assignment['iterations']} "
+                f"total={assignment['k']} shard={args.shard_index}",
                 flush=True,
             )
             return 0
@@ -686,7 +738,8 @@ def cmd_spsa_worker(args: argparse.Namespace) -> int:
         ])
         score = (result["wins"] - result["losses"]) / result["games"]
         print(
-            f"SPSA iteration {assignment['iteration']}/{assignment['iterations']} "
+            f"SPSA iteration {assignment['batch_iteration']}/{assignment['iterations']} "
+            f"total={assignment['iteration']} "
             f"shard={args.shard_index} games={result['games']} "
             f"result={score:+.3f} status={response['status']}",
             flush=True,

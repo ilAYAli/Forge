@@ -29,7 +29,13 @@ def parameter(name: str = "alpha") -> dict:
 
 
 class SpsaCoordinatorTests(unittest.TestCase):
-    def make_manifest(self, root: Path, *, iterations: int = 1) -> Path:
+    def make_manifest(
+        self,
+        root: Path,
+        *,
+        iterations: int = 1,
+        start_iteration: int = 0,
+    ) -> Path:
         manifest_path = root / "manifest.json"
         forge.write_json(manifest_path, {
             "schema": "forge.task.v1",
@@ -46,6 +52,8 @@ class SpsaCoordinatorTests(unittest.TestCase):
             "spsa": {
                 "schema": forge.CONFIG_SCHEMA,
                 "iterations": iterations,
+                "start_iteration": start_iteration,
+                "target_iteration": start_iteration + iterations,
                 "rounds": 2,
                 "shards": 2,
                 "shard_games": [2, 2],
@@ -53,7 +61,11 @@ class SpsaCoordinatorTests(unittest.TestCase):
                 "state": str(root / "exported-state.json"),
                 "parameters": [parameter()],
                 "parameter_source": {"path": "params.txt", "sha256": "0" * 64},
-                "initial_state": {"k": 0, "names": ["alpha"], "theta": [5.0]},
+                "initial_state": {
+                    "k": start_iteration,
+                    "names": ["alpha"],
+                    "theta": [5.0],
+                },
             },
         })
         return manifest_path
@@ -103,8 +115,40 @@ class SpsaCoordinatorTests(unittest.TestCase):
                     manifest_path, 0, 1, wins=1, losses=0, draws=0, games=1
                 )
 
+    def test_iterations_are_added_to_loaded_state(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="forge-spsa-") as tmp:
+            manifest_path = self.make_manifest(
+                Path(tmp), iterations=2, start_iteration=1500
+            )
+
+            first = forge.spsa_next_payload(manifest_path, 0)
+
+            self.assertEqual(1501, first["iteration"])
+            self.assertEqual(1, first["batch_iteration"])
+            self.assertEqual(2, first["iterations"])
+
 
 class SpsaTemplateTests(unittest.TestCase):
+    def test_spsa_defaults_are_self_contained(self) -> None:
+        template = forge.load_template(ROOT / "templates" / "spsa.template.json")
+
+        self.assertEqual(1000, template["parameters"]["iterations"]["default"])
+        self.assertEqual([
+            "nnue_file=~/code/cpp/chess/enyo/net/default.net",
+            "use_syzygy=false",
+        ], template["parameters"]["uci"]["default"])
+
+    def test_explicit_uci_options_override_defaults(self) -> None:
+        self.assertEqual([
+            "nnue_file=/tmp/custom.net",
+            "use_syzygy=true",
+        ], forge.normalize_common_uci([
+            "nnue_file=~/code/cpp/chess/enyo/net/default.net",
+            "use_syzygy=false",
+            "nnue_file=/tmp/custom.net",
+            "use_syzygy=true",
+        ]))
+
     def test_worker_slots_are_capped_and_spread_across_hosts(self) -> None:
         payload = {
             "schema": "forge.workers.v1",
@@ -131,6 +175,11 @@ class SpsaTemplateTests(unittest.TestCase):
             params_path = root / "params.txt"
             state_path = root / "state.json"
             params_path.write_text("alpha, 5, 0, 10, 1, 0.03\n")
+            state_path.write_text(json.dumps({
+                "k": 7,
+                "names": ["alpha"],
+                "theta": [5.0],
+            }))
             template_path = ROOT / "templates" / "spsa.template.json"
             template = forge.load_template(template_path)
             params = forge.parse_template_parameters("spsa", template, [
@@ -149,6 +198,8 @@ class SpsaTemplateTests(unittest.TestCase):
             self.assertEqual(2, len(manifest["tasks"]))
             self.assertEqual([4, 2], manifest["spsa"]["shard_games"])
             self.assertEqual(3, manifest["spsa"]["iterations"])
+            self.assertEqual(7, manifest["spsa"]["start_iteration"])
+            self.assertEqual(10, manifest["spsa"]["target_iteration"])
             self.assertIn("spsa-worker", manifest["tasks"][0]["command"])
             self.assertIn("$FORGE_COORDINATOR", manifest["tasks"][0]["command"])
             self.assertEqual("3", manifest["tasks"][0]["progress"]["total"])
@@ -171,6 +222,11 @@ class SpsaTemplateTests(unittest.TestCase):
             config = root / "config.yml"
             template_path = root / "spsa.template.json"
             params.write_text("alpha, 5, 0, 10, 1, 0.03\n")
+            state.write_text(json.dumps({
+                "k": 5,
+                "names": ["alpha"],
+                "theta": [5.0],
+            }))
             book.write_text("startpos\n")
             engine.write_text("#!/bin/sh\nexit 0\n")
             fastchess.write_text(
@@ -202,6 +258,7 @@ class SpsaTemplateTests(unittest.TestCase):
                 ],
                 "inputs": [{"name": "book", "path": "{book}"}],
             }
+            template["parameters"]["uci"]["default"] = ["use_syzygy=false"]
             forge.write_json(template_path, template)
             environment = os.environ.copy()
             environment.update({
@@ -242,10 +299,14 @@ class SpsaTemplateTests(unittest.TestCase):
                 result.stdout + result.stderr + "\n" + logs,
             )
             final_state = json.loads(state.read_text())
-            self.assertEqual(2, final_state["k"])
+            self.assertEqual(7, final_state["k"])
+            self.assertEqual(5, final_state["start_iteration"])
+            self.assertEqual(7, final_state["target_iteration"])
             self.assertEqual(["alpha"], final_state["names"])
             self.assertTrue((run / "summary.json").is_file())
             self.assertEqual(3, len((run / "spsa.csv").read_text().splitlines()))
+            self.assertIn("SPSA iteration 1/2 total=6", logs)
+            self.assertIn("SPSA iteration 2/2 total=7", logs)
 
     def test_spsa_cancel_is_retryable_failure(self) -> None:
         with tempfile.TemporaryDirectory(prefix="forge-spsa-cancel-") as tmp:
