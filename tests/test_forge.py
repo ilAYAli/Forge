@@ -3424,7 +3424,7 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
                 mock.patch("forge_lib.shell.run_worker_shell", side_effect=fake_run_worker_shell),
             ):
                 rc = forge.cmd_sh(argparse.Namespace(
-                    command="echo hi",
+                    command=f"rm {Path.home()}/code/cpp/chess/enyo/net/berserk-9b84c340af7e.nn",
                     workers=None,
                     jobs=4,
                     run="sh-test",
@@ -3444,7 +3444,10 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
                 {"cache_dir": "/tmp/a", "host": "worker-a", "local": False, "profile": "worker-a"},
                 {"host": "worker-b", "local": False, "profile": "worker-b", "python": "/usr/bin/python3"},
             ], [worker for worker, _command in seen_sorted])
-            self.assertEqual(["echo hi", "echo hi"], [command for _worker, command in seen_sorted])
+            self.assertEqual(
+                ["rm ~/code/cpp/chess/enyo/net/berserk-9b84c340af7e.nn"] * 2,
+                [command for _worker, command in seen_sorted],
+            )
             self.assertFalse((runs / ".sh-tmp").exists())
             self.assertFalse((runs / "sh-test").exists())
 

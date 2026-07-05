@@ -97,9 +97,14 @@ def write_shell_stream(stream: Any, text: str) -> None:
     stream.flush()
 
 
+def home_relative_command(command: str) -> str:
+    return command.replace(str(Path.home()) + os.sep, "~" + os.sep)
+
+
 def cmd_sh(args: argparse.Namespace) -> int:
     workers_payload = one_slot_per_host_payload(args.workers)
     workers = worker_records_from_payload(workers_payload, label="sh workers")
+    command = home_relative_command(args.command)
     timeout = bounded_timeout(args.remote_timeout_seconds)
     jobs = max(1, int(args.jobs))
     tracker = ProcessTracker()
@@ -113,7 +118,7 @@ def cmd_sh(args: argparse.Namespace) -> int:
     try:
         with concurrent.futures.ThreadPoolExecutor(max_workers=min(jobs, len(workers))) as executor:
             futures = {
-                executor.submit(run_shell_host, worker, args.command, timeout=timeout, tracker=tracker): shell_worker_label(worker)
+                executor.submit(run_shell_host, worker, command, timeout=timeout, tracker=tracker): shell_worker_label(worker)
                 for worker in workers
             }
             for future in concurrent.futures.as_completed(futures):
