@@ -108,7 +108,7 @@ def cmd_sh(args: argparse.Namespace) -> int:
     timeout = bounded_timeout(args.remote_timeout_seconds)
     jobs = max(1, int(args.jobs))
     tracker = ProcessTracker()
-    failed = 0
+    failed: list[str] = []
 
     labels = [shell_worker_label(worker) for worker in workers]
     write_shell_stream(
@@ -126,13 +126,14 @@ def cmd_sh(args: argparse.Namespace) -> int:
                 result = future.result()
                 write_shell_stream(sys.stdout, format_shell_result(label, result))
                 if result.returncode != 0:
-                    failed += 1
+                    failed.append(label)
     except KeyboardInterrupt:
         tracker.terminate_all()
         raise
 
     if failed:
-        write_shell_stream(sys.stderr, f"sh: failed on {failed}/{len(workers)} host(s)\n")
+        names = ", ".join(label for label in labels if label in failed)
+        write_shell_stream(sys.stderr, f"sh: failed on {len(failed)}/{len(workers)} host(s): {names}\n")
         return 1
     return 0
 

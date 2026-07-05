@@ -3597,7 +3597,7 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
         self.assertNotIn("worker-a: OK", output)
         self.assertIn("worker-b: FAILED rc=7", output)
         self.assertIn("  boom", output)
-        self.assertIn("sh: failed on 1/2 host(s)", stderr.getvalue())
+        self.assertEqual("sh: failed on 1/2 host(s): worker-b\n", stderr.getvalue())
 
     def test_shell_stream_text_uses_crlf_for_tty_output(self) -> None:
         class TtyStream(io.StringIO):
