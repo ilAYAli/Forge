@@ -3477,6 +3477,12 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
             self.assertIn(f" to {destination}\n", first_stdout.getvalue())
             self.assertIn("localhost: synced", first_stdout.getvalue())
             self.assertIn("localhost: current", second_stdout.getvalue())
+            self.assertIsNone(forge.build_parser().parse_args(["sync", str(source)]).destination)
+            args.destination = None
+            with contextlib.redirect_stdout(io.StringIO()) as default_stdout:
+                self.assertEqual(0, forge.cmd_sync(args))
+            self.assertIn(f" to {source}\n", default_stdout.getvalue())
+            self.assertIn("localhost: current", default_stdout.getvalue())
 
     def test_sync_directory_preserves_layout_and_skips_matching_files(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

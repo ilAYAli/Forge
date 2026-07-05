@@ -136,12 +136,12 @@ def cmd_sync(args: argparse.Namespace) -> int:
     source = expand_path(args.source)
     if not source.exists():
         raise SystemExit(f"sync source does not exist: {source}")
+    destination_arg = args.destination if args.destination is not None else worker_path_parameter(args.source)
 
     if source.is_dir():
         source_files = sorted(path for path in source.rglob("*") if path.is_file())
         if not source_files:
             raise SystemExit(f"sync source directory contains no files: {source}")
-        destination_arg = args.destination
         if destination_arg.endswith("/"):
             destination_arg = destination_arg.rstrip("/") + "/" + source.name
         destination = worker_path_parameter(destination_arg)
@@ -151,7 +151,7 @@ def cmd_sync(args: argparse.Namespace) -> int:
         }
     elif source.is_file():
         source_files = [source]
-        destination = worker_path_parameter(args.destination)
+        destination = worker_path_parameter(destination_arg)
         destinations = {str(source): destination}
     else:
         raise SystemExit(f"sync source is not a file or directory: {source}")

@@ -61,6 +61,7 @@ The name of the respective workers should likely be a hostname rather than worke
 ```sh
 forge --help
 forge "cd ~/repo; git pull; cmake --build build"
+forge sync ~/code/cpp/chess/enyo/net/default.net
 forge sync /tmp/foo ~/bar
 forge sync "$PWD/.codex/agents" ~/code/cpp/chess/nnue/
 forge start manifest.json --workers worker1,worker2:4
@@ -76,8 +77,10 @@ forge update
 
 Use `forge <command> --help` for full options.
 
-`forge sync SOURCE DESTINATION` hashes the local file or directory contents and
-synchronizes them to each selected worker host. A trailing `/` on a directory
+`forge sync SOURCE [DESTINATION]` hashes the local file or directory contents and
+synchronizes them to each selected worker host. When `DESTINATION` is omitted,
+Forge uses the equivalent source path on each worker; paths beneath the
+coordinator's home use each worker's own `~/`. A trailing `/` on a directory
 destination places the source directory beneath it; the example above writes to
 `~/code/cpp/chess/nnue/agents/`. Files whose destination already has the matching
 size and SHA-256 are skipped. Extra destination files are not deleted.
