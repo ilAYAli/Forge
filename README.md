@@ -105,6 +105,7 @@ forge '
 Each host gets one slot unless `--workers` says otherwise.
 Paths beneath the coordinator's home are rewritten relative to each worker's
 home, so `forge "rm $PWD/net/file.nn"` dispatches `rm ~/code/.../net/file.nn`.
+This also applies when paths are separate arguments, such as `forge ls $PWD/net`.
 The `sh` prefix is optional when the complete first argument does not exactly
 match a Forge command or installed template name. Forge does not split a quoted
 command, so `forge "sprt foo bar"` runs that shell command while

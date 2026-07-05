@@ -95,6 +95,23 @@ RESERVED_COMMANDS = {
 }
 
 
+def home_relative_argument(value: str) -> str:
+    home = str(Path.home())
+    if value == home or value.startswith(home + os.sep):
+        return "~" + value[len(home):]
+    return value
+
+
+def shell_command_from_arguments(values: list[str]) -> str:
+    if len(values) == 1:
+        return values[0]
+    words = [
+        "~" if value == "~" else "~/" + shlex.quote(value[2:]) if value.startswith("~/") else shlex.quote(value)
+        for value in values
+    ]
+    return " ".join(words)
+
+
 def expand_template_command_aliases(args: list[str]) -> list[str]:
     if args and args[0] == "sprt":
         return ["run", "sprt", *args[1:]]
@@ -142,7 +159,11 @@ class ForgeArgumentParser(argparse.ArgumentParser):
     def parse_args(self, args: list[str] | None = None, namespace: Any = None) -> argparse.Namespace:
         if args is None:
             args = sys.argv[1:]
-        return super().parse_args(expand_implicit_command(list(args)), namespace)
+        normalized = [home_relative_argument(value) for value in args]
+        parsed = super().parse_args(expand_implicit_command(normalized), namespace)
+        if getattr(parsed, "subcommand", None) == "sh" and isinstance(parsed.command, list):
+            parsed.command = shell_command_from_arguments(parsed.command)
+        return parsed
 
     def format_help(self) -> str:
         if not self.command_groups:
@@ -309,7 +330,7 @@ def build_parser() -> argparse.ArgumentParser:
             "  forge sh --workers pwa-5090,pwa-mbp \"hostname && git --version\""
         ),
     )
-    shell.add_argument("command", help="Shell command run on each host.")
+    shell.add_argument("command", nargs="+", help="Shell command and arguments run on each host.")
     shell.add_argument("--workers", help=WORKERS_ARG_HELP_WITH_DEFAULT)
     shell.add_argument("--jobs", type=int, default=4, help="Maximum hosts to run concurrently.")
     shell.add_argument("--remote-timeout-seconds", type=float, default=1800.0, help="Timeout for each host command.")

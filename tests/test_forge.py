@@ -3378,6 +3378,9 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
         ):
             shell = parser.parse_args(["pwd"])
             quoted_shell = parser.parse_args(["sprt foo bar"])
+            copied_path = str(Path.home() / "code/cpp/chess/enyo/net/berserk-9b84c340af7e.nn")
+            copy_shell = parser.parse_args(["cp", copied_path])
+            explicit_copy_shell = parser.parse_args(["sh", "cp", copied_path])
             builtin_template = parser.parse_args(["sprt", "--games", "10"])
             custom_template = parser.parse_args(["custom", "--value", "x"])
 
@@ -3385,6 +3388,8 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
         self.assertEqual("pwd", shell.command)
         self.assertEqual("sh", quoted_shell.subcommand)
         self.assertEqual("sprt foo bar", quoted_shell.command)
+        self.assertEqual("cp ~/code/cpp/chess/enyo/net/berserk-9b84c340af7e.nn", copy_shell.command)
+        self.assertEqual(copy_shell.command, explicit_copy_shell.command)
         self.assertEqual("run", builtin_template.subcommand)
         self.assertEqual("sprt", builtin_template.template)
         self.assertEqual(["--games", "10"], builtin_template.template_args)
