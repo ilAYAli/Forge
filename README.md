@@ -359,7 +359,17 @@ forge worker del worker3 my-run
 
 `del --worker` drains the host: no new claims, reserved claims released, running
 tasks left alone. Add `--keep-claims` to keep already reserved claims. Without
-`--worker`, `del` deletes a run.
+`--worker`, `del` deletes runs:
+
+```sh
+forge del my-run
+forge del --done
+forge del --all
+```
+
+`del --all` deletes completed, failed, stopped, and empty runs while keeping
+current, queued, and stalled runs. Deletion prompts for confirmation unless
+`--force` is supplied.
 
 ## Retry Failed Work
 

@@ -223,8 +223,8 @@ def add_worker_set_options(parser: argparse.ArgumentParser) -> None:
 
 def cmd_del_or_worker(args: argparse.Namespace) -> int:
     if getattr(args, "worker", None):
-        if bool(getattr(args, "done", False)):
-            raise SystemExit("del --worker cannot be used with --done")
+        if bool(getattr(args, "done", False)) or bool(getattr(args, "all", False)):
+            raise SystemExit("del --worker cannot be used with --done or --all")
         if bool(getattr(args, "force", False)):
             raise SystemExit("del --worker cannot be used with --force")
         return cmd_worker_del(args)
@@ -698,7 +698,9 @@ def build_parser() -> argparse.ArgumentParser:
     delete.add_argument("run", nargs="?", help="Run name or run directory. With --worker, drain from this run; otherwise delete it.")
     delete.add_argument("--worker", help="Worker host to drain instead of deleting a run.")
     delete.add_argument("--keep-claims", action="store_true", help="With --worker, do not release this worker's reserved claims.")
-    delete.add_argument("--done", action="store_true", help="Delete all completed runs.")
+    delete_scope = delete.add_mutually_exclusive_group()
+    delete_scope.add_argument("--done", action="store_true", help="Delete all completed runs.")
+    delete_scope.add_argument("--all", action="store_true", help="Delete all inactive runs.")
     delete.add_argument("--force", action="store_true", help="Do not prompt before deleting.")
     delete.add_argument(
         "--lease-seconds",

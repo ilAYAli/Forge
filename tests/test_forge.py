@@ -5273,7 +5273,7 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
             self.assertIn("worker del: active worker-b released=1", stdout.getvalue())
 
     def test_del_command_worker_rejects_delete_options(self) -> None:
-        for option in ("--done", "--force"):
+        for option in ("--done", "--all", "--force"):
             with self.subTest(option=option):
                 args = forge.build_parser().parse_args(["del", "--worker", "worker-b", option])
                 with self.assertRaises(SystemExit):
@@ -10397,6 +10397,34 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
             self.assertEqual([], state["hidden_runs"])
             self.assertEqual(["finished"], state["deleted_runs"])
             self.assertEqual({}, state["lingering_runs"])
+
+    def test_delete_all_keeps_active_runs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            states = ["done", "failed", "stopped", "empty", "current", "queued", "stalled"]
+            summaries = []
+            for state in states:
+                run_dir = root / state
+                run_dir.mkdir()
+                summaries.append({"manifest": str(run_dir / "manifest.json"), "test_state": state})
+            args = forge.build_parser().parse_args(["del", "--all", "--force"])
+            self.assertIn("--all", forge.state_control_command_args("del", args))
+
+            with (
+                mock.patch.dict(os.environ, {"FORGE_COORDINATOR_RUNS": ""}),
+                mock.patch("forge_lib.status.load_run_summaries", return_value=summaries),
+                mock.patch("forge_lib.status.run_state", side_effect=lambda item: item["test_state"]),
+                mock.patch("forge_lib.status.mark_deleted_run_for_web") as mark_deleted,
+                contextlib.redirect_stdout(io.StringIO()) as stdout,
+            ):
+                self.assertEqual(0, forge.cmd_del(args))
+
+            for state in states[:4]:
+                self.assertFalse((root / state).exists())
+            for state in states[4:]:
+                self.assertTrue((root / state).exists())
+            self.assertEqual(states[:4], [call.args[0] for call in mark_deleted.call_args_list])
+            self.assertIn("kept active: current, queued, stalled", stdout.getvalue())
 
     def test_delete_named_run_delegates_to_coordinator(self) -> None:
         remote_result = subprocess.CompletedProcess(

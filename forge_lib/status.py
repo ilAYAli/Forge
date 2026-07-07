@@ -210,6 +210,8 @@ def state_control_command_args(name: str, args: argparse.Namespace) -> list[str]
     elif name == "del":
         if bool(getattr(args, "done", False)):
             command.append("--done")
+        if bool(getattr(args, "all", False)):
+            command.append("--all")
         if bool(getattr(args, "force", False)):
             command.append("--force")
     command.extend(["--lease-seconds", str(args.lease_seconds)])
@@ -2052,19 +2054,29 @@ def mark_deleted_run_for_web(run: str) -> None:
         print(f"warning: web state not updated for {run}: {exc}", file=sys.stderr)
 
 def cmd_del(args: argparse.Namespace) -> int:
+    delete_done = bool(getattr(args, "done", False))
+    delete_all = bool(getattr(args, "all", False))
     coordinator_runs = configured_coordinator_runs()
     if coordinator_runs and status_can_delegate(args.run):
         rc = run_state_control_on_coordinator("del", args, coordinator_runs)
         if rc == 0 and args.run:
             mark_deleted_run_for_web(str(args.run))
         return rc
-    if args.done and args.run:
-        raise SystemExit("del accepts either a run name or --done")
-    if not args.done and not args.run:
-        raise SystemExit("del requires a run name or --done")
+    if (delete_done or delete_all) and args.run:
+        raise SystemExit("del accepts a run name, --done, or --all")
+    if not delete_done and not delete_all and not args.run:
+        raise SystemExit("del requires a run name, --done, or --all")
     summaries = load_run_summaries(lease_seconds=args.lease_seconds)
     targets: list[Path] = []
-    if args.done:
+    kept: list[str] = []
+    if delete_all:
+        for item in summaries:
+            path = Path(item["manifest"]).parent
+            if run_state(item) in {"current", "queued", "stalled"}:
+                kept.append(path.name)
+            else:
+                targets.append(path)
+    elif delete_done:
         targets = [Path(item["manifest"]).parent for item in summaries if run_done(item)]
     else:
         summary = run_summary_for(args.run, lease_seconds=args.lease_seconds)
@@ -2072,13 +2084,17 @@ def cmd_del(args: argparse.Namespace) -> int:
             raise SystemExit(f"{args.run}: run is active; stop it first or pass --force")
         targets = [Path(summary["manifest"]).parent]
     if not targets:
-        print("no runs matched")
+        print("no inactive runs matched" if delete_all else "no runs matched")
+        if kept:
+            print(f"kept active: {', '.join(kept)}")
         return 0
     confirm_delete(targets, force=bool(args.force))
     for path in targets:
         shutil.rmtree(path)
         mark_deleted_run_for_web(path.name)
         print(f"deleted: {path.name}")
+    if kept:
+        print(f"kept active: {', '.join(kept)}")
     return 0
 
 def format_manifest_path(path: Path) -> str:
