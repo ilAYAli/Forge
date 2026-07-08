@@ -3010,7 +3010,19 @@ def cmd_web(args: argparse.Namespace) -> int:
         if exc.errno == 98 or exc.errno == 48:  # EADDRINUSE
             raise SystemExit(f"port {port} already in use — is forge web already running?")
         raise
+
+    def recover_local_queue() -> None:
+        if configured_coordinator_runs():
+            return
+        from .workers import recover_queue_monitors
+
+        recovered = recover_queue_monitors()
+        if recovered:
+            names = ", ".join(recovered)
+            print(f"forge web: recovered queue monitors for {names}", flush=True)
+
     if getattr(args, "foreground", False):
+        recover_local_queue()
         print(f"forge web: {url}", flush=True)
         try:
             server.serve_forever()
@@ -3019,5 +3031,6 @@ def cmd_web(args: argparse.Namespace) -> int:
     else:
         print(f"forge web: {url}", flush=True)
         _daemonize()
+        recover_local_queue()
         server.serve_forever()
     return 0

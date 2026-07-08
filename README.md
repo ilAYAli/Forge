@@ -126,8 +126,10 @@ forge start manifest.json --workers workers.json --replace
 ```
 
 `start` materializes `runs/<run>/manifest.json` and `workers.json`, syncs inputs,
-checks prerequisites, launches workers, and optionally waits/merges. If another
-run is active, the new run is queued and shown in status/web.
+checks prerequisites, launches workers, and optionally waits/merges. Forge runs
+at most one run at a time; additional runs wait in FIFO order and are shown in
+status/web. Dead queue monitors are restarted when a new run is queued or the
+coordinator web server starts.
 Worker setup runs in parallel and waits for each host's real success, failure,
 or `--remote-timeout-seconds`; a faster host never cancels slower setup.
 
@@ -330,8 +332,9 @@ forge resume my-run
 
 `stop` prevents new claims, terminates every local and remote worker slot,
 releases incomplete active claims, and removes transient state. Completed tasks
-and the materialized run are preserved. Templates may retain checkpoint
-outputs; other incomplete task outputs are removed.
+and the materialized run are preserved. For a queued run, `stop` removes it
+from the queue; use `forge del my-run --force` to delete it entirely. Templates
+may retain checkpoint outputs; other incomplete task outputs are removed.
 `resume` restarts incomplete non-failed work using `<run>/workers.json` when
 present, otherwise `~/.config/forge/workers.json`.
 Use `retry` for failed tasks.

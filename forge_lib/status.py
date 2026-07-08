@@ -3781,6 +3781,7 @@ def _cmd_wait(args: argparse.Namespace) -> int:
             finalizer = manifest.get("finalize")
             if isinstance(finalizer, dict):
                 cleanup_partials(manifest, finalizer)
+        launch_request_path(manifest).unlink(missing_ok=True)
         payload = run_completion_event_payload(
             manifest_path=manifest_path,
             manifest=manifest,

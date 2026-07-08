@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import contextlib
+import fcntl
+
 from collections.abc import Callable
 
 from .config import config_workers_path, default_coordinator_host, default_notify_command
@@ -17,6 +20,7 @@ DEPLOY_STARTUP_TIMEOUT_SECONDS = 20.0
 DEPLOY_STARTUP_POLL_SECONDS = 0.5
 QUEUE_LAUNCHER_POLL_SECONDS = 1.0
 QUEUE_MONITOR_NAME = "queue-monitor.json"
+SCHEDULER_LOCK_NAME = ".scheduler.lock"
 SSH_TRANSIENT_RETRY_COUNT = 3
 SSH_TRANSIENT_RETRY_DELAY_SECONDS = 1.0
 SSH_TRANSIENT_RETRY_PATTERNS = (
@@ -39,6 +43,18 @@ raise SystemExit(run_queue_launcher(json.loads(sys.argv[1])))
 """
 _INPUT_TREE_SYNC_LOCK = threading.Lock()
 _SYNCED_INPUT_TREES: set[tuple[str, str, str]] = set()
+
+
+@contextlib.contextmanager
+def scheduler_lock():
+    root = runs_dir()
+    root.mkdir(parents=True, exist_ok=True)
+    with (root / SCHEDULER_LOCK_NAME).open("a+", encoding="utf-8") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
 def update_worker_label(worker: dict[str, Any]) -> str:
@@ -1252,18 +1268,29 @@ def queued_run_sort_key(summary: dict[str, Any]) -> tuple[float, str]:
         requested_epoch = 0.0
     return (requested_epoch, str(summary.get("run") or ""))
 
+
+def run_blocks_queue(summary: dict[str, Any]) -> bool:
+    if run_done(summary):
+        return False
+    return run_active_count(summary) > 0 or run_current(summary)
+
+
 def queue_blockers_for_run(run_name: str, summaries: list[dict[str, Any]]) -> list[dict[str, Any]]:
     target = next((summary for summary in summaries if str(summary.get("run")) == run_name), None)
     target_key = queued_run_sort_key(target or {"run": run_name})
+    target_has_turn = bool(target and (run_blocks_queue(target) or run_queue_requested(target)))
     blockers = []
     for summary in summaries:
         name = str(summary.get("run") or "")
         if name == run_name:
             continue
-        if run_active_count(summary) > 0 or run_launching(summary):
+        if run_blocks_queue(summary):
             blockers.append(summary)
             continue
-        if run_queue_requested(summary) and (target is None or queued_run_sort_key(summary) < target_key):
+        if run_queue_requested(summary) and (
+            not target_has_turn
+            or (run_queue_requested(target or {}) and queued_run_sort_key(summary) < target_key)
+        ):
             blockers.append(summary)
     return blockers
 
@@ -1323,6 +1350,18 @@ def clear_restart_requests(manifest: dict[str, Any], run_name: str, *, label: st
         launch_path.unlink()
         print(f"{label}: cleared launch request for {run_name}")
 
+
+def clear_resume_markers(manifest: dict[str, Any], run_name: str, *, label: str) -> None:
+    stop_path = stop_request_path(manifest)
+    if stop_path.exists():
+        stop_path.unlink()
+        print(f"{label}: cleared stop request for {run_name}")
+    launch_path = launch_request_path(manifest)
+    launch = read_state_json(launch_path)
+    if launch_path.exists() and launch_request_stale(launch):
+        launch_path.unlink()
+        print(f"{label}: cleared launch request for {run_name}")
+
 def archive_failed_tasks_for_retry(manifest: dict[str, Any], run_name: str) -> list[str]:
     failed_tasks: list[str] = []
     archive_root = state_dir(manifest) / "retry-failures"
@@ -1355,12 +1394,18 @@ def write_queue_request(
     manifest: dict[str, Any],
     command: list[str],
     blockers: list[dict[str, Any]],
+    existing: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    requested_at = str(existing.get("requested_at") or "") if isinstance(existing, dict) else ""
+    try:
+        requested_epoch = float(existing.get("requested_epoch")) if isinstance(existing, dict) else epoch()
+    except (TypeError, ValueError):
+        requested_epoch = epoch()
     payload = {
         "schema": SCHEMA,
         "run": run_dir.name,
-        "requested_at": now(),
-        "requested_epoch": epoch(),
+        "requested_at": requested_at or now(),
+        "requested_epoch": requested_epoch,
         "host": socket.gethostname(),
         "command": command,
         "blocked_by": [str(summary.get("run") or "") for summary in blockers],
@@ -1369,14 +1414,20 @@ def write_queue_request(
     write_json(queue_request_path(manifest), payload)
     return payload
 
-def write_launch_request(*, run_dir: Path, manifest: dict[str, Any], reason: str) -> dict[str, Any]:
+def write_launch_request(
+    *,
+    run_dir: Path,
+    manifest: dict[str, Any],
+    reason: str,
+    pid: int | None = None,
+) -> dict[str, Any]:
     payload = {
         "schema": SCHEMA,
         "run": run_dir.name,
         "reason": reason,
         "requested_at": now(),
         "requested_epoch": epoch(),
-        "pid": os.getpid(),
+        "pid": int(pid or os.getpid()),
         "lease_seconds": LAUNCH_REQUEST_LEASE_SECONDS,
         "host": socket.gethostname(),
     }
@@ -1399,27 +1450,27 @@ def run_queue_launcher(payload: dict[str, Any]) -> int:
 
     last_blockers: list[str] | None = None
     while True:
-        summaries = load_run_summaries(lease_seconds=lease_seconds)
-        target = next((summary for summary in summaries if str(summary.get("run")) == run_name), None)
-        if target is None:
-            print(f"queue: {run_name} disappeared", flush=True)
-            return 1
-        if not run_queue_requested(target):
-            print(f"queue: {run_name} is no longer queued", flush=True)
-            return 1 if fail_if_unqueued else 0
-        blockers = queue_blockers_for_run(run_name, summaries)
-        blocker_names = [str(summary.get("run") or "") for summary in blockers]
-        if not blockers:
-            break
+        with scheduler_lock():
+            summaries = load_run_summaries(lease_seconds=lease_seconds)
+            target = next((summary for summary in summaries if str(summary.get("run")) == run_name), None)
+            if target is None:
+                print(f"queue: {run_name} disappeared", flush=True)
+                return 1
+            if not run_queue_requested(target):
+                print(f"queue: {run_name} is no longer queued", flush=True)
+                return 1 if fail_if_unqueued else 0
+            blockers = queue_blockers_for_run(run_name, summaries)
+            blocker_names = [str(summary.get("run") or "") for summary in blockers]
+            if not blockers:
+                manifest_path = run_manifest_path(run_name)
+                manifest = load_manifest(manifest_path)
+                write_launch_request(run_dir=manifest_path.parent, manifest=manifest, reason="queue")
+                break
         if blocker_names != last_blockers:
             print(f"queue: {run_name} waiting for {', '.join(blocker_names)}", flush=True)
             last_blockers = blocker_names
         time.sleep(poll_seconds)
 
-    manifest_path = run_manifest_path(run_name)
-    manifest = load_manifest(manifest_path)
-    write_launch_request(run_dir=manifest_path.parent, manifest=manifest, reason="queue")
-    queue_request_path(manifest).unlink(missing_ok=True)
     print(f"queue: launching {run_name}: {shell_join(command)}", flush=True)
     return subprocess.run(command, check=False).returncode
 
@@ -1467,29 +1518,74 @@ def start_queue_monitor(
     command: list[str],
     lease_seconds: int,
 ) -> int:
-    payload = queue_launcher_payload(run_dir=run_dir, command=command, lease_seconds=lease_seconds)
-    log = (run_dir / "queue.log").open("ab", buffering=0)
-    env = os.environ.copy()
-    env[RUNS_DIR_ENV] = str(runs_dir())
-    env[COORDINATOR_RUNS_ENV] = ""
-    process = subprocess.Popen(
-        [sys.executable, "-c", _QUEUE_LAUNCHER_CODE, json.dumps(payload)],
-        cwd=script_repo(),
-        stdin=subprocess.DEVNULL,
-        stdout=log,
-        stderr=subprocess.STDOUT,
-        env=env,
-        start_new_session=True,
+    with scheduler_lock():
+        manifest_path = run_dir / RUN_MANIFEST_NAME
+        if not manifest_path.is_file():
+            return 0
+        manifest = load_manifest(manifest_path)
+        if not queue_request_path(manifest).is_file():
+            return 0
+        monitor_path = queue_monitor_path(run_dir)
+        if monitor_path.is_file():
+            try:
+                monitor = read_json(monitor_path)
+                pid = int(monitor.get("pid") or 0)
+                if pid > 0 and process_is_alive(pid):
+                    return pid
+            except (OSError, SystemExit, TypeError, ValueError):
+                pass
+        payload = queue_launcher_payload(run_dir=run_dir, command=command, lease_seconds=lease_seconds)
+        log = (run_dir / "queue.log").open("ab", buffering=0)
+        env = os.environ.copy()
+        env[RUNS_DIR_ENV] = str(runs_dir())
+        env[COORDINATOR_RUNS_ENV] = ""
+        process = subprocess.Popen(
+            [sys.executable, "-c", _QUEUE_LAUNCHER_CODE, json.dumps(payload)],
+            cwd=script_repo(),
+            stdin=subprocess.DEVNULL,
+            stdout=log,
+            stderr=subprocess.STDOUT,
+            env=env,
+            start_new_session=True,
+        )
+        write_json(monitor_path, {
+            "schema": SCHEMA,
+            "pid": process.pid,
+            "command": command,
+            "log": str(run_dir / "queue.log"),
+            "started_at": now(),
+            "started_epoch": epoch(),
+        })
+        return process.pid
+
+
+def recover_queue_monitors(
+    *,
+    lease_seconds: int = 600,
+    exclude: set[str] | None = None,
+) -> dict[str, int]:
+    monitors: dict[str, int] = {}
+    excluded = exclude or set()
+    summaries = sorted(
+        (summary for summary in load_run_summaries(lease_seconds=lease_seconds) if run_queue_requested(summary)),
+        key=queued_run_sort_key,
     )
-    write_json(queue_monitor_path(run_dir), {
-        "schema": SCHEMA,
-        "pid": process.pid,
-        "command": command,
-        "log": str(run_dir / "queue.log"),
-        "started_at": now(),
-        "started_epoch": epoch(),
-    })
-    return process.pid
+    for summary in summaries:
+        queue = summary.get("queue")
+        command = queue.get("command") if isinstance(queue, dict) else None
+        if not isinstance(command, list) or not command:
+            continue
+        run_name = str(summary.get("run") or "")
+        if run_name in excluded:
+            continue
+        pid = start_queue_monitor(
+            run_dir=run_dir_for_name(run_name),
+            command=[str(item) for item in command],
+            lease_seconds=lease_seconds,
+        )
+        if pid:
+            monitors[run_name] = pid
+    return monitors
 
 def coordinator_host_for_workers(workers: list[dict[str, Any]], coordinator_host: str | None = None) -> str:
     if coordinator_host:
@@ -1703,51 +1799,67 @@ def run_deploy(args: argparse.Namespace) -> int:
     planned_run_dir, _planned_manifest_path = planned_run_paths(template_path, getattr(args, "run", None))
     run_name = planned_run_dir.name
     lease_seconds = int(getattr(args, "lease_seconds", 600))
+    label = str(getattr(args, "command_label", "deploy"))
     if bool(getattr(args, "replace", False)) and planned_run_dir.exists():
         kill_run_workers(planned_run_dir)
-    if not bool(getattr(args, "replace", False)):
-        blockers = active_or_queued_blockers(run_name, lease_seconds=lease_seconds)
-        if blockers:
-            queued_run_dir, queued_manifest_path, _queued_workers_path = materialize_run(
-                template_path=template_path,
-                workers_arg=str(args.workers),
-                inline_worker_defaults=getattr(args, "worker_defaults", None),
-                workers_snapshot_payload=getattr(args, "worker_snapshot_payload", None),
-                preserve_workers_snapshot=bool(getattr(args, "preserve_workers_snapshot", False)),
-                comment=getattr(args, "comment", None),
-                run_name_arg=getattr(args, "run", None),
-                resume=bool(getattr(args, "resume", False)),
-                replace=False,
-            )
-            queued_manifest = load_manifest(queued_manifest_path)
-            command = queue_resume_command(args, run_name)
+    with scheduler_lock():
+        summaries = load_run_summaries(lease_seconds=lease_seconds)
+        target = next((summary for summary in summaries if str(summary.get("run")) == run_name), None)
+        existing_queue = target.get("queue") if isinstance(target, dict) else None
+        blockers = queue_blockers_for_run(run_name, summaries)
+        run_dir, manifest_path, workers_path = materialize_run(
+            template_path=template_path,
+            workers_arg=str(args.workers),
+            inline_worker_defaults=getattr(args, "worker_defaults", None),
+            workers_snapshot_payload=getattr(args, "worker_snapshot_payload", None),
+            preserve_workers_snapshot=bool(getattr(args, "preserve_workers_snapshot", False)),
+            comment=getattr(args, "comment", None),
+            run_name_arg=getattr(args, "run", None),
+            resume=bool(getattr(args, "resume", False)),
+            replace=bool(getattr(args, "replace", False)),
+        )
+        manifest = load_manifest(manifest_path)
+        command = queue_resume_command(args, run_name)
+        queued = bool(blockers)
+        if queued:
+            clear_launch_request(manifest)
             write_queue_request(
-                run_dir=queued_run_dir,
-                manifest=queued_manifest,
+                run_dir=run_dir,
+                manifest=manifest,
                 command=command,
                 blockers=blockers,
+                existing=existing_queue if isinstance(existing_queue, dict) else None,
             )
-            monitor_pid = start_queue_monitor(
-                run_dir=queued_run_dir,
+        else:
+            queue_request_path(manifest).unlink(missing_ok=True)
+            write_launch_request(run_dir=run_dir, manifest=manifest, reason="deploy")
+
+    if queued:
+        setattr(args, "queue_handled", True)
+        blocker_names = ", ".join(str(summary.get("run") or "") for summary in blockers)
+        print(f"{label}: queued {run_name}; waiting for {blocker_names}")
+        foreground = bool(getattr(args, "queue_foreground", False))
+        monitors = recover_queue_monitors(
+            lease_seconds=lease_seconds,
+            exclude={run_name} if foreground else None,
+        )
+        if foreground:
+            print(f"{label}: waiting for queued run to finish")
+            print(f"{label}: status: forge status {run_name} --verbose")
+            return run_queue_launcher_foreground(
+                run_dir=run_dir,
                 command=command,
                 lease_seconds=lease_seconds,
             )
-            blocker_names = ", ".join(str(summary.get("run") or "") for summary in blockers)
-            print(f"deploy: queued {run_name}; waiting for {blocker_names}")
-            print(f"deploy: queue monitor pid={monitor_pid}")
-            print(f"deploy: status: forge status {run_name} --verbose")
-            return 0
-    run_dir, manifest_path, workers_path = materialize_run(
-        template_path=template_path,
-        workers_arg=str(args.workers),
-        inline_worker_defaults=getattr(args, "worker_defaults", None),
-        workers_snapshot_payload=getattr(args, "worker_snapshot_payload", None),
-        preserve_workers_snapshot=bool(getattr(args, "preserve_workers_snapshot", False)),
-        comment=getattr(args, "comment", None),
-        run_name_arg=getattr(args, "run", None),
-        resume=bool(getattr(args, "resume", False)),
-        replace=bool(getattr(args, "replace", False)),
-    )
+        monitor_pid = monitors.get(run_name) or start_queue_monitor(
+            run_dir=run_dir,
+            command=command,
+            lease_seconds=lease_seconds,
+        )
+        print(f"{label}: queue monitor pid={monitor_pid}")
+        print(f"{label}: status: forge status {run_name} --verbose")
+        return 0
+
     launch_workers_payload = getattr(args, "launch_workers_payload", None)
     workers = (
         workers_from_payload(launch_workers_payload, label=str(args.workers))
@@ -1758,12 +1870,8 @@ def run_deploy(args: argparse.Namespace) -> int:
     remote_timeout = max(1.0, float(args.remote_timeout_seconds))
     bootstrap_timeout = min(remote_timeout, DEPLOY_BOOTSTRAP_TIMEOUT_SECONDS)
     setup_retries = SSH_TRANSIENT_RETRY_COUNT
-    manifest = load_manifest(manifest_path)
     has_tasks = bool(manifest.get("tasks"))
-    launch_marker_written = False
-    if has_tasks:
-        write_launch_request(run_dir=run_dir, manifest=manifest, reason="deploy")
-        launch_marker_written = True
+    launch_marker_written = True
     configured_coordinator_host = getattr(args, "coordinator_host", None) or default_coordinator_host()
     coordinator_host = coordinator_host_for_workers(workers, configured_coordinator_host)
     force_remote_coordinator = bool(configured_coordinator_host)
@@ -2224,6 +2332,12 @@ def run_deploy(args: argparse.Namespace) -> int:
             )
             if monitor_pid:
                 completion_deferred_to_wait = True
+                write_launch_request(
+                    run_dir=run_dir,
+                    manifest=manifest,
+                    reason="wait-monitor",
+                    pid=monitor_pid,
+                )
                 status(colorize(f"deploy: wait monitor pid={monitor_pid}", "green", enabled=color_enabled))
         elif bool(getattr(args, "defer_completion_notify", False)):
             completion_deferred_to_wait = True
@@ -2244,7 +2358,7 @@ def run_deploy(args: argparse.Namespace) -> int:
     commit_payload = getattr(args, "worker_snapshot_commit_payload", None)
     if failed == 0 and commit_payload is not None:
         write_json(workers_path, commit_payload)
-    if launch_marker_written:
+    if launch_marker_written and not completion_deferred_to_wait:
         clear_launch_request(manifest)
     return 1 if failed else 0
 
@@ -2729,48 +2843,6 @@ def run_local_job(args: argparse.Namespace) -> int:
     ephemeral = bool(getattr(args, "ephemeral", False))
     remember_run_for_web(run_name, coordinator_runs=configured_coordinator_runs())
 
-    if not bool(getattr(args, "replace", False)):
-        blockers = active_or_queued_blockers(run_name, lease_seconds=int(args.lease_seconds))
-        if blockers:
-            resume = bool(getattr(args, "resume", False))
-            queued_run_dir, queued_manifest_path, _queued_workers_path = materialize_run(
-                template_path=template_path,
-                workers_arg=str(args.workers),
-                inline_worker_defaults=getattr(args, "worker_defaults", None),
-                workers_snapshot_payload=getattr(args, "worker_snapshot_payload", None),
-                preserve_workers_snapshot=bool(getattr(args, "preserve_workers_snapshot", False)),
-                comment=getattr(args, "comment", None),
-                run_name_arg=getattr(args, "run", None),
-                resume=resume,
-                replace=False,
-            )
-            queued_manifest = load_manifest(queued_manifest_path)
-            command = queue_resume_command(args, run_name)
-            write_queue_request(
-                run_dir=queued_run_dir,
-                manifest=queued_manifest,
-                command=command,
-                blockers=blockers,
-            )
-            blocker_names = ", ".join(str(summary.get("run") or "") for summary in blockers)
-            print(f"{label}: queued {run_name}; waiting for {blocker_names}")
-            if should_wait:
-                print(f"{label}: waiting for queued run to finish")
-                print(f"{label}: status: forge status {run_name} --verbose")
-                return run_queue_launcher_foreground(
-                    run_dir=queued_run_dir,
-                    command=command,
-                    lease_seconds=int(args.lease_seconds),
-                )
-            monitor_pid = start_queue_monitor(
-                run_dir=queued_run_dir,
-                command=command,
-                lease_seconds=int(args.lease_seconds),
-            )
-            print(f"{label}: queue monitor pid={monitor_pid}")
-            print(f"{label}: status: forge status {run_name} --verbose")
-            return 0
-
     deploy_args = argparse.Namespace(
         workers=args.workers,
         worker_defaults=getattr(args, "worker_defaults", None),
@@ -2794,12 +2866,21 @@ def run_local_job(args: argparse.Namespace) -> int:
         interval_seconds=args.interval_seconds,
         timeout_seconds=args.timeout_seconds,
         fail_on_fail=args.fail_on_fail,
+        wait=args.wait,
+        verify=args.verify,
+        merge=args.merge,
+        merge_force=args.merge_force,
+        newline_between=args.newline_between,
+        queue_foreground=should_wait,
+        command_label=label,
         start_wait_monitor=not should_wait,
         defer_completion_notify=should_wait,
         no_color=args.no_color,
         verbose=args.verbose,
     )
     rc = run_command_stage(label, "deploy", cmd_deploy, deploy_args)
+    if bool(getattr(deploy_args, "queue_handled", False)):
+        return rc
     if rc:
         if not ephemeral:
             print(f"{label}: inspect with: forge status {run_name} --verbose", file=sys.stderr)
@@ -3024,7 +3105,6 @@ def cmd_resume(args: argparse.Namespace) -> int:
     if coordinator_runs and status_can_delegate(args.run):
         return run_control_on_coordinator("resume", args, coordinator_runs)
     targets = resume_run_paths(args.run, lease_seconds=args.lease_seconds)
-    should_wait = bool(args.wait or args.merge or args.verify is True)
     failed = 0
     for run_name, manifest_path, workers_path in targets:
         manifest = load_manifest(manifest_path)
@@ -3038,8 +3118,7 @@ def cmd_resume(args: argparse.Namespace) -> int:
             clear_restart_requests(manifest, run_name, label="resume")
             print(f"resume: {run_name} already active ({active_count} task(s)); no workers launched")
             continue
-        manifest = prepare_resume_manifest(manifest_path, manifest, label="resume")
-        clear_restart_requests(manifest, run_name, label="resume")
+        clear_resume_markers(manifest, run_name, label="resume")
         resume_args = argparse.Namespace(
             manifest=str(manifest_path),
             workers=str(args.workers) if args.workers else str(workers_path),
@@ -3065,43 +3144,6 @@ def cmd_resume(args: argparse.Namespace) -> int:
             verbose=args.verbose,
             command_label="resume",
         )
-        blockers = active_or_queued_blockers(run_name, lease_seconds=int(args.lease_seconds))
-        if blockers:
-            materialize_run(
-                template_path=manifest_path,
-                workers_arg=str(args.workers) if args.workers else str(workers_path),
-                run_name_arg=run_name,
-                resume=True,
-                replace=False,
-            )
-            manifest = load_manifest(manifest_path)
-            command = queue_resume_command(resume_args, run_name)
-            write_queue_request(
-                run_dir=manifest_path.parent,
-                manifest=manifest,
-                command=command,
-                blockers=blockers,
-            )
-            blocker_names = ", ".join(str(summary.get("run") or "") for summary in blockers)
-            print(f"resume: queued {run_name}; waiting for {blocker_names}")
-            if should_wait:
-                print(f"resume: waiting for queued run to finish")
-                print(f"resume: status: forge status {run_name} --verbose")
-                rc = run_queue_launcher_foreground(
-                    run_dir=manifest_path.parent,
-                    command=command,
-                    lease_seconds=int(args.lease_seconds),
-                )
-                failed += 1 if rc else 0
-                continue
-            monitor_pid = start_queue_monitor(
-                run_dir=manifest_path.parent,
-                command=command,
-                lease_seconds=int(args.lease_seconds),
-            )
-            print(f"resume: queue monitor pid={monitor_pid}")
-            print(f"resume: status: forge status {run_name} --verbose")
-            continue
         failed += 1 if cmd_run_job(resume_args) else 0
     return 1 if failed else 0
 
@@ -3138,7 +3180,10 @@ def cmd_retry(args: argparse.Namespace) -> int:
             )
         if active_count == 0:
             manifest = prepare_resume_manifest(manifest_path, manifest, label="retry")
-        clear_restart_requests(manifest, run_name, label="retry")
+        if args.workers:
+            clear_resume_markers(manifest, run_name, label="retry")
+        else:
+            clear_restart_requests(manifest, run_name, label="retry")
         archived = archive_failed_tasks_for_retry(manifest, run_name)
         if not args.workers:
             print(f"retry: {run_name} requeued={len(archived)}; no workers launched")

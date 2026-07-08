@@ -4221,7 +4221,6 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
 
             with (
                 self.patch_runs_dir(runs),
-                mock.patch("forge_lib.workers.cmd_deploy") as deploy,
                 mock.patch("forge_lib.workers.start_queue_monitor", return_value=4242) as queue_monitor,
             ):
                 stdout = io.StringIO()
@@ -4253,7 +4252,6 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
                     ))
 
             self.assertEqual(0, rc)
-            deploy.assert_not_called()
             queue_monitor.assert_called_once()
             queued_manifest = forge.load_manifest(runs / "queued-new" / "manifest.json")
             self.assertTrue(forge.queue_request_path(queued_manifest).exists())
@@ -4269,6 +4267,310 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
             self.assertIn("run=queued-new", status.stdout)
             payload = json.loads((runs / ".web-state.json").read_text(encoding="utf-8"))
             self.assertIn("queued-new", payload["seen_runs"])
+
+    def test_concurrent_deploys_admit_only_one_run(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            runs = root / "runs"
+
+            def write_template(name: str) -> Path:
+                path = root / f"{name}.json"
+                path.write_text(
+                    json.dumps({
+                        "schema": "forge.task.v1",
+                        "name": name,
+                        "work_dir": str(root),
+                        "tasks": [{"id": "task_0000", "index": 0, "command": "true", "outputs": []}],
+                    }),
+                    encoding="utf-8",
+                )
+                return path
+
+            def deploy_args(path: Path, worker: str) -> argparse.Namespace:
+                return argparse.Namespace(
+                    workers=worker,
+                    worker_defaults=None,
+                    worker_snapshot_payload=None,
+                    preserve_workers_snapshot=False,
+                    worker_snapshot_commit_payload=None,
+                    launch_workers_payload=None,
+                    launch_only=False,
+                    manifest=str(path),
+                    jobs=1,
+                    run=None,
+                    comment=None,
+                    resume=False,
+                    replace=False,
+                    retry_failed=False,
+                    task_attempts=2,
+                    coordinator_host=None,
+                    remote_timeout_seconds=30.0,
+                    notify_command=None,
+                    start_wait_monitor=False,
+                    no_color=True,
+                    verbose=False,
+                )
+
+            first_setup = threading.Event()
+            release_setup = threading.Event()
+            shell_calls = 0
+            shell_lock = threading.Lock()
+
+            def fake_worker_shell(*_args, **_kwargs):
+                nonlocal shell_calls
+                with shell_lock:
+                    shell_calls += 1
+                    call = shell_calls
+                if call == 1:
+                    first_setup.set()
+                    self.assertTrue(release_setup.wait(5))
+                return subprocess.CompletedProcess(["worker"], 0, stdout="ok", stderr="")
+
+            results: dict[str, int] = {}
+            errors: list[BaseException] = []
+
+            def deploy(name: str, args: argparse.Namespace) -> None:
+                try:
+                    results[name] = forge.cmd_deploy(args)
+                except BaseException as exc:
+                    errors.append(exc)
+
+            with (
+                self.patch_runs_dir(runs),
+                mock.patch("forge_lib.workers.bootstrap_worker_runner"),
+                mock.patch("forge_lib.workers.sync_inputs_to_worker", return_value=0),
+                mock.patch("forge_lib.workers.run_worker_shell", side_effect=fake_worker_shell),
+                mock.patch("forge_lib.workers.start_queue_monitor", return_value=4343),
+            ):
+                first = threading.Thread(target=deploy, args=("first", deploy_args(write_template("first"), "worker-a")))
+                first.start()
+                self.assertTrue(first_setup.wait(5))
+
+                first_manifest = forge.load_manifest(runs / "first" / "manifest.json")
+                self.assertTrue(forge.launch_request_path(first_manifest).exists())
+
+                second = threading.Thread(target=deploy, args=("second", deploy_args(write_template("second"), "worker-b")))
+                second.start()
+                second.join(5)
+                self.assertFalse(second.is_alive())
+
+                second_manifest = forge.load_manifest(runs / "second" / "manifest.json")
+                self.assertTrue(forge.queue_request_path(second_manifest).exists())
+                self.assertFalse(forge.launch_request_path(second_manifest).exists())
+
+                release_setup.set()
+                first.join(5)
+
+            self.assertFalse(errors)
+            self.assertEqual({"first": 0, "second": 0}, results)
+
+    def test_started_run_between_claims_blocks_the_queue(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runs = Path(tmp) / "runs"
+            run = self.write_retry_run(runs, "between-claims", failed=None)
+            manifest_path = run / "manifest.json"
+            manifest = forge.load_manifest(manifest_path)
+            manifest["tasks"].append({"id": "task_1", "index": 1, "command": "true", "outputs": []})
+            forge.write_json(manifest_path, manifest)
+            forge.write_json(run / "state" / "task_0.done.json", {"task": "task_0"})
+
+            with self.patch_runs_dir(runs):
+                blockers = forge.active_or_queued_blockers("new-run", lease_seconds=600)
+
+        self.assertEqual(["between-claims"], [summary["run"] for summary in blockers])
+
+    def test_active_run_with_stale_launch_marker_still_blocks_queue(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runs = Path(tmp) / "runs"
+            run = self.write_retry_run(runs, "active", failed=None)
+            manifest = forge.load_manifest(run / "manifest.json")
+            forge.claim_task(
+                manifest,
+                worker="worker-a",
+                profile=None,
+                lease_seconds=600,
+                retry_failed=False,
+            )
+            forge.write_json(forge.launch_request_path(manifest), {
+                "schema": "forge.task.v1",
+                "run": "active",
+                "requested_epoch": 1.0,
+                "lease_seconds": 1,
+            })
+
+            with self.patch_runs_dir(runs):
+                blockers = forge.active_or_queued_blockers("new-run", lease_seconds=600)
+
+        self.assertEqual(["active"], [summary["run"] for summary in blockers])
+
+    def test_queue_launcher_claims_runs_in_fifo_order(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runs = Path(tmp) / "runs"
+            for name, requested_epoch in (("first", 100.0), ("second", 200.0), ("third", 300.0)):
+                run = self.write_retry_run(runs, name, failed=None)
+                manifest = forge.load_manifest(run / "manifest.json")
+                forge.write_json(forge.queue_request_path(manifest), {
+                    "schema": "forge.task.v1",
+                    "run": name,
+                    "requested_epoch": requested_epoch,
+                    "command": ["true"],
+                })
+
+            def payload(name: str) -> dict[str, Any]:
+                return {
+                    "run": name,
+                    "runs_dir": str(runs),
+                    "command": ["true"],
+                    "lease_seconds": 600,
+                    "poll_seconds": 0.5,
+                }
+
+            with (
+                self.patch_runs_dir(runs),
+                mock.patch("forge_lib.workers.subprocess.run", return_value=subprocess.CompletedProcess(["true"], 0)),
+            ):
+                self.assertEqual(0, forge.run_queue_launcher(payload("first")))
+                first_manifest = forge.load_manifest(runs / "first" / "manifest.json")
+                forge.queue_request_path(first_manifest).unlink()
+                summaries = forge.load_run_summaries(lease_seconds=600)
+                self.assertEqual(["first"], [item["run"] for item in forge.queue_blockers_for_run("second", summaries)])
+
+                forge.clear_launch_request(first_manifest)
+                self.assertEqual(0, forge.run_queue_launcher(payload("second")))
+
+            second_manifest = forge.load_manifest(runs / "second" / "manifest.json")
+            third_manifest = forge.load_manifest(runs / "third" / "manifest.json")
+            self.assertTrue(forge.queue_request_path(second_manifest).exists())
+            self.assertTrue(forge.launch_request_path(second_manifest).exists())
+            self.assertTrue(forge.queue_request_path(third_manifest).exists())
+
+    def test_queue_recovery_restarts_all_dead_monitors_in_fifo_order(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runs = Path(tmp) / "runs"
+            for name, requested_epoch in (("later", 200.0), ("earlier", 100.0)):
+                run = self.write_retry_run(runs, name, failed=None)
+                manifest = forge.load_manifest(run / "manifest.json")
+                forge.write_json(forge.queue_request_path(manifest), {
+                    "schema": "forge.task.v1",
+                    "run": name,
+                    "requested_epoch": requested_epoch,
+                    "command": ["forge", "resume", name],
+                })
+
+            with (
+                self.patch_runs_dir(runs),
+                mock.patch("forge_lib.workers.start_queue_monitor", side_effect=(111, 222)) as start,
+            ):
+                monitors = forge.recover_queue_monitors(lease_seconds=600)
+
+        self.assertEqual({"earlier": 111, "later": 222}, monitors)
+        self.assertEqual(
+            [runs / "earlier", runs / "later"],
+            [call.kwargs["run_dir"] for call in start.call_args_list],
+        )
+
+    def test_queued_local_run_starts_after_active_run_finishes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            runs = root / "runs"
+            cache = root / "worker-cache"
+            workers = root / "workers.json"
+            forge.write_json(workers, {
+                "schema": "forge.workers.v1",
+                "workers": [{
+                    "host": "localhost",
+                    "profile": "localhost",
+                    "local": True,
+                    "cache_dir": str(cache),
+                    "python": sys.executable,
+                }],
+            })
+
+            def write_template(name: str, command: str) -> Path:
+                path = root / f"{name}.json"
+                path.write_text(
+                    json.dumps({
+                        "schema": "forge.task.v1",
+                        "name": name,
+                        "work_dir": str(root),
+                        "requirements": {"python_min": "3.11", "git_min": "2.38"},
+                        "tasks": [{"id": "task_0000", "index": 0, "command": command, "outputs": []}],
+                    }),
+                    encoding="utf-8",
+                )
+                return path
+
+            env = {
+                **os.environ,
+                "FORGE_RUNS_DIR": str(runs),
+                "FORGE_COORDINATOR_RUNS": "",
+                "FORGE_NOTIFY_COMMAND": "",
+            }
+            first = self.run_cli(
+                "start",
+                str(write_template("queue-first", "sleep 1.5")),
+                "--workers",
+                str(workers),
+                "--jobs",
+                "1",
+                cwd=ROOT,
+                env=env,
+            )
+            second = self.run_cli(
+                "start",
+                str(write_template("queue-second", "true")),
+                "--workers",
+                str(workers),
+                "--jobs",
+                "1",
+                cwd=ROOT,
+                env=env,
+            )
+
+            try:
+                self.assertEqual(0, first.returncode, first.stdout + first.stderr)
+                self.assertEqual(0, second.returncode, second.stdout + second.stderr)
+                self.assertIn("start: queued queue-second; waiting for queue-first", second.stdout)
+
+                overlap = False
+                deadline = time.monotonic() + 15
+                while time.monotonic() < deadline:
+                    first_manifest = forge.load_manifest(runs / "queue-first" / "manifest.json")
+                    second_manifest = forge.load_manifest(runs / "queue-second" / "manifest.json")
+                    first_summary = forge.status_summary(first_manifest, lease_seconds=600)
+                    second_summary = forge.status_summary(second_manifest, lease_seconds=600)
+                    overlap |= first_summary["active_count"] > 0 and second_summary["active_count"] > 0
+                    if first_summary["counts"]["done"] == 1 and second_summary["counts"]["done"] == 1:
+                        break
+                    time.sleep(0.02)
+                else:
+                    queue_log = runs / "queue-second" / "queue.log"
+                    wait_log = runs / "queue-first" / "wait.log"
+                    self.fail(
+                        "queued run did not finish: "
+                        f"first={first_summary['counts']} second={second_summary['counts']} "
+                        f"first_launch={first_summary.get('launch')} "
+                        f"second_monitor={forge.queue_monitor_state(runs / 'queue-second' / 'manifest.json')} "
+                        f"first_stdout={first.stdout!r} first_stderr={first.stderr!r} "
+                        f"wait_log={wait_log.read_text(encoding='utf-8') if wait_log.exists() else '<missing>'} "
+                        f"queue_log={queue_log.read_text(encoding='utf-8') if queue_log.exists() else '<missing>'}"
+                    )
+
+                self.assertFalse(overlap)
+                self.assertFalse(forge.queue_request_path(second_manifest).exists())
+            finally:
+                for pid_file in cache.glob("queue-*.pid"):
+                    try:
+                        pid = int(pid_file.read_text(encoding="utf-8").splitlines()[0])
+                        os.killpg(pid, signal.SIGKILL)
+                    except (OSError, ValueError, IndexError):
+                        pass
+                for monitor_file in runs.glob("queue-*/**/*-monitor.json"):
+                    try:
+                        pid = int(forge.read_json(monitor_file)["pid"])
+                        os.killpg(pid, signal.SIGKILL)
+                    except (OSError, SystemExit, TypeError, ValueError, KeyError):
+                        pass
 
     def test_start_verify_waits_for_queued_run(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -4361,6 +4663,37 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
         self.assertEqual(1, rc)
         self.assertIn("queue: cleared is no longer queued", stdout.getvalue())
 
+    def test_queue_launcher_failure_keeps_run_queued_for_recovery(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runs = Path(tmp) / "runs"
+            run = self.write_retry_run(runs, "retry-queue", failed=None)
+            manifest = forge.load_manifest(run / "manifest.json")
+            forge.write_json(forge.queue_request_path(manifest), {
+                "schema": "forge.task.v1",
+                "run": "retry-queue",
+                "requested_epoch": 100.0,
+                "command": ["false"],
+            })
+            payload = {
+                "run": "retry-queue",
+                "runs_dir": str(runs),
+                "command": ["false"],
+                "lease_seconds": 600,
+                "poll_seconds": 0.5,
+            }
+
+            with (
+                self.patch_runs_dir(runs),
+                mock.patch(
+                    "forge_lib.workers.subprocess.run",
+                    return_value=subprocess.CompletedProcess(["false"], 1),
+                ),
+            ):
+                self.assertEqual(1, forge.run_queue_launcher(payload))
+
+            self.assertTrue(forge.queue_request_path(manifest).exists())
+            self.assertTrue(forge.launch_request_path(manifest).exists())
+
     def test_deploy_resume_queues_when_another_run_is_active(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             runs = Path(tmp) / "runs"
@@ -4435,7 +4768,6 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
 
             with (
                 self.patch_runs_dir(runs),
-                mock.patch("forge_lib.workers.cmd_deploy") as deploy,
                 mock.patch("forge_lib.workers.start_queue_monitor", return_value=4243),
             ):
                 stdout = io.StringIO()
@@ -4467,7 +4799,6 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
                     ))
 
             self.assertEqual(0, rc)
-            deploy.assert_not_called()
             self.assertIn("start: queued queued-behind; waiting for already-queued", stdout.getvalue())
 
     def test_start_wait_verifies_by_default(self) -> None:
@@ -4753,6 +5084,28 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
         self.assertEqual("retry", Path(command[2]).name if "/" in command[2] else command[2])
         self.assertEqual("failed-a", command[3])
 
+    def test_retry_with_workers_preserves_live_queue_launch_reservation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runs = Path(tmp) / "runs"
+            run = self.write_retry_run(runs, "failed-a", failed=True)
+            manifest = forge.load_manifest(run / "manifest.json")
+            forge.write_json(forge.launch_request_path(manifest), {
+                "schema": "forge.task.v1",
+                "run": "failed-a",
+                "reason": "queue",
+                "pid": os.getpid(),
+                "requested_epoch": time.time(),
+            })
+
+            with (
+                self.patch_runs_dir(runs),
+                mock.patch("forge_lib.workers.cmd_run_job", return_value=0) as run_job,
+            ):
+                self.assertEqual(0, forge.cmd_retry(self.retry_args(run="failed-a", workers="worker-b")))
+
+            self.assertTrue(forge.launch_request_path(manifest).exists())
+            run_job.assert_called_once()
+
     def test_retry_named_run_delegates_to_coordinator(self) -> None:
         remote_result = subprocess.CompletedProcess(
             args=["ssh"],
@@ -5009,7 +5362,7 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
 
             with (
                 self.patch_runs_dir(runs),
-                mock.patch("forge_lib.workers.cmd_run_job", return_value=0) as run_job,
+                mock.patch("forge_lib.workers.run_worker_shell") as run_worker_shell,
                 mock.patch("forge_lib.workers.start_queue_monitor", return_value=4244) as queue_monitor,
             ):
                 stdout = io.StringIO()
@@ -5017,7 +5370,7 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
                     rc = forge.cmd_resume(self.retry_args(run="paused"))
 
             self.assertEqual(0, rc)
-            run_job.assert_not_called()
+            run_worker_shell.assert_not_called()
             queue_monitor.assert_called_once()
             self.assertFalse(forge.stop_request_path(paused_manifest).exists())
             queue = forge.read_json(forge.queue_request_path(paused_manifest))
@@ -5048,7 +5401,7 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
             args.verify = True
             with (
                 self.patch_runs_dir(runs),
-                mock.patch("forge_lib.workers.cmd_run_job", return_value=0) as run_job,
+                mock.patch("forge_lib.workers.run_worker_shell") as run_worker_shell,
                 mock.patch("forge_lib.workers.start_queue_monitor") as queue_monitor,
                 mock.patch("forge_lib.workers.run_queue_launcher_foreground", return_value=5) as queue_launcher,
             ):
@@ -5057,7 +5410,7 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
                     rc = forge.cmd_resume(args)
 
             self.assertEqual(1, rc)
-            run_job.assert_not_called()
+            run_worker_shell.assert_not_called()
             queue_monitor.assert_not_called()
             queue_launcher.assert_called_once()
             command = queue_launcher.call_args.kwargs["command"]
@@ -6414,7 +6767,7 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             manifest = root / "wait-done" / "manifest.json"
-            forge.write_json(manifest, {
+            manifest_payload = {
                 "schema": "forge.task.v1",
                 "name": "wait-done",
                 "kind": "smoke",
@@ -6424,6 +6777,12 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
                 "log_dir": str(root / "wait-done" / "logs"),
                 "claim_dir": str(root / "wait-done" / "claims"),
                 "tasks": [],
+            }
+            forge.write_json(manifest, manifest_payload)
+            forge.write_json(forge.launch_request_path(manifest_payload), {
+                "schema": "forge.task.v1",
+                "run": "wait-done",
+                "pid": os.getpid(),
             })
             payloads: list[dict[str, object]] = []
 
@@ -6460,6 +6819,7 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
             self.assertEqual("run_done", summary["event"])
             self.assertEqual("tasks=0/0", summary["status_line"])
             self.assertEqual(["tasks=0/0"], summary["display"]["fields"])
+            self.assertFalse(forge.launch_request_path(manifest_payload).exists())
 
     def test_wait_completion_payload_keeps_progress_graph(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -12987,6 +13347,9 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
             self.assertIn("deploy: wait monitor pid=4242", stdout.getvalue())
             monitor = forge.read_json(runs / "launch-monitor" / "wait-monitor.json")
             self.assertEqual(4242, monitor["pid"])
+            launch = forge.read_json(runs / "launch-monitor" / "state" / "launch.json")
+            self.assertEqual(4242, launch["pid"])
+            self.assertEqual("wait-monitor", launch["reason"])
             self.assertIn("--notify-command", monitor["command"])
             self.assertIn("notify-me", monitor["command"])
             self.assertIn("--interval-seconds", monitor["command"])
@@ -13066,6 +13429,8 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
             self.assertIn("deploy: wait monitor pid=4343", stdout.getvalue())
             monitor = forge.read_json(runs / "launch-monitor-no-notify" / "wait-monitor.json")
             self.assertEqual(4343, monitor["pid"])
+            launch = forge.read_json(runs / "launch-monitor-no-notify" / "state" / "launch.json")
+            self.assertEqual(4343, launch["pid"])
             self.assertNotIn("--notify-command", monitor["command"])
             popen.assert_called_once()
 
