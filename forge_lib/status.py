@@ -3764,7 +3764,13 @@ def _cmd_wait(args: argparse.Namespace) -> int:
     notify_command = getattr(args, "notify_command", None) or default_notify_command()
     last_line = ""
 
+    def deleted() -> int:
+        print(f"run deleted while waiting: {manifest_path.parent.name}", file=sys.stderr)
+        return 130
+
     def finish(event: str, state: str, rc: int, manifest: dict[str, Any]) -> int:
+        if not manifest_path.exists():
+            return deleted()
         finalization = None
         if event == "run_done" and state == "ok" and isinstance(manifest.get("finalize"), dict):
             try:
@@ -3809,7 +3815,10 @@ def _cmd_wait(args: argparse.Namespace) -> int:
         return rc
 
     while True:
-        manifest = apply_profile(load_manifest(manifest_path), args.profile)
+        try:
+            manifest = apply_profile(load_manifest(manifest_path), args.profile)
+        except FileNotFoundError:
+            return deleted()
         summary = status_summary(manifest, lease_seconds=args.lease_seconds)
         summary["metadata"] = manifest_metadata(manifest)
         counts = summary["counts"]
@@ -3863,6 +3872,11 @@ def cmd_wait(args: argparse.Namespace) -> int:
     manifest_path = expand_path(args.manifest)
     try:
         return _cmd_wait(args)
+    except FileNotFoundError:
+        if not manifest_path.exists():
+            print(f"run deleted while waiting: {manifest_path.parent.name}", file=sys.stderr)
+            return 130
+        raise
     except KeyboardInterrupt:
         if manifest_path.exists():
             manifest = load_manifest(manifest_path)

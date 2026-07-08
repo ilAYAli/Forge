@@ -8,6 +8,7 @@ import json
 import os
 import argparse
 import signal
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -6709,6 +6710,42 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
             payload = json.loads((run / "summary.json").read_text(encoding="utf-8"))
             self.assertEqual("run_launch_failed", payload["event"])
             self.assertEqual("failed", payload["state"])
+
+    def test_wait_exits_cleanly_when_run_is_deleted(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            run = Path(tmp) / "deleted-run"
+            manifest_path = run / "manifest.json"
+            manifest = {
+                "schema": "forge.task.v1",
+                "name": "deleted-run",
+                "work_dir": str(run),
+                "state_dir": str(run / "state"),
+                "claim_dir": str(run / "claims"),
+                "tasks": [{"id": "task", "index": 0, "command": "true", "outputs": []}],
+            }
+            forge.write_json(manifest_path, manifest)
+            args = argparse.Namespace(
+                manifest=str(manifest_path),
+                profile=None,
+                lease_seconds=600,
+                interval_seconds=0.01,
+                timeout_seconds=0.0,
+                fail_on_fail=True,
+                notify_command=None,
+            )
+
+            def delete_run(_seconds: float) -> None:
+                shutil.rmtree(run)
+
+            stderr = io.StringIO()
+            with (
+                mock.patch("forge_lib.status.time.sleep", side_effect=delete_run),
+                contextlib.redirect_stderr(stderr),
+            ):
+                rc = forge.cmd_wait(args)
+
+        self.assertEqual(130, rc)
+        self.assertEqual("run deleted while waiting: deleted-run\n", stderr.getvalue())
 
     def test_wait_interrupt_stops_run_and_resets_active_task(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
