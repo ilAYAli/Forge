@@ -329,11 +329,17 @@ forge resume my-run
 ```
 
 `stop` prevents new claims, terminates every local and remote worker slot,
-releases incomplete active claims, and removes their partial outputs and
-transient state. Completed tasks and the materialized run are preserved.
+releases incomplete active claims, and removes transient state. Completed tasks
+and the materialized run are preserved. Templates may retain checkpoint
+outputs; other incomplete task outputs are removed.
 `resume` restarts incomplete non-failed work using `<run>/workers.json` when
 present, otherwise `~/.config/forge/workers.json`.
 Use `retry` for failed tasks.
+
+The SPRT template preserves every completed game pair when stopped. Resume
+seals those partial shards and launches new shards for only the remaining
+games. If the preserved files cannot account for all recorded games, Forge
+refuses to resume instead of silently restarting from zero.
 
 Ctrl+C during setup or `--wait` performs the same cleanup before returning
 status 130. Coordinator temporary files are removed, and the stopped run can be
@@ -572,8 +578,9 @@ also wires together wait, verify, and merge.
 - Wrong Git commits, missing commands, or mismatched input checksums fail before
   a task command starts.
 - Ctrl+C propagates through the coordinator, kills every detached worker
-  process group, resets interrupted tasks to pending, and removes temporary and
-  partial files while preserving completed tasks for resume.
+  process group, allows checkpoint files to synchronize, and resets interrupted
+  tasks to pending. Checkpoint-enabled templates preserve recoverable progress;
+  other partial outputs are removed.
 
 ## Examples
 

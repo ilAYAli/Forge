@@ -149,6 +149,10 @@
       "count": "shards",
       "unit": "games"
     },
+    "resume": {
+      "strategy": "split-progress",
+      "count_arg": "--games"
+    },
     "label": "sprt:{shard}",
     "output": "{output_dir}/{task_name}/logs/{task_name}.log",
     "command": "~/.cache/forge/tools/sprt/a42658d7ff09c8334777fccd61e0928cf3108b57/sprt --candidate-uci Hash={hash} --reference-uci Hash={hash} {sprt_args} --games {shard} --fastchess ~/.cache/forge/tools/fastchess/3de44228aec904e688a4ad71c554eb9d461a5a2a/fastchess --log-dir {output_dir}/{task_name}/logs --name {task_name} --no-ntfy --no-eta",

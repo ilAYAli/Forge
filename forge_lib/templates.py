@@ -606,6 +606,11 @@ def expand_template(template_name: str, template_path_: Path, template: dict[str
         }
         if "cancel_rc" in task_template:
             task["cancel_rc"] = int(template_value(task_template["cancel_rc"], task_values))
+        if "resume" in task_template:
+            resume = safe_format(task_template["resume"], task_values)
+            if not isinstance(resume, dict):
+                raise SystemExit("task.resume must be an object")
+            task["resume"] = resume
         label = task_template.get("label")
         if label is not None:
             task["label"] = clean_manifest_text(str(safe_format(label, task_values)), label=f"{task_name}.label")

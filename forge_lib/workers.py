@@ -1122,7 +1122,17 @@ def cleanup_run_pid_files_command(cache_dir: str, run_name: str) -> str:
         "printf '%s\\n' \"$pid_file\"; "
         "kill -TERM -\"$pid\" 2>/dev/null || kill -TERM \"$pid\" 2>/dev/null || true; "
         "done; "
-        "test \"$found\" -eq 0 || sleep 1; "
+        "remaining=200; while test \"$found\" -ne 0 && test \"$remaining\" -gt 0; do "
+        "alive=0; "
+        f"for pid_file in \"$cache_dir\"/{quoted_run}-*.pid; do "
+        "test -e \"$pid_file\" || continue; "
+        "pid=$(sed -n '1p' \"$pid_file\" 2>/dev/null || true); "
+        "case \"$pid\" in ''|*[!0-9]*) continue;; esac; "
+        "if kill -0 -\"$pid\" 2>/dev/null || kill -0 \"$pid\" 2>/dev/null; then alive=1; fi; "
+        "done; "
+        "test \"$alive\" -ne 0 || break; "
+        "remaining=$((remaining - 1)); sleep 0.1; "
+        "done; "
         f"for pid_file in \"$cache_dir\"/{quoted_run}-*.pid; do "
         "test -e \"$pid_file\" || continue; "
         "pid=$(sed -n '1p' \"$pid_file\" 2>/dev/null || true); "
@@ -1132,7 +1142,7 @@ def cleanup_run_pid_files_command(cache_dir: str, run_name: str) -> str:
         "done"
     )
 
-def kill_run_workers(run_dir: Path, *, timeout: float = 15.0) -> int:
+def kill_run_workers(run_dir: Path, *, timeout: float = 30.0) -> int:
     workers_path = run_dir / RUN_WORKERS_NAME
     if not workers_path.exists():
         try:
@@ -1535,6 +1545,21 @@ def default_run_name(template_path: Path, manifest: dict[str, Any]) -> str:
             break
     return validate_run_name(stem)
 
+def prepare_resume_manifest(
+    manifest_path: Path,
+    manifest: dict[str, Any],
+    *,
+    label: str,
+) -> dict[str, Any]:
+    result = prepare_run_resume(manifest_path, manifest)
+    if result["preserved"]:
+        print(
+            f"{label}: preserved {result['preserved']} completed game(s); "
+            f"created {result['continued']} remainder shard(s)"
+        )
+        return load_manifest(manifest_path)
+    return manifest
+
 def materialize_run(
     *,
     template_path: Path,
@@ -1569,7 +1594,9 @@ def materialize_run(
                 )
             )
             write_json(workers_snapshot, payload)
-        clear_restart_requests(load_manifest(manifest_path), run_name, label="resume")
+        manifest = load_manifest(manifest_path)
+        manifest = prepare_resume_manifest(manifest_path, manifest, label="resume")
+        clear_restart_requests(manifest, run_name, label="resume")
         if not preserve_workers_snapshot:
             payload = (
                 workers_snapshot_payload
@@ -3001,7 +3028,6 @@ def cmd_resume(args: argparse.Namespace) -> int:
     failed = 0
     for run_name, manifest_path, workers_path in targets:
         manifest = load_manifest(manifest_path)
-        clear_restart_requests(manifest, run_name, label="resume")
         active_count = run_active_task_count(manifest, lease_seconds=int(args.lease_seconds))
         if active_count > 0 and args.workers:
             raise SystemExit(
@@ -3009,8 +3035,11 @@ def cmd_resume(args: argparse.Namespace) -> int:
                 "use worker set HOST:N to change capacity"
             )
         if active_count > 0:
+            clear_restart_requests(manifest, run_name, label="resume")
             print(f"resume: {run_name} already active ({active_count} task(s)); no workers launched")
             continue
+        manifest = prepare_resume_manifest(manifest_path, manifest, label="resume")
+        clear_restart_requests(manifest, run_name, label="resume")
         resume_args = argparse.Namespace(
             manifest=str(manifest_path),
             workers=str(args.workers) if args.workers else str(workers_path),
@@ -3101,13 +3130,15 @@ def cmd_retry(args: argparse.Namespace) -> int:
         if len(targets) > 1:
             print(f"retry: {run_name} ({index + 1}/{len(targets)})")
         manifest = load_manifest(manifest_path)
-        clear_restart_requests(manifest, run_name, label="retry")
         active_count = run_active_task_count(manifest, lease_seconds=int(args.lease_seconds))
         if active_count > 0 and args.workers:
             raise SystemExit(
                 f"retry: {run_name} already has {active_count} active/claimed/stale task(s); "
                 "retry without --workers to requeue failures, or use worker set HOST:N to change capacity"
             )
+        if active_count == 0:
+            manifest = prepare_resume_manifest(manifest_path, manifest, label="retry")
+        clear_restart_requests(manifest, run_name, label="retry")
         archived = archive_failed_tasks_for_retry(manifest, run_name)
         if not args.workers:
             print(f"retry: {run_name} requeued={len(archived)}; no workers launched")

@@ -1798,6 +1798,225 @@ def run_summary_for(run: str | Path, *, lease_seconds: int) -> dict[str, Any]:
     annotate_run_ordering(summary, manifest_path=path, manifest=manifest)
     return summary
 
+def replace_resume_count_arg(command: str, count_arg: str, count: int) -> str:
+    if not count_arg or any(char.isspace() for char in count_arg):
+        raise SystemExit(f"invalid resume count argument: {count_arg!r}")
+    pattern = re.compile(
+        rf"(?<!\S){re.escape(count_arg)}(?:(?P<equals>=)(?P<equal_value>\S+)|(?P<space>\s+)(?P<value>\S+))"
+    )
+    matches = list(pattern.finditer(command))
+    if len(matches) != 1:
+        raise SystemExit(
+            f"resume requires exactly one {count_arg} argument; found {len(matches)} in: {command}"
+        )
+    match = matches[0]
+    replacement = f"{count_arg}={count}" if match.group("equals") else f"{count_arg} {count}"
+    return command[:match.start()] + replacement + command[match.end():]
+
+def resumed_task_id(root: str, existing: set[str]) -> str:
+    sequence = 1
+    while True:
+        candidate = f"{root}_resume{sequence}"
+        if candidate not in existing:
+            return candidate
+        sequence += 1
+
+def resumed_task_label(label: Any, total: int) -> str | None:
+    if label is None:
+        return None
+    text = str(label)
+    if re.search(r":\d+$", text):
+        return re.sub(r":\d+$", f":{total}", text)
+    return text
+
+def partial_task_done_payload(
+    manifest: dict[str, Any],
+    task: dict[str, Any],
+    *,
+    recovered_games: int,
+) -> dict[str, Any]:
+    finished_at = now()
+    outputs = task_outputs(task)
+    return {
+        "schema": SCHEMA,
+        "task": task["id"],
+        "index": task.get("index"),
+        "host": str(task.get("claim_worker") or socket.gethostname()),
+        "platform": platform.platform(),
+        "started_at": finished_at,
+        "finished_at": finished_at,
+        "elapsed_s": 0.0,
+        "command": format_command(manifest, task),
+        "rc": 0,
+        "attempt": 1,
+        "log": str(task_log_path(manifest, task)),
+        "manifest_sha256": manifest_checksum(manifest),
+        "task_execution_sha256": task_execution_checksum(manifest, task),
+        "outputs": [file_record(path) for path in outputs],
+        "partial_segment": True,
+        "recovered_games": recovered_games,
+    }
+
+def prepare_run_resume(manifest_path: Path, manifest: dict[str, Any]) -> dict[str, int]:
+    incomplete = [task for task in manifest["tasks"] if not task_complete(manifest, task)]
+    if not incomplete:
+        return {"preserved": 0, "continued": 0}
+
+    history_max = max(
+        (int(float(entry["x"])) for entry in load_progress_history(manifest)),
+        default=0,
+    )
+    stop_payload = read_state_json(stop_request_path(manifest))
+    stopped_progress = stop_payload.get("task_progress") if isinstance(stop_payload, dict) else None
+    if not isinstance(stopped_progress, dict):
+        stopped_progress = {}
+    stopped_total = 0
+    for task in manifest["tasks"]:
+        config_total = progress_config_unit_total(task)
+        if config_total is None:
+            continue
+        _unit, total = config_total
+        if task_complete(manifest, task):
+            stopped_total += total
+            continue
+        stopped_done = parse_int(stopped_progress.get(str(task["id"]))) or 0
+        stopped_total += min(total, max(0, stopped_done))
+    resumable = [task for task in incomplete if task_resume_strategy(task) == "split-progress"]
+    kind = str(manifest_metadata(manifest).get("kind") or "").lower()
+    if not resumable:
+        recorded = max(history_max, stopped_total)
+        if kind == "sprt" and recorded > 0:
+            raise SystemExit(
+                f"resume: {manifest_path.parent.name} cannot safely resume: "
+                f"{recorded} recorded games have no resumable shard state; restart refused"
+            )
+        return {"preserved": 0, "continued": 0}
+
+    recoverable = 0
+    recorded_at_stop = 0
+    plans: list[tuple[str, int, int]] = []
+    for task in manifest["tasks"]:
+        config_total = progress_config_unit_total(task)
+        if config_total is None:
+            continue
+        _unit, total = config_total
+        if task_complete(manifest, task):
+            done_payload = task_done_payload(manifest, task)
+            if isinstance(done_payload, dict) and (done_payload.get("soft_cancel") or done_payload.get("skipped")):
+                progress = task_log_progress_data(manifest, task)
+                observed = progress.get("done") if isinstance(progress, dict) else 0
+                completed = min(total, observed) if isinstance(observed, int) else 0
+                recoverable += completed
+                recorded_at_stop += completed
+            else:
+                recoverable += total
+                recorded_at_stop += total
+            continue
+        if task_resume_strategy(task) != "split-progress":
+            continue
+        progress = task_log_progress_data(manifest, task)
+        observed = progress.get("done") if isinstance(progress, dict) else 0
+        done = min(total, observed) if isinstance(observed, int) and observed > 0 else 0
+        stopped_done = parse_int(stopped_progress.get(str(task["id"]))) or 0
+        recorded_at_stop += min(total, max(0, stopped_done))
+        if done <= 0:
+            continue
+        missing = [path for path in task_outputs(task) if not path.is_file()]
+        if missing:
+            raise SystemExit(
+                f"resume: {manifest_path.parent.name} cannot safely resume {task['id']}: "
+                f"checkpoint output is missing: {missing[0]}"
+            )
+        recoverable += done
+        plans.append((str(task["id"]), done, total))
+
+    recorded = max(history_max, recorded_at_stop)
+    if recoverable < recorded:
+        raise SystemExit(
+            f"resume: {manifest_path.parent.name} cannot safely resume: "
+            f"only {recoverable} of {recorded} recorded games are recoverable; restart refused"
+        )
+    if not plans:
+        return {"preserved": 0, "continued": 0}
+
+    updated = copy.deepcopy(manifest)
+    tasks_by_id = {str(task["id"]): task for task in updated["tasks"]}
+    existing_ids = set(tasks_by_id)
+    next_index = max((int(task.get("index", -1)) for task in updated["tasks"]), default=-1) + 1
+    sealed: list[tuple[dict[str, Any], int]] = []
+    continued = 0
+    for task_id, done, original_total in plans:
+        task = tasks_by_id[task_id]
+        progress = task.get("progress")
+        if not isinstance(progress, dict):
+            raise SystemExit(f"resume: {task_id} has no progress configuration")
+        segment = task.get("resume_segment")
+        if isinstance(segment, dict):
+            continued_by = str(segment.get("continued_by") or "")
+            if continued_by and continued_by not in existing_ids:
+                raise SystemExit(f"resume: {task_id} continuation {continued_by} is missing")
+            progress["total"] = done
+            sealed.append((task, done))
+            continue
+
+        remaining = original_total - done
+        continuation_id = ""
+        if remaining > 0:
+            root = str(task.get("resume_root") or task_id)
+            continuation_id = resumed_task_id(root, existing_ids)
+            continuation = copy.deepcopy(task)
+            continuation["id"] = continuation_id
+            continuation["index"] = next_index
+            continuation["resume_root"] = root
+            continuation.pop("resume_segment", None)
+            continuation["command"] = replace_resume_count_arg(
+                str(continuation.get("command") or "").replace(task_id, continuation_id),
+                str(task_resume_config(task).get("count_arg") or ""),
+                remaining,
+            )
+            continuation["outputs"] = [
+                str(path).replace(task_id, continuation_id)
+                for path in task.get("outputs", [])
+            ]
+            if any(old == new for old, new in zip(task.get("outputs", []), continuation["outputs"])):
+                raise SystemExit(f"resume: {task_id} output path does not contain its task id")
+            continuation_progress = continuation.get("progress")
+            if not isinstance(continuation_progress, dict):
+                raise SystemExit(f"resume: {task_id} has no progress configuration")
+            continuation_progress["total"] = remaining
+            label = resumed_task_label(continuation.get("label"), remaining)
+            if label is not None:
+                continuation["label"] = label
+            updated["tasks"].append(continuation)
+            tasks_by_id[continuation_id] = continuation
+            existing_ids.add(continuation_id)
+            next_index += 1
+            continued += 1
+
+        progress["total"] = done
+        label = resumed_task_label(task.get("label"), done)
+        if label is not None:
+            task["label"] = label
+        task["resume_segment"] = {
+            "completed": done,
+            "original_total": original_total,
+            "continued_by": continuation_id,
+        }
+        sealed.append((task, done))
+
+    validate_manifest_payload(updated, label=f"resume {manifest_path.parent.name}")
+    write_json(manifest_path, updated)
+    for task, done in sealed:
+        write_json(
+            task_done_path(updated, task),
+            partial_task_done_payload(updated, task, recovered_games=done),
+        )
+        task_fail_path(updated, task).unlink(missing_ok=True)
+        task_running_path(updated, task).unlink(missing_ok=True)
+        task_cancel_path(updated, task).unlink(missing_ok=True)
+        shutil.rmtree(task_claim_dir(updated, task), ignore_errors=True)
+    return {"preserved": sum(done for _task, done in sealed), "continued": continued}
+
 def request_stop_for_run(
     manifest_path: Path,
     manifest: dict[str, Any],
@@ -1819,6 +2038,14 @@ def request_stop_for_run(
         "requested_epoch": epoch(),
         "host": socket.gethostname(),
     }
+    task_progress: dict[str, int] = {}
+    for task in active_tasks:
+        progress = task_heartbeat_progress_data(manifest, task)
+        done = progress.get("done") if isinstance(progress, dict) else None
+        if isinstance(done, int) and done > 0:
+            task_progress[str(task["id"])] = done
+    if task_progress:
+        payload["task_progress"] = task_progress
     if reason:
         payload["reason"] = reason
     write_json(stop_request_path(manifest), payload)
@@ -1848,11 +2075,12 @@ def request_stop_for_run(
         task_running_path(manifest, task).unlink(missing_ok=True)
         task_cancel_path(manifest, task).unlink(missing_ok=True)
         shutil.rmtree(task_claim_dir(manifest, task), ignore_errors=True)
-        for output in task_outputs(task):
-            if output.is_dir() and not output.is_symlink():
-                shutil.rmtree(output, ignore_errors=True)
-            else:
-                output.unlink(missing_ok=True)
+        if not task_preserves_partial_outputs(task):
+            for output in task_outputs(task):
+                if output.is_dir() and not output.is_symlink():
+                    shutil.rmtree(output, ignore_errors=True)
+                else:
+                    output.unlink(missing_ok=True)
         reset.append(str(task["id"]))
     finalizer = manifest.get("finalize")
     if isinstance(finalizer, dict):

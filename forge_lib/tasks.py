@@ -96,6 +96,16 @@ def task_outputs(task: dict[str, Any]) -> list[Path]:
         raise SystemExit(f"{task['id']}: outputs must be a list")
     return [expand_path(str(path)) for path in outputs]
 
+def task_resume_config(task: dict[str, Any]) -> dict[str, Any]:
+    config = task.get("resume")
+    return config if isinstance(config, dict) else {}
+
+def task_resume_strategy(task: dict[str, Any]) -> str:
+    return str(task_resume_config(task).get("strategy") or "").strip()
+
+def task_preserves_partial_outputs(task: dict[str, Any]) -> bool:
+    return task_resume_strategy(task) == "split-progress"
+
 def format_command(manifest: dict[str, Any], task: dict[str, Any]) -> str:
     outputs = task_outputs(task)
     values = task_template_values(manifest, task)

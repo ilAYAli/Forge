@@ -197,6 +197,81 @@ class ForgeTests(unittest.TestCase):
             })
         return run
 
+    def write_resumable_run(
+        self,
+        runs: Path,
+        name: str,
+        *,
+        done: int,
+        history: int | None = None,
+    ) -> Path:
+        run = runs / name
+        output = run / "outputs" / "sprt_0000" / "logs" / "sprt_0000.log"
+        progress = copy.deepcopy(
+            forge.load_template(ROOT / "templates" / "sprt.template.json")["task"]["progress"]
+        )
+        progress["total"] = 10
+        task = {
+            "id": "sprt_0000",
+            "index": 0,
+            "label": "sprt:10",
+            "command": (
+                "sprt --games 10 --log-dir {output_dir}/sprt_0000/logs "
+                "--name sprt_0000"
+            ),
+            "outputs": [str(output)],
+            "progress": progress,
+            "resume": {"strategy": "split-progress", "count_arg": "--games"},
+            "claim_worker": "worker-a",
+        }
+        manifest = {
+            "schema": "forge.task.v1",
+            "name": name,
+            "kind": "sprt",
+            "work_dir": str(run),
+            "state_dir": str(run / "state"),
+            "log_dir": str(run / "logs"),
+            "claim_dir": str(run / "claims"),
+            "vars": {
+                "run_dir": str(run),
+                "output_dir": str(run / "outputs"),
+            },
+            "tasks": [task],
+        }
+        run.mkdir(parents=True)
+        forge.write_json(run / "manifest.json", manifest)
+        forge.write_json(run / "workers.json", {
+            "schema": "forge.workers.v1",
+            "workers": ["worker-a"],
+        })
+        if done > 0:
+            output.parent.mkdir(parents=True)
+            output.write_text("raw fastchess checkpoint\n", encoding="utf-8")
+            forge.task_log_path(manifest, task).parent.mkdir(parents=True, exist_ok=True)
+            forge.task_log_path(manifest, task).write_text(
+                f"[{done:2d}/10] Elo   5.0 +/-  20.0 | LLR  0.10/2.20 (  5%) "
+                "| LOS 60.0% | draw  40.0%\n",
+                encoding="utf-8",
+            )
+        if history is not None:
+            history_path = forge.progress_history_path(manifest)
+            history_path.parent.mkdir(parents=True, exist_ok=True)
+            history_path.write_text(
+                json.dumps({
+                    "epoch": 1.0,
+                    "x": float(history),
+                    "x_total": 10,
+                    "x_unit": "games",
+                    "series": {"elo": 5.0, "llr": 0.1, "ci": 20.0},
+                }) + "\n",
+                encoding="utf-8",
+            )
+        forge.write_json(forge.stop_request_path(manifest), {
+            "schema": "forge.task.v1",
+            "run": name,
+        })
+        return run
+
     def delegated_status_payload(self) -> str:
         summary = {
             "run": "remote-run",
@@ -445,6 +520,14 @@ class ForgeTests(unittest.TestCase):
         script = forge.managed_remote_script("forge version")
         self.assertIn("PATH=\"$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH\"; export PATH; ", script)
         self.assertIn("forge version", script)
+
+    def test_worker_stop_waits_for_checkpoint_sync_before_kill(self) -> None:
+        script = forge.cleanup_run_pid_files_command("/tmp/forge-cache", "resume-test")
+
+        self.assertIn("kill -TERM", script)
+        self.assertIn("remaining=200", script)
+        self.assertIn("kill -0", script)
+        self.assertLess(script.index("kill -TERM"), script.index("kill -KILL"))
 
     def test_no_arguments_prints_help(self) -> None:
         result = self.run_cli()
@@ -3100,6 +3183,10 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
         self.assertEqual(256, sum(totals))
         self.assertEqual(["llr", "elo", "ci"], [spec["name"] for spec in manifest["tasks"][0]["progress"]["series"]])
         self.assertIn("?P<llr>", manifest["tasks"][0]["progress"]["log_regex"])
+        self.assertEqual(
+            {"strategy": "split-progress", "count_arg": "--games"},
+            manifest["tasks"][0]["resume"],
+        )
 
     def test_template_commit_placeholder_accepts_checkout_directory(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -3963,6 +4050,151 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
                     except (OSError, ValueError, IndexError):
                         pass
 
+    def test_interrupted_split_progress_run_resumes_from_preserved_games(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            runs = root / "runs"
+            cache = root / "worker-cache"
+            runner = root / "progress-runner.py"
+            runner.write_text(
+                "#!/usr/bin/env python3\n"
+                "import argparse, pathlib, time\n"
+                "parser = argparse.ArgumentParser()\n"
+                "parser.add_argument('--games', type=int, required=True)\n"
+                "parser.add_argument('--log-dir', required=True)\n"
+                "parser.add_argument('--name', required=True)\n"
+                "args = parser.parse_args()\n"
+                "log_dir = pathlib.Path(args.log_dir)\n"
+                "log_dir.mkdir(parents=True, exist_ok=True)\n"
+                "with (log_dir / f'{args.name}.log').open('w') as raw:\n"
+                "    for done in range(2, args.games + 1, 2):\n"
+                "        line = (f'[{done:2d}/{args.games}] Elo   5.0 +/-  20.0 | '"
+                "                'LLR  0.10/2.20 (  5%) | LOS 60.0% | draw  40.0%')\n"
+                "        print(line, flush=True)\n"
+                "        raw.write(line + '\\n')\n"
+                "        raw.flush()\n"
+                "        time.sleep(1.0)\n",
+                encoding="utf-8",
+            )
+            runner.chmod(0o755)
+            progress = copy.deepcopy(
+                forge.load_template(ROOT / "templates" / "sprt.template.json")["task"]["progress"]
+            )
+            template = root / "template.json"
+            template.write_text(
+                json.dumps({
+                    "schema": "forge.task.v1",
+                    "name": "resume-progress",
+                    "kind": "sprt",
+                    "work_dir": str(root),
+                    "tasks": [{
+                        "id": "sprt_0000",
+                        "index": 0,
+                        "label": "sprt:10",
+                        "command": (
+                            f"{runner} --games 10 --log-dir "
+                            "{output_dir}/sprt_0000/logs --name sprt_0000"
+                        ),
+                        "outputs": ["{output_dir}/sprt_0000/logs/sprt_0000.log"],
+                        "progress": {**progress, "total": 10},
+                        "resume": {"strategy": "split-progress", "count_arg": "--games"},
+                    }],
+                }),
+                encoding="utf-8",
+            )
+            workers = root / "workers.json"
+            forge.write_json(workers, {
+                "schema": "forge.workers.v1",
+                "workers": [{
+                    "host": "localhost",
+                    "profile": "localhost",
+                    "local": True,
+                    "cache_dir": str(cache),
+                    "python": sys.executable,
+                }],
+            })
+            env = {
+                **os.environ,
+                "FORGE_RUNS_DIR": str(runs),
+                "FORGE_COORDINATOR_RUNS": "",
+                "FORGE_NOTIFY_COMMAND": "",
+            }
+            process = subprocess.Popen(
+                [
+                    sys.executable,
+                    str(CLI),
+                    "start",
+                    str(template),
+                    "--workers",
+                    str(workers),
+                    "--wait",
+                    "--interval-seconds",
+                    "0.02",
+                    "--timeout-seconds",
+                    "20",
+                ],
+                cwd=ROOT,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=env,
+            )
+            try:
+                running = runs / "resume-progress" / "state" / "sprt_0000.running.json"
+                deadline = time.monotonic() + 10
+                while not running.is_file() and process.poll() is None and time.monotonic() < deadline:
+                    time.sleep(0.02)
+                self.assertTrue(running.is_file())
+                time.sleep(1.3)
+
+                process.send_signal(signal.SIGINT)
+                stdout, stderr = process.communicate(timeout=40)
+                self.assertEqual(130, process.returncode, stdout + stderr)
+
+                stopped = forge.load_manifest(runs / "resume-progress" / "manifest.json")
+                stopped_summary = forge.status_summary(stopped, lease_seconds=600)
+                preserved = stopped_summary["progress_done"]["games"]
+                self.assertGreaterEqual(preserved, 2)
+                self.assertLess(preserved, 10)
+
+                resumed = subprocess.run(
+                    [
+                        sys.executable,
+                        str(CLI),
+                        "resume",
+                        "resume-progress",
+                        "--wait",
+                        "--interval-seconds",
+                        "0.02",
+                        "--timeout-seconds",
+                        "20",
+                    ],
+                    cwd=ROOT,
+                    text=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    check=False,
+                    timeout=40,
+                    env=env,
+                )
+                self.assertEqual(0, resumed.returncode, resumed.stdout + resumed.stderr)
+                self.assertIn(f"preserved {preserved} completed game(s)", resumed.stdout)
+                finished = forge.load_manifest(runs / "resume-progress" / "manifest.json")
+                summary = forge.status_summary(finished, lease_seconds=600)
+                self.assertEqual(10, summary["progress_done"]["games"])
+                self.assertEqual(10, summary["progress_totals"]["games"])
+                self.assertEqual(len(finished["tasks"]), summary["counts"]["done"])
+            finally:
+                if process.poll() is None:
+                    process.kill()
+                    process.communicate()
+                for pid_file in cache.glob("resume-progress-*.pid"):
+                    try:
+                        pid = int(pid_file.read_text(encoding="utf-8").splitlines()[0])
+                        os.killpg(pid, signal.SIGKILL)
+                    except (OSError, ValueError, IndexError):
+                        pass
+
     def test_start_queues_new_run_when_another_run_is_active(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -4588,6 +4820,93 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
             self.assertTrue(resume_args.resume)
             self.assertFalse(resume_args.retry_failed)
             self.assertEqual("resume", resume_args.command_label)
+
+    def test_stop_preserves_split_progress_checkpoint(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            run = self.write_resumable_run(Path(tmp) / "runs", "paused-sprt", done=8, history=8)
+            manifest = forge.load_manifest(run / "manifest.json")
+            task = manifest["tasks"][0]
+            output = Path(task["outputs"][0])
+            forge.stop_request_path(manifest).unlink()
+            forge.claim_task(
+                manifest,
+                worker="worker-a",
+                profile=None,
+                lease_seconds=600,
+                retry_failed=False,
+            )
+            heartbeat = forge.read_json(forge.task_heartbeat_path(manifest, task))
+            heartbeat["progress_data"] = {"done": 8, "total": 10, "unit": "games"}
+            forge.write_json(forge.task_heartbeat_path(manifest, task), heartbeat)
+            forge.write_json(forge.task_running_path(manifest, task), {"task": task["id"]})
+
+            with mock.patch("forge_lib.workers.kill_run_workers", return_value=1):
+                forge.request_stop_for_run(run / "manifest.json", manifest, lease_seconds=600)
+
+            self.assertTrue(output.is_file())
+            self.assertEqual("pending", forge.task_state(manifest, task, lease_seconds=600))
+            self.assertEqual(
+                {task["id"]: 8},
+                forge.read_json(forge.stop_request_path(manifest))["task_progress"],
+            )
+            summary = forge.status_summary(manifest, lease_seconds=600)
+            self.assertEqual(8, summary["progress_done"]["games"])
+
+    def test_resume_seals_partial_progress_and_runs_only_remainder(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            run = self.write_resumable_run(Path(tmp) / "runs", "paused-sprt", done=8, history=8)
+            manifest_path = run / "manifest.json"
+            manifest = forge.load_manifest(manifest_path)
+
+            result = forge.prepare_run_resume(manifest_path, manifest)
+            resumed = forge.load_manifest(manifest_path)
+
+            self.assertEqual({"preserved": 8, "continued": 1}, result)
+            self.assertEqual(2, len(resumed["tasks"]))
+            original, remainder = resumed["tasks"]
+            self.assertEqual(8, original["progress"]["total"])
+            self.assertEqual(2, remainder["progress"]["total"])
+            self.assertIn("--games 2", remainder["command"])
+            self.assertIn(remainder["id"], remainder["command"])
+            self.assertNotEqual(original["outputs"], remainder["outputs"])
+            self.assertTrue(forge.task_complete(resumed, original))
+            self.assertFalse(forge.task_complete(resumed, remainder))
+            summary = forge.status_summary(resumed, lease_seconds=600)
+            self.assertEqual(10, summary["progress_totals"]["games"])
+            self.assertEqual(8, summary["progress_done"]["games"])
+
+            repeated = forge.prepare_run_resume(manifest_path, resumed)
+            self.assertEqual({"preserved": 0, "continued": 0}, repeated)
+            self.assertEqual(2, len(forge.load_manifest(manifest_path)["tasks"]))
+
+    def test_resume_refuses_to_discard_recorded_progress(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            run = self.write_resumable_run(Path(tmp) / "runs", "damaged-sprt", done=6, history=8)
+            manifest_path = run / "manifest.json"
+
+            with self.assertRaisesRegex(
+                SystemExit,
+                "only 6 of 8 recorded games are recoverable; restart refused",
+            ):
+                forge.prepare_run_resume(manifest_path, forge.load_manifest(manifest_path))
+
+            unchanged = forge.load_manifest(manifest_path)
+            self.assertEqual(1, len(unchanged["tasks"]))
+            self.assertTrue(forge.stop_request_path(unchanged).exists())
+
+    def test_resume_refuses_legacy_sprt_with_partial_history(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            run = self.write_resumable_run(Path(tmp) / "runs", "legacy-sprt", done=8, history=8)
+            manifest_path = run / "manifest.json"
+            manifest = forge.load_manifest(manifest_path)
+            manifest["tasks"][0].pop("resume")
+            forge.write_json(manifest_path, manifest)
+
+            with self.assertRaisesRegex(
+                SystemExit,
+                "8 recorded games have no resumable shard state; restart refused",
+            ):
+                forge.prepare_run_resume(manifest_path, manifest)
 
     def test_resume_uses_configured_workers_when_run_snapshot_is_absent(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -12592,7 +12911,7 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
             command = run_mock.call_args.args[0]
             self.assertEqual(["sh", "-lc"], command[:2])
             self.assertIn("local-stop-*.pid", command[-1])
-            self.assertEqual(1, command[-1].count("sleep 1"))
+            self.assertEqual(1, command[-1].count("sleep 0.1"))
             self.assertIn("kill -TERM", command[-1])
 
     def test_deploy_launch_only_starts_wait_monitor_for_notifications(self) -> None:
