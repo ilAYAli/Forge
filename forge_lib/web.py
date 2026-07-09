@@ -562,7 +562,7 @@ _HTML = r"""<!DOCTYPE html>
     }
 
     // UI state persistence
-    const UI_STATE_KEY = 'forge.ui.v1';
+    const UI_STATE_KEY = 'forge.ui.v2';
     function clearOldHashState() {
       if (!location.hash) return;
       try {
@@ -1859,29 +1859,29 @@ _HTML = r"""<!DOCTYPE html>
         ));
       }
 
-      // active — open by default for current runs
+      // active
       if (active.count > 0) {
         const activeFieldText = activeFields.join(' ');
         const ws = display.active_summary_text ? renderChips(display.active_summary_text) : renderChips(activeFieldText);
         sections.push(makeSection(r.run, 'active',
           `active: <b>${active.count}</b>`, 'yel',
-          ws + renderTasks(active.tasks), isCurrent && !mobileLayout()
+          ws + renderTasks(active.tasks), false
         ));
       }
 
-      // pending — open by default
+      // pending
       if (pending.count > 0) {
         sections.push(makeSection(r.run, 'pending',
           `pending: <b>${pending.count}</b>`, 'yel',
-          renderGroups(pending.groups), true
+          renderGroups(pending.groups), false
         ));
       }
 
-      // fail — open if there are failures
+      // fail
       if (fail.count > 0) {
         sections.push(makeSection(r.run, 'fail',
           `fail: <b>${fail.count}</b>`, 'red',
-          renderGroups(fail.groups), true
+          renderGroups(fail.groups), false
         ));
       }
 
