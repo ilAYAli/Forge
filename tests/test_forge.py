@@ -12825,6 +12825,88 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
             scripts = [command[-1] for command in commands if command[0] == "sh"]
             self.assertEqual(4, len([script for script in scripts if " work " in script]))
 
+    def test_deploy_launch_only_finalizes_when_setup_lags_completed_run(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            runs = root / "runs"
+            template = root / "template.manifest.json"
+            template.write_text(
+                json.dumps({
+                    "schema": "forge.task.v1",
+                    "name": "setup-lags-complete",
+                    "work_dir": str(root),
+                    "requirements": {"python_min": "3.11", "git_min": "2.38"},
+                    "tasks": [{"id": "task_0000", "index": 0, "command": "true", "outputs": []}],
+                }),
+                encoding="utf-8",
+            )
+            workers_path = root / "workers.json"
+            workers_path.write_text(
+                json.dumps({
+                    "schema": "forge.workers.v1",
+                    "workers": [
+                        {"host": "worker-fast", "profile": "worker-fast", "local": True, "cache_dir": str(root / "cache-fast")},
+                        {"host": "worker-slow", "profile": "worker-slow", "local": True, "cache_dir": str(root / "cache-slow")},
+                    ],
+                }),
+                encoding="utf-8",
+            )
+            setup_released = threading.Event()
+            terminated = threading.Event()
+
+            def fake_bootstrap(worker, manifest_path, **kwargs):
+                if worker["host"] == "worker-slow":
+                    setup_released.wait(timeout=5)
+
+            def fake_run_worker_shell(worker, script, **kwargs):
+                if " work " in script:
+                    manifest = forge.load_manifest(runs / "setup-lags-complete" / "manifest.json")
+                    task = manifest["tasks"][0]
+                    forge.write_json(forge.task_done_path(manifest, task), {
+                        "task": task["id"],
+                        "index": task["index"],
+                        "worker": worker["host"],
+                        "state": "done",
+                    })
+                return subprocess.CompletedProcess(["sh"], 0, stdout="", stderr="")
+
+            def fake_terminate_all(self):
+                terminated.set()
+                setup_released.set()
+
+            args = argparse.Namespace(
+                manifest=str(template),
+                workers=str(workers_path),
+                jobs=2,
+                run="setup-lags-complete",
+                resume=False,
+                replace=False,
+                launch_only=True,
+                remote_timeout_seconds=1800.0,
+                no_color=True,
+                verbose=False,
+            )
+            with (
+                self.patch_runs_dir(runs),
+                mock.patch("forge_lib.workers.bootstrap_worker_runner", side_effect=fake_bootstrap),
+                mock.patch("forge_lib.workers.sync_inputs_to_worker", return_value=0),
+                mock.patch("forge_lib.workers.run_worker_shell", side_effect=fake_run_worker_shell),
+                mock.patch.object(forge.ProcessTracker, "terminate_all", fake_terminate_all),
+                mock.patch("forge_lib.workers.DEPLOY_STARTUP_TIMEOUT_SECONDS", 0.01),
+                mock.patch("forge_lib.workers.DEPLOY_STARTUP_POLL_SECONDS", 0.01),
+            ):
+                stdout = io.StringIO()
+                stderr = io.StringIO()
+                with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                    rc = forge.cmd_deploy(args)
+
+            self.assertEqual(0, rc)
+            self.assertTrue(terminated.is_set())
+            self.assertIn("deploy: tasks completed while setup was still pending; stopping setup", stderr.getvalue())
+            self.assertIn("deploy: launch complete", stdout.getvalue())
+            manifest = forge.load_manifest(runs / "setup-lags-complete" / "manifest.json")
+            self.assertEqual("done", forge.task_state(manifest, manifest["tasks"][0], lease_seconds=600))
+
     def test_deploy_launch_only_keeps_partial_worker_start(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -14395,13 +14477,22 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
                 }),
                 encoding="utf-8",
             )
+            real_wait = forge.concurrent.futures.wait
+            wait_calls = 0
+
+            def interrupt_first_wait(*args, **kwargs):
+                nonlocal wait_calls
+                wait_calls += 1
+                if wait_calls == 1:
+                    raise KeyboardInterrupt
+                return real_wait(*args, **kwargs)
 
             with (
                 self.patch_runs_dir(root / "runs"),
                 mock.patch("forge.ProcessTracker.run", return_value=subprocess.CompletedProcess(["sh"], 0, stdout="", stderr="")),
                 mock.patch.object(forge.ProcessTracker, "terminate_all") as terminate_all,
                 mock.patch("forge_lib.workers.kill_run_workers", return_value=0) as kill_workers,
-                mock.patch("forge.concurrent.futures.as_completed", side_effect=KeyboardInterrupt),
+                mock.patch("forge.concurrent.futures.wait", side_effect=interrupt_first_wait),
             ):
                 stdout = io.StringIO()
                 stderr = io.StringIO()

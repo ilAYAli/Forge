@@ -2132,14 +2132,46 @@ def run_deploy(args: argparse.Namespace) -> int:
     def collect_setup_results(
         future_to_group: dict[concurrent.futures.Future[Any], list[tuple[int, dict[str, Any]]]],
         on_ready: Callable[[list[dict[str, Any]]], None] | None = None,
+        stop_when_tasks_done: bool = False,
     ) -> list[dict[str, Any]]:
         setup_results_list: list[dict[str, Any]] = []
-        for future in concurrent.futures.as_completed(future_to_group):
-            group_results = future.result()
-            setup_results_list.extend(group_results)
-            print_results(group_results, show_success=bool(args.verbose))
-            if on_ready is not None and all(item["ok"] for item in group_results):
-                on_ready(group_results)
+        pending = set(future_to_group)
+        while pending:
+            done, pending = concurrent.futures.wait(
+                pending,
+                timeout=0.5 if stop_when_tasks_done else None,
+                return_when=concurrent.futures.FIRST_COMPLETED,
+            )
+            if not done:
+                if stop_when_tasks_done:
+                    try:
+                        current = load_manifest(manifest_path)
+                        current_summary = status_summary(current, lease_seconds=lease_seconds)
+                        current_counts = current_summary["counts"]
+                        if current_counts["done"] == len(current.get("tasks") or []):
+                            status(
+                                colorize(
+                                    "deploy: tasks completed while setup was still pending; stopping setup",
+                                    "yellow",
+                                    enabled=color_enabled,
+                                ),
+                                error=True,
+                            )
+                            tracker.terminate_all()
+                            for future in pending:
+                                future.cancel()
+                            concurrent.futures.wait(pending, timeout=2)
+                            break
+                    except (OSError, ValueError, json.JSONDecodeError):
+                        pass
+                continue
+            for future in done:
+                pending.discard(future)
+                group_results = future.result()
+                setup_results_list.extend(group_results)
+                print_results(group_results, show_success=bool(args.verbose))
+                if on_ready is not None and all(item["ok"] for item in group_results):
+                    on_ready(group_results)
         return setup_results_list
 
     status(colorize(f"deploy: run={run_dir.name} workers={len(workers)} jobs={jobs}", "cyan", enabled=color_enabled))
@@ -2201,6 +2233,7 @@ def run_deploy(args: argparse.Namespace) -> int:
         setup_results_list = collect_setup_results(
             future_to_group,
             launch_ready_workers if launch_only else None,
+            stop_when_tasks_done=launch_only,
         )
         setup_failed = sum(1 for item in setup_results_list if not item["ok"])
         setup_failed_results = [item for item in setup_results_list if not item["ok"]]
@@ -2220,7 +2253,7 @@ def run_deploy(args: argparse.Namespace) -> int:
                         enabled=color_enabled,
                     ),
                 )
-            executor.shutdown(wait=True)
+            executor.shutdown(wait=not launch_only, cancel_futures=launch_only)
             executor = None
             if launch_only:
                 expected_new_started = min(before_pending, len(ready_worker_items))
