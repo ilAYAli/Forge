@@ -562,7 +562,7 @@ _HTML = r"""<!DOCTYPE html>
     }
 
     // UI state persistence
-    const UI_STATE_KEY = 'forge.ui.v2';
+    const UI_STATE_KEY = 'forge.ui.v3';
     function clearOldHashState() {
       if (!location.hash) return;
       try {
@@ -680,7 +680,6 @@ _HTML = r"""<!DOCTYPE html>
       document.querySelectorAll('.run-body, .section-detail').forEach(el => {
         if (!el.id) return;
         seen.add(el.id);
-        openState[el.id] = el.classList.contains('open');
       });
       if (seen.size > 0) {
         for (const key of Object.keys(openState)) {
