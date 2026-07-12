@@ -2144,6 +2144,62 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
             self.assertEqual(fresh["progress_graph"], state["lingering_runs"]["done-run"]["progress_graph"])
             self.assertEqual(web._WEB_RUN_SNAPSHOT_VERSION, state["lingering_runs"]["done-run"]["web_snapshot_version"])
 
+    def test_web_refreshes_lingering_completed_selfplay_without_graph(self) -> None:
+        import forge_lib.web as web
+
+        with tempfile.TemporaryDirectory() as tmp:
+            runs = Path(tmp) / "runs"
+            run_dir = runs / "selfplay-done"
+            stale = {
+                "run": "selfplay-done",
+                "run_dir": str(run_dir),
+                "manifest": str(run_dir / "manifest.json"),
+                "state": "done",
+                "kind": "selfplay",
+                "tasks": 2,
+                "counts": {"done": 2, "fail": 0, "running": 0, "claimed": 0, "stale": 0, "pending": 0},
+                "commands": [{"label": "forge selfplay", "count": 1, "command": "forge selfplay --games 100"}],
+                "web_snapshot_version": web._WEB_RUN_SNAPSHOT_VERSION,
+            }
+            fresh = {
+                **stale,
+                "progress_graph": {
+                    "version": forge.PROGRESS_GRAPH_VERSION,
+                    "x_unit": "games",
+                    "x_total": 100,
+                    "series": [
+                        {"name": "wins", "points": [{"x": 4, "y": 1}, {"x": 100, "y": 29}]},
+                        {"name": "losses", "points": [{"x": 4, "y": 1}, {"x": 100, "y": 30}]},
+                    ],
+                },
+            }
+            empty_payload = {
+                "runs": [],
+                "collapsed_failures": [],
+                "collapsed_failures_count": 0,
+                "coordinator": None,
+            }
+
+            with self.patch_runs_dir(runs), mock.patch("forge_lib.web.runs_dir", return_value=runs):
+                forge.write_json(run_dir / "manifest.json", {
+                    "schema": "forge.task.v1",
+                    "name": "selfplay-done",
+                    "kind": "selfplay",
+                    "work_dir": str(run_dir),
+                    "state_dir": str(run_dir / "state"),
+                    "tasks": [],
+                })
+                forge.write_json(runs / ".web-state.json", {
+                    "lingering_runs": {"selfplay-done": stale},
+                })
+                with mock.patch("forge_lib.web._collect_named_run_payload", return_value=fresh) as named:
+                    merged = web._merge_lingering_runs(copy.deepcopy(empty_payload))
+                    state = web._read_web_state()
+
+            named.assert_called_once_with("selfplay-done", None)
+            self.assertEqual(fresh["progress_graph"], merged["runs"][0]["progress_graph"])
+            self.assertEqual(fresh["progress_graph"], state["lingering_runs"]["selfplay-done"]["progress_graph"])
+
     def test_web_refreshes_seed_specific_legacy_commands(self) -> None:
         import forge_lib.web as web
 

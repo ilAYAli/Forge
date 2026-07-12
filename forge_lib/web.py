@@ -2089,7 +2089,7 @@ _WEB_HOST = "127.0.0.1"
 _WEB_PORT = 0
 _WEB_RESTART_DELAY_SECONDS = 0.2
 _WEB_RESTARTER_WAIT_SECONDS = 15.0
-_WEB_RUN_SNAPSHOT_VERSION = 3
+_WEB_RUN_SNAPSHOT_VERSION = 4
 _WEB_STATE_NAME = ".web-state.json"
 _WEB_STATE_LOCK = threading.Lock()
 _WEB_RESTARTER_CODE = r"""
@@ -2359,6 +2359,8 @@ def _commands_need_refresh(payload: dict[str, Any]) -> bool:
 def _progress_graph_needs_refresh(payload: dict[str, Any]) -> bool:
     graph = payload.get("progress_graph")
     if not isinstance(graph, dict):
+        if _run_payload_done(payload) and str(payload.get("kind") or "").lower() == "selfplay":
+            return True
         return False
     if graph.get("version") != PROGRESS_GRAPH_VERSION:
         return True
