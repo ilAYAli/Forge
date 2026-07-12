@@ -133,7 +133,7 @@
     "command": "{fastchess_shell} -engine cmd={engine_shell} name=enyo-a option.Hash={hash} option.Threads={threads} {uci_args} -engine cmd={engine_shell} name=enyo-b option.Hash={hash} option.Threads={threads} {uci_args} -each tc={tc_shell} proto=uci restart={restart_shell} -rounds {shard_pairs} -games 2 -openings file={book_shell} format=epd order={book_order_shell} -srand {seed} -concurrency {concurrency} -pgnout file=\"{output_dir}/{task_name}.pgn\" notation={pgn_notation_shell} -output format=fastchess",
     "progress": {
       "unit": "games",
-      "log_regex": "Score of .*?:\\s+(?P<wins>\\d+)\\s+-\\s+(?P<losses>\\d+)\\s+-\\s+(?P<draws>\\d+)\\s+\\[[^\\]]+\\]\\s+(?P<done>\\d+)",
+      "log_regex": "Games:\\s+(?P<done>\\d+),\\s+Wins:\\s+(?P<wins>\\d+),\\s+Losses:\\s+(?P<losses>\\d+),\\s+Draws:\\s+(?P<draws>\\d+)",
       "series": [
         {
           "name": "wins",

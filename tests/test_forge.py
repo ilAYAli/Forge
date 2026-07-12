@@ -3477,7 +3477,57 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
         self.assertIn("option.Threads=2", command)
         self.assertIn('option.nnue_file="$HOME/code/cpp/chess/enyo/net/default.nn"', command)
         self.assertIn("-pgnout file=\"{output_dir}/selfplay_0000.pgn\" notation=uci", command)
-        self.assertIn("Score of .*?", manifest["tasks"][0]["progress"]["log_regex"])
+        self.assertIn("Games:", manifest["tasks"][0]["progress"]["log_regex"])
+
+    def test_selfplay_status_graph_aggregates_completed_fastchess_shards(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            state = root / "state"
+            logs = root / "logs"
+            state.mkdir()
+            logs.mkdir()
+            progress = {
+                "unit": "games",
+                "total": 4,
+                "log_regex": r"Games:\s+(?P<done>\d+),\s+Wins:\s+(?P<wins>\d+),\s+Losses:\s+(?P<losses>\d+),\s+Draws:\s+(?P<draws>\d+)",
+                "series": [
+                    {"name": "wins", "field": "wins", "x": "done", "scale": "linear"},
+                    {"name": "losses", "field": "losses", "x": "done", "scale": "linear"},
+                    {"name": "draws", "field": "draws", "x": "done", "scale": "linear"},
+                ],
+            }
+            manifest = {
+                "schema": "forge.task.v1",
+                "name": "selfplay",
+                "kind": "selfplay",
+                "work_dir": str(root),
+                "state_dir": str(state),
+                "log_dir": str(logs),
+                "tasks": [
+                    {"id": "selfplay_0000", "index": 0, "command": "true", "outputs": [], "progress": dict(progress)},
+                    {"id": "selfplay_0001", "index": 1, "command": "true", "outputs": [], "progress": dict(progress)},
+                ],
+            }
+            (state / "selfplay_0000.done.json").write_text(json.dumps({"task": "selfplay_0000"}), encoding="utf-8")
+            (state / "selfplay_0001.done.json").write_text(json.dumps({"task": "selfplay_0001"}), encoding="utf-8")
+            (logs / "selfplay_0000.log").write_text(
+                "Games: 4, Wins: 1, Losses: 1, Draws: 2, Points: 2.0 (50.00 %)\n",
+                encoding="utf-8",
+            )
+            (logs / "selfplay_0001.log").write_text(
+                "Games: 4, Wins: 2, Losses: 1, Draws: 1, Points: 2.5 (62.50 %)\n",
+                encoding="utf-8",
+            )
+
+            summary = forge.status_summary(manifest, lease_seconds=600)
+
+            graph = summary["progress_graph"]
+            self.assertEqual("games", graph["x_unit"])
+            self.assertEqual(8, graph["x_total"])
+            series = {item["name"]: item["points"] for item in graph["series"]}
+            self.assertEqual([{"x": 4.0, "y": 1.0}, {"x": 8.0, "y": 3.0}], series["wins"])
+            self.assertEqual([{"x": 4.0, "y": 1.0}, {"x": 8.0, "y": 2.0}], series["losses"])
+            self.assertEqual([{"x": 4.0, "y": 2.0}, {"x": 8.0, "y": 3.0}], series["draws"])
 
     def test_selfplay_template_rounds_odd_games_up(self) -> None:
         template_path = ROOT / "templates" / "selfplay.template.json"

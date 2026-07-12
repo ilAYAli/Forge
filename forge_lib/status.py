@@ -2687,8 +2687,10 @@ def run_progress_graph_from_rows(
     kind = str(manifest_metadata(manifest).get("kind") or "").lower()
     is_sprt = kind == "sprt"
     is_labeling = kind == "label"
+    is_selfplay = kind == "selfplay"
     label_x = 0.0
     label_worker_rates: dict[str, float] = {}
+    selfplay_rows: list[dict[str, Any]] = []
     x_unit = ""
     for row in rows:
         task = tasks_by_id.get(str(row.get("id") or ""))
@@ -2728,6 +2730,8 @@ def run_progress_graph_from_rows(
                 label_worker_rates[worker] = label_worker_rates.get(worker, 0.0) + rate
             continue
         sprt_x: float | None = None
+        selfplay_x: float | None = None
+        selfplay_values: dict[str, float] = {}
         for spec in specs:
             x_name = "global_done" if spec["x"] == "done" and "global_done" in graph_data else spec["x"]
             x = progress_numeric_value(x_name, graph_data, fields)
@@ -2735,6 +2739,10 @@ def run_progress_graph_from_rows(
             if x is None or y is None:
                 continue
             field_name = str(spec["field"]).lower()
+            if is_selfplay and field_name in {"wins", "losses", "draws"}:
+                selfplay_x = x if selfplay_x is None else selfplay_x
+                selfplay_values[spec["name"]] = y
+                continue
             if is_sprt and field_name in {"elo", "llr", "ci"}:
                 sprt_series_names.setdefault(spec["name"], field_name)
                 if field_name == "llr":
@@ -2747,11 +2755,24 @@ def run_progress_graph_from_rows(
         done = graph_data.get("done")
         if sprt_x is not None and isinstance(done, int) and done > 0:
             sprt_rows.append({"x": sprt_x, "done": done, "fields": fields})
+        if selfplay_x is not None and selfplay_values:
+            selfplay_rows.append({"x": selfplay_x, "series": selfplay_values})
 
     if is_labeling and label_x > 0 and label_worker_rates:
         points_by_name["total"] = [{"x": label_x, "y": sum(label_worker_rates.values())}]
         for worker, rate in sorted(label_worker_rates.items()):
             points_by_name[worker] = [{"x": label_x, "y": rate}]
+
+    if is_selfplay and selfplay_rows:
+        totals: dict[str, float] = {}
+        for item in sorted(selfplay_rows, key=lambda value: float(value["x"])):
+            x = parse_float(item.get("x"))
+            raw_series = item.get("series")
+            if x is None or not isinstance(raw_series, dict):
+                continue
+            for name, value in raw_series.items():
+                totals[name] = totals.get(name, 0.0) + float(value)
+                points_by_name.setdefault(name, []).append({"x": x, "y": totals[name]})
 
     x_total = progress_unit_totals.get(x_unit) if x_unit else None
     for name, points in sprt_aggregate_graph_points(
@@ -3031,9 +3052,7 @@ def run_progress_history_graph(
     current_graph: dict[str, Any] | None,
 ) -> dict[str, Any] | None:
     history = append_progress_history(manifest, progress_graph_snapshot(current_graph))
-    if str(manifest_metadata(manifest).get("kind") or "").lower() == "sprt" and all(
-        task_complete(manifest, task) for task in manifest.get("tasks", [])
-    ):
+    if all(task_complete(manifest, task) for task in manifest.get("tasks", [])):
         return current_graph
     return progress_graph_from_history(history, current_graph)
 
