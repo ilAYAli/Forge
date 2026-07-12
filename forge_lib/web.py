@@ -1545,10 +1545,20 @@ _HTML = r"""<!DOCTYPE html>
         + `</div>`;
     }
 
+    function combinedGraphSeriesOrder(series) {
+      const rank = name => {
+        const key = graphSeriesName(name);
+        if (key === 'total') return 0;
+        if (key === 'wins') return 1;
+        if (key === 'draws') return 2;
+        if (key === 'losses') return 3;
+        return 10;
+      };
+      return [...series].sort((a, b) => rank(a.name) - rank(b.name));
+    }
+
     function combinedGraphLegendHtml(series, valueSuffix = '/s') {
-      const ordered = [...series].sort((a, b) =>
-        Number(graphSeriesName(b.name) === 'total') - Number(graphSeriesName(a.name) === 'total')
-      );
+      const ordered = combinedGraphSeriesOrder(series);
       return `<div class="graph-legend">` + ordered.map(s => {
         const raw = s.rawPoints || s.points;
         const latest = raw[raw.length - 1]?.y;
@@ -1563,8 +1573,9 @@ _HTML = r"""<!DOCTYPE html>
 
     function graphCombinedRowHtml(series, graph, xTotal, options = {}) {
       const h = 72;
-      const primary = graphSeriesByName(series, 'total') || series[0];
-      const plotted = options.plotAll ? series : [primary];
+      const orderedSeries = combinedGraphSeriesOrder(series);
+      const primary = graphSeriesByName(orderedSeries, 'total') || orderedSeries[0];
+      const plotted = options.plotAll ? orderedSeries : [primary];
       const allY = plotted.flatMap(s => s.points.map(point => point.y));
       const grid = graphGridLines(primary.name, primary.points, allY, GRAPH_W, h);
       const paths = plotted.map(s => {
@@ -1588,7 +1599,7 @@ _HTML = r"""<!DOCTYPE html>
         return `${s.name} ${fmtGraphValue(s.name, raw[raw.length - 1]?.y)}${valueSuffix}`;
       }).join(' · ');
       const clipId = `graph-clip-${Math.random().toString(36).slice(2)}`;
-      return combinedGraphLegendHtml(series, valueSuffix)
+      return combinedGraphLegendHtml(orderedSeries, valueSuffix)
         + `<div class="graph-row combined">`
         + `<span class="graph-axis">${graphAxisHtml(primary.name, primary.points, allY)}</span>`
         + `<span class="graph-plot">`
