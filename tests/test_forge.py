@@ -3479,16 +3479,17 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
         self.assertIn("-pgnout file=\"{output_dir}/selfplay_0000.pgn\" notation=uci", command)
         self.assertIn("Score of .*?", manifest["tasks"][0]["progress"]["log_regex"])
 
-    def test_selfplay_template_rejects_odd_games(self) -> None:
+    def test_selfplay_template_rounds_odd_games_up(self) -> None:
         template_path = ROOT / "templates" / "selfplay.template.json"
         template = forge.load_template(template_path)
 
-        with self.assertRaisesRegex(SystemExit, "selfplay.games must be even"):
-            forge.parse_selfplay_template_parameters(
-                "selfplay",
-                template,
-                ["--engine", "~/assets/engines/enyo_9696dac", "--games", "15"],
-            )
+        params = forge.parse_selfplay_template_parameters(
+            "selfplay",
+            template,
+            ["--engine", "~/assets/engines/enyo_9696dac", "--games", "15"],
+        )
+
+        self.assertEqual(16, params["games"])
 
     def test_selfplay_template_rejects_empty_uci_option_values(self) -> None:
         template_path = ROOT / "templates" / "selfplay.template.json"

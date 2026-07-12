@@ -347,7 +347,7 @@ def parse_selfplay_template_parameters(template_name: str, template: dict[str, A
     validate_template_uci_options(values.get("uci"), "--uci")
     games = as_int(values.get("games"), label="selfplay.games")
     if games % 2 != 0:
-        raise SystemExit("selfplay.games must be even")
+        values["games"] = games + 1
     return values
 
 
