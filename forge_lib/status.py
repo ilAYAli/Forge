@@ -2431,6 +2431,11 @@ FASTCHESS_SPRT_RE = re.compile(
     r"ubound\s+(?P<ubound>[+-]?(?:\d+(?:\.\d+)?|inf|nan))",
     re.IGNORECASE,
 )
+FASTCHESS_GAMES_RE = re.compile(
+    r"Games:\s+(?P<done>\d+),\s+Wins:\s+(?P<wins>\d+),\s+"
+    r"Losses:\s+(?P<losses>\d+),\s+Draws:\s+(?P<draws>\d+)",
+    re.IGNORECASE,
+)
 
 SPRT_PROGRESS_FIELD_KEYS = {"elo", "ci", "llr", "los", "draw"}
 
@@ -2486,6 +2491,31 @@ def sprt_progress_line_data(line: str, config: dict[str, Any], *, eta_epoch: flo
     }
     if total is not None:
         data["total"] = total
+    return normalize_progress_data(data)
+
+def fastchess_games_line_data(line: str, config: dict[str, Any], *, eta_epoch: float) -> dict[str, Any] | None:
+    match = FASTCHESS_GAMES_RE.search(line)
+    if not match:
+        return None
+    values = match.groupdict()
+    done = parse_int(values.get("done"))
+    if done is None:
+        return None
+    data: dict[str, Any] = {
+        "done": done,
+        "unit": str(config.get("unit") or "games"),
+        "output_unit": str(config.get("output_unit") or "output"),
+        "kind": "metadata",
+        "eta_epoch": eta_epoch,
+        "fields": {
+            "wins": values["wins"],
+            "losses": values["losses"],
+            "draws": values["draws"],
+        },
+    }
+    total_value = config.get("total")
+    if total_value is not None:
+        data["total"] = total_value if isinstance(total_value, int) else parse_int(str(total_value))
     return normalize_progress_data(data)
 
 def progress_field_float(fields: dict[str, str], *names: str) -> float | None:
@@ -3363,6 +3393,9 @@ def parse_task_progress_text(text: str, config: Any, *, eta_epoch: float) -> dic
     if isinstance(config, dict):
         for line in reversed(text.splitlines()):
             data = sprt_progress_line_data(line, config, eta_epoch=eta_epoch)
+            if data is not None:
+                return data
+            data = fastchess_games_line_data(line, config, eta_epoch=eta_epoch)
             if data is not None:
                 return data
         fc_fields = fastchess_progress_fields(text)

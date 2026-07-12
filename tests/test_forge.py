@@ -3489,7 +3489,7 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
             progress = {
                 "unit": "games",
                 "total": 4,
-                "log_regex": r"Games:\s+(?P<done>\d+),\s+Wins:\s+(?P<wins>\d+),\s+Losses:\s+(?P<losses>\d+),\s+Draws:\s+(?P<draws>\d+)",
+                "log_regex": r"Score of .*?:\s+(?P<wins>\d+)\s+-\s+(?P<losses>\d+)\s+-\s+(?P<draws>\d+)\s+\[[^\]]+\]\s+(?P<done>\d+)",
                 "series": [
                     {"name": "wins", "field": "wins", "x": "done", "scale": "linear"},
                     {"name": "losses", "field": "losses", "x": "done", "scale": "linear"},
