@@ -1,0 +1,159 @@
+{
+  "schema": "forge.template.v1",
+  "name": "selfplay",
+  "kind": "selfplay",
+  "description": "Generate distributed Enyo self-play PGNs",
+  "run_name": "selfplay-{engine_stem}-{games}-{timestamp}",
+  "work_dir": "~",
+  "materialize_inputs": true,
+  "parameters": {
+    "engine": {
+      "default": "~/assets/engines/candidate",
+      "worker_path": true,
+      "directory_executable": "build/enyo",
+      "help": "Enyo UCI engine executable or checkout directory available on all workers"
+    },
+    "games": {
+      "type": "int",
+      "required": true,
+      "help": "Total self-play games across all shards; must be even"
+    },
+    "shards": {
+      "type": "int",
+      "aliases": ["shard_count"],
+      "help": "Number of Forge shards; defaults to about 25 games each and at least two configured worker-slot waves"
+    },
+    "book": {
+      "default": "~/assets/books/AntiDraw_V2.1/WOMP_Openings_V1/WOMP_V1_+150_+159/WOMP_V1_6mvs_big_+140_+169.epd",
+      "worker_path": true,
+      "help": "EPD opening book"
+    },
+    "book_order": {
+      "default": "random",
+      "help": "Fastchess opening order"
+    },
+    "seed": {
+      "type": "int",
+      "default": 1,
+      "help": "Fastchess opening random seed"
+    },
+    "concurrency": {
+      "type": "int",
+      "default": 1,
+      "help": "Concurrent games inside each shard"
+    },
+    "threads": {
+      "type": "int",
+      "default": 1,
+      "help": "Engine threads per game"
+    },
+    "hash": {
+      "type": "int",
+      "default": 128,
+      "help": "Hash size in MiB for each engine process"
+    },
+    "tc": {
+      "default": "10+0.1",
+      "help": "Fastchess time control"
+    },
+    "restart": {
+      "default": "on",
+      "help": "Engine restart mode"
+    },
+    "pgn_notation": {
+      "default": "uci",
+      "help": "PGN notation written by fastchess"
+    },
+    "fastchess": {
+      "default": "~/.cache/forge/tools/fastchess/3de44228aec904e688a4ad71c554eb9d461a5a2a/fastchess",
+      "worker_path": true,
+      "help": "Fastchess executable"
+    },
+    "uci": {
+      "repeatable": true,
+      "arg": "--uci",
+      "file_options": [
+        "nnue_file"
+      ],
+      "help": "Common UCI option applied to both self-play engines as NAME=VALUE; repeatable"
+    }
+  },
+  "requirements": {
+    "python_min": "3.11",
+    "git_min": "2.38",
+    "repos": [
+      {
+        "name": "fastchess",
+        "url": "https://github.com/Disservin/fastchess.git",
+        "path": "~/.cache/forge/tools/fastchess/3de44228aec904e688a4ad71c554eb9d461a5a2a",
+        "remote": "origin",
+        "commit": "3de44228aec904e688a4ad71c554eb9d461a5a2a",
+        "allow_untracked": true,
+        "build_timeout_s": 900,
+        "install_timeout_s": 120,
+        "probe_timeout_s": 30,
+        "build": [
+          "make -j build=release"
+        ],
+        "probe": [
+          "./fastchess -version | grep fastchess"
+        ]
+      }
+    ],
+    "commands": [
+      {
+        "name": "fastchess",
+        "path": "{fastchess}",
+        "timeout_s": 20
+      },
+      {
+        "name": "engine",
+        "path": "{engine}",
+        "command": "engine={engine}; if probe=$(printf '%s\\n' uci quit | \"$engine\" 2>/dev/null) && printf '%s\\n' \"$probe\" | grep -q uciok; then printf '%s\\n' \"$probe\"; exit 0; fi; name=$(basename \"$engine\"); case \"$name\" in enyo_*) commit=$(printf '%s\\n' \"$name\" | sed 's/^enyo_//') ;; *) echo \"engine is unavailable and cannot be built automatically: $engine\" >&2; exit 1 ;; esac; cd ~/code/cpp/chess/enyo && git fetch origin && git -c advice.detachedHead=false checkout -f \"$commit\" && ./scripts/deploy.sh --candidate && test -x \"$engine\" && printf '%s\\n' uci quit | \"$engine\"",
+        "contains": "uciok",
+        "timeout_s": 900
+      }
+    ],
+    "inputs": [
+      {
+        "name": "book",
+        "path": "{book}"
+      }
+    ]
+  },
+  "task": {
+    "split": {
+      "total": "games",
+      "count": "shards",
+      "unit": "games"
+    },
+    "prefix": "selfplay",
+    "label": "selfplay:{shard}",
+    "output": "{output_dir}/{task_name}.pgn",
+    "command": "{fastchess_shell} -engine cmd={engine_shell} name=enyo-a option.Hash={hash} option.Threads={threads} {uci_args} -engine cmd={engine_shell} name=enyo-b option.Hash={hash} option.Threads={threads} {uci_args} -each tc={tc_shell} proto=uci restart={restart_shell} -rounds {shard_pairs} -games 2 -openings file={book_shell} format=epd order={book_order_shell} -srand {seed} -concurrency {concurrency} -pgnout file=\"{output_dir}/{task_name}.pgn\" notation={pgn_notation_shell} -output format=fastchess",
+    "progress": {
+      "unit": "games",
+      "log_regex": "Score of .*?:\\s+(?P<wins>\\d+)\\s+-\\s+(?P<losses>\\d+)\\s+-\\s+(?P<draws>\\d+)\\s+\\[[^\\]]+\\]\\s+(?P<done>\\d+)",
+      "series": [
+        {
+          "name": "wins",
+          "field": "wins",
+          "x": "done",
+          "scale": "linear"
+        },
+        {
+          "name": "losses",
+          "field": "losses",
+          "x": "done",
+          "scale": "linear"
+        },
+        {
+          "name": "draws",
+          "field": "draws",
+          "x": "done",
+          "scale": "linear"
+        }
+      ]
+    }
+  }
+}

@@ -167,6 +167,21 @@ def sprt_shell_word(value: str) -> str:
     return shlex.quote(value)
 
 
+def shell_word(value: Any) -> str:
+    text = str(value)
+    if "~" in text:
+        return text
+    return shlex.quote(text)
+
+
+def shell_value_format_values(values: dict[str, Any]) -> dict[str, str]:
+    result: dict[str, str] = {}
+    for key, value in values.items():
+        if isinstance(value, (str, int, float, bool)):
+            result[f"{key}_shell"] = shell_word(value)
+    return result
+
+
 def sprt_shell_args(template: dict[str, Any], values: dict[str, Any]) -> str:
     params = template.get("parameters", {})
     if not isinstance(params, dict):
@@ -194,6 +209,25 @@ def sprt_shell_args(template: dict[str, Any], values: dict[str, Any]) -> str:
     if isinstance(extra_args, list):
         parts.extend(str(item) for item in extra_args)
     return " ".join(sprt_shell_word(part) for part in parts)
+
+
+def fastchess_uci_args(values: dict[str, Any], key: str = "uci") -> str:
+    items = values.get(key) or []
+    if isinstance(items, str):
+        items = [items]
+    result = []
+    for item in items:
+        text = str(item)
+        if text:
+            name, separator, value = text.partition("=")
+            if separator and value == "~":
+                result.append(f"option.{name}=\"$HOME\"")
+            elif separator and value.startswith("~/"):
+                home_value = value[2:].replace("\\", "\\\\").replace('"', '\\"').replace("$", "\\$").replace("`", "\\`")
+                result.append(f"option.{name}=\"$HOME/{home_value}\"")
+            else:
+                result.append(shell_word("option." + text))
+    return " ".join(result)
 
 
 def resolve_worker_path_symlink(path: Path) -> Path:
@@ -308,17 +342,29 @@ def parse_sprt_template_parameters(template_name: str, template: dict[str, Any],
     return values
 
 
+def parse_selfplay_template_parameters(template_name: str, template: dict[str, Any], raw_args: list[str]) -> dict[str, Any]:
+    values = parse_template_parameters(template_name, template, raw_args)
+    validate_template_uci_options(values.get("uci"), "--uci")
+    games = as_int(values.get("games"), label="selfplay.games")
+    if games % 2 != 0:
+        raise SystemExit("selfplay.games must be even")
+    return values
+
+
 def validate_sprt_uci_options(values: dict[str, Any]) -> None:
     for key, flag in (("candidate_uci", "--candidate-uci"), ("reference_uci", "--reference-uci")):
-        items = values.get(key)
-        if items is None:
-            continue
-        if not isinstance(items, list):
-            items = [items]
-        for item in items:
-            text = str(item)
-            if "=" in text and text.split("=", 1)[1] == "":
-                raise SystemExit(f"{flag} {text}: empty UCI option values are rejected; omit the option instead")
+        validate_template_uci_options(values.get(key), flag)
+
+
+def validate_template_uci_options(items: Any, flag: str) -> None:
+    if items is None:
+        return
+    if not isinstance(items, list):
+        items = [items]
+    for item in items:
+        text = str(item)
+        if "=" in text and text.split("=", 1)[1] == "":
+            raise SystemExit(f"{flag} {text}: empty UCI option values are rejected; omit the option instead")
 
 
 def normalize_file_paths(parameters: dict[str, Any], values: dict[str, Any]) -> None:
@@ -552,9 +598,12 @@ def git_checkout_template_parameters(template: dict[str, Any], params: dict[str,
 def expand_template(template_name: str, template_path_: Path, template: dict[str, Any], params: dict[str, Any]) -> dict[str, Any]:
     params = git_checkout_template_parameters(template, params)
     values = run_name_values(template_name, params)
+    values.update(shell_value_format_values(values))
     values.update(repeatable_arg_shell_values(template, values))
     if template_name == "sprt":
         values["sprt_args"] = sprt_shell_args(template, values)
+    if template_name == "selfplay":
+        values["uci_args"] = fastchess_uci_args(values)
     kind = str(template.get("kind") or template_name)
     name_template = str(template.get("run_name") or f"{template_name}-{{timestamp}}")
     run_name = validate_run_name(str(safe_format(name_template, values)))
@@ -591,10 +640,12 @@ def expand_template(template_name: str, template_path_: Path, template: dict[str
             "task_count": task_count,
             "task_name": task_name,
             "shard": shard,
+            "shard_pairs": shard // 2 if isinstance(shard, int) else "",
             "chunk": shard,
             "output_dir": "{output_dir}",
             "run_dir": "{run_dir}",
         })
+        task_values.update(shell_value_format_values(task_values))
         task: dict[str, Any] = {
             "id": task_name,
             "index": index,
@@ -736,6 +787,7 @@ def cmd_template_run(args: argparse.Namespace) -> int:
     template_name = template_display_name(path, template)
     workers_arg: str | None = None
     sprt_workers_payload: dict[str, Any] | None = None
+    selfplay_workers_payload: dict[str, Any] | None = None
     spsa_workers_payload: dict[str, Any] | None = None
     if template_name == "sprt":
         params = parse_sprt_template_parameters(template_name, template, template_args)
@@ -750,6 +802,19 @@ def cmd_template_run(args: argparse.Namespace) -> int:
         if not shards_supplied:
             params = dict(params)
             params["shards"] = auto_sprt_shards(params, sprt_workers_payload or {})
+    elif template_name == "selfplay":
+        params = parse_selfplay_template_parameters(template_name, template, template_args)
+        shards_supplied = template_parameter_supplied(template, template_args, {"shards"})
+        needs_workers = (
+            not (run_options.print_manifest or run_options.dry_run)
+            or not shards_supplied
+        )
+        if needs_workers:
+            workers_arg = resolved_workers_arg(run_options, config)
+            selfplay_workers_payload = sprt_worker_slots_payload(workers_arg)
+        if not shards_supplied:
+            params = dict(params)
+            params["shards"] = auto_sprt_shards(params, selfplay_workers_payload or {})
     elif template_name == "spsa":
         params = parse_template_parameters(template_name, template, template_args)
         shards_supplied = template_parameter_supplied(template, template_args, {"shards"})
@@ -806,13 +871,16 @@ def cmd_template_run(args: argparse.Namespace) -> int:
     with tempfile.TemporaryDirectory(prefix="forge-template-") as tmp:
         manifest_path = Path(tmp) / f"{manifest['name']}.manifest.json"
         write_json(manifest_path, manifest)
-        if template_name in {"sprt", "spsa"}:
+        if template_name in {"sprt", "selfplay", "spsa"}:
             workers_path = Path(tmp) / "workers.json"
-            worker_payload = (
-                sprt_workers_payload or sprt_worker_slots_payload(workers_arg)
-                if template_name == "sprt"
-                else spsa_workers_payload or spsa_worker_slots_payload(workers_arg)
-            )
+            if template_name == "spsa":
+                worker_payload = spsa_workers_payload or spsa_worker_slots_payload(workers_arg)
+            else:
+                worker_payload = (
+                    sprt_workers_payload
+                    or selfplay_workers_payload
+                    or sprt_worker_slots_payload(workers_arg)
+                )
             write_json(workers_path, worker_payload)
             workers_arg = str(workers_path)
         from .workers import cmd_run_job

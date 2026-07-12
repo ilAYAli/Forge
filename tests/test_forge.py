@@ -2924,6 +2924,20 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
             "--games", "256",
         ], args.template_args)
 
+    def test_selfplay_command_alias_runs_selfplay_template(self) -> None:
+        args = forge.build_parser().parse_args([
+            "selfplay",
+            "--engine", "~/assets/engines/enyo_9696dac",
+            "--games", "256",
+        ])
+
+        self.assertIs(args.func, forge.cmd_template_run)
+        self.assertEqual("selfplay", args.template)
+        self.assertEqual([
+            "--engine", "~/assets/engines/enyo_9696dac",
+            "--games", "256",
+        ], args.template_args)
+
     def test_sprt_command_alias_accepts_dashdash_passthrough(self) -> None:
         run_options, template_args = forge.parse_run_options([
             "--workers", "pwa-mbp:4",
@@ -3433,16 +3447,106 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
                 {paths["book.epd"], paths["candidate.nn"], paths["reference.nn"]},
                 {Path(item["path"]) for item in inputs},
             )
+
+    def test_selfplay_template_generates_pgn_shards(self) -> None:
+        template_path = ROOT / "templates" / "selfplay.template.json"
+        template = forge.load_template(template_path)
+        params = forge.parse_selfplay_template_parameters(
+            "selfplay",
+            template,
+            [
+                "--engine", "~/assets/engines/enyo_9696dac",
+                "--book", "~/assets/books/openings.epd",
+                "--games", "64",
+                "--shards", "4",
+                "--uci", "nnue_file=~/code/cpp/chess/enyo/net/default.nn",
+                "--hash", "64",
+                "--threads", "2",
+                "--tc", "5+0.05",
+            ],
+        )
+        manifest = forge.expand_template("selfplay", template_path, template, params)
+        command = manifest["tasks"][0]["command"]
+
+        self.assertEqual("selfplay", manifest["kind"])
+        self.assertEqual(4, len(manifest["tasks"]))
+        self.assertEqual([16, 16, 16, 16], [task["progress"]["total"] for task in manifest["tasks"]])
+        self.assertEqual(["{output_dir}/selfplay_0000.pgn"], manifest["tasks"][0]["outputs"])
+        self.assertIn("-rounds 8 -games 2", command)
+        self.assertIn("option.Hash=64", command)
+        self.assertIn("option.Threads=2", command)
+        self.assertIn('option.nnue_file="$HOME/code/cpp/chess/enyo/net/default.nn"', command)
+        self.assertIn("-pgnout file=\"{output_dir}/selfplay_0000.pgn\" notation=uci", command)
+        self.assertIn("Score of .*?", manifest["tasks"][0]["progress"]["log_regex"])
+
+    def test_selfplay_template_rejects_odd_games(self) -> None:
+        template_path = ROOT / "templates" / "selfplay.template.json"
+        template = forge.load_template(template_path)
+
+        with self.assertRaisesRegex(SystemExit, "selfplay.games must be even"):
+            forge.parse_selfplay_template_parameters(
+                "selfplay",
+                template,
+                ["--engine", "~/assets/engines/enyo_9696dac", "--games", "15"],
+            )
+
+    def test_selfplay_template_rejects_empty_uci_option_values(self) -> None:
+        template_path = ROOT / "templates" / "selfplay.template.json"
+        template = forge.load_template(template_path)
+
+        with self.assertRaisesRegex(SystemExit, "--uci nnue_file="):
+            forge.parse_selfplay_template_parameters(
+                "selfplay",
+                template,
+                [
+                    "--engine", "~/assets/engines/enyo_9696dac",
+                    "--games", "16",
+                    "--uci", "nnue_file=",
+                ],
+            )
+
+    def test_selfplay_template_syncs_book_and_net_only(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            paths = {
+                name: root / name
+                for name in ("engine", "book.epd", "default.nn")
+            }
+            for name, path in paths.items():
+                path.write_bytes(name.encode())
+            template_path = ROOT / "templates" / "selfplay.template.json"
+            template = forge.load_template(template_path)
+            params = forge.parse_selfplay_template_parameters(
+                "selfplay",
+                template,
+                [
+                    "--engine", str(paths["engine"]),
+                    "--book", str(paths["book.epd"]),
+                    "--games", "16",
+                    "--shards", "2",
+                    "--uci", f"nnue_file={paths['default.nn']}",
+                ],
+            )
+            manifest = forge.expand_template("selfplay", template_path, template, params)
+
+            forge.materialize_template_inputs(template, manifest, params)
+
+            inputs = manifest["requirements"]["inputs"]
+            self.assertEqual(2, len(inputs))
+            self.assertEqual({"book", "uci.nnue_file"}, {item["name"] for item in inputs})
+            self.assertEqual(
+                {paths["book.epd"], paths["default.nn"]},
+                {Path(item["path"]) for item in inputs},
+            )
             self.assertTrue(all(item["bytes"] > 0 and len(item["sha256"]) == 64 for item in inputs))
 
             commands = {item["name"]: item for item in manifest["requirements"]["commands"]}
-            self.assertIn("./scripts/deploy.sh --candidate", commands["candidate"]["command"])
-            self.assertIn("./scripts/deploy.sh --candidate", commands["reference"]["command"])
-            self.assertEqual(900, commands["candidate"]["timeout_s"])
+            self.assertIn("./scripts/deploy.sh --candidate", commands["engine"]["command"])
+            self.assertEqual(900, commands["engine"]["timeout_s"])
 
     def test_subcommand_help_is_available(self) -> None:
         commands = [
-            "run", "sprt", "sync", "sh", "template", "plan", "add-input", "add-repo", "add-command", "sync-repos", "start", "run-task", "claim",
+            "run", "sprt", "selfplay", "sync", "sh", "template", "plan", "add-input", "add-repo", "add-command", "sync-repos", "start", "run-task", "claim",
             "release", "heartbeat", "work", "doctor", "status",
             "wait", "verify", "merge", "stop", "drain", "del", "self-update",
             "update", "version", "deploy", "resume", "retry", "worker",

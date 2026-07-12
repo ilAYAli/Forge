@@ -177,6 +177,31 @@ Notes:
   games per shard. Slow worker startup does not affect this calculation;
   explicit `--shards` still overrides it.
 
+### Distributed Enyo self-play
+
+`selfplay` runs Enyo against itself with pinned fastchess and writes one PGN per
+Forge shard. The first declared output is the shard PGN, so `--merge` can
+concatenate the completed shards into one PGN.
+
+```sh
+forge selfplay --engine ~/assets/engines/enyo_9696dac --games 100000
+forge selfplay --engine ~/assets/engines/enyo_9696dac --games 100000 \
+  --uci nnue_file=~/code/cpp/chess/enyo/net/default.nn \
+  --merge ~/assets/pgn/enyo_9696dac-selfplay.pgn
+forge selfplay --engine ~/assets/engines/enyo_9696dac --games 100000 \
+  --workers worker1:8,worker3:5,worker2:4 --shards 200
+```
+
+Defaults are the WOMP `+140_+169` EPD book, `10+0.1`, `Hash=128`,
+`Threads=1`, `restart=on`, `-games 2` per opening round, random opening order,
+and UCI PGN notation. `--games` must be even. Without `--shards`, Forge uses
+the same worker-slot-aware shard sizing as SPRT.
+
+The opening book and `nnue_file` UCI options are hashed, synchronized, and
+verified on every selected worker. Engine executables are not copied between
+platforms; `enyo_<commit>` engines are built and deployed locally when missing,
+using the same worker-local mechanism as SPRT.
+
 ### Distributed SPSA (“Simultaneous Perturbation Stochastic Approximation.”)
 
 `spsa` runs exact fixed-game matches rather than SPRTs. One long-lived Forge

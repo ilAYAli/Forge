@@ -272,6 +272,18 @@ def build_parser() -> argparse.ArgumentParser:
     sprt.add_argument("template_args", nargs=argparse.REMAINDER, help="Run options and SPRT arguments.")
     sprt.set_defaults(func=cmd_template_run, template="sprt")
 
+    selfplay = sub.add_parser(
+        "selfplay",
+        help="Run the Enyo self-play template.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+        description=(
+            "Run the built-in Enyo self-play template. This is equivalent to "
+            "`forge run selfplay ...`."
+        ),
+    )
+    selfplay.add_argument("template_args", nargs=argparse.REMAINDER, help="Run options and self-play arguments.")
+    selfplay.set_defaults(func=cmd_template_run, template="selfplay")
+
     spsa = sub.add_parser(
         "spsa",
         help="Run distributed SPSA tuning.",
