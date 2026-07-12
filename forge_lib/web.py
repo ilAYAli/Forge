@@ -974,6 +974,9 @@ _HTML = r"""<!DOCTYPE html>
       if (key === 'llr') return 'var(--yel)';
       if (key === 'elo') return 'var(--blu)';
       if (key === 'total') return 'var(--blu)';
+      if (key === 'wins') return 'var(--grn)';
+      if (key === 'losses') return 'var(--red)';
+      if (key === 'draws') return 'var(--blu)';
       return GRAPH_COLORS[index % GRAPH_COLORS.length];
     }
 
@@ -1542,48 +1545,50 @@ _HTML = r"""<!DOCTYPE html>
         + `</div>`;
     }
 
-    function combinedGraphLegendHtml(series) {
+    function combinedGraphLegendHtml(series, valueSuffix = '/s') {
       const ordered = [...series].sort((a, b) =>
         Number(graphSeriesName(b.name) === 'total') - Number(graphSeriesName(a.name) === 'total')
       );
       return `<div class="graph-legend">` + ordered.map(s => {
         const raw = s.rawPoints || s.points;
         const latest = raw[raw.length - 1]?.y;
+        const value = `${fmtGraphValue(s.name, latest)}${valueSuffix}`;
         return `<span class="graph-legend-item">`
           + `<span class="graph-legend-dot" style="background:${esc(s.color)}"></span>`
           + `<span class="graph-legend-name">${esc(s.name)}</span>`
-          + `<span class="graph-legend-value">${esc(fmtGraphValue(s.name, latest))}/s</span>`
+          + `<span class="graph-legend-value">${esc(value)}</span>`
           + `</span>`;
       }).join('') + `</div>`;
     }
 
-    function graphCombinedRowHtml(series, graph, xTotal) {
+    function graphCombinedRowHtml(series, graph, xTotal, options = {}) {
       const h = 72;
       const primary = graphSeriesByName(series, 'total') || series[0];
-      const plotted = [primary];
-      const allY = primary.points.map(point => point.y);
+      const plotted = options.plotAll ? series : [primary];
+      const allY = plotted.flatMap(s => s.points.map(point => point.y));
       const grid = graphGridLines(primary.name, primary.points, allY, GRAPH_W, h);
       const paths = plotted.map(s => {
         const path = sparkPath(primary.name, s.points, allY, GRAPH_W, h, xTotal);
         return `<path class="graph-line" d="${esc(path)}" style="stroke:${esc(s.color)}"></path>`;
       }).join('');
-      const markers = graphPointMarkers(
+      const markers = plotted.map(s => graphPointMarkers(
         primary.name,
-        primary.color,
-        primary.points,
+        s.color,
+        s.points,
         allY,
         GRAPH_W,
         h,
         xTotal,
-      );
+      )).join('');
       const hover = graphCombinedHoverZones(plotted, graph?.x_unit || 'records', GRAPH_W, h, xTotal);
       const latestX = primary.rawPoints[primary.rawPoints.length - 1]?.x;
+      const valueSuffix = options.valueSuffix ?? '/s';
       const valueText = plotted.map(s => {
         const raw = s.rawPoints || s.points;
-        return `${s.name} ${fmtGraphValue(s.name, raw[raw.length - 1]?.y)}/s`;
+        return `${s.name} ${fmtGraphValue(s.name, raw[raw.length - 1]?.y)}${valueSuffix}`;
       }).join(' · ');
       const clipId = `graph-clip-${Math.random().toString(36).slice(2)}`;
-      return combinedGraphLegendHtml(series)
+      return combinedGraphLegendHtml(series, valueSuffix)
         + `<div class="graph-row combined">`
         + `<span class="graph-axis">${graphAxisHtml(primary.name, primary.points, allY)}</span>`
         + `<span class="graph-plot">`
@@ -1635,6 +1640,9 @@ _HTML = r"""<!DOCTYPE html>
         s.points = graphDisplayPoints(s, s.rawPoints);
       });
       const isLabelingGraph = Boolean(graphSeriesByName(allSeries, 'total'));
+      const selfplayNames = new Set(allSeries.map(s => graphSeriesName(s.name)));
+      const isSelfplayGraph = String(run?.kind || '').toLowerCase() === 'selfplay'
+        || (selfplayNames.has('wins') && selfplayNames.has('losses') && selfplayNames.has('draws'));
       const labelingSeries = isLabelingGraph ? allSeries : [];
       const primary = eloSeries || allSeries.find(s => graphSeriesName(s.name) !== 'ci') || null;
       if (!primary) return '';
@@ -1644,12 +1652,14 @@ _HTML = r"""<!DOCTYPE html>
       const genericSeries = !eloSeries && !llrSeries
         ? allSeries.filter(s => graphSeriesName(s.name) !== 'ci')
         : [primary];
-      const rows = isLabelingGraph
+      const rows = isSelfplayGraph
+        ? graphCombinedRowHtml(genericSeries, graph, xTotal, {plotAll: true, valueSuffix: ''})
+        : isLabelingGraph
         ? graphCombinedRowHtml(labelingSeries, graph, xTotal)
         : genericSeries.map(s => s === primary
           ? graphRowHtml(s, options, graph, xTotal, bandSeries, overlay)
           : graphRowHtml(s, options, graph, xTotal)).join('');
-      const graphTitle = isLabelingGraph ? 'labeling' : title;
+      const graphTitle = isSelfplayGraph ? 'selfplay' : isLabelingGraph ? 'labeling' : title;
       const unit = isLabelingGraph
         ? ' · aggregate records/s over records scanned'
         : (graph?.x_unit ? ` · x: ${graph.x_unit}` : '');
