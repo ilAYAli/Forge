@@ -808,12 +808,17 @@ except SystemExit as exc:
         self.assertIn("const isLabelingGraph = Boolean(graphSeriesByName(allSeries, 'total'))", web._HTML)
         self.assertIn("const isSelfplayGraph = String(run?.kind || '').toLowerCase() === 'selfplay'", web._HTML)
         self.assertIn("graphCombinedRowHtml(labelingSeries, graph, xTotal)", web._HTML)
-        self.assertIn("graphCombinedRowHtml(genericSeries, graph, xTotal, {plotAll: true, valueSuffix: ''})", web._HTML)
+        self.assertIn("selfplaySummaryHtml(graph) + graphRowHtml(balanceSeries, options, graph, xTotal)", web._HTML)
+        self.assertIn("WDL=${wins}/${draws}/${losses}", web._HTML)
+        self.assertIn("draw=${fmtGraphNumber(drawPercent)}%", web._HTML)
         self.assertIn("const graphTitle = isSelfplayGraph ? 'selfplay' : isLabelingGraph ? 'labeling' : title", web._HTML)
         self.assertIn("aggregate records/s over records scanned", web._HTML)
         self.assertIn("const primary = graphSeriesByName(orderedSeries, 'total') || orderedSeries[0]", web._HTML)
         self.assertIn("const plotted = options.plotAll ? orderedSeries : [primary]", web._HTML)
         self.assertIn("if (key === 'total') return 'var(--blu)'", web._HTML)
+        self.assertIn("if (key === 'balance') return 'var(--grn)'", web._HTML)
+        self.assertIn("if (graphSeriesName(name) === 'balance') return [-1, 1]", web._HTML)
+        self.assertIn("return [1, 0.75, 0.5, 0.25, 0, -0.25, -0.5, -0.75, -1]", web._HTML)
         self.assertIn("if (key === 'wins') return 'var(--grn)'", web._HTML)
         self.assertIn("if (key === 'losses') return 'var(--red)'", web._HTML)
         self.assertIn("if (key === 'draws') return 'var(--blu)'", web._HTML)
@@ -955,6 +960,46 @@ console.log(JSON.stringify({
             },
             json.loads(result.stdout),
         )
+
+    def test_web_selfplay_balance_uses_fixed_domain_and_ticks(self) -> None:
+        import forge_lib.web as web
+
+        names_start = web._HTML.index("    function graphSeriesName")
+        names_end = web._HTML.index("    function graphNumberOption", names_start)
+        domain_start = web._HTML.index("    function graphYDomain")
+        domain_end = web._HTML.index("    function graphYExtras", domain_start)
+        y_start = web._HTML.index("    function graphY(name")
+        y_end = web._HTML.index("    function zeroLine", y_start)
+        ticks_start = web._HTML.index("    function graphTicks")
+        ticks_end = web._HTML.index("    function graphAxisHtml", ticks_start)
+        probe = (
+            "const GRAPH_H = 280;\n"
+            + web._HTML[names_start:names_end]
+            + web._HTML[domain_start:domain_end]
+            + web._HTML[y_start:y_end]
+            + web._HTML[ticks_start:ticks_end]
+            + """
+const points = [{x: 4, y: 0}, {x: 30, y: -0.27}];
+console.log(JSON.stringify({
+  domain: graphYDomain('balance', points.map(point => point.y)),
+  y: graphY('balance', points.map(point => point.y), -0.27),
+  ticks: graphTicks('balance', points),
+}));
+"""
+        )
+        result = subprocess.run(
+            ["node", "-e", probe],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        rendered = json.loads(result.stdout)
+        self.assertEqual([-1, 1], rendered["domain"])
+        self.assertAlmostEqual(175.64, rendered["y"], places=2)
+        self.assertEqual([1, 0.75, 0.5, 0.25, 0, -0.25, -0.5, -0.75, -1], rendered["ticks"])
 
     def test_web_graph_ci_outliers_do_not_flatten_elo_scale(self) -> None:
         import forge_lib.web as web
@@ -3590,9 +3635,19 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
             self.assertEqual("games", graph["x_unit"])
             self.assertEqual(8, graph["x_total"])
             series = {item["name"]: item["points"] for item in graph["series"]}
-            self.assertEqual([{"x": 4.0, "y": 1.0}, {"x": 8.0, "y": 3.0}], series["wins"])
-            self.assertEqual([{"x": 4.0, "y": 1.0}, {"x": 8.0, "y": 2.0}], series["losses"])
-            self.assertEqual([{"x": 4.0, "y": 2.0}, {"x": 8.0, "y": 3.0}], series["draws"])
+            self.assertEqual([
+                {"x": 0.0, "y": 0.0},
+                {"x": 4.0, "y": 0.0},
+                {"x": 8.0, "y": 0.125},
+            ], series["balance"])
+            balance = next(item for item in graph["series"] if item["name"] == "balance")
+            self.assertEqual((-1.0, 1.0), (balance["min"], balance["max"]))
+            self.assertEqual({
+                "wins": 3,
+                "draws": 3,
+                "losses": 2,
+                "draw_percent": 37.5,
+            }, graph["selfplay"])
 
     def test_selfplay_template_rounds_odd_games_up(self) -> None:
         template_path = ROOT / "templates" / "selfplay.template.json"
@@ -3659,6 +3714,95 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
             commands = {item["name"]: item for item in manifest["requirements"]["commands"]}
             self.assertIn("./scripts/deploy.sh --candidate", commands["engine"]["command"])
             self.assertEqual(900, commands["engine"]["timeout_s"])
+
+    def test_enyo_engine_fallback_uses_isolated_worktree(self) -> None:
+        for template_name in ("sprt", "selfplay", "spsa"):
+            with self.subTest(template=template_name):
+                template = forge.load_template(ROOT / "templates" / f"{template_name}.template.json")
+                commands = [
+                    item["command"]
+                    for item in template["requirements"]["commands"]
+                    if "./scripts/deploy.sh --candidate" in str(item.get("command") or "")
+                ]
+                self.assertTrue(commands)
+                for command in commands:
+                    self.assertIn("$HOME/.cache/forge/enyo-worktrees/$commit-$$", command)
+                    self.assertIn('git -C "$repo" worktree add --detach', command)
+                    self.assertIn('git -C "$repo" worktree remove --force', command)
+                    self.assertNotIn("checkout -f", command)
+                    self.assertNotIn("cd ~/code/cpp/chess/enyo", command)
+                    syntax = subprocess.run(
+                        ["sh", "-n", "-c", command],
+                        text=True,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        check=False,
+                    )
+                    self.assertEqual(0, syntax.returncode, syntax.stderr)
+
+    def test_enyo_engine_fallback_does_not_switch_shared_checkout(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            origin = home / "origin.git"
+            seed = home / "seed"
+            repo = home / "code" / "cpp" / "chess" / "enyo"
+            subprocess.run(["git", "init", "--bare", str(origin)], check=True, stdout=subprocess.DEVNULL)
+            subprocess.run(["git", "init", "-b", "main", str(seed)], check=True, stdout=subprocess.DEVNULL)
+            subprocess.run(["git", "-C", str(seed), "config", "user.email", "forge@example.invalid"], check=True)
+            subprocess.run(["git", "-C", str(seed), "config", "user.name", "Forge Test"], check=True)
+            deploy = seed / "scripts" / "deploy.sh"
+            deploy.parent.mkdir()
+            deploy.write_text(
+                "#!/bin/sh\nset -eu\n"
+                "hash=$(git rev-parse --short HEAD)\n"
+                "mkdir -p \"$HOME/assets/engines\"\n"
+                "printf '#!/bin/sh\\necho uciok\\n' >\"$HOME/assets/engines/enyo_$hash\"\n"
+                "chmod +x \"$HOME/assets/engines/enyo_$hash\"\n",
+                encoding="utf-8",
+            )
+            deploy.chmod(0o755)
+            subprocess.run(["git", "-C", str(seed), "add", "."], check=True)
+            subprocess.run(["git", "-C", str(seed), "commit", "-m", "base"], check=True, stdout=subprocess.DEVNULL)
+            subprocess.run(["git", "-C", str(seed), "remote", "add", "origin", str(origin)], check=True)
+            subprocess.run(["git", "-C", str(seed), "push", "-u", "origin", "main"], check=True, stdout=subprocess.DEVNULL)
+            (seed / "revision.txt").write_text("target\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(seed), "add", "revision.txt"], check=True)
+            subprocess.run(["git", "-C", str(seed), "commit", "-m", "target"], check=True, stdout=subprocess.DEVNULL)
+            subprocess.run(["git", "-C", str(seed), "push"], check=True, stdout=subprocess.DEVNULL)
+            repo.parent.mkdir(parents=True)
+            subprocess.run(["git", "clone", str(origin), str(repo)], check=True, stdout=subprocess.DEVNULL)
+            subprocess.run(["git", "-C", str(repo), "switch", "-c", "workspace", "HEAD~1"], check=True, stdout=subprocess.DEVNULL)
+            (repo / "keep.me").write_text("untracked\n", encoding="utf-8")
+            before = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
+            target = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "origin/main"], text=True).strip()[:7]
+            template = forge.load_template(ROOT / "templates" / "selfplay.template.json")
+            raw = next(
+                item["command"]
+                for item in template["requirements"]["commands"]
+                if item["name"] == "engine"
+            )
+            command = raw.replace("{engine}", f"~/assets/engines/enyo_{target}")
+
+            result = subprocess.run(
+                ["sh", "-c", command],
+                env={**os.environ, "HOME": str(home)},
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+
+            self.assertEqual(0, result.returncode, result.stderr)
+            self.assertEqual("workspace", subprocess.check_output(
+                ["git", "-C", str(repo), "branch", "--show-current"], text=True
+            ).strip())
+            self.assertEqual(before, subprocess.check_output(
+                ["git", "-C", str(repo), "rev-parse", "HEAD"], text=True
+            ).strip())
+            self.assertTrue((repo / "keep.me").is_file())
+            self.assertEqual(1, subprocess.check_output(
+                ["git", "-C", str(repo), "worktree", "list", "--porcelain"], text=True
+            ).count("worktree "))
 
     def test_subcommand_help_is_available(self) -> None:
         commands = [

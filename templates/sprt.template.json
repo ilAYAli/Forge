@@ -124,14 +124,14 @@
       {
         "name": "candidate",
         "path": "{candidate}",
-        "command": "engine={candidate}; if probe=$(printf '%s\\n' uci quit | \"$engine\" 2>/dev/null) && printf '%s\\n' \"$probe\" | grep -q uciok; then printf '%s\\n' \"$probe\"; exit 0; fi; name=$(basename \"$engine\"); case \"$name\" in enyo_*) commit=$(printf '%s\\n' \"$name\" | sed 's/^enyo_//') ;; *) echo \"engine is unavailable and cannot be built automatically: $engine\" >&2; exit 1 ;; esac; cd ~/code/cpp/chess/enyo && git fetch origin && git -c advice.detachedHead=false checkout -f \"$commit\" && ./scripts/deploy.sh --candidate && test -x \"$engine\" && printf '%s\\n' uci quit | \"$engine\"",
+        "command": "engine={candidate}; if probe=$(printf '%s\\n' uci quit | \"$engine\" 2>/dev/null) && printf '%s\\n' \"$probe\" | grep -q uciok; then printf '%s\\n' \"$probe\"; exit 0; fi; name=$(basename \"$engine\"); case \"$name\" in enyo_*) commit=$(printf '%s\\n' \"$name\" | sed 's/^enyo_//') ;; *) echo \"engine is unavailable and cannot be built automatically: $engine\" >&2; exit 1 ;; esac; repo=~/code/cpp/chess/enyo; worktree=\"$HOME/.cache/forge/enyo-worktrees/$commit-$$\"; mkdir -p \"$(dirname \"$worktree\")\" && git -C \"$repo\" fetch origin && git -C \"$repo\" worktree add --detach \"$worktree\" \"$commit\" && trap 'git -C \"$repo\" worktree remove --force \"$worktree\" >/dev/null 2>&1 || true' 0 && cd \"$worktree\" && ./scripts/deploy.sh --candidate && test -x \"$engine\" && printf '%s\\n' uci quit | \"$engine\"",
         "contains": "uciok",
         "timeout_s": 900
       },
       {
         "name": "reference",
         "path": "{reference}",
-        "command": "engine={reference}; if probe=$(printf '%s\\n' uci quit | \"$engine\" 2>/dev/null) && printf '%s\\n' \"$probe\" | grep -q uciok; then printf '%s\\n' \"$probe\"; exit 0; fi; name=$(basename \"$engine\"); case \"$name\" in enyo_*) commit=$(printf '%s\\n' \"$name\" | sed 's/^enyo_//') ;; *) echo \"engine is unavailable and cannot be built automatically: $engine\" >&2; exit 1 ;; esac; cd ~/code/cpp/chess/enyo && git fetch origin && git -c advice.detachedHead=false checkout -f \"$commit\" && ./scripts/deploy.sh --candidate && test -x \"$engine\" && printf '%s\\n' uci quit | \"$engine\"",
+        "command": "engine={reference}; if probe=$(printf '%s\\n' uci quit | \"$engine\" 2>/dev/null) && printf '%s\\n' \"$probe\" | grep -q uciok; then printf '%s\\n' \"$probe\"; exit 0; fi; name=$(basename \"$engine\"); case \"$name\" in enyo_*) commit=$(printf '%s\\n' \"$name\" | sed 's/^enyo_//') ;; *) echo \"engine is unavailable and cannot be built automatically: $engine\" >&2; exit 1 ;; esac; repo=~/code/cpp/chess/enyo; worktree=\"$HOME/.cache/forge/enyo-worktrees/$commit-$$\"; mkdir -p \"$(dirname \"$worktree\")\" && git -C \"$repo\" fetch origin && git -C \"$repo\" worktree add --detach \"$worktree\" \"$commit\" && trap 'git -C \"$repo\" worktree remove --force \"$worktree\" >/dev/null 2>&1 || true' 0 && cd \"$worktree\" && ./scripts/deploy.sh --candidate && test -x \"$engine\" && printf '%s\\n' uci quit | \"$engine\"",
         "contains": "uciok",
         "timeout_s": 900
       }
