@@ -948,7 +948,7 @@ _HTML = r"""<!DOCTYPE html>
     }
 
     function signedGraphSeries(name) {
-      return ['elo', 'llr'].includes(String(name || '').toLowerCase());
+      return ['balance', 'elo', 'llr'].includes(String(name || '').toLowerCase());
     }
 
     function graphSeriesName(name) {
@@ -974,6 +974,7 @@ _HTML = r"""<!DOCTYPE html>
       if (key === 'llr') return 'var(--yel)';
       if (key === 'elo') return 'var(--blu)';
       if (key === 'total') return 'var(--blu)';
+      if (key === 'balance') return 'var(--grn)';
       if (key === 'wins') return 'var(--grn)';
       if (key === 'losses') return 'var(--red)';
       if (key === 'draws') return 'var(--blu)';
@@ -1005,6 +1006,7 @@ _HTML = r"""<!DOCTYPE html>
     function graphYDomain(name, values, extras = []) {
       const all = values.concat(extras).filter(Number.isFinite);
       if (!all.length) return [0, 1];
+      if (graphSeriesName(name) === 'balance') return [-1, 1];
       const explicitMin = graphNumberOption(name, ['min', 'y_min']);
       const explicitMax = graphNumberOption(name, ['max', 'y_max']);
       if (Number.isFinite(explicitMin) && Number.isFinite(explicitMax) && explicitMax > explicitMin) {
@@ -1186,6 +1188,9 @@ _HTML = r"""<!DOCTYPE html>
 
     function graphTicks(name, points, extras = []) {
       if (!points || points.length < 2) return [];
+      if (graphSeriesName(name) === 'balance') {
+        return [1, 0.75, 0.5, 0.25, 0, -0.25, -0.5, -0.75, -1];
+      }
       const [minY, maxY] = graphYDomain(name, points.map(p => p.y), extras);
       return [1, 0.75, 0.5, 0.25, 0].map(fraction => minY + (maxY - minY) * fraction);
     }
@@ -1571,6 +1576,18 @@ _HTML = r"""<!DOCTYPE html>
       }).join('') + `</div>`;
     }
 
+    function selfplaySummaryHtml(graph) {
+      const stats = graph?.selfplay;
+      if (!stats || typeof stats !== 'object') return '';
+      const wins = Number(stats.wins), draws = Number(stats.draws), losses = Number(stats.losses);
+      const drawPercent = Number(stats.draw_percent);
+      if (![wins, draws, losses, drawPercent].every(Number.isFinite)) return '';
+      return `<div class="graph-legend">`
+        + `<span class="graph-legend-item">${esc(`WDL=${wins}/${draws}/${losses}`)}</span>`
+        + `<span class="graph-legend-item">${esc(`draw=${fmtGraphNumber(drawPercent)}%`)}</span>`
+        + `</div>`;
+    }
+
     function graphCombinedRowHtml(series, graph, xTotal, options = {}) {
       const h = 72;
       const orderedSeries = combinedGraphSeriesOrder(series);
@@ -1653,6 +1670,7 @@ _HTML = r"""<!DOCTYPE html>
       const isLabelingGraph = Boolean(graphSeriesByName(allSeries, 'total'));
       const selfplayNames = new Set(allSeries.map(s => graphSeriesName(s.name)));
       const isSelfplayGraph = String(run?.kind || '').toLowerCase() === 'selfplay'
+        || selfplayNames.has('balance')
         || (selfplayNames.has('wins') && selfplayNames.has('losses') && selfplayNames.has('draws'));
       const labelingSeries = isLabelingGraph ? allSeries : [];
       const primary = eloSeries || allSeries.find(s => graphSeriesName(s.name) !== 'ci') || null;
@@ -1663,7 +1681,10 @@ _HTML = r"""<!DOCTYPE html>
       const genericSeries = !eloSeries && !llrSeries
         ? allSeries.filter(s => graphSeriesName(s.name) !== 'ci')
         : [primary];
-      const rows = isSelfplayGraph
+      const balanceSeries = graphSeriesByName(allSeries, 'balance');
+      const rows = isSelfplayGraph && balanceSeries
+        ? selfplaySummaryHtml(graph) + graphRowHtml(balanceSeries, options, graph, xTotal)
+        : isSelfplayGraph
         ? graphCombinedRowHtml(genericSeries, graph, xTotal, {plotAll: true, valueSuffix: ''})
         : isLabelingGraph
         ? graphCombinedRowHtml(labelingSeries, graph, xTotal)
@@ -2110,7 +2131,7 @@ _WEB_HOST = "127.0.0.1"
 _WEB_PORT = 0
 _WEB_RESTART_DELAY_SECONDS = 0.2
 _WEB_RESTARTER_WAIT_SECONDS = 15.0
-_WEB_RUN_SNAPSHOT_VERSION = 4
+_WEB_RUN_SNAPSHOT_VERSION = 5
 _WEB_STATE_NAME = ".web-state.json"
 _WEB_STATE_LOCK = threading.Lock()
 _WEB_RESTARTER_CODE = r"""

@@ -11,8 +11,8 @@ from .tasks import *
 
 QUEUE_MONITOR_NAME = "queue-monitor.json"
 PROGRESS_HISTORY_NAME = "progress-history.jsonl"
-PROGRESS_GRAPH_VERSION = 4
-SIGNED_PROGRESS_SERIES = {"elo", "llr"}
+PROGRESS_GRAPH_VERSION = 7
+SIGNED_PROGRESS_SERIES = {"balance", "elo", "llr"}
 PROGRESS_GRAPH_SERIES_OPTION_KEYS = {
     "band_max_fraction",
     "band_scale",
@@ -2795,6 +2795,7 @@ def run_progress_graph_from_rows(
 
     if is_selfplay and selfplay_rows:
         totals: dict[str, float] = {}
+        points_by_name["balance"] = [{"x": 0.0, "y": 0.0}]
         for item in sorted(selfplay_rows, key=lambda value: float(value["x"])):
             x = parse_float(item.get("x"))
             raw_series = item.get("series")
@@ -2802,7 +2803,15 @@ def run_progress_graph_from_rows(
                 continue
             for name, value in raw_series.items():
                 totals[name] = totals.get(name, 0.0) + float(value)
-                points_by_name.setdefault(name, []).append({"x": x, "y": totals[name]})
+            wins = totals.get("wins", 0.0)
+            losses = totals.get("losses", 0.0)
+            games = sum(totals.get(name, 0.0) for name in ("wins", "draws", "losses"))
+            if games > 0:
+                points_by_name.setdefault("balance", []).append({
+                    "x": x,
+                    "y": (wins - losses) / games,
+                })
+        options_by_name["balance"] = {"min": -1.0, "max": 1.0, "scale": "symmetric"}
 
     x_total = progress_unit_totals.get(x_unit) if x_unit else None
     for name, points in sprt_aggregate_graph_points(
@@ -2829,6 +2838,17 @@ def run_progress_graph_from_rows(
         "x_unit": x_unit,
         "series": series,
     }
+    if is_selfplay and selfplay_rows:
+        wins = int(totals.get("wins", 0.0))
+        draws = int(totals.get("draws", 0.0))
+        losses = int(totals.get("losses", 0.0))
+        games = wins + draws + losses
+        result["selfplay"] = {
+            "wins": wins,
+            "draws": draws,
+            "losses": losses,
+            "draw_percent": 100.0 * draws / games if games else 0.0,
+        }
     if isinstance(x_total, int) and x_total > 0:
         result["x_total"] = x_total
     return result
@@ -3024,6 +3044,7 @@ def progress_graph_from_history(
     options_by_name: dict[str, dict[str, Any]] = {}
     x_unit = ""
     x_total: int | None = None
+    is_selfplay = isinstance(fallback_graph, dict) and isinstance(fallback_graph.get("selfplay"), dict)
     if isinstance(fallback_graph, dict):
         raw_fallback_series = fallback_graph.get("series")
         if isinstance(raw_fallback_series, list):
@@ -3045,6 +3066,11 @@ def progress_graph_from_history(
         series = entry.get("series")
         if not isinstance(series, dict):
             continue
+        if is_selfplay and all(name in series for name in ("wins", "draws", "losses")):
+            games = sum(float(series[name]) for name in ("wins", "draws", "losses"))
+            series = {"balance": (float(series["wins"]) - float(series["losses"])) / games} if games > 0 else {}
+        elif is_selfplay:
+            series = {name: value for name, value in series.items() if str(name).lower() == "balance"}
         for name, value in series.items():
             y = parse_float(value)
             if y is None:
@@ -3075,6 +3101,8 @@ def progress_graph_from_history(
     }
     if x_total is not None and x_total > 0:
         result["x_total"] = x_total
+    if is_selfplay:
+        result["selfplay"] = fallback_graph["selfplay"]
     return result
 
 def run_progress_history_graph(
