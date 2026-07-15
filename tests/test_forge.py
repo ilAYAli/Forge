@@ -3681,6 +3681,62 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
                 "draw_percent": 37.5,
             }, graph["selfplay"])
 
+    def test_selfplay_history_ignores_projected_endpoints(self) -> None:
+        current_graph = {
+            "version": forge.PROGRESS_GRAPH_VERSION,
+            "x_unit": "games",
+            "x_total": 1000,
+            "selfplay": {
+                "wins": 29,
+                "draws": 41,
+                "losses": 30,
+                "draw_percent": 41.0,
+            },
+            "series": [
+                {
+                    "name": "balance",
+                    "points": [
+                        {"x": 0.0, "y": 0.0},
+                        {"x": 350.0, "y": -0.01},
+                    ],
+                }
+            ],
+        }
+        history = [
+            {
+                "epoch": 1.0,
+                "x": 100.0,
+                "x_unit": "games",
+                "x_total": 1000,
+                "series": {"balance": -0.02},
+            },
+            {
+                "epoch": 2.0,
+                "x": 350.0,
+                "x_unit": "games",
+                "x_total": 1000,
+                "series": {"balance": -0.01},
+            },
+            {
+                "epoch": 3.0,
+                "x": 1000.0,
+                "x_unit": "games",
+                "x_total": 1000,
+                "series": {"balance": -0.27},
+            },
+        ]
+
+        graph = forge.progress_graph_from_history(history, current_graph)
+
+        self.assertIsNotNone(graph)
+        balance = next(item for item in graph["series"] if item["name"] == "balance")
+        self.assertEqual([
+            {"x": 0.0, "y": 0.0},
+            {"x": 100.0, "y": -0.02},
+            {"x": 350.0, "y": -0.01},
+        ], balance["points"])
+        self.assertNotIn({"x": 1000.0, "y": -0.27}, balance["points"])
+
     def test_selfplay_template_rounds_odd_games_up(self) -> None:
         template_path = ROOT / "templates" / "selfplay.template.json"
         template = forge.load_template(template_path)

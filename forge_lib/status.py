@@ -2760,7 +2760,7 @@ def run_progress_graph_from_rows(
                 label_worker_rates[worker] = label_worker_rates.get(worker, 0.0) + rate
             continue
         sprt_x: float | None = None
-        selfplay_x: float | None = None
+        selfplay_done: float | None = None
         selfplay_values: dict[str, float] = {}
         for spec in specs:
             x_name = "global_done" if spec["x"] == "done" and "global_done" in graph_data else spec["x"]
@@ -2770,8 +2770,9 @@ def run_progress_graph_from_rows(
                 continue
             field_name = str(spec["field"]).lower()
             if is_selfplay and field_name in {"wins", "losses", "draws"}:
-                selfplay_x = x if selfplay_x is None else selfplay_x
                 selfplay_values[spec["name"]] = y
+                if selfplay_done is None:
+                    selfplay_done = progress_numeric_value("done", graph_data, fields)
                 continue
             if is_sprt and field_name in {"elo", "llr", "ci"}:
                 sprt_series_names.setdefault(spec["name"], field_name)
@@ -2785,8 +2786,8 @@ def run_progress_graph_from_rows(
         done = graph_data.get("done")
         if sprt_x is not None and isinstance(done, int) and done > 0:
             sprt_rows.append({"x": sprt_x, "done": done, "fields": fields})
-        if selfplay_x is not None and selfplay_values:
-            selfplay_rows.append({"x": selfplay_x, "series": selfplay_values})
+        if selfplay_done is not None and selfplay_values:
+            selfplay_rows.append({"done": selfplay_done, "series": selfplay_values})
 
     if is_labeling and label_x > 0 and label_worker_rates:
         points_by_name["total"] = [{"x": label_x, "y": sum(label_worker_rates.values())}]
@@ -2795,12 +2796,14 @@ def run_progress_graph_from_rows(
 
     if is_selfplay and selfplay_rows:
         totals: dict[str, float] = {}
+        games_done = 0.0
         points_by_name["balance"] = [{"x": 0.0, "y": 0.0}]
-        for item in sorted(selfplay_rows, key=lambda value: float(value["x"])):
-            x = parse_float(item.get("x"))
+        for item in selfplay_rows:
+            row_done = parse_float(item.get("done"))
             raw_series = item.get("series")
-            if x is None or not isinstance(raw_series, dict):
+            if row_done is None or row_done <= 0 or not isinstance(raw_series, dict):
                 continue
+            games_done += row_done
             for name, value in raw_series.items():
                 totals[name] = totals.get(name, 0.0) + float(value)
             wins = totals.get("wins", 0.0)
@@ -2808,7 +2811,7 @@ def run_progress_graph_from_rows(
             games = sum(totals.get(name, 0.0) for name in ("wins", "draws", "losses"))
             if games > 0:
                 points_by_name.setdefault("balance", []).append({
-                    "x": x,
+                    "x": games_done,
                     "y": (wins - losses) / games,
                 })
         options_by_name["balance"] = {"min": -1.0, "max": 1.0, "scale": "symmetric"}
@@ -3045,9 +3048,26 @@ def progress_graph_from_history(
     x_unit = ""
     x_total: int | None = None
     is_selfplay = isinstance(fallback_graph, dict) and isinstance(fallback_graph.get("selfplay"), dict)
+    current_max_x: float | None = None
     if isinstance(fallback_graph, dict):
         raw_fallback_series = fallback_graph.get("series")
         if isinstance(raw_fallback_series, list):
+            if is_selfplay:
+                max_points: list[float] = []
+                for item in raw_fallback_series:
+                    if not isinstance(item, dict):
+                        continue
+                    points = item.get("points")
+                    if not isinstance(points, list):
+                        continue
+                    for point in points:
+                        if not isinstance(point, dict):
+                            continue
+                        x = parse_float(point.get("x"))
+                        if x is not None:
+                            max_points.append(x)
+                if max_points:
+                    current_max_x = max(max_points)
             for item in raw_fallback_series:
                 if not isinstance(item, dict):
                     continue
@@ -3065,6 +3085,8 @@ def progress_graph_from_history(
             x_total = entry_x_total
         series = entry.get("series")
         if not isinstance(series, dict):
+            continue
+        if is_selfplay and current_max_x is not None and x > current_max_x:
             continue
         if is_selfplay and all(name in series for name in ("wins", "draws", "losses")):
             games = sum(float(series[name]) for name in ("wins", "draws", "losses"))
