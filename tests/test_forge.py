@@ -1712,6 +1712,15 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
             self.assertEqual(0, rc)
             self.assertEqual([str(script), "--flag"], run.call_args.args[0])
 
+    def test_notify_expands_tilde_executable(self) -> None:
+        home = Path.home()
+        script = home / "code" / "cpp" / "chess" / "forge" / "scripts" / "forge_event_ntfy.sh"
+        with mock.patch("forge_lib.status.subprocess.run", return_value=subprocess.CompletedProcess([], 0, "", "")) as run:
+            rc = forge.run_notify_command("~/code/cpp/chess/forge/scripts/forge_event_ntfy.sh", {"event": "done"})
+
+        self.assertEqual(0, rc)
+        self.assertEqual([str(script)], run.call_args.args[0])
+
     def test_web_remembered_completion_normalizes_ok_state(self) -> None:
         import forge_lib.web as web
 

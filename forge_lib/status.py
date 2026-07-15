@@ -3985,6 +3985,8 @@ def run_notify_command(command_text: str | None, payload: dict[str, Any]) -> int
         candidate = script_repo() / executable
         if candidate.is_file():
             command[0] = str(candidate)
+    else:
+        command[0] = str(executable)
     data = json.dumps(payload, sort_keys=True)
     env = os.environ.copy()
     env["FORGE_EVENT_JSON"] = data
