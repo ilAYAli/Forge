@@ -230,6 +230,16 @@ def fastchess_uci_args(values: dict[str, Any], key: str = "uci") -> str:
     return " ".join(result)
 
 
+def fastchess_limit_args(values: dict[str, Any]) -> str:
+    depth = values.get("depth")
+    nodes = values.get("nodes")
+    if depth not in (None, "", 0):
+        return f"tc=inf depth={depth}"
+    if nodes not in (None, "", 0):
+        return f"tc=inf nodes={nodes}"
+    return f"tc={values.get('tc')}"
+
+
 def resolve_worker_path_symlink(path: Path) -> Path:
     if path.is_symlink():
         return path.resolve(strict=False)
@@ -613,6 +623,7 @@ def expand_template(template_name: str, template_path_: Path, template: dict[str
         values["sprt_args"] = sprt_shell_args(template, values)
     if template_name == "selfplay":
         values["uci_args"] = fastchess_uci_args(values)
+        values["limit_args"] = fastchess_limit_args(values)
     kind = str(template.get("kind") or template_name)
     name_template = str(template.get("run_name") or f"{template_name}-{{timestamp}}")
     run_name = validate_run_name(str(safe_format(name_template, values)))
