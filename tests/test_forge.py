@@ -4392,6 +4392,32 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
             verify.assert_not_called()
             self.assertIn("start: ok; status: forge status launch-default --verbose", stdout.getvalue())
 
+    def test_selfplay_template_defaults_retry_failed_without_fail_fast(self) -> None:
+        options = argparse.Namespace(
+            resume=False,
+            retry_failed=False,
+            fail_on_fail=True,
+        )
+
+        result = forge.apply_template_run_defaults("selfplay", options)
+
+        self.assertIs(result, options)
+        self.assertTrue(options.retry_failed)
+        self.assertFalse(options.fail_on_fail)
+
+    def test_spsa_resume_defaults_retry_failed(self) -> None:
+        options = argparse.Namespace(
+            resume=True,
+            retry_failed=False,
+            fail_on_fail=True,
+        )
+
+        result = forge.apply_template_run_defaults("spsa", options)
+
+        self.assertIs(result, options)
+        self.assertTrue(options.retry_failed)
+        self.assertTrue(options.fail_on_fail)
+
     def test_start_ctrl_c_cleans_and_resumes_without_duplicate_output(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

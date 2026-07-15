@@ -474,6 +474,15 @@ def parse_run_options(raw_args: list[str]) -> tuple[argparse.Namespace, list[str
     return run_options, [*template_args, *passthrough_args]
 
 
+def apply_template_run_defaults(template_name: str, run_options: argparse.Namespace) -> argparse.Namespace:
+    if template_name == "spsa" and getattr(run_options, "resume", False):
+        run_options.retry_failed = True
+    if template_name == "selfplay":
+        run_options.retry_failed = True
+        run_options.fail_on_fail = False
+    return run_options
+
+
 def as_int(value: Any, *, label: str) -> int:
     try:
         result = int(value)
@@ -839,10 +848,9 @@ def cmd_template_run(args: argparse.Namespace) -> int:
                 spsa_workers_payload,
                 int(params["shards"]),
             )
-        if run_options.resume:
-            run_options.retry_failed = True
     else:
         params = parse_template_parameters(template_name, template, template_args)
+    run_options = apply_template_run_defaults(template_name, run_options)
     inventory_info: dict[str, Any] | None = None
     if template_name == "label":
         inventory_info = build_inventory(str(params["source"]))
