@@ -779,6 +779,11 @@ def auto_sprt_shards(params: dict[str, Any], worker_payload: dict[str, Any]) -> 
     return largest_multiple if largest_multiple > 0 else paired_limit
 
 
+def auto_selfplay_shards(worker_payload: dict[str, Any]) -> int:
+    slots = sprt_worker_slot_count(worker_payload)
+    return max(1, slots)
+
+
 def cmd_template_run(args: argparse.Namespace) -> int:
     run_options, template_args = parse_run_options(list(args.template_args))
     config = load_config()
@@ -814,7 +819,7 @@ def cmd_template_run(args: argparse.Namespace) -> int:
             selfplay_workers_payload = sprt_worker_slots_payload(workers_arg)
         if not shards_supplied:
             params = dict(params)
-            params["shards"] = auto_sprt_shards(params, selfplay_workers_payload or {})
+            params["shards"] = auto_selfplay_shards(selfplay_workers_payload or {})
     elif template_name == "spsa":
         params = parse_template_parameters(template_name, template, template_args)
         shards_supplied = template_parameter_supplied(template, template_args, {"shards"})

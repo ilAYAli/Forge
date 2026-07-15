@@ -195,8 +195,7 @@ forge selfplay --engine ~/assets/engines/enyo_9696dac --games 100000 \
 Defaults are the WOMP `+140_+169` EPD book, `10+0.1`, `Hash=128`,
 `Threads=1`, `restart=on`, `-games 2` per opening round, random opening order,
 and UCI PGN notation. Odd `--games` values are rounded up to the next even
-value. Without `--shards`, Forge uses the same worker-slot-aware shard sizing
-as SPRT.
+value. Without `--shards`, Forge uses one shard per configured worker slot.
 
 The opening book and `nnue_file` UCI options are hashed, synchronized, and
 verified on every selected worker. Engine executables are not copied between

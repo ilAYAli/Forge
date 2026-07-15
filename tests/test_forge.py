@@ -3589,6 +3589,29 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
         self.assertIn("-pgnout file=\"{output_dir}/selfplay_0000.pgn\" notation=uci", command)
         self.assertIn("Games:", manifest["tasks"][0]["progress"]["log_regex"])
 
+    def test_selfplay_command_auto_sizes_shards_to_worker_slots(self) -> None:
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            rc = forge.cmd_template_run(argparse.Namespace(
+                template="selfplay",
+                template_args=[
+                    "--dry-run",
+                    "--workers", "pwa-mbp:4,pwa-mbp0:5,pwa-5090:6",
+                    "--engine", "~/assets/engines/enyo_9696dac",
+                    "--games", "64",
+                    "--uci", "nnue_file=~/code/cpp/chess/enyo/net/default.nn",
+                ],
+            ))
+        manifest = json.loads(stdout.getvalue())
+        totals = [task["progress"]["total"] for task in manifest["tasks"]]
+
+        self.assertEqual(0, rc)
+        self.assertEqual(15, manifest["template"]["parameters"]["shards"])
+        self.assertEqual(15, len(manifest["tasks"]))
+        self.assertEqual(64, sum(totals))
+        self.assertEqual(4, min(totals))
+        self.assertEqual(6, max(totals))
+
     def test_selfplay_status_graph_aggregates_completed_fastchess_shards(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
