@@ -667,6 +667,8 @@ def expand_template(template_name: str, template_path_: Path, template: dict[str
             "output_dir": "{output_dir}",
             "run_dir": "{run_dir}",
         })
+        if template_name == "selfplay" and "seed" in values:
+            task_values["seed"] = int(values["seed"]) + index
         task_values.update(shell_value_format_values(task_values))
         task: dict[str, Any] = {
             "id": task_name,

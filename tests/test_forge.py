@@ -7,6 +7,7 @@ import inspect
 import json
 import os
 import argparse
+import re
 import signal
 import shutil
 import subprocess
@@ -3637,6 +3638,55 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
         self.assertIn('option.nnue_file="$HOME/code/cpp/chess/enyo/net/default.nn"', command)
         self.assertIn("-pgnout file=\"{output_dir}/selfplay_0000.pgn\" notation=uci", command)
         self.assertIn("Games:", manifest["tasks"][0]["progress"]["log_regex"])
+
+    def test_selfplay_template_assigns_distinct_deterministic_seed_per_shard(self) -> None:
+        template_path = ROOT / "templates" / "selfplay.template.json"
+        template = forge.load_template(template_path)
+
+        def seeds_for(base_seed: str) -> list[int]:
+            params = forge.parse_selfplay_template_parameters(
+                "selfplay",
+                template,
+                [
+                    "--engine", "~/assets/engines/enyo_9696dac",
+                    "--book", "~/assets/books/openings.epd",
+                    "--games", "300",
+                    "--shards", "3",
+                    "--seed", base_seed,
+                ],
+            )
+            manifest = forge.expand_template("selfplay", template_path, template, params)
+            found = []
+            for task in manifest["tasks"]:
+                match = re.search(r"-srand (\d+)", task["command"])
+                self.assertIsNotNone(match, task["command"])
+                found.append(int(match.group(1)))
+            return found
+
+        seeds = seeds_for("5")
+        self.assertEqual([5, 6, 7], seeds)
+        self.assertEqual(len(seeds), len(set(seeds)), "shard seeds must be distinct")
+
+        # Same base seed reproduces the exact same per-shard seeds.
+        self.assertEqual(seeds, seeds_for("5"))
+
+        # Default base seed (1) shifts the same way.
+        default_params = forge.parse_selfplay_template_parameters(
+            "selfplay",
+            template,
+            [
+                "--engine", "~/assets/engines/enyo_9696dac",
+                "--book", "~/assets/books/openings.epd",
+                "--games", "300",
+                "--shards", "3",
+            ],
+        )
+        default_manifest = forge.expand_template("selfplay", template_path, template, default_params)
+        default_seeds = [
+            int(re.search(r"-srand (\d+)", task["command"]).group(1))
+            for task in default_manifest["tasks"]
+        ]
+        self.assertEqual([1, 2, 3], default_seeds)
 
     def test_selfplay_command_auto_sizes_shards_to_worker_slots(self) -> None:
         stdout = io.StringIO()
