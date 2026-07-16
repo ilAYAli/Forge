@@ -397,6 +397,7 @@ _HTML = r"""<!DOCTYPE html>
     function parseEtaStr(str) {
       if (!str || str === 'unknown') return null;
       let s = 0;
+      const d = str.match(/(\d+)d/); if (d) s += parseInt(d[1]) * 86400;
       const h = str.match(/(\d+)h/); if (h) s += parseInt(h[1]) * 3600;
       const m = str.match(/(\d+)m/); if (m) s += parseInt(m[1]) * 60;
       const sec = str.match(/(\d+)s/); if (sec) s += parseInt(sec[1]);
@@ -748,7 +749,8 @@ _HTML = r"""<!DOCTYPE html>
       if (s == null || s < 0) return '';
       if (s < 60)   return Math.round(s) + 's';
       if (s < 3600) { const m=Math.floor(s/60),r=Math.round(s%60); return `${m}m${String(r).padStart(2,'0')}s`; }
-      const h=Math.floor(s/3600),m=Math.floor((s%3600)/60); return `${h}h${String(m).padStart(2,'0')}m`;
+      if (s < 86400) { const h=Math.floor(s/3600),m=Math.floor((s%3600)/60); return `${h}h${String(m).padStart(2,'0')}m`; }
+      const d=Math.floor(s/86400),h=Math.floor((s%86400)/3600); return `${d}d${String(h).padStart(2,'0')}h`;
     }
 
     function progressEtaFromRate(pd) {

@@ -10618,6 +10618,36 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
         }
         self.assertEqual("progress=rows=200/400, eta=10s", forge.summary_progress(summary))
 
+    def test_summary_eta_uses_cumulative_run_rate_over_noisy_active_rate(self) -> None:
+        created_at_str = time.strftime(
+            "%Y-%m-%dT%H:%M:%S+0000", time.gmtime(forge.epoch() - 1000.0)
+        )
+        summary = {
+            "created_at": created_at_str,
+            "active": [
+                {
+                    "progress_data": {
+                        "kind": "metadata",
+                        "done": 10,
+                        "total": 1000,
+                        "unit": "games",
+                        # Deliberately absurd instantaneous rate a single fresh
+                        # shard could report; must not dominate the aggregate ETA.
+                        "rate": 5000.0,
+                    },
+                },
+            ],
+            "counts": {"pending": 5},
+            "progress_done": {"games": 990},
+            "progress_totals": {"games": 2000000},
+        }
+        # cumulative rate = 1000 games done / 1000s elapsed = 1.0 games/s
+        # remaining = 2000000 - 1000 = 1999000 -> eta ~= 1999000s, not the
+        # ~400s the noisy 5000.0 active rate would have produced.
+        progress = forge.summary_progress(summary)
+        self.assertIn("games=1000/2m", progress)
+        self.assertIn("eta=23d", progress)
+
     def test_summary_eta_respects_slowest_active_task(self) -> None:
         summary = {
             "active": [

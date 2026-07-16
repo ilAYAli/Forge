@@ -958,6 +958,24 @@ def spsa_summary_progress(summary: dict[str, Any]) -> str:
     return f"progress={', '.join(parts)}"
 
 
+def run_created_epoch(summary: dict[str, Any]) -> float | None:
+    created_at = summary.get("created_at")
+    manifest_payload = summary.get("manifest_payload")
+    if isinstance(manifest_payload, dict) and isinstance(manifest_payload.get("created_at"), str):
+        created_at = manifest_payload["created_at"]
+    return parse_timestamp_epoch(created_at)
+
+def run_cumulative_rate(summary: dict[str, Any], done: float) -> float | None:
+    if done <= 0:
+        return None
+    created_epoch = run_created_epoch(summary)
+    if created_epoch is None:
+        return None
+    elapsed = epoch() - created_epoch
+    if elapsed <= 0:
+        return None
+    return done / elapsed
+
 def summary_progress(summary: dict[str, Any]) -> str:
     if progress := spsa_summary_progress(summary):
         return progress
@@ -1067,10 +1085,12 @@ def summary_progress(summary: dict[str, Any]) -> str:
         if isinstance(total_work, int) and total_work > 0:
             done = min(total_work, int(done_work) + active_done)
             text = f"{unit}={compact_count(done)}/{compact_count(total_work)}"
-            if bucket["rate"] > 0:
-                append_aggregate_eta(done, total_work, bucket["rate"], bucket["etas"])
+            cumulative_rate = run_cumulative_rate(summary, float(done))
+            eta_rate = cumulative_rate if cumulative_rate is not None else bucket["rate"]
+            if eta_rate > 0:
+                append_aggregate_eta(done, total_work, eta_rate, bucket["etas"])
             elif waiting_count == 0 and bucket["etas"]:
-                append_aggregate_eta(done, total_work, bucket["rate"], bucket["etas"])
+                append_aggregate_eta(done, total_work, eta_rate, bucket["etas"])
             parts.append(text)
         elif bucket["all_total"] and active_total > 0:
             text = f"{unit}={compact_count(active_done)}/{compact_count(active_total)}"
