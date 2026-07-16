@@ -65,7 +65,7 @@
       "help": "Fixed node budget per move (fastchess tc=inf nodes=N); used when depth is unset, takes priority over tc"
     },
     "restart": {
-      "default": "on",
+      "default": "off",
       "help": "Engine restart mode"
     },
     "pgn_notation": {
