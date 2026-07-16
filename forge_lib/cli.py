@@ -567,6 +567,15 @@ def build_parser() -> argparse.ArgumentParser:
     work.add_argument("--task-attempts", type=int, default=1, help="Total attempts per task before final failure.")
     work.add_argument("--force", action="store_true", help="Re-run tasks even if local state says complete.")
     work.add_argument("--fail-fast", action="store_true", help="Stop after the first task failure.")
+    work.add_argument(
+        "--task-complete-command",
+        help="Command run after each task finishes, with FORGE_EVENT_JSON and JSON on stdin.",
+    )
+    work.add_argument(
+        "--task-complete-sync",
+        action="store_true",
+        help="Wait for --task-complete-command to finish before claiming the next task (default: fire-and-forget).",
+    )
     work.set_defaults(func=cmd_work)
 
     doctor = sub.add_parser(

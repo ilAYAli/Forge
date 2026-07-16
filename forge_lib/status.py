@@ -3996,7 +3996,7 @@ def cmd_wait(args: argparse.Namespace) -> int:
             )
         raise
 
-def run_notify_command(command_text: str | None, payload: dict[str, Any]) -> int:
+def run_notify_command(command_text: str | None, payload: dict[str, Any], *, wait: bool = True) -> int:
     if not command_text:
         return 0
     command = shlex.split(command_text)
@@ -4012,6 +4012,22 @@ def run_notify_command(command_text: str | None, payload: dict[str, Any]) -> int
     data = json.dumps(payload, sort_keys=True)
     env = os.environ.copy()
     env["FORGE_EVENT_JSON"] = data
+    if not wait:
+        proc = subprocess.Popen(
+            command,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            env=env,
+        )
+        if proc.stdin is not None:
+            try:
+                proc.stdin.write(data + "\n")
+                proc.stdin.close()
+            except (BrokenPipeError, OSError):
+                pass
+        return 0
     result = subprocess.run(
         command,
         input=data + "\n",

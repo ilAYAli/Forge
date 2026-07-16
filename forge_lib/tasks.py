@@ -1004,6 +1004,45 @@ def check_coordinator_cli(coordinator: str) -> None:
         detail = result.stderr.strip() or result.stdout.strip() or "coordinator forge check failed"
         raise SystemExit(detail)
 
+def task_complete_event_payload(manifest: dict[str, Any], task: dict[str, Any], *, rc: int) -> dict[str, Any]:
+    from .status import task_log_progress_data
+
+    done_path = task_done_path(manifest, task)
+    fail_path = task_fail_path(manifest, task)
+    if done_path.exists():
+        payload = dict(read_json(done_path))
+        payload["event"] = "task_done"
+    elif fail_path.exists():
+        payload = dict(read_json(fail_path))
+        payload["event"] = "task_fail"
+    else:
+        payload = {
+            "schema": SCHEMA,
+            "task": task["id"],
+            "index": task.get("index"),
+            "rc": rc,
+            "event": "task_done" if rc == 0 else "task_fail",
+        }
+    progress = task_log_progress_data(manifest, task)
+    if progress:
+        payload["progress_data"] = progress
+    return payload
+
+def run_task_complete_command(
+    manifest: dict[str, Any],
+    task: dict[str, Any],
+    *,
+    rc: int,
+    command_text: str | None,
+    sync: bool,
+) -> None:
+    if not command_text:
+        return
+    from .status import run_notify_command
+
+    payload = task_complete_event_payload(manifest, task, rc=rc)
+    run_notify_command(command_text, payload, wait=sync)
+
 def cmd_work(args: argparse.Namespace) -> int:
     os.environ["FORGE_COORDINATOR"] = str(args.coordinator)
     os.environ["FORGE_RUNNER"] = str(script_path())
@@ -1084,6 +1123,13 @@ def cmd_work(args: argparse.Namespace) -> int:
                 attempt=attempt,
                 max_attempts=task_attempts,
                 cancel_event=cancel_task,
+            )
+            run_task_complete_command(
+                local_manifest,
+                local_task,
+                rc=rc,
+                command_text=getattr(args, "task_complete_command", None),
+                sync=bool(getattr(args, "task_complete_sync", False)),
             )
             sync_task_result(
                 coordinator=args.coordinator,
