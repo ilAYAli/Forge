@@ -219,7 +219,11 @@ def add_worker_set_options(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--task-complete-command",
-        help="Command run after each task finishes, with FORGE_EVENT_JSON and JSON on stdin.",
+        help=(
+            "Command run after each task finishes, with FORGE_EVENT_JSON and JSON on "
+            "stdin. Fire-and-forget by default, so concurrent invocations are possible; "
+            "if it touches shared state, serialize it yourself (see README Notifications)."
+        ),
     )
     parser.add_argument(
         "--task-complete-sync",
@@ -578,7 +582,11 @@ def build_parser() -> argparse.ArgumentParser:
     work.add_argument("--fail-fast", action="store_true", help="Stop after the first task failure.")
     work.add_argument(
         "--task-complete-command",
-        help="Command run after each task finishes, with FORGE_EVENT_JSON and JSON on stdin.",
+        help=(
+            "Command run after each task finishes, with FORGE_EVENT_JSON and JSON on "
+            "stdin. Fire-and-forget by default, so concurrent invocations are possible; "
+            "if it touches shared state, serialize it yourself (see README Notifications)."
+        ),
     )
     work.add_argument(
         "--task-complete-sync",
@@ -807,7 +815,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     deploy.add_argument(
         "--task-complete-command",
-        help="Command run after each task finishes, with FORGE_EVENT_JSON and JSON on stdin.",
+        help=(
+            "Command run after each task finishes, with FORGE_EVENT_JSON and JSON on "
+            "stdin. Fire-and-forget by default, so concurrent invocations are possible; "
+            "if it touches shared state, serialize it yourself (see README Notifications)."
+        ),
     )
     deploy.add_argument(
         "--task-complete-sync",
@@ -856,7 +868,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     run_job.add_argument(
         "--task-complete-command",
-        help="Command run after each task finishes, with FORGE_EVENT_JSON and JSON on stdin.",
+        help=(
+            "Command run after each task finishes, with FORGE_EVENT_JSON and JSON on "
+            "stdin. Fire-and-forget by default, so concurrent invocations are possible; "
+            "if it touches shared state, serialize it yourself (see README Notifications)."
+        ),
     )
     run_job.add_argument(
         "--task-complete-sync",
@@ -893,7 +909,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     resume.add_argument(
         "--task-complete-command",
-        help="Command run after each task finishes, with FORGE_EVENT_JSON and JSON on stdin.",
+        help=(
+            "Command run after each task finishes, with FORGE_EVENT_JSON and JSON on "
+            "stdin. Fire-and-forget by default, so concurrent invocations are possible; "
+            "if it touches shared state, serialize it yourself (see README Notifications)."
+        ),
     )
     resume.add_argument(
         "--task-complete-sync",
@@ -934,7 +954,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     retry.add_argument(
         "--task-complete-command",
-        help="Command run after each task finishes, with FORGE_EVENT_JSON and JSON on stdin.",
+        help=(
+            "Command run after each task finishes, with FORGE_EVENT_JSON and JSON on "
+            "stdin. Fire-and-forget by default, so concurrent invocations are possible; "
+            "if it touches shared state, serialize it yourself (see README Notifications)."
+        ),
     )
     retry.add_argument(
         "--task-complete-sync",

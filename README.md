@@ -562,6 +562,38 @@ same completion payload sent to notifications, including the final status line.
 Detached starts run a background wait monitor so completed runs still get that
 summary even when no notification command is configured.
 
+### Per-task hook
+
+`work` (and anything that deploys workers — `run`/`selfplay`/`start`/`resume`/
+`retry`/`worker set`) also supports `--task-complete-command`, which runs
+after *each* task/shard finishes, not just at the end of the whole run. It
+gets the same `FORGE_EVENT_JSON`/stdin payload convention as
+`--notify-command`, tagged with `"event": "task_done"` or `"task_fail"`, plus
+`progress_data` when available.
+
+By default this fires fire-and-forget: the worker does not wait for the
+command to finish before claiming its next task, so shard throughput never
+blocks on it. Pass `--task-complete-sync` to wait for it instead.
+
+**Concurrency is your responsibility.** With dozens of parallel shards
+finishing close together, fire-and-forget means multiple invocations of your
+command can run at the same time. Forge makes no serialization guarantee
+across them. If your command only appends to a file or otherwise doesn't
+share mutable state between invocations, this is harmless. If it maintains
+shared state on disk (e.g. "which shards have I already converted" tracked in
+a JSON file, with output appended to a shared file), concurrent invocations
+can race on that state: two invocations can both read the same "already
+processed" list, each append a different new shard's data, and each write
+back state that clobbers the other's update — silently dropping one shard
+from tracked state while its data is already in the output (and duplicating
+it on a later re-run that reprocesses the "missing" shard). Guard against
+this in the consumer, not in Forge: take an exclusive file lock (e.g.
+`fcntl.flock` on a lock file next to the output) around the whole
+read-state → process → append → write-state sequence, and save state
+incrementally rather than only once at the end, so a killed process doesn't
+lose track of work it already appended. Use `--task-complete-sync` instead if
+you'd rather trade shard throughput for simplicity.
+
 ## Updates
 
 `update` uses `~/.config/forge/workers.json` by default.
