@@ -471,6 +471,8 @@ def parse_run_options(raw_args: list[str]) -> tuple[argparse.Namespace, list[str
     parser.add_argument("--merge-force", action="store_true")
     parser.add_argument("--newline-between", action="store_true")
     parser.add_argument("--notify-command")
+    parser.add_argument("--task-complete-command")
+    parser.add_argument("--task-complete-sync", action="store_true")
     parser.add_argument("--no-color", action="store_true")
     parser.add_argument("--verbose", action="store_true")
     parser.add_argument("--print-manifest", action="store_true")
@@ -890,6 +892,8 @@ def cmd_template_run(args: argparse.Namespace) -> int:
     workers_arg = workers_arg or resolved_workers_arg(run_options, config, template)
     coordinator_host = run_options.coordinator_host or default_coordinator_host(config)
     notify_command = run_options.notify_command
+    task_complete_command = run_options.task_complete_command
+    task_complete_sync = run_options.task_complete_sync
     run_id = run_options.run or str(manifest["name"])
     print(f"run: id={run_id}", flush=True)
     with tempfile.TemporaryDirectory(prefix="forge-template-") as tmp:
@@ -930,6 +934,8 @@ def cmd_template_run(args: argparse.Namespace) -> int:
             merge_force=run_options.merge_force,
             newline_between=run_options.newline_between,
             notify_command=notify_command,
+            task_complete_command=task_complete_command,
+            task_complete_sync=task_complete_sync,
             comment=comment,
             no_color=run_options.no_color,
             verbose=run_options.verbose,

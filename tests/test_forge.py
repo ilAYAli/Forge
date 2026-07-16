@@ -3220,6 +3220,46 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
             self.assertEqual("coordinator-a", captured["args"].coordinator_host)
             self.assertIsNone(captured["args"].notify_command)
 
+    def test_run_template_threads_task_complete_options_to_deploy(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.write_test_template(root)
+            config = root / "config.yml"
+            config.write_text(
+                f'coordinator_host: "coordinator-a"\n'
+                f"template_dirs:\n"
+                f"  - \"{root / 'templates'}\"\n",
+                encoding="utf-8",
+            )
+            workers = root / "workers.json"
+            forge.write_json(workers, {
+                "schema": "forge.workers.v1",
+                "workers": [{"host": "worker-a", "slots": 2}],
+            })
+            captured = {}
+
+            def fake_run_job(args):
+                captured["args"] = args
+                return 0
+
+            with (
+                mock.patch.dict(os.environ, {"FORGE_CONFIG": str(config), "FORGE_NOTIFY_COMMAND": ""}, clear=False),
+                mock.patch("forge_lib.workers.cmd_run_job", side_effect=fake_run_job),
+            ):
+                rc = forge.cmd_template_run(argparse.Namespace(
+                    template="demo",
+                    template_args=[
+                        "--item", "/tmp/input.dat",
+                        "--total", "10",
+                        "--task-complete-command", "~/scripts/hook.sh",
+                        "--task-complete-sync",
+                    ],
+                ))
+
+            self.assertEqual(0, rc)
+            self.assertEqual("~/scripts/hook.sh", captured["args"].task_complete_command)
+            self.assertTrue(captured["args"].task_complete_sync)
+
     def test_run_template_prefers_environment_over_default_workers_file(self) -> None:
         run_options = argparse.Namespace(workers=None)
         workers_path = Path("/tmp/forge-runs/workers.json")
@@ -12556,6 +12596,28 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
         self.assertIn("--idle-seconds 120.0", work)
         self.assertNotIn("--retry-failed", work)
         self.assertIn("--retry-failed", retry_work)
+
+    def test_deploy_work_command_includes_task_complete_options(self) -> None:
+        worker = {"host": "pwa-mbp", "profile": "pwa-mbp", "local": False}
+        manifest = {"tasks": [{"id": "task_0000"}]}
+
+        plain = forge.deploy_work_command(
+            worker=worker,
+            manifest=manifest,
+            coordinator="pwa-5090:/tmp/manifest.json",
+        )
+        hooked = forge.deploy_work_command(
+            worker=worker,
+            manifest=manifest,
+            coordinator="pwa-5090:/tmp/manifest.json",
+            task_complete_command="~/scripts/hook.sh",
+            task_complete_sync=True,
+        )
+
+        self.assertNotIn("--task-complete-command", plain)
+        self.assertNotIn("--task-complete-sync", plain)
+        self.assertIn("--task-complete-command '~/scripts/hook.sh'", hooked)
+        self.assertIn("--task-complete-sync", hooked)
 
     def test_coordinator_host_override_is_used_for_remote_workers(self) -> None:
         manifest = Path("/tmp/run/manifest.json")

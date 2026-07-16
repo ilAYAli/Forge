@@ -217,6 +217,15 @@ def add_worker_set_options(parser: argparse.ArgumentParser) -> None:
         "--notify-command",
         help="Command run on deploy/wait completion with FORGE_EVENT_JSON and JSON on stdin.",
     )
+    parser.add_argument(
+        "--task-complete-command",
+        help="Command run after each task finishes, with FORGE_EVENT_JSON and JSON on stdin.",
+    )
+    parser.add_argument(
+        "--task-complete-sync",
+        action="store_true",
+        help="Wait for --task-complete-command to finish before claiming the next task (default: fire-and-forget).",
+    )
     parser.add_argument("--no-color", action="store_true", help="Disable ANSI color output.")
     parser.add_argument("--verbose", action="store_true", help="Print setup and worker phase details.")
 
@@ -796,6 +805,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--notify-command",
         help="Command run on completion with FORGE_EVENT_JSON and JSON on stdin.",
     )
+    deploy.add_argument(
+        "--task-complete-command",
+        help="Command run after each task finishes, with FORGE_EVENT_JSON and JSON on stdin.",
+    )
+    deploy.add_argument(
+        "--task-complete-sync",
+        action="store_true",
+        help="Wait for --task-complete-command to finish before claiming the next task (default: fire-and-forget).",
+    )
     deploy.add_argument("--no-color", action="store_true", help="Disable ANSI color output.")
     deploy.add_argument("--verbose", action="store_true", help="Print setup and worker phase details.")
     deploy.set_defaults(func=cmd_deploy, start_wait_monitor=True)
@@ -836,6 +854,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--notify-command",
         help="Command run on deploy/wait completion with FORGE_EVENT_JSON and JSON on stdin.",
     )
+    run_job.add_argument(
+        "--task-complete-command",
+        help="Command run after each task finishes, with FORGE_EVENT_JSON and JSON on stdin.",
+    )
+    run_job.add_argument(
+        "--task-complete-sync",
+        action="store_true",
+        help="Wait for --task-complete-command to finish before claiming the next task (default: fire-and-forget).",
+    )
     run_job.add_argument("--no-color", action="store_true", help="Disable ANSI color output.")
     run_job.add_argument("--verbose", action="store_true", help="Print setup and worker phase details.")
     run_job.set_defaults(func=cmd_run_job, command_label="start")
@@ -863,6 +890,15 @@ def build_parser() -> argparse.ArgumentParser:
     resume.add_argument(
         "--notify-command",
         help="Command run on deploy/wait completion with FORGE_EVENT_JSON and JSON on stdin.",
+    )
+    resume.add_argument(
+        "--task-complete-command",
+        help="Command run after each task finishes, with FORGE_EVENT_JSON and JSON on stdin.",
+    )
+    resume.add_argument(
+        "--task-complete-sync",
+        action="store_true",
+        help="Wait for --task-complete-command to finish before claiming the next task (default: fire-and-forget).",
     )
     resume.add_argument("--no-color", action="store_true", help="Disable ANSI color output.")
     resume.add_argument("--verbose", action="store_true", help="Print setup and worker phase details.")
@@ -895,6 +931,15 @@ def build_parser() -> argparse.ArgumentParser:
     retry.add_argument(
         "--notify-command",
         help="Command run on deploy/wait completion with FORGE_EVENT_JSON and JSON on stdin.",
+    )
+    retry.add_argument(
+        "--task-complete-command",
+        help="Command run after each task finishes, with FORGE_EVENT_JSON and JSON on stdin.",
+    )
+    retry.add_argument(
+        "--task-complete-sync",
+        action="store_true",
+        help="Wait for --task-complete-command to finish before claiming the next task (default: fire-and-forget).",
     )
     retry.add_argument("--no-color", action="store_true", help="Disable ANSI color output.")
     retry.add_argument("--verbose", action="store_true", help="Print setup and worker phase details.")
