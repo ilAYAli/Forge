@@ -1677,6 +1677,7 @@ def materialize_run(
     run_name_arg: str | None,
     resume: bool,
     replace: bool,
+    attach_existing: bool = False,
 ) -> tuple[Path, Path, Path]:
     template = load_manifest(template_path)
     run_name = validate_run_name(run_name_arg) if run_name_arg else default_run_name(template_path, template)
@@ -1686,6 +1687,21 @@ def materialize_run(
 
     if resume and replace:
         raise SystemExit("--resume and --replace are mutually exclusive")
+    if attach_existing:
+        if not manifest_path.exists():
+            raise SystemExit(f"{run_name}: cannot attach workers; run manifest is missing")
+        if not workers_snapshot.exists():
+            payload = (
+                workers_snapshot_payload
+                if workers_snapshot_payload is not None
+                else workers_payload_from_arg(
+                    workers_arg or None,
+                    default_ok=not bool(workers_arg),
+                    inline_defaults_path=inline_worker_defaults,
+                )
+            )
+            write_json(workers_snapshot, payload)
+        return run_dir, manifest_path, workers_snapshot
     if resume:
         if not manifest_path.exists():
             raise SystemExit(f"{run_name}: cannot resume; run manifest is missing")
@@ -1800,9 +1816,10 @@ def cmd_deploy(args: argparse.Namespace) -> int:
         raise
 
 def run_deploy(args: argparse.Namespace) -> int:
-    delegated = deploy_on_coordinator(args, configured_coordinator_runs() or "")
-    if delegated is not None:
-        return delegated
+    if not bool(getattr(args, "attach_existing", False)):
+        delegated = deploy_on_coordinator(args, configured_coordinator_runs() or "")
+        if delegated is not None:
+            return delegated
 
     started_at = time.monotonic()
     template_path = expand_path(args.manifest)
@@ -1827,6 +1844,7 @@ def run_deploy(args: argparse.Namespace) -> int:
             run_name_arg=getattr(args, "run", None),
             resume=bool(getattr(args, "resume", False)),
             replace=bool(getattr(args, "replace", False)),
+            attach_existing=bool(getattr(args, "attach_existing", False)),
         )
         manifest = load_manifest(manifest_path)
         command = queue_resume_command(args, run_name)
@@ -2090,6 +2108,55 @@ def run_deploy(args: argparse.Namespace) -> int:
             if part.strip()
         )
 
+    def result_host_label(item: dict[str, Any]) -> str:
+        return worker_label(str(item["host"]), str(item["profile"]))
+
+    def failure_summary_reason(output: str) -> str:
+        text = output.strip()
+        lower = text.lower()
+        if not text:
+            return "failed without output"
+        if "no route to host" in lower or "connection timed out" in lower or "could not resolve hostname" in lower:
+            return "not responding"
+        missing_engine = re.search(
+            r"engine\s+(\S+)\s+is missing and Enyo commit\s+([0-9A-Fa-f]+)\s+is unavailable",
+            text,
+        )
+        if missing_engine:
+            engine = Path(missing_engine.group(1)).name
+            commit = missing_engine.group(2)
+            return f"missing {engine} (Enyo commit {commit} unavailable)"
+        missing_input = re.search(r"required input missing:\s*(\S+)", text)
+        if missing_input:
+            return f"missing {Path(missing_input.group(1)).name}"
+        missing_command = re.search(r"required command not found:\s*(\S+)", text)
+        if missing_command:
+            return f"missing {Path(missing_command.group(1)).name}"
+        invalid_reference = re.search(r"fatal: invalid reference:\s*([0-9A-Fa-f]+)", text)
+        if invalid_reference:
+            return f"missing Enyo commit {invalid_reference.group(1)}"
+        first_line = next((line.strip() for line in text.splitlines() if line.strip()), text)
+        return first_line[:160]
+
+    def print_failure_summary(items: list[dict[str, Any]]) -> None:
+        failed_items = [item for item in items if not bool(item["ok"])]
+        if not failed_items:
+            return
+        host_reasons: dict[str, list[str]] = {}
+        for item in failed_items:
+            host = result_host_label(item)
+            reason = failure_summary_reason(result_output(item))
+            reasons = host_reasons.setdefault(host, [])
+            if reason not in reasons:
+                reasons.append(reason)
+        total_hosts = len({worker_label(str(worker["host"]), str(worker["profile"])) for worker in workers})
+        failed_hosts = len(host_reasons)
+        status(f"deploy: failed on {failed_hosts}/{total_hosts} host(s):", error=True)
+        for host in sorted(host_reasons):
+            status(f"  {host}:", error=True)
+            for reason in host_reasons[host]:
+                status(f"      {reason}", error=True)
+
     def result_label(items: list[dict[str, Any]]) -> str:
         first = min(items, key=lambda entry: int(entry["index"]))
         if len(items) == 1:
@@ -2289,25 +2356,13 @@ def run_deploy(args: argparse.Namespace) -> int:
                             error=True,
                         )
                     else:
-                        if bool(getattr(args, "resume", False)):
-                            status(
-                                colorize(
-                                    "deploy: workers launched but not yet active (resume; not aborting)",
-                                    "yellow",
-                                    enabled=color_enabled,
-                                ),
-                            )
-                        else:
-                            startup_failed = True
-                            status(
-                                colorize(
-                                    "deploy: workers did not become active; stopping launched workers",
-                                    "red",
-                                    enabled=color_enabled,
-                                ),
-                                error=True,
-                            )
-                            cleanup_failed_launch("workers did not become active after launch")
+                        status(
+                            colorize(
+                                "deploy: workers launched; task claims are still pending",
+                                "yellow",
+                                enabled=color_enabled,
+                            ),
+                        )
             else:
                 executor = concurrent.futures.ThreadPoolExecutor(max_workers=max(1, len(ready_worker_items)))
                 task_message = (
@@ -2323,6 +2378,7 @@ def run_deploy(args: argparse.Namespace) -> int:
                 task_results = [future.result() for future in concurrent.futures.as_completed(futures)]
                 results = setup_failed_results + task_results
                 print_results(task_results, show_success=bool(args.verbose))
+        print_failure_summary(results)
     except KeyboardInterrupt:
         interrupted = True
         status(colorize("deploy: interrupted; stopping active worker commands", "yellow", enabled=color_enabled), error=True)
@@ -2857,9 +2913,10 @@ def run_interruptible_coordinator_process(
     return subprocess.CompletedProcess(command, proc.returncode, stdout=stdout, stderr=stderr)
 
 def cmd_run_job(args: argparse.Namespace) -> int:
-    delegated = start_on_coordinator(args, configured_coordinator_runs() or "")
-    if delegated is not None:
-        return delegated
+    if not bool(getattr(args, "attach_existing", False)):
+        delegated = start_on_coordinator(args, configured_coordinator_runs() or "")
+        if delegated is not None:
+            return delegated
 
     template_path = expand_path(args.manifest)
     _run_dir, manifest_path = planned_run_paths(template_path, getattr(args, "run", None))
@@ -2913,6 +2970,7 @@ def run_local_job(args: argparse.Namespace) -> int:
         run=args.run,
         comment=getattr(args, "comment", None),
         resume=args.resume,
+        attach_existing=bool(getattr(args, "attach_existing", False)),
         replace=args.replace,
         coordinator_host=args.coordinator_host,
         remote_timeout_seconds=args.remote_timeout_seconds,
@@ -3108,7 +3166,8 @@ def cmd_worker_set(args: argparse.Namespace) -> int:
                 launch_only=True,
                 jobs=args.jobs,
                 run=run_name,
-                resume=True,
+                resume=False,
+                attach_existing=True,
                 replace=False,
                 retry_failed=False,
                 task_attempts=getattr(args, "task_attempts", 2),

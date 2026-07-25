@@ -13942,13 +13942,13 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
                 with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
                     rc = forge.cmd_deploy(args)
 
-            self.assertEqual(1, rc)
+            self.assertEqual(0, rc)
             output = stdout.getvalue() + stderr.getvalue()
-            self.assertIn("deploy: workers did not become active", output)
-            self.assertIn("deploy: launch failed", output)
+            self.assertIn("deploy: workers launched; task claims are still pending", output)
+            self.assertIn("deploy: launch complete", output)
             manifest = forge.load_manifest(runs / "failed-launch" / "manifest.json")
-            self.assertTrue(forge.stop_request_path(manifest).exists())
-            kill_workers.assert_called_once_with(runs / "failed-launch")
+            self.assertFalse(forge.stop_request_path(manifest).exists())
+            kill_workers.assert_not_called()
 
     def test_kill_run_workers_cleans_slot_pid_glob(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
