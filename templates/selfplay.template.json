@@ -26,7 +26,7 @@
       "help": "Number of Forge shards; defaults to the total configured worker slots"
     },
     "book": {
-      "default": "~/assets/books/AntiDraw_V2.1/UHO_2022/UHO_2022_+120_+129/UHO_2022_8mvs_+120_+129.epd",
+      "default": "~/assets/books/UHO_4060_v4.epd",
       "worker_path": true,
       "help": "EPD opening book"
     },
