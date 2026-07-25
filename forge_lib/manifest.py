@@ -218,6 +218,19 @@ def check_command_requirement(item: dict[str, Any]) -> None:
     label = str(item.get("name") or item.get("path") or item.get("command") or "command")
     path = str(item.get("path") or "").strip()
 
+    def requirement_context() -> str:
+        details = []
+        if path:
+            details.append(f"path={path}")
+        command_text = item.get("command")
+        if command_text is not None:
+            details.append(f"command={command_text}")
+        return f" ({'; '.join(details)})" if details else ""
+
+    def command_output() -> str:
+        output = (result.stdout or "").strip()
+        return output if output else "<no output>"
+
     def check_path() -> None:
         if not path:
             return
@@ -240,7 +253,10 @@ def check_command_requirement(item: dict[str, Any]) -> None:
     result = command_result(command, timeout=timeout)
     output = result.stdout
     if result.returncode != int(item.get("rc", 0)):
-        raise SystemExit(f"{label}: command failed rc={result.returncode}: {output.strip()}")
+        raise SystemExit(
+            f"{label}: command failed rc={result.returncode}{requirement_context()}: "
+            f"{command_output()}"
+        )
     check_path()
     contains = str(item.get("contains") or "")
     if contains and contains not in output:

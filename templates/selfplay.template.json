@@ -20,7 +20,9 @@
     },
     "shards": {
       "type": "int",
-      "aliases": ["shard_count"],
+      "aliases": [
+        "shard_count"
+      ],
       "help": "Number of Forge shards; defaults to the total configured worker slots"
     },
     "book": {
@@ -117,7 +119,7 @@
       {
         "name": "engine",
         "path": "{engine}",
-        "command": "engine={engine}; if probe=$(printf '%s\\n' uci quit | \"$engine\" 2>/dev/null) && printf '%s\\n' \"$probe\" | grep -q uciok; then printf '%s\\n' \"$probe\"; exit 0; fi; name=$(basename \"$engine\"); case \"$name\" in enyo_*) commit=$(printf '%s\\n' \"$name\" | sed 's/^enyo_//') ;; *) echo \"engine is unavailable and cannot be built automatically: $engine\" >&2; exit 1 ;; esac; repo=~/code/cpp/chess/enyo; worktree=\"$HOME/.cache/forge/enyo-worktrees/$commit-$$\"; mkdir -p \"$(dirname \"$worktree\")\" && git -C \"$repo\" fetch origin && git -C \"$repo\" worktree add --detach \"$worktree\" \"$commit\" && trap 'git -C \"$repo\" worktree remove --force \"$worktree\" >/dev/null 2>&1 || true' 0 && cd \"$worktree\" && ./scripts/deploy.sh --candidate && test -x \"$engine\" && printf '%s\\n' uci quit | \"$engine\"",
+        "command": "engine={engine}; if probe=$(printf '%s\\n' uci quit | \"$engine\" 2>/dev/null) && printf '%s\\n' \"$probe\" | grep -q uciok; then printf '%s\\n' \"$probe\"; exit 0; fi; name=$(basename \"$engine\"); case \"$name\" in enyo_*) commit=$(printf '%s\\n' \"$name\" | sed 's/^enyo_//') ;; *) echo \"engine is unavailable and cannot be built automatically: $engine\" >&2; exit 1 ;; esac; repo=~/code/cpp/chess/enyo; git -C \"$repo\" fetch origin && if git -C \"$repo\" rev-parse --verify \"$commit^{{commit}}\" >/dev/null; then :; else echo \"engine $engine is missing and Enyo commit $commit is unavailable in $repo; push/fetch the commit or sync a prebuilt engine to $engine\" >&2; exit 1; fi; worktree=\"$HOME/.cache/forge/enyo-worktrees/$commit-$$\"; mkdir -p \"$(dirname \"$worktree\")\" && git -C \"$repo\" worktree add --detach \"$worktree\" \"$commit\" && trap 'git -C \"$repo\" worktree remove --force \"$worktree\" >/dev/null 2>&1 || true' 0 && cd \"$worktree\" && ./scripts/deploy.sh --candidate && if test -x \"$engine\"; then printf '%s\\n' uci quit | \"$engine\"; else echo \"engine build completed but did not create executable: $engine\" >&2; exit 1; fi",
         "contains": "uciok",
         "timeout_s": 900
       }

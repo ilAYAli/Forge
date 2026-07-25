@@ -79,6 +79,36 @@ def format_shell_result(label: str, result: subprocess.CompletedProcess[str]) ->
     return "\n".join(lines) + "\n"
 
 
+def shell_failure_reason(result: subprocess.CompletedProcess[str]) -> str:
+    output = "\n".join(
+        part.strip()
+        for part in (result.stdout or "", result.stderr or "")
+        if part.strip()
+    )
+    lower = output.lower()
+    if "no route to host" in lower or "connection timed out" in lower or "could not resolve hostname" in lower:
+        return "not responding"
+    if result.returncode == 255 and not output:
+        return "not responding"
+    if not output:
+        return f"failed rc={result.returncode}"
+    return next((line.strip() for line in output.splitlines() if line.strip()), output)[:160]
+
+
+def format_shell_failure_summary(
+    failed: dict[str, subprocess.CompletedProcess[str]],
+    labels: list[str],
+) -> str:
+    lines = [f"sh: failed on {len(failed)}/{len(labels)} host(s):"]
+    for label in labels:
+        result = failed.get(label)
+        if result is None:
+            continue
+        lines.append(f"  {label}:")
+        lines.append(f"      {shell_failure_reason(result)}")
+    return "\n".join(lines) + "\n"
+
+
 def shell_stream_text(stream: Any, text: str) -> str:
     is_tty = False
     isatty = getattr(stream, "isatty", None)
@@ -108,7 +138,7 @@ def cmd_sh(args: argparse.Namespace) -> int:
     timeout = bounded_timeout(args.remote_timeout_seconds)
     jobs = max(1, int(args.jobs))
     tracker = ProcessTracker()
-    failed: list[str] = []
+    failed: dict[str, subprocess.CompletedProcess[str]] = {}
 
     labels = [shell_worker_label(worker) for worker in workers]
     write_shell_stream(
@@ -126,14 +156,13 @@ def cmd_sh(args: argparse.Namespace) -> int:
                 result = future.result()
                 write_shell_stream(sys.stdout, format_shell_result(label, result))
                 if result.returncode != 0:
-                    failed.append(label)
+                    failed[label] = result
     except KeyboardInterrupt:
         tracker.terminate_all()
         raise
 
     if failed:
-        names = ", ".join(label for label in labels if label in failed)
-        write_shell_stream(sys.stderr, f"sh: failed on {len(failed)}/{len(workers)} host(s): {names}\n")
+        write_shell_stream(sys.stderr, format_shell_failure_summary(failed, labels))
         return 1
     return 0
 
