@@ -42,7 +42,7 @@
       "help": "Extra reference UCI option NAME=VALUE. Repeatable."
     },
     "book": {
-      "default": "~/assets/books/UHO_4060_v4.epd",
+      "default": "~/assets/books/UHO_XXL_2022_+120_+149.epd",
       "worker_path": true,
       "help": "Opening book"
     },
