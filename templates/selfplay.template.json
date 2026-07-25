@@ -26,7 +26,7 @@
       "help": "Number of Forge shards; defaults to the total configured worker slots"
     },
     "book": {
-      "default": "~/assets/books/AntiDraw_V2.1/WOMP_Openings_V1/WOMP_V1_+150_+159/WOMP_V1_6mvs_big_+140_+169.epd",
+      "default": "~/assets/books/UHO_XXL_2022_+120_+149.epd",
       "worker_path": true,
       "help": "EPD opening book"
     },
