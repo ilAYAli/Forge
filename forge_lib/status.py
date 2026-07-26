@@ -1204,7 +1204,8 @@ def run_speedup_value(summary: dict[str, Any]) -> float | None:
     rates = active_task_rates(summary)
     if not rates:
         return None
-    baseline = speedup_single_host_workers() * max(rates)
+    average_rate = sum(rates) / len(rates)
+    baseline = speedup_single_host_workers() * average_rate
     return sum(rates) / baseline if baseline > 0 else None
 
 def active_worker_summary(summary: dict[str, Any]) -> str:

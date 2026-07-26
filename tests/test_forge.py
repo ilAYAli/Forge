@@ -10887,14 +10887,14 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
             "workers=2 rate=4/s min=slow:1/s max=fast:3/s",
             forge.active_worker_summary(summary),
         )
-        self.assertEqual("speedup=0.4x", forge.run_speedup_field(summary))
+        self.assertEqual("speedup=0.6x", forge.run_speedup_field(summary))
         payload = forge.run_status_payload(summary)
-        self.assertEqual(0.4, payload["display"]["active_summary"]["speedup"])
-        self.assertEqual("0.4x", payload["display"]["active_summary"]["speedup_text"])
+        self.assertEqual(0.6, payload["display"]["active_summary"]["speedup"])
+        self.assertEqual("0.6x", payload["display"]["active_summary"]["speedup_text"])
         self.assertEqual("rate", payload["display"]["active_summary"]["rate_name"])
         self.assertEqual("4/s", payload["display"]["active_summary"]["rate_text"])
         self.assertNotIn("speedup=", payload["display"]["active_summary_text"])
-        self.assertIn("speedup=0.4x", payload["display"]["fields"])
+        self.assertIn("speedup=0.6x", payload["display"]["fields"])
 
     def test_status_speedup_uses_configurable_single_host_baseline(self) -> None:
         summary = {
@@ -10916,6 +10916,19 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
         with mock.patch("forge_lib.status.speedup_single_host_workers", return_value=4):
             self.assertEqual(11.0, forge.run_speedup_value(summary))
             self.assertEqual("speedup=11.0x", forge.run_speedup_field(summary))
+
+    def test_status_speedup_uses_average_worker_rate(self) -> None:
+        summary = {
+            "active": [
+                {"worker": "host-a", "progress_data": {"kind": "metadata", "rate": 2.0}},
+                {"worker": "host-b", "progress_data": {"kind": "metadata", "rate": 1.0}},
+                {"worker": "host-c", "progress_data": {"kind": "metadata", "rate": 2.0}},
+            ],
+            "worker_outputs": {},
+            "worker_rates": {},
+            "metadata": {},
+        }
+        self.assertEqual(0.6, forge.run_speedup_value(summary))
 
     def test_status_single_worker_summary_omits_redundant_fields(self) -> None:
         summary = {
