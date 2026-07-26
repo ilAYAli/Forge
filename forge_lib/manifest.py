@@ -310,7 +310,12 @@ def check_requirements(manifest: dict[str, Any]) -> None:
     python_min = str(req.get("python_min", "")).strip()
     if python_min:
         actual = ".".join(map(str, sys.version_info[:3]))
-        require_min_version("python", actual, python_min)
+        try:
+            require_min_version("python", actual, python_min)
+        except SystemExit as exc:
+            raise SystemExit(
+                f"python executable {sys.executable!r}: {exc}"
+            ) from None
 
     git_min = str(req.get("git_min", "")).strip()
     if git_min:

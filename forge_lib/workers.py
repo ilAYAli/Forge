@@ -2119,6 +2119,20 @@ def run_deploy(args: argparse.Namespace) -> int:
             if part.strip()
         )
 
+    def launch_log_diagnostic(item: dict[str, Any]) -> str:
+        log_file = str(item.get("log_file") or "").strip()
+        if not log_file:
+            return ""
+        index = int(item["index"])
+        result = run_worker_shell(
+            workers[index],
+            f"tail -n 40 -- {shlex.quote(log_file)} 2>/dev/null || true",
+            timeout=min(remote_timeout, 30.0),
+            tracker=tracker,
+            retries=setup_retries,
+        )
+        return result_output({"stdout": result.stdout, "stderr": result.stderr})
+
     def result_host_label(item: dict[str, Any]) -> str:
         return worker_label(str(item["host"]), str(item["profile"]))
 
@@ -2374,6 +2388,18 @@ def run_deploy(args: argparse.Namespace) -> int:
                                 enabled=color_enabled,
                             ),
                         )
+                        diagnostics: dict[str, list[str]] = {}
+                        for item in launch_results:
+                            diagnostic = launch_log_diagnostic(item)
+                            if diagnostic:
+                                diagnostics.setdefault(result_host_label(item), []).append(diagnostic)
+                        if diagnostics:
+                            status("deploy: startup diagnostics:", error=True)
+                            for host, messages in sorted(diagnostics.items()):
+                                status(f"  {host}:", error=True)
+                                for message in messages:
+                                    for line in message.splitlines():
+                                        status(f"      {line}", error=True)
             else:
                 executor = concurrent.futures.ThreadPoolExecutor(max_workers=max(1, len(ready_worker_items)))
                 task_message = (

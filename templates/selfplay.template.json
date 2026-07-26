@@ -166,6 +166,12 @@
           "field": "draws",
           "x": "done",
           "scale": "linear"
+        },
+        {
+          "name": "rate",
+          "field": "rate",
+          "x": "done",
+          "scale": "linear"
         }
       ]
     }

@@ -1002,7 +1002,7 @@ def summary_progress(summary: dict[str, Any]) -> str:
                 if active_unknown_when_elapsed and active_eta <= 0:
                     aggregate_eta = 0.0
                     unknown_when_elapsed = True
-                elif active_eta > aggregate_eta:
+                elif not waiting_count and active_eta > aggregate_eta:
                     aggregate_eta = active_eta
                     unknown_when_elapsed = active_unknown_when_elapsed
             etas.append(eta_field(aggregate_eta, unknown_when_elapsed=unknown_when_elapsed))
@@ -2792,6 +2792,11 @@ def run_progress_graph_from_rows(
         sprt_x: float | None = None
         selfplay_done: float | None = None
         selfplay_values: dict[str, float] = {}
+        selfplay_rate: float | None = (
+            progress_numeric_value("rate", graph_data, fields) if is_selfplay else None
+        )
+        if is_selfplay:
+            selfplay_done = progress_numeric_value("done", graph_data, fields)
         for spec in specs:
             x_name = "global_done" if spec["x"] == "done" and "global_done" in graph_data else spec["x"]
             x = progress_numeric_value(x_name, graph_data, fields)
@@ -2801,6 +2806,11 @@ def run_progress_graph_from_rows(
             field_name = str(spec["field"]).lower()
             if is_selfplay and field_name in {"wins", "losses", "draws"}:
                 selfplay_values[spec["name"]] = y
+                if selfplay_done is None:
+                    selfplay_done = progress_numeric_value("done", graph_data, fields)
+                continue
+            if is_selfplay and field_name == "rate":
+                selfplay_rate = y
                 if selfplay_done is None:
                     selfplay_done = progress_numeric_value("done", graph_data, fields)
                 continue
@@ -2816,8 +2826,12 @@ def run_progress_graph_from_rows(
         done = graph_data.get("done")
         if sprt_x is not None and isinstance(done, int) and done > 0:
             sprt_rows.append({"x": sprt_x, "done": done, "fields": fields})
-        if selfplay_done is not None and selfplay_values:
-            selfplay_rows.append({"done": selfplay_done, "series": selfplay_values})
+        if selfplay_done is not None and (selfplay_values or selfplay_rate is not None):
+            selfplay_rows.append({
+                "done": selfplay_done,
+                "series": selfplay_values,
+                "rate": selfplay_rate,
+            })
 
     if is_labeling and label_x > 0 and label_worker_rates:
         points_by_name["total"] = [{"x": label_x, "y": sum(label_worker_rates.values())}]
@@ -2827,7 +2841,7 @@ def run_progress_graph_from_rows(
     if is_selfplay and selfplay_rows:
         totals: dict[str, float] = {}
         games_done = 0.0
-        points_by_name["balance"] = [{"x": 0.0, "y": 0.0}]
+        aggregate_rate = 0.0
         for item in selfplay_rows:
             row_done = parse_float(item.get("done"))
             raw_series = item.get("series")
@@ -2836,15 +2850,16 @@ def run_progress_graph_from_rows(
             games_done += row_done
             for name, value in raw_series.items():
                 totals[name] = totals.get(name, 0.0) + float(value)
-            wins = totals.get("wins", 0.0)
-            losses = totals.get("losses", 0.0)
-            games = sum(totals.get(name, 0.0) for name in ("wins", "draws", "losses"))
-            if games > 0:
-                points_by_name.setdefault("balance", []).append({
-                    "x": games_done,
-                    "y": (wins - losses) / games,
-                })
-        options_by_name["balance"] = {"min": -1.0, "max": 1.0, "scale": "symmetric"}
+            rate = parse_float(item.get("rate"))
+            if rate is not None and rate > 0:
+                aggregate_rate += rate
+        if aggregate_rate > 0:
+            points_by_name["games/s"] = [{
+                "x": games_done,
+                "y": aggregate_rate,
+            }]
+        if "games/s" in points_by_name:
+            options_by_name["games/s"] = {"scale": "linear", "smooth": True}
 
     x_total = progress_unit_totals.get(x_unit) if x_unit else None
     for name, points in sprt_aggregate_graph_points(
@@ -2862,7 +2877,7 @@ def run_progress_graph_from_rows(
     series = []
     for name, points in points_by_name.items():
         points.sort(key=lambda point: point["x"])
-        if len(points) >= 2 or (is_labeling and points) or (name.lower() == "ci" and points):
+        if len(points) >= 2 or (is_labeling and points) or (is_selfplay and name == "games/s" and points) or (name.lower() == "ci" and points):
             series.append(graph_series_with_options(name, points, options_by_name.get(name)))
     if not series:
         return None
@@ -3077,6 +3092,15 @@ def progress_graph_from_history(
     options_by_name: dict[str, dict[str, Any]] = {}
     x_unit = ""
     x_total: int | None = None
+    selfplay_rate_graph = (
+        isinstance(fallback_graph, dict)
+        and isinstance(fallback_graph.get("selfplay"), dict)
+        and any(
+            str(item.get("name") or "").lower() == "games/s"
+            for item in fallback_graph.get("series", [])
+            if isinstance(item, dict)
+        )
+    )
     is_selfplay = isinstance(fallback_graph, dict) and isinstance(fallback_graph.get("selfplay"), dict)
     current_max_x: float | None = None
     if isinstance(fallback_graph, dict):
@@ -3118,9 +3142,12 @@ def progress_graph_from_history(
             continue
         if is_selfplay and current_max_x is not None and x > current_max_x:
             continue
-        if is_selfplay and all(name in series for name in ("wins", "draws", "losses")):
-            games = sum(float(series[name]) for name in ("wins", "draws", "losses"))
-            series = {"balance": (float(series["wins"]) - float(series["losses"])) / games} if games > 0 else {}
+        if is_selfplay and selfplay_rate_graph:
+            series = {"games/s": series["games/s"]} if "games/s" in series else {}
+        elif is_selfplay and "games/s" in series:
+            series = {"games/s": series["games/s"]}
+        elif is_selfplay and all(name in series for name in ("wins", "draws", "losses")):
+            series = {}
         elif is_selfplay:
             series = {name: value for name, value in series.items() if str(name).lower() == "balance"}
         for name, value in series.items():
@@ -3128,6 +3155,20 @@ def progress_graph_from_history(
             if y is None:
                 continue
             points_by_name.setdefault(str(name), []).append({"x": float(x), "y": y})
+    if selfplay_rate_graph and not points_by_name:
+        for item in fallback_graph.get("series", []):
+            if not isinstance(item, dict) or str(item.get("name") or "").lower() != "games/s":
+                continue
+            points = item.get("points")
+            if isinstance(points, list):
+                points_by_name["games/s"] = [
+                    {"x": float(point["x"]), "y": float(point["y"])}
+                    for point in points
+                    if isinstance(point, dict)
+                    and parse_float(point.get("x")) is not None
+                    and parse_float(point.get("y")) is not None
+                ]
+            break
     if not x_unit and isinstance(fallback_graph, dict):
         x_unit = str(fallback_graph.get("x_unit") or "").strip()
     if x_total is None and isinstance(fallback_graph, dict):
@@ -3163,7 +3204,16 @@ def run_progress_history_graph(
 ) -> dict[str, Any] | None:
     history = append_progress_history(manifest, progress_graph_snapshot(current_graph))
     if all(task_complete(manifest, task) for task in manifest.get("tasks", [])):
-        return current_graph
+        if current_graph is not None and (
+            not isinstance(current_graph.get("selfplay"), dict)
+            or any(
+                str(item.get("name") or "").lower() == "games/s"
+                for item in current_graph.get("series", [])
+                if isinstance(item, dict)
+            )
+        ):
+            return current_graph
+        return progress_graph_from_history(history, current_graph)
     return progress_graph_from_history(history, current_graph)
 
 def sprt_summary_rows(summary: dict[str, Any]) -> list[dict[str, Any]]:

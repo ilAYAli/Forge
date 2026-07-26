@@ -980,6 +980,7 @@ _HTML = r"""<!DOCTYPE html>
       if (key === 'wins') return 'var(--grn)';
       if (key === 'losses') return 'var(--red)';
       if (key === 'draws') return 'var(--blu)';
+      if (key === 'games/s') return 'var(--blu)';
       return GRAPH_COLORS[index % GRAPH_COLORS.length];
     }
 
@@ -1601,7 +1602,7 @@ _HTML = r"""<!DOCTYPE html>
         const path = sparkPath(primary.name, s.points, allY, GRAPH_W, h, xTotal);
         return `<path class="graph-line" d="${esc(path)}" style="stroke:${esc(s.color)}"></path>`;
       }).join('');
-      const markers = plotted.map(s => graphPointMarkers(
+      const markers = plotted.map(s => graphSeriesName(s.name) === 'games/s' ? '' : graphPointMarkers(
         primary.name,
         s.color,
         s.points,
@@ -1655,7 +1656,10 @@ _HTML = r"""<!DOCTYPE html>
             rawPoints,
           };
         })
-        .filter(s => s.points.length >= 2);
+        .filter(s => s.points.length >= 2
+          || (String(run?.kind || '').toLowerCase() === 'selfplay'
+            && graphSeriesName(s.name) === 'games/s'
+            && s.points.length > 0));
       if (!allSeries.length) return '';
       const ciSeries = graphSeriesByName(allSeries, 'ci');
       const eloSeries = graphSeriesByName(allSeries, 'elo');
@@ -1696,6 +1700,8 @@ _HTML = r"""<!DOCTYPE html>
       const graphTitle = isSelfplayGraph ? 'selfplay' : isLabelingGraph ? 'labeling' : title;
       const unit = isLabelingGraph
         ? ' · aggregate records/s over records scanned'
+        : isSelfplayGraph
+        ? ' · aggregate games/s over games completed'
         : (graph?.x_unit ? ` · x: ${graph.x_unit}` : '');
       const stopLabel = earlyStop ? ` · stopped at ${fmtGraphNumber(earlyStop.observed)} / ${fmtGraphNumber(earlyStop.target)}` : '';
       return `<div class="task-graph">`

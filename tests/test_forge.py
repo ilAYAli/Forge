@@ -3721,11 +3721,12 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
             progress = {
                 "unit": "games",
                 "total": 4,
-                "log_regex": r"Score of .*?:\s+(?P<wins>\d+)\s+-\s+(?P<losses>\d+)\s+-\s+(?P<draws>\d+)\s+\[[^\]]+\]\s+(?P<done>\d+)",
+                "log_regex": r"Score of .*?:\s+(?P<wins>\d+)\s+-\s+(?P<losses>\d+)\s+-\s+(?P<draws>\d+)\s+\[[^\]]+\]\s+(?P<done>\d+)\s+Rate:\s+(?P<rate>[0-9.]+)",
                 "series": [
                     {"name": "wins", "field": "wins", "x": "done", "scale": "linear"},
                     {"name": "losses", "field": "losses", "x": "done", "scale": "linear"},
                     {"name": "draws", "field": "draws", "x": "done", "scale": "linear"},
+                    {"name": "rate", "field": "rate", "x": "done", "scale": "linear"},
                 ],
             }
             manifest = {
@@ -3743,11 +3744,11 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
             (state / "selfplay_0000.done.json").write_text(json.dumps({"task": "selfplay_0000"}), encoding="utf-8")
             (state / "selfplay_0001.done.json").write_text(json.dumps({"task": "selfplay_0001"}), encoding="utf-8")
             (logs / "selfplay_0000.log").write_text(
-                "Games: 4, Wins: 1, Losses: 1, Draws: 2, Points: 2.0 (50.00 %)\n",
+                "Score of selfplay: 1 - 1 - 2 [..] 4 Rate: 2.0\n",
                 encoding="utf-8",
             )
             (logs / "selfplay_0001.log").write_text(
-                "Games: 4, Wins: 2, Losses: 1, Draws: 1, Points: 2.5 (62.50 %)\n",
+                "Score of selfplay: 2 - 1 - 1 [..] 4 Rate: 3.0\n",
                 encoding="utf-8",
             )
 
@@ -3758,12 +3759,8 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
             self.assertEqual(8, graph["x_total"])
             series = {item["name"]: item["points"] for item in graph["series"]}
             self.assertEqual([
-                {"x": 0.0, "y": 0.0},
-                {"x": 4.0, "y": 0.0},
-                {"x": 8.0, "y": 0.125},
-            ], series["balance"])
-            balance = next(item for item in graph["series"] if item["name"] == "balance")
-            self.assertEqual((-1.0, 1.0), (balance["min"], balance["max"]))
+                {"x": 8.0, "y": 5.0},
+            ], series["games/s"])
             self.assertEqual({
                 "wins": 3,
                 "draws": 3,
@@ -10729,7 +10726,7 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
         self.assertIn("games=1000/2m", progress)
         self.assertIn("eta=23d", progress)
 
-    def test_summary_eta_respects_slowest_active_task(self) -> None:
+    def test_summary_eta_uses_aggregate_rate_while_work_is_pending(self) -> None:
         summary = {
             "active": [
                 {
@@ -10758,7 +10755,7 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
             "progress_done": {"rows": 100},
             "progress_totals": {"rows": 400},
         }
-        self.assertEqual("progress=rows=200/400, eta=30s", forge.summary_progress(summary))
+        self.assertEqual("progress=rows=200/400, eta=10s", forge.summary_progress(summary))
 
     def test_summary_eta_counts_claimed_work_without_claimed_rate(self) -> None:
         summary = {
