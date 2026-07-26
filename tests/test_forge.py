@@ -3688,7 +3688,7 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
         ]
         self.assertEqual([1, 2, 3], default_seeds)
 
-    def test_selfplay_command_auto_sizes_shards_to_worker_slots(self) -> None:
+    def test_selfplay_command_auto_sizes_shards_for_queue_depth(self) -> None:
         stdout = io.StringIO()
         with contextlib.redirect_stdout(stdout):
             rc = forge.cmd_template_run(argparse.Namespace(
@@ -3705,11 +3705,11 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
         totals = [task["progress"]["total"] for task in manifest["tasks"]]
 
         self.assertEqual(0, rc)
-        self.assertEqual(15, manifest["template"]["parameters"]["shards"])
-        self.assertEqual(15, len(manifest["tasks"]))
+        self.assertEqual(60, manifest["template"]["parameters"]["shards"])
+        self.assertEqual(60, len(manifest["tasks"]))
         self.assertEqual(64, sum(totals))
-        self.assertEqual(4, min(totals))
-        self.assertEqual(6, max(totals))
+        self.assertEqual(1, min(totals))
+        self.assertEqual(2, max(totals))
 
     def test_selfplay_status_graph_aggregates_completed_fastchess_shards(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

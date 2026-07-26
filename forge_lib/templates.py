@@ -17,6 +17,7 @@ from .spsa import (
 
 TEMPLATE_SCHEMA = "forge.template.v1"
 SPRT_AUTO_TARGET_GAMES_PER_SHARD = 25
+SELFPLAY_AUTO_TARGET_GAMES_PER_SHARD = 750
 
 
 class MissingFormat:
@@ -280,6 +281,7 @@ def parse_template_parameters_with_unknown(
     params = template.get("parameters", {})
     if not isinstance(params, dict):
         raise SystemExit(f"{template_name}: parameters must be an object")
+    repeatable_defaults: dict[str, list[Any]] = {}
     for name, spec in params.items():
         if not isinstance(spec, dict):
             raise SystemExit(f"{template_name}: parameters.{name} must be an object")
@@ -295,7 +297,8 @@ def parse_template_parameters_with_unknown(
             if not isinstance(default, list):
                 raise SystemExit(f"{template_name}: repeatable parameter {name} default must be a list")
             kwargs["action"] = "append"
-            kwargs["default"] = list(default)
+            kwargs["default"] = []
+            repeatable_defaults[str(name)] = list(default)
         elif "default" in spec:
             kwargs["default"] = spec["default"]
         if value_type == "int":
@@ -314,6 +317,9 @@ def parse_template_parameters_with_unknown(
         namespace = parser.parse_args(raw_args)
         unknown = []
     values = {key: value for key, value in vars(namespace).items() if value is not None}
+    for name, default in repeatable_defaults.items():
+        if not values.get(name):
+            values[name] = list(default)
     for name, spec in params.items():
         if not isinstance(spec, dict) or not bool(spec.get("worker_path", False)):
             continue
@@ -803,9 +809,14 @@ def auto_sprt_shards(params: dict[str, Any], worker_payload: dict[str, Any]) -> 
     return largest_multiple if largest_multiple > 0 else paired_limit
 
 
-def auto_selfplay_shards(worker_payload: dict[str, Any]) -> int:
+def auto_selfplay_shards(params: dict[str, Any], worker_payload: dict[str, Any]) -> int:
+    games = as_int(params.get("games"), label="selfplay.games")
     slots = sprt_worker_slot_count(worker_payload)
-    return max(1, slots)
+    if slots <= 0:
+        return max(1, (games + SELFPLAY_AUTO_TARGET_GAMES_PER_SHARD - 1) // SELFPLAY_AUTO_TARGET_GAMES_PER_SHARD)
+    target = max(1, (games + SELFPLAY_AUTO_TARGET_GAMES_PER_SHARD - 1) // SELFPLAY_AUTO_TARGET_GAMES_PER_SHARD)
+    minimum = slots * 4
+    return max(slots, ((max(target, minimum) + slots - 1) // slots) * slots)
 
 
 def cmd_template_run(args: argparse.Namespace) -> int:
@@ -843,7 +854,7 @@ def cmd_template_run(args: argparse.Namespace) -> int:
             selfplay_workers_payload = sprt_worker_slots_payload(workers_arg)
         if not shards_supplied:
             params = dict(params)
-            params["shards"] = auto_selfplay_shards(selfplay_workers_payload or {})
+            params["shards"] = auto_selfplay_shards(params, selfplay_workers_payload or {})
     elif template_name == "spsa":
         params = parse_template_parameters(template_name, template, template_args)
         shards_supplied = template_parameter_supplied(template, template_args, {"shards"})

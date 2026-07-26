@@ -8,7 +8,7 @@
   "materialize_inputs": true,
   "parameters": {
     "engine": {
-      "default": "~/assets/engines/candidate",
+      "default": "~/assets/engines/reference",
       "worker_path": true,
       "directory_executable": "build/enyo",
       "help": "Enyo UCI engine executable or checkout directory available on all workers"
@@ -23,7 +23,7 @@
       "aliases": [
         "shard_count"
       ],
-      "help": "Number of Forge shards; defaults to the total configured worker slots"
+      "help": "Number of Forge shards; defaults to at least four times the configured worker slots and about 750 games per shard"
     },
     "book": {
       "default": "~/assets/books/UHO_4060_v4.epd",
@@ -64,6 +64,7 @@
     },
     "nodes": {
       "type": "int",
+      "default": 5000,
       "help": "Fixed node budget per move (fastchess tc=inf nodes=N); used when depth is unset, takes priority over tc"
     },
     "restart": {
@@ -81,6 +82,9 @@
     },
     "uci": {
       "repeatable": true,
+      "default": [
+        "nnue_file=~/assets/nets/reference"
+      ],
       "arg": "--uci",
       "file_options": [
         "nnue_file"
