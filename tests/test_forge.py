@@ -10887,16 +10887,16 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
             "workers=2 rate=4/s min=slow:1/s max=fast:3/s",
             forge.active_worker_summary(summary),
         )
-        self.assertEqual("speedup=0.6x", forge.run_speedup_field(summary))
+        self.assertEqual("speedup=1.3x", forge.run_speedup_field(summary))
         payload = forge.run_status_payload(summary)
-        self.assertEqual(0.6, payload["display"]["active_summary"]["speedup"])
-        self.assertEqual("0.6x", payload["display"]["active_summary"]["speedup_text"])
+        self.assertEqual(1.333, payload["display"]["active_summary"]["speedup"])
+        self.assertEqual("1.3x", payload["display"]["active_summary"]["speedup_text"])
         self.assertEqual("rate", payload["display"]["active_summary"]["rate_name"])
         self.assertEqual("4/s", payload["display"]["active_summary"]["rate_text"])
         self.assertNotIn("speedup=", payload["display"]["active_summary_text"])
-        self.assertIn("speedup=0.6x", payload["display"]["fields"])
+        self.assertIn("speedup=1.3x", payload["display"]["fields"])
 
-    def test_status_speedup_uses_configurable_single_host_baseline(self) -> None:
+    def test_status_speedup_uses_fastest_host_baseline(self) -> None:
         summary = {
             "active": [
                 {
@@ -10910,14 +10910,10 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
             "metadata": {},
         }
 
-        with mock.patch("forge_lib.status.speedup_single_host_workers", return_value=5):
-            self.assertEqual(8.8, forge.run_speedup_value(summary))
-            self.assertEqual("speedup=8.8x", forge.run_speedup_field(summary))
-        with mock.patch("forge_lib.status.speedup_single_host_workers", return_value=4):
-            self.assertEqual(11.0, forge.run_speedup_value(summary))
-            self.assertEqual("speedup=11.0x", forge.run_speedup_field(summary))
+        self.assertEqual(44 / 9, forge.run_speedup_value(summary))
+        self.assertEqual("speedup=4.9x", forge.run_speedup_field(summary))
 
-    def test_status_speedup_uses_average_worker_rate(self) -> None:
+    def test_status_speedup_uses_fastest_host_rate(self) -> None:
         summary = {
             "active": [
                 {"worker": "host-a", "progress_data": {"kind": "metadata", "rate": 2.0}},
@@ -10928,7 +10924,7 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
             "worker_rates": {},
             "metadata": {},
         }
-        self.assertEqual(0.6, forge.run_speedup_value(summary))
+        self.assertEqual(2.5, forge.run_speedup_value(summary))
 
     def test_status_single_worker_summary_omits_redundant_fields(self) -> None:
         summary = {
