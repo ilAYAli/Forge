@@ -6129,6 +6129,37 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
                 [(item["host"], int(item.get("slots", 1))) for item in payload["workers"]],
             )
 
+    def test_worker_set_refreshes_missing_metadata_from_current_defaults(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            runs = root / "runs"
+            run = self.write_retry_run(runs, "active", failed=None)
+            forge.write_json(run / "workers.json", {
+                "schema": "forge.workers.v1",
+                "workers": [{"host": "pwa-mbp", "profile": "pwa-mbp", "slots": 0}],
+            })
+            defaults = root / "config-workers.json"
+            forge.write_json(defaults, {
+                "schema": "forge.workers.v1",
+                "workers": [{
+                    "host": "pwa-mbp",
+                    "profile": "pwa-mbp",
+                    "python": "/opt/homebrew/bin/python3",
+                    "slots": 5,
+                }],
+            })
+
+            with (
+                self.patch_runs_dir(runs),
+                mock.patch("forge_lib.workers.default_workers_path", return_value=defaults),
+                mock.patch("forge_lib.workers.cmd_run_job", return_value=0) as run_job,
+            ):
+                self.assertEqual(0, forge.cmd_worker_set(self.worker_set_args(run="active", worker="pwa-mbp:5")))
+
+            set_args = run_job.call_args.args[0]
+            self.assertEqual("/opt/homebrew/bin/python3", set_args.launch_workers_payload["workers"][0]["python"])
+            self.assertEqual("/opt/homebrew/bin/python3", set_args.worker_snapshot_commit_payload["workers"][0]["python"])
+
     def test_worker_set_launch_preserves_all_default_workers(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

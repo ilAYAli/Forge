@@ -428,13 +428,24 @@ def set_worker_record_slots(worker: dict[str, Any], slots: int) -> dict[str, Any
         record["slots"] = slots
     return record
 
-def worker_set_record_from_arg(value: str, *, inline_defaults_path: str | Path | None = None) -> dict[str, Any]:
+def worker_set_record_from_arg(
+    value: str,
+    *,
+    inline_defaults_path: str | Path | None = None,
+) -> dict[str, Any]:
     if "," in value:
         raise SystemExit("worker set accepts a single worker spec")
     host, profile, slots = parse_inline_worker_spec(value)
     if slots is None:
         raise SystemExit(f"{value}: worker set requires an explicit slot count")
-    defaults = default_inline_worker_records(inline_defaults_path)
+    # A run snapshot may predate metadata added to the global worker config
+    # (for example an explicit Homebrew Python path).  Keep per-run values,
+    # but fill fields missing from the snapshot from current defaults.
+    defaults = default_inline_worker_records()
+    for default_host, run_record in default_inline_worker_records(inline_defaults_path).items():
+        merged = dict(defaults.get(default_host, {}))
+        merged.update(run_record)
+        defaults[default_host] = merged
     base = dict(defaults.get(host, {}))
     record = base if base else {
         "host": host,
