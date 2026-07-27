@@ -2085,7 +2085,10 @@ _HTML = r"""<!DOCTYPE html>
         } else if (data.loading) {
           parts.push('<div class="empty">loading Forge status...</div>');
         } else if (!data.collapsed_failures_count) {
-          parts.push('<div class="empty">no active Forge runs found</div>');
+          const hiddenInactive = !showInactiveRuns && (data.runs||[]).length;
+          parts.push(hiddenInactive
+            ? `<div class="empty">inactive runs hidden: ${(data.runs||[]).length} — click “inactive off” to show them</div>`
+            : '<div class="empty">no Forge runs found</div>');
         }
         el.innerHTML = parts.join('');
         sizeGraphPointMarkers(el);
