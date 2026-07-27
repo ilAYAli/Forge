@@ -6,6 +6,7 @@ import tempfile
 from .config import *
 from .manifest import *
 from .labeling import build_inventory
+from .selfplay_chunks import selfplay_autosized_shards
 from .spsa import (
     attach_spsa_manifest_config,
     auto_spsa_shards,
@@ -17,7 +18,6 @@ from .spsa import (
 
 TEMPLATE_SCHEMA = "forge.template.v1"
 SPRT_AUTO_TARGET_GAMES_PER_SHARD = 25
-SELFPLAY_AUTO_TARGET_GAMES_PER_SHARD = 750
 
 
 class MissingFormat:
@@ -492,12 +492,19 @@ def parse_run_options(raw_args: list[str]) -> tuple[argparse.Namespace, list[str
     return run_options, [*template_args, *passthrough_args]
 
 
-def apply_template_run_defaults(template_name: str, run_options: argparse.Namespace) -> argparse.Namespace:
+def apply_template_run_defaults(
+    template_name: str, run_options: argparse.Namespace, template: dict[str, Any] | None = None
+) -> argparse.Namespace:
     if template_name == "spsa" and getattr(run_options, "resume", False):
         run_options.retry_failed = True
     if template_name == "selfplay":
         run_options.retry_failed = True
         run_options.fail_on_fail = False
+    elif template_name not in ("sprt", "spsa", "label") and isinstance(template, dict):
+        split = template.get("task", {}).get("split", {})
+        if isinstance(split, dict) and int(split.get("count", 1) if not isinstance(split.get("count"), str) else 2) != 1:
+            run_options.retry_failed = True
+            run_options.fail_on_fail = False
     return run_options
 
 
@@ -810,13 +817,7 @@ def auto_sprt_shards(params: dict[str, Any], worker_payload: dict[str, Any]) -> 
 
 
 def auto_selfplay_shards(params: dict[str, Any], worker_payload: dict[str, Any]) -> int:
-    games = as_int(params.get("games"), label="selfplay.games")
-    slots = sprt_worker_slot_count(worker_payload)
-    if slots <= 0:
-        return max(1, (games + SELFPLAY_AUTO_TARGET_GAMES_PER_SHARD - 1) // SELFPLAY_AUTO_TARGET_GAMES_PER_SHARD)
-    target = max(1, (games + SELFPLAY_AUTO_TARGET_GAMES_PER_SHARD - 1) // SELFPLAY_AUTO_TARGET_GAMES_PER_SHARD)
-    minimum = slots * 4
-    return max(slots, ((max(target, minimum) + slots - 1) // slots) * slots)
+    return selfplay_autosized_shards(params, worker_payload)
 
 
 def cmd_template_run(args: argparse.Namespace) -> int:
@@ -876,7 +877,21 @@ def cmd_template_run(args: argparse.Namespace) -> int:
             )
     else:
         params = parse_template_parameters(template_name, template, template_args)
-    run_options = apply_template_run_defaults(template_name, run_options)
+        shards_param = template.get("parameters", {}).get("shards")
+        if isinstance(shards_param, dict) and "default" not in shards_param:
+            shards_supplied = template_parameter_supplied(template, template_args, {"shards", "shard_count"})
+            needs_workers = (
+                not (run_options.print_manifest or run_options.dry_run)
+                or not shards_supplied
+            )
+            if needs_workers:
+                generic_workers_arg = resolved_workers_arg(run_options, config)
+                generic_workers_payload = sprt_worker_slots_payload(generic_workers_arg)
+            if not shards_supplied:
+                params = dict(params)
+                slots = sprt_worker_slot_count(generic_workers_payload or {})
+                params["shards"] = max(1, slots * 4) if slots > 0 else 1
+    run_options = apply_template_run_defaults(template_name, run_options, template)
     inventory_info: dict[str, Any] | None = None
     if template_name == "label":
         inventory_info = build_inventory(str(params["source"]))

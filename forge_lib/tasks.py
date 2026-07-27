@@ -1,7 +1,22 @@
 from __future__ import annotations
 
+import fcntl
+from contextlib import contextmanager
+
 from .core import *
 from .manifest import *
+
+
+@contextmanager
+def selfplay_claim_lock(manifest_path: Path) -> Any:
+    lock_path = manifest_path.parent / ".selfplay-claim.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a+", encoding="utf-8") as lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
 
 def task_done_path(manifest: dict[str, Any], task: dict[str, Any]) -> Path:
@@ -413,12 +428,91 @@ def run_task(
 def claim_task(
     manifest: dict[str, Any],
     *,
+    manifest_path: Path | None = None,
     worker: str,
     profile: str | None,
     lease_seconds: int,
     retry_failed: bool,
     max_attempts: int = 0,
 ) -> dict[str, Any] | None:
+    if manifest_path is not None and str(manifest.get("kind") or "") == "selfplay":
+        from .selfplay_chunks import selfplay_rechunk_pending_tasks
+
+        with selfplay_claim_lock(manifest_path):
+            manifest = load_manifest(manifest_path)
+            selfplay_rechunk_pending_tasks(
+                manifest_path,
+                manifest,
+                lease_seconds=lease_seconds,
+            )
+            manifest = load_manifest(manifest_path)
+            if stop_requested(manifest):
+                return None
+            if worker_drained(manifest, worker):
+                return None
+            claim_dir(manifest).mkdir(parents=True, exist_ok=True)
+            digest = manifest_checksum(manifest)
+            max_attempts = max(0, int(max_attempts))
+
+            def claim_order(item: dict[str, Any]) -> tuple[bool, bool, int]:
+                preferred = str(item.get("claim_worker") or "").strip()
+                return (
+                    bool(preferred and preferred != worker),
+                    task_fail_path(manifest, item).exists(),
+                    int(item.get("index", 0)),
+                )
+
+            for task in sorted(manifest["tasks"], key=claim_order):
+                if task_complete(manifest, task):
+                    continue
+                fail_path = task_fail_path(manifest, task)
+                fail_payload: dict[str, Any] | None = None
+                attempt = 1
+                if fail_path.exists():
+                    if not retry_failed:
+                        continue
+                    fail_payload = read_state_json(fail_path)
+                    attempt = task_attempt_from_payload(fail_payload) + 1
+                    if max_attempts > 0 and attempt > max_attempts:
+                        continue
+                running_state = task_running_state(manifest, task, lease_seconds=lease_seconds)
+                if running_state == "running":
+                    continue
+                if running_state == "stale":
+                    task_running_path(manifest, task).unlink(missing_ok=True)
+                claim_state = task_claim_state(manifest, task, lease_seconds=lease_seconds)
+                task_claim = task_claim_dir(manifest, task)
+                if claim_state == "claimed":
+                    continue
+                if claim_state == "stale":
+                    if not remove_stale_claim(manifest, task, lease_seconds=lease_seconds):
+                        continue
+                try:
+                    task_claim.mkdir(parents=True)
+                except FileExistsError:
+                    continue
+                payload = {
+                    "schema": SCHEMA,
+                    "task": task["id"],
+                    "index": task.get("index"),
+                    "claim_id": uuid.uuid4().hex,
+                    "worker": worker,
+                    "profile": profile,
+                    "claimed_at": now(),
+                    "claimed_epoch": epoch(),
+                    "heartbeat_epoch": epoch(),
+                    "lease_seconds": lease_seconds,
+                    "manifest_sha256": digest,
+                    "task_execution_sha256": task_execution_checksum(manifest, task),
+                    "attempt": attempt,
+                }
+                if max_attempts > 0:
+                    payload["max_attempts"] = max_attempts
+                write_json(task_claim_path(manifest, task), payload)
+                write_json(task_heartbeat_path(manifest, task), payload)
+                return {"task": task["id"], "index": task.get("index"), "claim": payload}
+            return None
+
     if stop_requested(manifest):
         return None
     if worker_drained(manifest, worker):
@@ -815,6 +909,7 @@ def cmd_claim(args: argparse.Namespace) -> int:
     manifest = load_manifest(expand_path(args.manifest))
     result = claim_task(
         manifest,
+        manifest_path=expand_path(args.manifest),
         worker=args.worker,
         profile=args.profile,
         lease_seconds=args.lease_seconds,
@@ -1140,6 +1235,12 @@ def cmd_work(args: argparse.Namespace) -> int:
                 worker=args.worker,
                 claim_id=claim_id,
             )
+            try:
+                from .selfplay_chunks import record_selfplay_chunk_task_result
+
+                record_selfplay_chunk_task_result(coordinator_manifest, coordinator_task)
+            except Exception:
+                pass
         except SystemExit as exc:
             sync_failed = True
             failed += 1

@@ -23,7 +23,12 @@
       "aliases": [
         "shard_count"
       ],
-      "help": "Number of Forge shards; defaults to at least four times the configured worker slots and about 750 games per shard"
+      "help": "Number of Forge shards; defaults from recent throughput history to a target chunk time"
+    },
+    "chunk_time_seconds": {
+      "type": "int",
+      "default": 300,
+      "help": "Target wall-clock seconds per shard when auto-sizing selfplay chunks"
     },
     "book": {
       "default": "~/assets/books/UHO_XXL_2022_+120_+149.epd",
