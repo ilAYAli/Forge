@@ -6,6 +6,10 @@
   "run_name": "selfplay-{engine_stem}-{games}-{timestamp}",
   "work_dir": "~",
   "materialize_inputs": true,
+  "chunking": {
+    "live_rechunk": true,
+    "initial_units": 15
+  },
   "parameters": {
     "engine": {
       "default": "~/assets/engines/reference",

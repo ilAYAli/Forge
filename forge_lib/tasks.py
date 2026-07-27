@@ -8,8 +8,8 @@ from .manifest import *
 
 
 @contextmanager
-def selfplay_claim_lock(manifest_path: Path) -> Any:
-    lock_path = manifest_path.parent / ".selfplay-claim.lock"
+def adaptive_claim_lock(manifest_path: Path) -> Any:
+    lock_path = manifest_path.parent / ".adaptive-claim.lock"
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     with lock_path.open("a+", encoding="utf-8") as lock_file:
         fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
@@ -435,12 +435,12 @@ def claim_task(
     retry_failed: bool,
     max_attempts: int = 0,
 ) -> dict[str, Any] | None:
-    if manifest_path is not None and str(manifest.get("kind") or "") == "selfplay":
-        from .selfplay_chunks import selfplay_rechunk_pending_tasks
+    if manifest_path is not None and isinstance(manifest.get("template"), dict):
+        from .chunking import adaptive_rechunk_pending_tasks
 
-        with selfplay_claim_lock(manifest_path):
+        with adaptive_claim_lock(manifest_path):
             manifest = load_manifest(manifest_path)
-            selfplay_rechunk_pending_tasks(
+            adaptive_rechunk_pending_tasks(
                 manifest_path,
                 manifest,
                 lease_seconds=lease_seconds,
@@ -1236,9 +1236,9 @@ def cmd_work(args: argparse.Namespace) -> int:
                 claim_id=claim_id,
             )
             try:
-                from .selfplay_chunks import record_selfplay_chunk_task_result
+                from .chunking import record_adaptive_chunk_task_result
 
-                record_selfplay_chunk_task_result(coordinator_manifest, coordinator_task)
+                record_adaptive_chunk_task_result(coordinator_manifest, coordinator_task)
             except Exception:
                 pass
         except SystemExit as exc:

@@ -1,0 +1,560 @@
+from __future__ import annotations
+
+import copy
+import fcntl
+import hashlib
+import json
+import re
+import time
+from contextlib import contextmanager
+from pathlib import Path
+from typing import Any
+
+from .core import *
+from .tasks import task_done_path, task_state
+
+
+SELFPLAY_CHUNK_CACHE_SCHEMA = "forge.selfplay.chunk-history.v1"
+SELFPLAY_CHUNK_CACHE_NAME = "selfplay-chunk-history.json"
+DEFAULT_SELFPLAY_CHUNK_TIME_SECONDS = 300
+DEFAULT_SELFPLAY_COLD_START_THROUGHPUT = 15 / 300
+DEFAULT_SELFPLAY_CHUNK_HISTORY_WEIGHT = 4
+
+
+def _parse_int(value: object) -> int | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _parse_float(value: object) -> float | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def selfplay_chunk_cache_dir() -> Path:
+    return expand_path("~/.cache/forge")
+
+
+def selfplay_chunk_cache_path() -> Path:
+    return selfplay_chunk_cache_dir() / SELFPLAY_CHUNK_CACHE_NAME
+
+
+@contextmanager
+def locked_selfplay_chunk_history(*, cache_path: Path | None = None):
+    path = cache_path or selfplay_chunk_cache_path()
+    lock_path = Path(str(path) + ".lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a+", encoding="utf-8") as lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
+def selfplay_chunk_signature(params: dict[str, Any]) -> dict[str, Any]:
+    template_name = str(params.get("__forge_template_name") or "selfplay")
+    signature = {
+        "kind": template_name,
+        "template": template_name,
+    }
+    worker = str(params.get("__forge_worker") or "").strip()
+    if worker:
+        signature["worker"] = worker
+    return signature
+
+
+def selfplay_chunk_signature_label(signature: dict[str, Any]) -> str:
+    return str(signature.get("template") or signature.get("kind") or "selfplay")
+
+
+def selfplay_chunk_signature_key(signature: dict[str, Any]) -> str:
+    payload = json.dumps(signature, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def load_selfplay_chunk_history(*, cache_path: Path | None = None) -> dict[str, Any]:
+    path = cache_path or selfplay_chunk_cache_path()
+    try:
+        payload = read_json(path)
+    except (OSError, SystemExit):
+        payload = None
+    if not isinstance(payload, dict) or payload.get("schema") != SELFPLAY_CHUNK_CACHE_SCHEMA:
+        return {
+            "schema": SELFPLAY_CHUNK_CACHE_SCHEMA,
+            "records": {},
+        }
+    records = payload.get("records")
+    if not isinstance(records, dict):
+        records = {}
+    return {
+        "schema": SELFPLAY_CHUNK_CACHE_SCHEMA,
+        "records": records,
+    }
+
+
+def write_selfplay_chunk_history(payload: dict[str, Any], *, cache_path: Path | None = None) -> None:
+    path = cache_path or selfplay_chunk_cache_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    write_json(path, payload)
+
+
+def selfplay_chunk_target_seconds(params: dict[str, Any]) -> int:
+    value = _parse_int(params.get("chunk_time_seconds"))
+    if value is None or value <= 0:
+        return DEFAULT_SELFPLAY_CHUNK_TIME_SECONDS
+    return int(value)
+
+
+def selfplay_default_chunk_games(params: dict[str, Any]) -> int:
+    target_seconds = selfplay_chunk_target_seconds(params)
+    return max(1, int(round(target_seconds * DEFAULT_SELFPLAY_COLD_START_THROUGHPUT)))
+
+
+def selfplay_observed_throughput(manifest: dict[str, Any]) -> float | None:
+    total_games = 0
+    total_elapsed = 0.0
+    for task in manifest.get("tasks") or []:
+        if not isinstance(task, dict):
+            continue
+        done_path = task_done_path(manifest, task)
+        done = read_json(done_path) if done_path.exists() else None
+        rc = _parse_int(done.get("rc")) if isinstance(done, dict) else None
+        if not isinstance(done, dict) or rc != 0:
+            continue
+        elapsed = _parse_float(done.get("elapsed_s"))
+        if elapsed is None or elapsed <= 0:
+            continue
+        games = selfplay_task_games(task)
+        if games <= 0:
+            continue
+        total_games += games
+        total_elapsed += float(elapsed)
+    if total_games <= 0 or total_elapsed <= 0:
+        return None
+    return total_games / total_elapsed
+
+
+def selfplay_task_games(task: dict[str, Any]) -> int:
+    progress = task.get("progress")
+    if isinstance(progress, dict):
+        total = _parse_int(progress.get("total"))
+        if total is not None and total > 0:
+            return total
+    command = str(task.get("command") or "")
+    match = re.search(r"\b-rounds\s+(\d+)\b", command)
+    if match:
+        return int(match.group(1)) * 2
+    return 0
+
+
+def adaptive_template_parameters(manifest: dict[str, Any]) -> dict[str, Any]:
+    template = manifest.get("template")
+    params = template.get("parameters") if isinstance(template, dict) else {}
+    result = dict(params) if isinstance(params, dict) else {}
+    name = template.get("name") if isinstance(template, dict) else None
+    result["__forge_template_name"] = str(name or manifest.get("kind") or "task")
+    return result
+
+
+def adaptive_split_config(template_data: dict[str, Any]) -> tuple[str, str, str] | None:
+    task = template_data.get("task")
+    split = task.get("split") if isinstance(task, dict) else None
+    if not isinstance(split, dict):
+        return None
+    total_key = split.get("total")
+    count_key = split.get("count")
+    unit = split.get("unit")
+    if not all(isinstance(value, str) and value for value in (total_key, count_key, unit)):
+        return None
+    return str(total_key), str(count_key), str(unit)
+
+
+def adaptive_task_units(task: dict[str, Any], unit: str) -> int:
+    progress = task.get("progress")
+    if isinstance(progress, dict):
+        direct = _parse_int(progress.get(unit))
+        if direct is not None and direct > 0:
+            return direct
+        if str(progress.get("unit") or "") == unit:
+            total = _parse_int(progress.get("total"))
+            if total is not None and total > 0:
+                return total
+    return selfplay_task_games(task) if unit == "games" else 0
+
+
+def adaptive_manifest_split(manifest: dict[str, Any]) -> tuple[str, str, str] | None:
+    template = manifest.get("template")
+    path_value = template.get("path") if isinstance(template, dict) else None
+    if not isinstance(path_value, str) or not path_value:
+        return ("games", "shards", "games") if str(manifest.get("kind") or "") == "selfplay" else None
+    try:
+        from .templates import load_template
+
+        return adaptive_split_config(load_template(expand_path(path_value)))
+    except (OSError, SystemExit):
+        return None
+
+
+def selfplay_cached_throughput(params: dict[str, Any], *, cache_path: Path | None = None) -> float | None:
+    signature = selfplay_chunk_signature(params)
+    key = selfplay_chunk_signature_key(signature)
+    history = load_selfplay_chunk_history(cache_path=cache_path)
+    record = history["records"].get(key)
+    if not isinstance(record, dict):
+        return None
+    rate = _parse_float(record.get("rate"))
+    if rate is None or rate <= 0:
+        return None
+    return float(rate)
+
+
+def selfplay_estimated_chunk_games(
+    params: dict[str, Any],
+    *,
+    cache_path: Path | None = None,
+) -> int | None:
+    rate = selfplay_cached_throughput(params, cache_path=cache_path)
+    target_seconds = selfplay_chunk_target_seconds(params)
+    if rate is None or rate <= 0:
+        return selfplay_default_chunk_games(params)
+    estimated = int(round(rate * target_seconds))
+    return max(1, estimated)
+
+
+def _record_selfplay_chunk_rate(
+    params: dict[str, Any],
+    *,
+    rate: float,
+    samples: int = 1,
+    cache_path: Path | None = None,
+) -> dict[str, Any] | None:
+    if rate <= 0 or samples <= 0:
+        return None
+
+    signature = selfplay_chunk_signature(params)
+    key = selfplay_chunk_signature_key(signature)
+    with locked_selfplay_chunk_history(cache_path=cache_path):
+        history = load_selfplay_chunk_history(cache_path=cache_path)
+        record = history["records"].get(key)
+        previous_rate = _parse_float(record.get("rate")) if isinstance(record, dict) else None
+        previous_samples = int(record.get("samples") or 0) if isinstance(record, dict) else 0
+
+        if previous_rate is not None and previous_rate > 0 and previous_samples > 0:
+            weight = min(previous_samples, DEFAULT_SELFPLAY_CHUNK_HISTORY_WEIGHT)
+            blended_rate = (previous_rate * weight + rate * samples) / (weight + samples)
+        else:
+            blended_rate = rate
+
+        history["records"][key] = {
+            "label": selfplay_chunk_signature_label(signature),
+            "rate": blended_rate,
+            "samples": previous_samples + samples,
+            "updated_epoch": time.time(),
+        }
+        write_selfplay_chunk_history(history, cache_path=cache_path)
+        return history["records"][key]
+
+
+def selfplay_autosized_shards(
+    params: dict[str, Any],
+    worker_payload: dict[str, Any],
+    *,
+    cache_path: Path | None = None,
+) -> int | None:
+    games = _parse_int(params.get("games"))
+    if games is None or games <= 0:
+        return None
+    slots = 0
+    workers = worker_payload.get("workers")
+    if isinstance(workers, list):
+        for worker in workers:
+            if isinstance(worker, dict):
+                try:
+                    slots += max(0, int(worker.get("slots", 1)))
+                except (TypeError, ValueError):
+                    continue
+            else:
+                slots += 1
+    estimated_games = selfplay_estimated_chunk_games(params, cache_path=cache_path)
+    shards = (games + estimated_games - 1) // estimated_games
+    if slots > 0:
+        shards = max(slots, ((shards + slots - 1) // slots) * slots)
+    return max(1, shards)
+
+
+def adaptive_autosized_shards(
+    template_name: str,
+    template_data: dict[str, Any],
+    params: dict[str, Any],
+    worker_payload: dict[str, Any],
+    *,
+    cold_units: int,
+    cache_path: Path | None = None,
+) -> int | None:
+    split = adaptive_split_config(template_data)
+    if split is None:
+        return None
+    total_key, _count_key, _unit = split
+    total = _parse_int(params.get(total_key))
+    if total is None or total <= 0:
+        return None
+    signature_params = {**params, "__forge_template_name": template_name}
+    worker_rates: list[float] = []
+    workers = worker_payload.get("workers")
+    if isinstance(workers, list):
+        for worker in workers:
+            name = str(
+                (worker.get("name") or worker.get("host") or "")
+                if isinstance(worker, dict)
+                else worker
+            ).strip()
+            if not name:
+                continue
+            worker_rate = selfplay_cached_throughput(
+                {**signature_params, "__forge_worker": name},
+                cache_path=cache_path,
+            )
+            if worker_rate is not None and worker_rate > 0:
+                worker_rates.append(worker_rate)
+    rate = min(worker_rates) if worker_rates else selfplay_cached_throughput(
+        signature_params, cache_path=cache_path
+    )
+    target_seconds = selfplay_chunk_target_seconds(params)
+    target_units = max(1, int(round(rate * target_seconds))) if rate else max(1, int(cold_units))
+    shards = max(1, (total + target_units - 1) // target_units)
+    slots = 0
+    workers = worker_payload.get("workers")
+    if isinstance(workers, list):
+        for worker in workers:
+            try:
+                slots += max(0, int(worker.get("slots", 1))) if isinstance(worker, dict) else 1
+            except (TypeError, ValueError):
+                continue
+    if slots > 0:
+        chunking = template_data.get("chunking")
+        min_per_slot = (
+            max(1, int(chunking.get("min_chunks_per_slot", 1)))
+            if isinstance(chunking, dict)
+            else 1
+        )
+        shards = max(slots * min_per_slot, ((shards + slots - 1) // slots) * slots)
+    return min(total, shards)
+
+
+def record_selfplay_chunk_history(
+    manifest: dict[str, Any],
+    *,
+    cache_path: Path | None = None,
+) -> dict[str, Any] | None:
+    split = adaptive_manifest_split(manifest)
+    if split is None:
+        return None
+    _total_key, _count_key, unit = split
+    total_units = 0
+    total_elapsed = 0.0
+    for task in manifest.get("tasks") or []:
+        if not isinstance(task, dict):
+            continue
+        done = read_json(task_done_path(manifest, task)) if task_done_path(manifest, task).exists() else None
+        elapsed = _parse_float(done.get("elapsed_s")) if isinstance(done, dict) else None
+        if elapsed is None or elapsed <= 0:
+            continue
+        units = adaptive_task_units(task, unit)
+        if units <= 0:
+            continue
+        total_units += units
+        total_elapsed += elapsed
+    rate = total_units / total_elapsed if total_units > 0 and total_elapsed > 0 else None
+    if rate is None or rate <= 0:
+        return None
+
+    params = adaptive_template_parameters(manifest)
+    return _record_selfplay_chunk_rate(params, rate=rate, cache_path=cache_path)
+
+
+def record_selfplay_chunk_task_result(
+    manifest: dict[str, Any],
+    task: dict[str, Any],
+    *,
+    cache_path: Path | None = None,
+) -> dict[str, Any] | None:
+    split = adaptive_manifest_split(manifest)
+    if split is None:
+        return None
+    _total_key, _count_key, unit = split
+    done_path = task_done_path(manifest, task)
+    if not done_path.exists():
+        return None
+    done = read_json(done_path)
+    rc = _parse_int(done.get("rc")) if isinstance(done, dict) else None
+    if not isinstance(done, dict) or rc != 0:
+        return None
+    elapsed = _parse_float(done.get("elapsed_s"))
+    if elapsed is None or elapsed <= 0:
+        return None
+    units = adaptive_task_units(task, unit)
+    if units <= 0:
+        return None
+    params = adaptive_template_parameters(manifest)
+    rate = units / elapsed
+    aggregate = _record_selfplay_chunk_rate(params, rate=rate, cache_path=cache_path)
+    worker = str(done.get("worker") or done.get("host") or "").strip()
+    if worker:
+        _record_selfplay_chunk_rate(
+            {**params, "__forge_worker": worker},
+            rate=rate,
+            cache_path=cache_path,
+        )
+    return aggregate
+
+
+def adaptive_rechunk_pending_tasks(
+    manifest_path: Path,
+    manifest: dict[str, Any],
+    *,
+    lease_seconds: int,
+    cache_path: Path | None = None,
+) -> dict[str, Any] | None:
+    from .templates import expand_template, load_template
+
+    template = manifest.get("template")
+    if not isinstance(template, dict):
+        return None
+    template_path_value = template.get("path")
+    if not isinstance(template_path_value, str) or not template_path_value:
+        return None
+    template_path = expand_path(template_path_value)
+    if not template_path.is_file():
+        return None
+    template_data = load_template(template_path)
+    chunking = template_data.get("chunking")
+    if not isinstance(chunking, dict) or not bool(chunking.get("live_rechunk")):
+        return None
+    split = adaptive_split_config(template_data)
+    if split is None:
+        return None
+    total_key, count_key, unit = split
+    params = template.get("parameters")
+    if not isinstance(params, dict):
+        return None
+
+    pending = [
+        task
+        for task in manifest.get("tasks") or []
+        if isinstance(task, dict) and task_state(manifest, task, lease_seconds=lease_seconds) == "pending"
+    ]
+    if not pending:
+        return None
+
+    signature_params = {**params, "__forge_template_name": str(template.get("name") or manifest.get("kind") or "task")}
+    cached_rate = selfplay_cached_throughput(signature_params, cache_path=cache_path)
+    if cached_rate is not None and cached_rate > 0:
+        estimated_games = max(1, int(round(cached_rate * selfplay_chunk_target_seconds(params))))
+    else:
+        estimated_games = max(1, int(chunking.get("initial_units") or 1))
+    threshold_games = estimated_games + max(2, estimated_games // 4)
+    current_max_games = max((adaptive_task_units(task, unit) for task in pending), default=0)
+    if current_max_games <= threshold_games:
+        return None
+
+    remaining_games = sum(adaptive_task_units(task, unit) for task in pending)
+    if remaining_games <= 0:
+        return None
+
+    target_shards = max(1, (remaining_games + estimated_games - 1) // estimated_games)
+    replanned = expand_template(
+        str(template_data.get("name") or manifest.get("kind") or "task"),
+        template_path,
+        template_data,
+        {
+            **params,
+            total_key: remaining_games,
+            count_key: target_shards,
+        },
+    )
+    replanned_tasks = replanned.get("tasks")
+    if not isinstance(replanned_tasks, list) or not replanned_tasks:
+        return None
+
+    kept_tasks = [
+        task
+        for task in manifest.get("tasks") or []
+        if task not in pending
+    ]
+    next_index = max((int(task.get("index", -1)) for task in kept_tasks), default=-1) + 1
+    width = max(4, len(str(next_index + len(replanned_tasks) - 1)))
+    pending_ids = {str(task.get("id") or "") for task in pending}
+    replacement_tasks: list[dict[str, Any]] = []
+    for offset, task in enumerate(replanned_tasks):
+        if not isinstance(task, dict):
+            continue
+        repl = copy.deepcopy(task)
+        old_id = str(repl.get("id") or "")
+        new_index = next_index + offset
+        prefix_match = re.match(r"^(.*?)(?:_?\d+)?$", old_id)
+        prefix = (prefix_match.group(1) if prefix_match else old_id).rstrip("_") or "task"
+        new_id = f"{prefix}_{new_index:0{width}d}"
+        repl["id"] = new_id
+        repl["index"] = new_index
+        if isinstance(repl.get("command"), str):
+            repl["command"] = repl["command"].replace(old_id, new_id)
+        if isinstance(repl.get("label"), str):
+            repl["label"] = repl["label"].replace(old_id, new_id)
+        outputs = repl.get("outputs")
+        if isinstance(outputs, list):
+            repl["outputs"] = [str(path).replace(old_id, new_id) for path in outputs]
+        replacement_tasks.append(repl)
+
+    if not replacement_tasks:
+        return None
+
+    updated = copy.deepcopy(manifest)
+    updated["tasks"] = [*kept_tasks, *replacement_tasks]
+    write_json(manifest_path, updated)
+    return {
+        "remaining_games": remaining_games,
+        "current_max_games": current_max_games,
+        "target_games": estimated_games,
+        "replacement_tasks": len(replacement_tasks),
+        "kept_tasks": len(kept_tasks),
+        "pending_tasks": len(pending_ids),
+    }
+
+
+def selfplay_rechunk_pending_tasks(
+    manifest_path: Path,
+    manifest: dict[str, Any],
+    *,
+    lease_seconds: int,
+    cache_path: Path | None = None,
+) -> dict[str, Any] | None:
+    return adaptive_rechunk_pending_tasks(
+        manifest_path,
+        manifest,
+        lease_seconds=lease_seconds,
+        cache_path=cache_path,
+    )
+
+
+# Generic public names. The older selfplay names remain aliases so existing
+# installations keep their calibration file and third-party callers do not
+# lose history during the scheduler migration.
+ADAPTIVE_CHUNK_CACHE_SCHEMA = SELFPLAY_CHUNK_CACHE_SCHEMA
+adaptive_chunk_cache_path = selfplay_chunk_cache_path
+adaptive_chunk_signature = selfplay_chunk_signature
+adaptive_chunk_signature_key = selfplay_chunk_signature_key
+adaptive_chunk_signature_label = selfplay_chunk_signature_label
+load_adaptive_chunk_history = load_selfplay_chunk_history
+write_adaptive_chunk_history = write_selfplay_chunk_history
+adaptive_cached_throughput = selfplay_cached_throughput
+record_adaptive_chunk_history = record_selfplay_chunk_history
+record_adaptive_chunk_task_result = record_selfplay_chunk_task_result

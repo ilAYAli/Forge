@@ -6,7 +6,7 @@ import tempfile
 from .config import *
 from .manifest import *
 from .labeling import build_inventory
-from .selfplay_chunks import selfplay_autosized_shards
+from .chunking import adaptive_autosized_shards, selfplay_autosized_shards
 from .spsa import (
     attach_spsa_manifest_config,
     auto_spsa_shards,
@@ -816,6 +816,26 @@ def auto_sprt_shards(params: dict[str, Any], worker_payload: dict[str, Any]) -> 
     return largest_multiple if largest_multiple > 0 else paired_limit
 
 
+def auto_adaptive_shards(
+    template_name: str,
+    template: dict[str, Any],
+    params: dict[str, Any],
+    worker_payload: dict[str, Any],
+    *,
+    cold_units: int,
+) -> int:
+    result = adaptive_autosized_shards(
+        template_name,
+        template,
+        params,
+        worker_payload,
+        cold_units=cold_units,
+    )
+    if result is None:
+        raise SystemExit(f"{template_name}: template cannot be adaptively split")
+    return result
+
+
 def auto_selfplay_shards(params: dict[str, Any], worker_payload: dict[str, Any]) -> int:
     return selfplay_autosized_shards(params, worker_payload)
 
@@ -842,7 +862,9 @@ def cmd_template_run(args: argparse.Namespace) -> int:
             sprt_workers_payload = sprt_worker_slots_payload(workers_arg)
         if not shards_supplied:
             params = dict(params)
-            params["shards"] = auto_sprt_shards(params, sprt_workers_payload or {})
+            params["shards"] = auto_adaptive_shards(
+                template_name, template, params, sprt_workers_payload or {}, cold_units=25
+            )
     elif template_name == "selfplay":
         params = parse_selfplay_template_parameters(template_name, template, template_args)
         shards_supplied = template_parameter_supplied(template, template_args, {"shards"})
@@ -868,7 +890,18 @@ def cmd_template_run(args: argparse.Namespace) -> int:
             spsa_workers_payload = spsa_worker_slots_payload(workers_arg)
         if not shards_supplied:
             params = dict(params)
-            params["shards"] = auto_spsa_shards(params, spsa_workers_payload or {})
+            cold_shards = auto_spsa_shards(params, spsa_workers_payload or {})
+            games = as_int(params.get("games"), label="spsa.games")
+            params["shards"] = min(
+                as_int(params.get("rounds"), label="spsa.rounds"),
+                auto_adaptive_shards(
+                    template_name,
+                    template,
+                    params,
+                    spsa_workers_payload or {},
+                    cold_units=max(1, (games + cold_shards - 1) // cold_shards),
+                ),
+            )
         params = prepare_spsa_template_parameters(params)
         if spsa_workers_payload is not None:
             spsa_workers_payload = cap_spsa_worker_slots(
@@ -878,7 +911,7 @@ def cmd_template_run(args: argparse.Namespace) -> int:
     else:
         params = parse_template_parameters(template_name, template, template_args)
         shards_param = template.get("parameters", {}).get("shards")
-        if isinstance(shards_param, dict) and "default" not in shards_param:
+        if isinstance(shards_param, dict):
             shards_supplied = template_parameter_supplied(template, template_args, {"shards", "shard_count"})
             needs_workers = (
                 not (run_options.print_manifest or run_options.dry_run)
@@ -890,7 +923,18 @@ def cmd_template_run(args: argparse.Namespace) -> int:
             if not shards_supplied:
                 params = dict(params)
                 slots = sprt_worker_slot_count(generic_workers_payload or {})
-                params["shards"] = max(1, slots * 4) if slots > 0 else 1
+                split = template.get("task", {}).get("split", {})
+                total_key = split.get("total") if isinstance(split, dict) else None
+                total = as_int(params.get(total_key), label=f"{template_name}.{total_key}") if total_key else 1
+                configured = as_int(shards_param.get("default", 1), label=f"{template_name}.shards")
+                cold_units = max(1, (total + configured - 1) // configured)
+                params["shards"] = auto_adaptive_shards(
+                    template_name,
+                    template,
+                    params,
+                    generic_workers_payload or {},
+                    cold_units=cold_units,
+                )
     run_options = apply_template_run_defaults(template_name, run_options, template)
     inventory_info: dict[str, Any] | None = None
     if template_name == "label":

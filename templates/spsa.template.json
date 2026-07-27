@@ -7,6 +7,11 @@
   "work_dir": "~",
   "materialize_inputs": true,
   "parameters": {
+    "chunk_time_seconds": {
+      "type": "int",
+      "default": 300,
+      "help": "Target wall-clock seconds per adaptively sized chunk"
+    },
     "engine": {
       "default": "~/assets/engines/candidate",
       "worker_path": true,

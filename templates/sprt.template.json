@@ -6,7 +6,17 @@
   "run_name": "sprt-{candidate_stem}-{games}-{timestamp}",
   "work_dir": "~",
   "materialize_inputs": true,
+  "chunking": {
+    "live_rechunk": true,
+    "initial_units": 25,
+    "min_chunks_per_slot": 2
+  },
   "parameters": {
+    "chunk_time_seconds": {
+      "type": "int",
+      "default": 300,
+      "help": "Target wall-clock seconds per adaptively sized chunk"
+    },
     "candidate": {
       "required": true,
       "worker_path": true,

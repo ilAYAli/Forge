@@ -3790,7 +3790,7 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
             })
 
             stdout = io.StringIO()
-            with mock.patch("forge_lib.selfplay_chunks.selfplay_chunk_cache_path", return_value=cache_path):
+            with mock.patch("forge_lib.chunking.selfplay_chunk_cache_path", return_value=cache_path):
                 with contextlib.redirect_stdout(stdout):
                     rc = forge.cmd_template_run(argparse.Namespace(
                         template="selfplay",
@@ -3816,6 +3816,138 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
         from forge_lib import selfplay_chunks
 
         self.assertEqual(15, selfplay_chunks.selfplay_default_chunk_games({"chunk_time_seconds": 300}))
+
+    def test_adaptive_chunk_history_sizes_every_split_template(self) -> None:
+        from forge_lib import chunking
+
+        cases = {
+            "selfplay": ("games", 600, 6),
+            "sprt": ("games", 1000, 10),
+            "spsa": ("games", 1200, 12),
+            "label": ("max_records", 900_000, 9000),
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            cache_path = Path(tmp) / "chunk-history.json"
+            records = {}
+            for name, (_total_key, _total, target_units) in cases.items():
+                signature = chunking.selfplay_chunk_signature({"__forge_template_name": name})
+                records[chunking.selfplay_chunk_signature_key(signature)] = {
+                    "label": name,
+                    "rate": target_units / 300.0,
+                    "samples": 3,
+                    "updated_epoch": 1.0,
+                }
+            forge.write_json(cache_path, {
+                "schema": chunking.SELFPLAY_CHUNK_CACHE_SCHEMA,
+                "records": records,
+            })
+
+            for name, (total_key, total, target_units) in cases.items():
+                with self.subTest(template=name):
+                    template = forge.load_template(forge.template_path(name))
+                    shards = chunking.adaptive_autosized_shards(
+                        name,
+                        template,
+                        {total_key: total, "chunk_time_seconds": 300},
+                        {"workers": [{"host": "worker-a", "slots": 1}]},
+                        cold_units=1,
+                        cache_path=cache_path,
+                    )
+                    self.assertEqual((total + target_units - 1) // target_units, shards)
+
+    def test_adaptive_chunk_units_support_spsa_split_games(self) -> None:
+        from forge_lib import chunking
+
+        task = {
+            "progress": {
+                "unit": "iterations",
+                "total": 20,
+                "games": 125,
+            },
+        }
+
+        self.assertEqual(125, chunking.adaptive_task_units(task, "games"))
+
+    def test_adaptive_initial_size_uses_slowest_known_worker_for_template(self) -> None:
+        from forge_lib import chunking
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cache_path = Path(tmp) / "chunk-history.json"
+            records = {}
+            for worker, rate in (("fast", 1.0), ("slow", 0.1)):
+                signature = chunking.selfplay_chunk_signature({
+                    "__forge_template_name": "selfplay",
+                    "__forge_worker": worker,
+                })
+                records[chunking.selfplay_chunk_signature_key(signature)] = {
+                    "label": "selfplay",
+                    "rate": rate,
+                    "samples": 2,
+                    "updated_epoch": 1.0,
+                }
+            forge.write_json(cache_path, {
+                "schema": chunking.SELFPLAY_CHUNK_CACHE_SCHEMA,
+                "records": records,
+            })
+            template = forge.load_template(forge.template_path("selfplay"))
+
+            shards = chunking.adaptive_autosized_shards(
+                "selfplay",
+                template,
+                {"games": 600, "chunk_time_seconds": 300},
+                {"workers": [{"host": "fast"}, {"host": "slow"}]},
+                cold_units=15,
+                cache_path=cache_path,
+            )
+
+        self.assertEqual(20, shards)
+
+    def test_adaptive_completion_records_template_and_worker_rates(self) -> None:
+        from forge_lib import chunking
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            state = root / "state"
+            state.mkdir()
+            task = {
+                "id": "sprt_0000",
+                "progress": {"unit": "games", "total": 20},
+            }
+            manifest = {
+                "kind": "sprt",
+                "state_dir": str(state),
+                "template": {
+                    "name": "sprt",
+                    "path": str(forge.template_path("sprt")),
+                    "parameters": {"games": 20, "chunk_time_seconds": 300},
+                },
+                "tasks": [task],
+            }
+            forge.write_json(state / "sprt_0000.done.json", {
+                "rc": 0,
+                "elapsed_s": 100.0,
+                "worker": "slow-worker",
+            })
+            cache_path = root / "chunk-history.json"
+
+            chunking.record_selfplay_chunk_task_result(
+                manifest,
+                task,
+                cache_path=cache_path,
+            )
+            history = chunking.load_selfplay_chunk_history(cache_path=cache_path)
+            aggregate_key = chunking.selfplay_chunk_signature_key(
+                chunking.selfplay_chunk_signature({"__forge_template_name": "sprt"})
+            )
+            worker_key = chunking.selfplay_chunk_signature_key(
+                chunking.selfplay_chunk_signature({
+                    "__forge_template_name": "sprt",
+                    "__forge_worker": "slow-worker",
+                })
+            )
+
+        self.assertAlmostEqual(0.2, history["records"][aggregate_key]["rate"])
+        self.assertAlmostEqual(0.2, history["records"][worker_key]["rate"])
 
     def test_selfplay_chunk_history_records_throughput_from_completed_tasks(self) -> None:
         from forge_lib import selfplay_chunks
@@ -3986,7 +4118,7 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
                 },
             })
 
-            with mock.patch("forge_lib.selfplay_chunks.selfplay_chunk_cache_path", return_value=cache_path):
+            with mock.patch("forge_lib.chunking.selfplay_chunk_cache_path", return_value=cache_path):
                 claimed = forge.claim_task(
                     manifest,
                     manifest_path=manifest_path,
@@ -4003,6 +4135,59 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
         self.assertEqual(4, len(updated["tasks"]))
         self.assertTrue(all(total <= 16 for total in totals))
         self.assertGreater(max(totals), min(totals))
+
+    def test_sprt_claim_uses_same_live_rechunker(self) -> None:
+        from forge_lib import chunking
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            state = root / "state"
+            claims = root / "claims"
+            state.mkdir()
+            claims.mkdir()
+            template_path = forge.template_path("sprt")
+            template = forge.load_template(template_path)
+            params = forge.parse_sprt_template_parameters(
+                "sprt",
+                template,
+                ["--candidate", "~/assets/engines/candidate", "--games", "100", "--shards", "2"],
+            )
+            manifest = forge.expand_template("sprt", template_path, template, params)
+            manifest["state_dir"] = str(state)
+            manifest["claim_dir"] = str(claims)
+            manifest_path = root / "manifest.json"
+            forge.write_json(manifest_path, manifest)
+            cache_path = root / "chunk-history.json"
+            signature = chunking.selfplay_chunk_signature({"__forge_template_name": "sprt"})
+            key = chunking.selfplay_chunk_signature_key(signature)
+            forge.write_json(cache_path, {
+                "schema": chunking.SELFPLAY_CHUNK_CACHE_SCHEMA,
+                "records": {
+                    key: {
+                        "label": "sprt",
+                        "rate": 10 / 300.0,
+                        "samples": 3,
+                        "updated_epoch": 1.0,
+                    },
+                },
+            })
+
+            with mock.patch("forge_lib.chunking.selfplay_chunk_cache_path", return_value=cache_path):
+                claimed = forge.claim_task(
+                    manifest,
+                    manifest_path=manifest_path,
+                    worker="worker-a",
+                    profile=None,
+                    lease_seconds=600,
+                    retry_failed=False,
+                )
+
+            updated = forge.load_manifest(manifest_path)
+            totals = [task["progress"]["total"] for task in updated["tasks"]]
+
+        self.assertIsNotNone(claimed)
+        self.assertEqual(10, len(updated["tasks"]))
+        self.assertTrue(all(total == 10 for total in totals))
 
     def test_selfplay_status_graph_aggregates_completed_fastchess_shards(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
