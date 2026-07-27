@@ -410,7 +410,16 @@ def record_selfplay_chunk_task_result(
     params = adaptive_template_parameters(manifest)
     rate = units / elapsed
     aggregate = _record_selfplay_chunk_rate(params, rate=rate, cache_path=cache_path)
-    worker = str(done.get("worker") or done.get("host") or "").strip()
+    worker_value = done.get("worker")
+    if isinstance(worker_value, dict):
+        worker = str(
+            worker_value.get("name")
+            or worker_value.get("host")
+            or done.get("host")
+            or ""
+        ).strip()
+    else:
+        worker = str(worker_value or done.get("host") or "").strip()
     if worker:
         _record_selfplay_chunk_rate(
             {**params, "__forge_worker": worker},
@@ -454,7 +463,12 @@ def adaptive_rechunk_pending_tasks(
     pending = [
         task
         for task in manifest.get("tasks") or []
-        if isinstance(task, dict) and task_state(manifest, task, lease_seconds=lease_seconds) == "pending"
+        if isinstance(task, dict)
+        and task_state(manifest, task, lease_seconds=lease_seconds) == "pending"
+        and (
+            not str(task.get("claim_worker") or "").strip()
+            or str(task.get("claim_worker") or "").strip() == str(worker or "").strip()
+        )
     ]
     if not pending:
         return None
@@ -473,25 +487,51 @@ def adaptive_rechunk_pending_tasks(
         estimated_games = max(1, int(round(cached_rate * selfplay_chunk_target_seconds(params))))
     else:
         estimated_games = max(1, int(chunking.get("initial_units") or 1))
-    threshold_games = estimated_games + max(2, estimated_games // 4)
+    pending.sort(key=lambda task: int(task.get("index", 0)))
+    tolerance = max(2, estimated_games // 4)
+    lower = max(1, estimated_games - tolerance)
+    upper = estimated_games + tolerance
     current_max_games = max((adaptive_task_units(task, unit) for task in pending), default=0)
-    if current_max_games <= threshold_games:
+    first_units = adaptive_task_units(pending[0], unit)
+    if lower <= first_units <= upper:
         return None
 
-    remaining_games = sum(adaptive_task_units(task, unit) for task in pending)
-    if remaining_games <= 0:
+    selected_units = 0
+    best_score: tuple[float, int] | None = None
+    best_count = 0
+    target_shards = 0
+    for count, task in enumerate(pending[:32], start=1):
+        selected_units += adaptive_task_units(task, unit)
+        if selected_units <= 0:
+            continue
+        shards = max(1, int(round(selected_units / estimated_games)))
+        average = selected_units / shards
+        score = (abs(average - estimated_games) / estimated_games, count)
+        if best_score is None or score < best_score:
+            best_score = score
+            best_count = count
+            target_shards = shards
+            if score[0] == 0:
+                break
+    if best_count <= 0 or target_shards <= 0:
         return None
+    selected = pending[:best_count]
+    selected_units = sum(adaptive_task_units(task, unit) for task in selected)
 
-    target_shards = max(1, (remaining_games + estimated_games - 1) // estimated_games)
+    replan_params = {
+        **params,
+        total_key: selected_units,
+        count_key: target_shards,
+    }
+    if "seed" in params:
+        replan_params["seed"] = int(params.get("seed") or 1) + min(
+            int(task.get("index", 0)) for task in selected
+        )
     replanned = expand_template(
         str(template_data.get("name") or manifest.get("kind") or "task"),
         template_path,
         template_data,
-        {
-            **params,
-            total_key: remaining_games,
-            count_key: target_shards,
-        },
+        replan_params,
     )
     replanned_tasks = replanned.get("tasks")
     if not isinstance(replanned_tasks, list) or not replanned_tasks:
@@ -500,11 +540,11 @@ def adaptive_rechunk_pending_tasks(
     kept_tasks = [
         task
         for task in manifest.get("tasks") or []
-        if task not in pending
+        if task not in selected
     ]
     next_index = max((int(task.get("index", -1)) for task in kept_tasks), default=-1) + 1
     width = max(4, len(str(next_index + len(replanned_tasks) - 1)))
-    pending_ids = {str(task.get("id") or "") for task in pending}
+    pending_ids = {str(task.get("id") or "") for task in selected}
     replacement_tasks: list[dict[str, Any]] = []
     for offset, task in enumerate(replanned_tasks):
         if not isinstance(task, dict):
@@ -517,6 +557,8 @@ def adaptive_rechunk_pending_tasks(
         new_id = f"{prefix}_{new_index:0{width}d}"
         repl["id"] = new_id
         repl["index"] = new_index
+        if worker_name:
+            repl["claim_worker"] = worker_name
         if isinstance(repl.get("command"), str):
             repl["command"] = repl["command"].replace(old_id, new_id)
         if isinstance(repl.get("label"), str):
@@ -533,7 +575,7 @@ def adaptive_rechunk_pending_tasks(
     updated["tasks"] = [*kept_tasks, *replacement_tasks]
     write_json(manifest_path, updated)
     return {
-        "remaining_games": remaining_games,
+        "remaining_games": selected_units,
         "current_max_games": current_max_games,
         "target_games": estimated_games,
         "replacement_tasks": len(replacement_tasks),

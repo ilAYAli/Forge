@@ -848,16 +848,12 @@ def fallback_progress_data(
         "done": 0,
         "total": total,
         "unit": unit,
-        "rate": rate,
         "eta_estimate": True,
         "fallback_estimate": True,
     }
     full_eta = progress_eta_seconds(0, total, rate)
-    if full_eta is not None and isinstance(elapsed_s, (int, float)) and elapsed_s > 0:
-        remaining = full_eta - float(elapsed_s)
-        data["eta_s"] = max(0.0, remaining)
-        if remaining <= 0:
-            data["eta_overdue"] = True
+    if full_eta is not None:
+        data["eta_s"] = full_eta
     return normalize_progress_data(data)
 
 def progress_text(data: dict[str, Any]) -> str:
@@ -3113,6 +3109,8 @@ def append_progress_history(
 def progress_graph_from_history(
     history: list[dict[str, Any]],
     fallback_graph: dict[str, Any] | None,
+    *,
+    kind: str = "",
 ) -> dict[str, Any] | None:
     points_by_name: dict[str, list[dict[str, float]]] = {}
     options_by_name: dict[str, dict[str, Any]] = {}
@@ -3120,15 +3118,20 @@ def progress_graph_from_history(
     x_total: int | None = None
     selfplay_rate_graph = (
         isinstance(fallback_graph, dict)
-        and isinstance(fallback_graph.get("selfplay"), dict)
         and any(
             str(item.get("name") or "").lower() == "games/s"
             for item in fallback_graph.get("series", [])
             if isinstance(item, dict)
         )
+    ) or any(
+        isinstance(entry.get("series"), dict) and "games/s" in entry["series"]
+        for entry in history
     )
-    is_selfplay = isinstance(fallback_graph, dict) and isinstance(fallback_graph.get("selfplay"), dict)
+    is_selfplay = kind.lower() == "selfplay" or selfplay_rate_graph or (
+        isinstance(fallback_graph, dict) and isinstance(fallback_graph.get("selfplay"), dict)
+    )
     current_max_x: float | None = None
+    previous_selfplay_sample: tuple[float, float] | None = None
     if isinstance(fallback_graph, dict):
         raw_fallback_series = fallback_graph.get("series")
         if isinstance(raw_fallback_series, list):
@@ -3169,7 +3172,16 @@ def progress_graph_from_history(
         if is_selfplay and current_max_x is not None and x > current_max_x:
             continue
         if is_selfplay and selfplay_rate_graph:
-            series = {"games/s": series["games/s"]} if "games/s" in series else {}
+            epoch = parse_float(entry.get("epoch"))
+            measured_rate: float | None = None
+            if epoch is not None and previous_selfplay_sample is not None:
+                previous_x, previous_epoch = previous_selfplay_sample
+                elapsed = epoch - previous_epoch
+                if elapsed > 0 and x > previous_x:
+                    measured_rate = (x - previous_x) / elapsed
+            if epoch is not None:
+                previous_selfplay_sample = (x, epoch)
+            series = {"games/s": measured_rate} if measured_rate is not None else {}
         elif is_selfplay and "games/s" in series:
             series = {"games/s": series["games/s"]}
         elif is_selfplay and all(name in series for name in ("wins", "draws", "losses")):
@@ -3220,7 +3232,7 @@ def progress_graph_from_history(
     }
     if x_total is not None and x_total > 0:
         result["x_total"] = x_total
-    if is_selfplay:
+    if is_selfplay and isinstance(fallback_graph, dict) and isinstance(fallback_graph.get("selfplay"), dict):
         result["selfplay"] = fallback_graph["selfplay"]
     return result
 
@@ -3239,8 +3251,16 @@ def run_progress_history_graph(
             )
         ):
             return current_graph
-        return progress_graph_from_history(history, current_graph)
-    return progress_graph_from_history(history, current_graph)
+        return progress_graph_from_history(
+            history,
+            current_graph,
+            kind=str(manifest_metadata(manifest).get("kind") or manifest.get("kind") or ""),
+        )
+    return progress_graph_from_history(
+        history,
+        current_graph,
+        kind=str(manifest_metadata(manifest).get("kind") or manifest.get("kind") or ""),
+    )
 
 def sprt_summary_rows(summary: dict[str, Any]) -> list[dict[str, Any]]:
     rows = summary.get("rows")
@@ -3766,7 +3786,7 @@ def status_summary(manifest: dict[str, Any], *, lease_seconds: int) -> dict[str,
             fallback_data = fallback_progress_data(
                 unit,
                 total,
-                fallback_rates.get(unit),
+                fallback_worker_rates.get(worker or "unknown") or fallback_rates.get(unit),
                 running_elapsed_seconds(running_payload),
             )
             if fallback_data is not None:
