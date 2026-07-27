@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from .core import *
-from .tasks import task_done_path, task_state
+from .tasks import task_done_path, task_heartbeat_path, task_running_path, task_state
 
 
 SELFPLAY_CHUNK_CACHE_SCHEMA = "forge.selfplay.chunk-history.v1"
@@ -475,6 +475,34 @@ def adaptive_rechunk_pending_tasks(
 
     signature_params = {**params, "__forge_template_name": str(template.get("name") or manifest.get("kind") or "task")}
     worker_name = str(worker or "").strip()
+    live_done = 0
+    live_elapsed = 0.0
+    now_epoch = time.time()
+    if worker_name:
+        for task in manifest.get("tasks") or []:
+            if not isinstance(task, dict):
+                continue
+            running_path = task_running_path(manifest, task)
+            heartbeat_path = task_heartbeat_path(manifest, task)
+            if not running_path.exists() or not heartbeat_path.exists():
+                continue
+            running = read_json(running_path)
+            heartbeat = read_json(heartbeat_path)
+            if not isinstance(running, dict) or not isinstance(heartbeat, dict):
+                continue
+            if str(running.get("worker") or heartbeat.get("worker") or "").strip() != worker_name:
+                continue
+            started = _parse_float(running.get("started_epoch") or heartbeat.get("claimed_epoch"))
+            progress = heartbeat.get("progress_data")
+            done = _parse_int(progress.get("done")) if isinstance(progress, dict) else None
+            if started is None or done is None:
+                continue
+            elapsed = now_epoch - started
+            if elapsed < 30:
+                continue
+            live_done += max(0, done)
+            live_elapsed += elapsed
+    live_rate = live_done / live_elapsed if live_done > 0 and live_elapsed > 0 else None
     cached_rate = (
         selfplay_cached_throughput(
             {**signature_params, "__forge_worker": worker_name},
@@ -483,8 +511,9 @@ def adaptive_rechunk_pending_tasks(
         if worker_name
         else None
     )
-    if cached_rate is not None and cached_rate > 0:
-        estimated_games = max(1, int(round(cached_rate * selfplay_chunk_target_seconds(params))))
+    effective_rate = live_rate if live_rate is not None and live_rate > 0 else cached_rate
+    if effective_rate is not None and effective_rate > 0:
+        estimated_games = max(1, int(round(effective_rate * selfplay_chunk_target_seconds(params))))
     else:
         estimated_games = max(1, int(chunking.get("initial_units") or 1))
     pending.sort(key=lambda task: int(task.get("index", 0)))

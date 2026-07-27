@@ -3718,11 +3718,8 @@ def status_summary(manifest: dict[str, Any], *, lease_seconds: int) -> dict[str,
         if isinstance(elapsed, (int, float)) and elapsed > 0:
             completed_units[unit] = completed_units.get(unit, 0) + total
             completed_elapsed[unit] = completed_elapsed.get(unit, 0.0) + float(elapsed)
-            progress_data = task_log_progress_data(manifest, task)
-            output_rate = progress_output_rate(progress_data, float(elapsed))
-            if output_rate is not None:
-                worker = status_worker(manifest, task, "done") or "unknown"
-                completed_worker_task_rates.setdefault(worker, []).append(output_rate)
+            worker = status_worker(manifest, task, "done") or "unknown"
+            completed_worker_task_rates.setdefault(worker, []).append(total / float(elapsed))
     fallback_rates = {
         unit: completed_units[unit] / completed_elapsed[unit]
         for unit in completed_units

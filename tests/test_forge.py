@@ -4339,6 +4339,72 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
         self.assertEqual(24, tasks[slow_claim["task"]]["progress"]["total"])
         self.assertEqual(64, tasks[fast_claim["task"]]["progress"]["total"])
 
+    def test_live_rechunk_uses_current_running_throughput_before_chunk_finishes(self) -> None:
+        from forge_lib import chunking
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "state").mkdir()
+            (root / "claims").mkdir()
+            template_path = forge.template_path("selfplay")
+            template = forge.load_template(template_path)
+            params = forge.parse_selfplay_template_parameters(
+                "selfplay",
+                template,
+                ["--engine", "~/assets/engines/enyo_9696dac", "--games", "64", "--shards", "4"],
+            )
+            manifest = forge.expand_template("selfplay", template_path, template, params)
+            manifest["state_dir"] = str(root / "state")
+            manifest["claim_dir"] = str(root / "claims")
+            manifest_path = root / "manifest.json"
+            running_task = manifest["tasks"][0]
+            forge.write_json(forge.task_running_path(manifest, running_task), {
+                "task": running_task["id"],
+                "worker": "slow",
+                "started_epoch": 700.0,
+            })
+            forge.task_claim_dir(manifest, running_task).mkdir()
+            forge.write_json(forge.task_heartbeat_path(manifest, running_task), {
+                "task": running_task["id"],
+                "worker": "slow",
+                "progress_data": {"done": 2, "total": 16, "unit": "games"},
+            })
+            forge.write_json(manifest_path, manifest)
+            cache_path = root / "chunk-history.json"
+            signature = chunking.selfplay_chunk_signature({
+                "__forge_template_name": "selfplay",
+                "__forge_worker": "slow",
+            })
+            forge.write_json(cache_path, {
+                "schema": chunking.SELFPLAY_CHUNK_CACHE_SCHEMA,
+                "records": {
+                    chunking.selfplay_chunk_signature_key(signature): {
+                        "label": "selfplay",
+                        "rate": 0.1,
+                        "samples": 3,
+                        "updated_epoch": 1.0,
+                    },
+                },
+            })
+
+            with (
+                mock.patch("forge_lib.chunking.selfplay_chunk_cache_path", return_value=cache_path),
+                mock.patch("forge_lib.chunking.time.time", return_value=1000.0),
+            ):
+                claimed = forge.claim_task(
+                    manifest,
+                    manifest_path=manifest_path,
+                    worker="slow",
+                    profile=None,
+                    lease_seconds=600,
+                    retry_failed=False,
+                )
+
+            updated = forge.load_manifest(manifest_path)
+            claimed_task = next(task for task in updated["tasks"] if task["id"] == claimed["task"])
+
+        self.assertEqual(2, claimed_task["progress"]["total"])
+
     def test_selfplay_status_graph_aggregates_completed_fastchess_shards(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
