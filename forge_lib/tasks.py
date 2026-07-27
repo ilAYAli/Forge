@@ -457,10 +457,11 @@ def claim_task(
 
             def claim_order(item: dict[str, Any]) -> tuple[int, bool, int]:
                 preferred = str(item.get("claim_worker") or "").strip()
+                index = int(item.get("index", 0))
                 return (
                     0 if preferred == worker else 1 if not preferred else 2,
                     task_fail_path(manifest, item).exists(),
-                    int(item.get("index", 0)),
+                    -index if preferred == worker else index,
                 )
 
             for task in sorted(manifest["tasks"], key=claim_order):
@@ -524,10 +525,11 @@ def claim_task(
 
     def claim_order(item: dict[str, Any]) -> tuple[int, bool, int]:
         preferred = str(item.get("claim_worker") or "").strip()
+        index = int(item.get("index", 0))
         return (
             0 if preferred == worker else 1 if not preferred else 2,
             task_fail_path(manifest, item).exists(),
-            int(item.get("index", 0)),
+            -index if preferred == worker else index,
         )
 
     for task in sorted(manifest["tasks"], key=claim_order):

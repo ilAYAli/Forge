@@ -8912,6 +8912,32 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
             self.assertIsNotNone(reclaimed)
             self.assertFalse(running.exists())
 
+    def test_worker_claims_newest_preferred_recalibrated_task_first(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest = {
+                "schema": "forge.task.v1",
+                "name": "adaptive-order",
+                "work_dir": str(root),
+                "state_dir": str(root / "state"),
+                "log_dir": str(root / "logs"),
+                "claim_dir": str(root / "claims"),
+                "tasks": [
+                    {"id": "task_0001", "index": 1, "claim_worker": "worker-a", "command": "true", "outputs": []},
+                    {"id": "task_0100", "index": 100, "claim_worker": "worker-a", "command": "true", "outputs": []},
+                ],
+            }
+
+            claimed = forge.claim_task(
+                manifest,
+                worker="worker-a",
+                profile=None,
+                lease_seconds=600,
+                retry_failed=False,
+            )
+
+        self.assertEqual("task_0100", claimed["task"])
+
     def test_task_execution_checksum_excludes_routing_but_tracks_execution(self) -> None:
         manifest = {
             "schema": "forge.task.v1",
