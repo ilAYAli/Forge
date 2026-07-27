@@ -201,6 +201,14 @@ def state_control_command_args(name: str, args: argparse.Namespace) -> list[str]
     if name == "stop":
         if bool(getattr(args, "all", False)):
             command.append("--all")
+        if bool(getattr(args, "force", False)):
+            command.append("--force")
+        if not bool(getattr(args, "wait", True)):
+            command.append("--no-wait")
+        command.extend([
+            "--interval-seconds",
+            str(getattr(args, "interval_seconds", 5.0)),
+        ])
     elif name == "drain":
         if bool(getattr(args, "all", False)):
             command.append("--all")
@@ -640,6 +648,8 @@ def run_state(summary: dict[str, Any]) -> str:
         return "stalled"
     if run_queued(summary):
         return "queued"
+    if run_stopped(summary) and run_active_count(summary) > 0:
+        return "stopping"
     if run_current(summary):
         return "current"
     if run_failed(summary):
@@ -657,6 +667,8 @@ def run_state_fields(summary: dict[str, Any]) -> list[str]:
         return ["state=queued"]
     if run_launch_stale(summary):
         return ["state=launch-stale"]
+    if run_stopped(summary) and run_active_count(summary) > 0:
+        return ["state=stopping"]
     return []
 
 def filtered_run_summaries(
@@ -2258,6 +2270,9 @@ def cmd_stop(args: argparse.Namespace) -> int:
             if stop_result["reset"]:
                 message += f" reset={len(stop_result['reset'])}"
             print(message)
+            continue
+        if not bool(getattr(args, "wait", True)):
+            print(f"stop requested: {path.parent.name} draining active chunks")
             continue
         if stop_result["cleared"]:
             print(f"stop requested: {path.parent.name} waiting; cleared={','.join(stop_result['cleared'])}")

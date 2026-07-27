@@ -1177,7 +1177,7 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
         self.assertIn("function updateInactiveButton", web._HTML)
         self.assertIn("function toggleInactiveRuns", web._HTML)
         self.assertIn("function runIsActive", web._HTML)
-        self.assertIn("state === 'current' || state === 'queued' || state === 'stalled'", web._HTML)
+        self.assertIn("state === 'current' || state === 'stopping' || state === 'queued' || state === 'stalled'", web._HTML)
         self.assertIn(".filter(r => showInactiveRuns || runIsActive(r))", web._HTML)
         self.assertIn("updateInactiveButton()", web._HTML)
         self.assertIn("const HIDDEN_RUNS_KEY = 'forge.hiddenRuns.v1'", web._HTML)
@@ -1333,6 +1333,25 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
             [sys.executable, str(web.script_path()), "del", "failed-run", "--force"],
             run_mock.call_args.args[0],
         )
+
+    def test_web_stop_requests_drain_without_blocking(self) -> None:
+        import forge_lib.web as web
+
+        completed = subprocess.CompletedProcess(
+            ["forge", "stop"],
+            0,
+            stdout="stop requested: active draining active chunks\n",
+            stderr="",
+        )
+        with (
+            mock.patch("forge_lib.web._run_web_cli", return_value=completed) as run_mock,
+            mock.patch("forge_lib.web._invalidate_status_cache") as invalidate,
+        ):
+            result = web._run_api_command("active", "stop")
+
+        self.assertIs(completed, result)
+        run_mock.assert_called_once_with(["stop", "active", "--no-wait"])
+        invalidate.assert_called_once_with()
 
     def test_web_delete_command_targets_visible_coordinator(self) -> None:
         import forge_lib.web as web
@@ -4384,6 +4403,119 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
         self.assertEqual(24, tasks[slow_claim["task"]]["progress"]["total"])
         self.assertEqual(64, tasks[fast_claim["task"]]["progress"]["total"])
 
+    def test_cross_host_steal_rechunks_for_claiming_worker(self) -> None:
+        from forge_lib import chunking
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "state").mkdir()
+            (root / "claims").mkdir()
+            template_path = forge.template_path("selfplay")
+            template = forge.load_template(template_path)
+            params = forge.parse_selfplay_template_parameters(
+                "selfplay",
+                template,
+                ["--engine", "~/assets/engines/enyo_9696dac", "--games", "320", "--shards", "160"],
+            )
+            manifest = forge.expand_template("selfplay", template_path, template, params)
+            manifest["state_dir"] = str(root / "state")
+            manifest["claim_dir"] = str(root / "claims")
+            for task in manifest["tasks"]:
+                task["claim_worker"] = "slow"
+            manifest_path = root / "manifest.json"
+            forge.write_json(manifest_path, manifest)
+            forge.write_json(root / "workers.json", {
+                "schema": "forge.workers.v1",
+                "workers": [
+                    {"host": "slow", "profile": "slow", "slots": 1},
+                    {"host": "fast", "profile": "fast", "slots": 2},
+                ],
+            })
+            cache_path = root / "chunk-history.json"
+            signature = chunking.selfplay_chunk_signature({
+                "__forge_template_name": "selfplay",
+                "__forge_worker": "fast",
+            })
+            forge.write_json(cache_path, {
+                "schema": chunking.SELFPLAY_CHUNK_CACHE_SCHEMA,
+                "records": {
+                    chunking.selfplay_chunk_signature_key(signature): {
+                        "label": "selfplay",
+                        "rate": 64 / 300,
+                        "samples": 3,
+                        "updated_epoch": 1.0,
+                    },
+                },
+            })
+
+            with mock.patch("forge_lib.chunking.selfplay_chunk_cache_path", return_value=cache_path):
+                claimed = forge.claim_task(
+                    manifest,
+                    manifest_path=manifest_path,
+                    worker="fast",
+                    worker_id="fast#1",
+                    profile=None,
+                    lease_seconds=600,
+                    retry_failed=False,
+                )
+
+            updated = forge.load_manifest(manifest_path)
+            claimed_task = next(task for task in updated["tasks"] if task["id"] == claimed["task"])
+            fast_tasks = [
+                task for task in updated["tasks"]
+                if task.get("claim_worker") == "fast"
+            ]
+
+        self.assertEqual("fast#1", claimed["claim"]["worker_id"])
+        self.assertEqual("fast", claimed_task["claim_worker"])
+        self.assertEqual(64, claimed_task["progress"]["total"])
+        self.assertGreaterEqual(len(fast_tasks), 4)
+        self.assertTrue(all(task["progress"]["total"] == 64 for task in fast_tasks))
+        self.assertEqual(320, sum(task["progress"]["total"] for task in updated["tasks"]))
+
+    def test_nonadaptive_template_can_still_steal_foreign_work(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "state").mkdir()
+            (root / "claims").mkdir()
+            task = {
+                "id": "label_0000",
+                "index": 0,
+                "claim_worker": "slow",
+                "command": "true",
+                "outputs": [],
+            }
+            manifest = {
+                "schema": "forge.task.v1",
+                "name": "label-steal",
+                "kind": "label",
+                "work_dir": str(root),
+                "state_dir": str(root / "state"),
+                "claim_dir": str(root / "claims"),
+                "template": {
+                    "name": "label",
+                    "path": str(forge.template_path("label")),
+                    "parameters": {},
+                },
+                "tasks": [task],
+            }
+            manifest_path = root / "manifest.json"
+            forge.write_json(manifest_path, manifest)
+
+            claimed = forge.claim_task(
+                manifest,
+                manifest_path=manifest_path,
+                worker="fast",
+                worker_id="fast#1",
+                profile=None,
+                lease_seconds=600,
+                retry_failed=False,
+            )
+
+        self.assertIsNotNone(claimed)
+        self.assertEqual("label_0000", claimed["task"])
+        self.assertEqual("fast#1", claimed["claim"]["worker_id"])
+
     def test_live_rechunk_uses_current_running_throughput_before_chunk_finishes(self) -> None:
         from forge_lib import chunking
 
@@ -6488,7 +6620,7 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
 
             self.assertIn("no failed Forge run found", str(raised.exception))
 
-    def test_resume_clears_stop_and_restarts_incomplete_run(self) -> None:
+    def test_resume_preserves_stop_until_deploy_cleans_old_workers(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             runs = Path(tmp) / "runs"
             run = self.write_retry_run(runs, "paused", failed=None)
@@ -6507,8 +6639,8 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
                     rc = forge.cmd_resume(self.retry_args(run="paused"))
 
             self.assertEqual(0, rc)
-            self.assertFalse(forge.stop_request_path(manifest).exists())
-            self.assertIn("resume: cleared stop request for paused", stdout.getvalue())
+            self.assertTrue(forge.stop_request_path(manifest).exists())
+            self.assertNotIn("resume: cleared stop request for paused", stdout.getvalue())
             resume_args = run_job.call_args.args[0]
             self.assertEqual("paused", resume_args.run)
             self.assertEqual(str(run / "workers.json"), resume_args.workers)
@@ -7913,6 +8045,26 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
             sleep_mock.assert_called_once()
             run_task_mock.assert_called_once()
 
+    def test_stopped_coordinator_makes_idle_worker_exit(self) -> None:
+        with mock.patch(
+            "forge_lib.tasks.coordinator_status_summary",
+            return_value={
+                "stop": {"requested_at": "2026-07-27T21:00:00+0200"},
+                "counts": {
+                    "pending": 100,
+                    "running": 3,
+                    "claimed": 0,
+                    "stale": 0,
+                },
+            },
+        ):
+            has_work = forge.coordinator_has_claimable_or_active_work(
+                "/tmp/run/manifest.json",
+                lease_seconds=600,
+            )
+
+        self.assertFalse(has_work)
+
     def test_worker_refreshes_manifest_after_dynamic_task_claim(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -8879,6 +9031,23 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
             "pending": 0,
         }
         self.assertEqual("failed", forge.run_state(summary))
+
+    def test_stopping_run_state_takes_precedence_while_tasks_drain(self) -> None:
+        summary = {
+            "tasks": 3,
+            "stop": {"requested_at": "2026-07-27T20:45:15+0200"},
+            "counts": {
+                "done": 1,
+                "fail": 0,
+                "running": 2,
+                "claimed": 0,
+                "stale": 0,
+                "pending": 0,
+            },
+        }
+
+        self.assertEqual("stopping", forge.run_state(summary))
+        self.assertEqual(["state=stopping"], forge.run_state_fields(summary))
 
     def test_malformed_claim_is_claimed_until_stale(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -13673,7 +13842,8 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
         )
 
         self.assertIn("--worker pwa-wsl", command)
-        self.assertIn("--worker-id 'pwa-wsl/linux#3'", command)
+        self.assertIn("--worker-id 'pwa-wsl#3'", command)
+        self.assertNotIn("pwa-wsl/linux", command)
 
     def test_worker_process_status_identifies_starved_and_stale_slots(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -15074,6 +15244,46 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
             self.assertEqual(1, command[-1].count("sleep 0.1"))
             self.assertIn("kill -TERM", command[-1])
 
+    def test_resume_cleans_lingering_workers_before_clearing_stop(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            run = Path(tmp) / "stopped-run"
+            run.mkdir()
+            manifest = {
+                "schema": "forge.task.v1",
+                "name": "stopped-run",
+                "work_dir": str(run),
+                "state_dir": str(run / "state"),
+                "log_dir": str(run / "logs"),
+                "claim_dir": str(run / "claims"),
+                "tasks": [{"id": "task_0000", "index": 0, "command": "true", "outputs": []}],
+            }
+            forge.write_json(run / "manifest.json", manifest)
+            forge.write_json(forge.stop_request_path(manifest), {
+                "schema": "forge.task.v1",
+                "run": "stopped-run",
+            })
+            process_dir = forge.worker_process_dir(manifest)
+            process_dir.mkdir(parents=True)
+            forge.write_json(process_dir / "old-profile.json", {
+                "worker": "pwa-wsl",
+                "worker_id": "pwa-wsl/linux#1",
+                "state": "stale",
+            })
+
+            with mock.patch("forge_lib.workers.kill_run_workers", return_value=3) as kill_workers:
+                stdout = io.StringIO()
+                with contextlib.redirect_stdout(stdout):
+                    killed = forge.cleanup_lingering_resume_workers(
+                        run,
+                        lease_seconds=600,
+                        label="resume",
+                    )
+
+            self.assertEqual(3, killed)
+            kill_workers.assert_called_once_with(run)
+            self.assertEqual([], list(process_dir.glob("*.json")))
+            self.assertIn("resume: stopped 3 lingering worker process(es)", stdout.getvalue())
+
     def test_deploy_launch_only_starts_wait_monitor_for_notifications(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -15424,6 +15634,8 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
     def test_worker_label_omits_duplicate_profile(self) -> None:
         self.assertEqual("pwa-5090", forge.worker_label("pwa-5090", "pwa-5090"))
         self.assertEqual("pwa-wsl", forge.worker_label("pwa-wsl", "pwa-wsl"))
+        self.assertEqual("pwa-wsl/linux#1", forge.worker_label("pwa-wsl", "linux", 1, 8))
+        self.assertEqual("pwa-wsl#1", forge.worker_process_id("pwa-wsl", 1, 8))
         self.assertEqual("pwa-5090#2", forge.worker_label("pwa-5090", "pwa-5090", 2, 4))
 
     def test_run_worker_shell_retries_transient_ssh_transport_failure(self) -> None:

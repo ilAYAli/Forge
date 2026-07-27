@@ -697,6 +697,12 @@ def build_parser() -> argparse.ArgumentParser:
     stop.add_argument("--all", action="store_true", help="Request stop for all current runs.")
     stop.add_argument("--lease-seconds", type=int, default=600, help="Claim lease duration before stale.")
     stop.add_argument("--interval-seconds", type=float, default=5.0, help="Polling interval while waiting for chunks to finish.")
+    stop.add_argument(
+        "--wait",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Wait for active chunks to finish after requesting the stop.",
+    )
     stop.add_argument("--force", action="store_true", help="Kill active workers and release active claims immediately.")
     stop.set_defaults(func=cmd_stop)
 

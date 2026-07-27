@@ -204,6 +204,44 @@ def adaptive_manifest_split(manifest: dict[str, Any]) -> tuple[str, str, str] | 
         return None
 
 
+def adaptive_live_rechunk_enabled(manifest: dict[str, Any]) -> bool:
+    template = manifest.get("template")
+    path_value = template.get("path") if isinstance(template, dict) else None
+    if not isinstance(path_value, str) or not path_value:
+        return False
+    try:
+        from .templates import load_template
+
+        template_data = load_template(expand_path(path_value))
+    except (OSError, SystemExit):
+        return False
+    chunking = template_data.get("chunking")
+    return (
+        isinstance(chunking, dict)
+        and bool(chunking.get("live_rechunk"))
+        and adaptive_split_config(template_data) is not None
+    )
+
+
+def adaptive_worker_slot_count(manifest_path: Path, worker: str) -> int:
+    workers_path = manifest_path.parent / "workers.json"
+    try:
+        payload = read_json(workers_path)
+    except (OSError, SystemExit):
+        return 1
+    records = payload.get("workers") if isinstance(payload, dict) else None
+    if not isinstance(records, list):
+        return 1
+    slots = 0
+    for record in records:
+        if not isinstance(record, dict) or str(record.get("host") or "").strip() != worker:
+            continue
+        value = _parse_int(record.get("slots", 1))
+        if value is not None and value > 0:
+            slots += value
+    return max(1, slots)
+
+
 def selfplay_cached_throughput(params: dict[str, Any], *, cache_path: Path | None = None) -> float | None:
     signature = selfplay_chunk_signature(params)
     key = selfplay_chunk_signature_key(signature)
@@ -435,6 +473,7 @@ def adaptive_rechunk_pending_tasks(
     *,
     lease_seconds: int,
     worker: str | None = None,
+    reassign_foreign: bool = False,
     cache_path: Path | None = None,
 ) -> dict[str, Any] | None:
     from .templates import expand_template, load_template
@@ -460,21 +499,27 @@ def adaptive_rechunk_pending_tasks(
     if not isinstance(params, dict):
         return None
 
+    worker_name = str(worker or "").strip()
+    if reassign_foreign and not worker_name:
+        return None
+
+    def route_matches(task: dict[str, Any]) -> bool:
+        preferred = str(task.get("claim_worker") or "").strip()
+        if reassign_foreign:
+            return bool(preferred and preferred != worker_name)
+        return not preferred or preferred == worker_name
+
     pending = [
         task
         for task in manifest.get("tasks") or []
         if isinstance(task, dict)
         and task_state(manifest, task, lease_seconds=lease_seconds) == "pending"
-        and (
-            not str(task.get("claim_worker") or "").strip()
-            or str(task.get("claim_worker") or "").strip() == str(worker or "").strip()
-        )
+        and route_matches(task)
     ]
     if not pending:
         return None
 
     signature_params = {**params, "__forge_template_name": str(template.get("name") or manifest.get("kind") or "task")}
-    worker_name = str(worker or "").strip()
     live_done = 0
     live_elapsed = 0.0
     now_epoch = time.time()
@@ -516,32 +561,50 @@ def adaptive_rechunk_pending_tasks(
         estimated_games = max(1, int(round(effective_rate * selfplay_chunk_target_seconds(params))))
     else:
         estimated_games = max(1, int(chunking.get("initial_units") or 1))
-    pending.sort(key=lambda task: int(task.get("index", 0)))
+    if reassign_foreign:
+        pending.sort(key=lambda task: int(task.get("index", 0)))
+    else:
+        pending.sort(key=lambda task: (
+            0 if str(task.get("claim_worker") or "").strip() == worker_name else 1,
+            -int(task.get("index", 0))
+            if str(task.get("claim_worker") or "").strip() == worker_name
+            else int(task.get("index", 0)),
+        ))
     tolerance = max(2, estimated_games // 4)
     lower = max(1, estimated_games - tolerance)
     upper = estimated_games + tolerance
     current_max_games = max((adaptive_task_units(task, unit) for task in pending), default=0)
     first_units = adaptive_task_units(pending[0], unit)
-    if lower <= first_units <= upper:
+    if not reassign_foreign and lower <= first_units <= upper:
         return None
 
+    worker_slots = adaptive_worker_slot_count(manifest_path, worker_name) if worker_name else 1
+    chunks_per_slot = max(1, int(chunking.get("rechunk_chunks_per_slot", 2)))
+    desired_chunks = max(1, worker_slots * chunks_per_slot)
+    desired_units = estimated_games * desired_chunks
     selected_units = 0
-    best_score: tuple[float, int] | None = None
-    best_count = 0
-    target_shards = 0
-    for count, task in enumerate(pending[:32], start=1):
+    best_any: tuple[tuple[float, int], int, int] | None = None
+    best_batch: tuple[tuple[float, int], int, int] | None = None
+    for count, task in enumerate(pending, start=1):
         selected_units += adaptive_task_units(task, unit)
         if selected_units <= 0:
             continue
         shards = max(1, int(round(selected_units / estimated_games)))
         average = selected_units / shards
         score = (abs(average - estimated_games) / estimated_games, count)
-        if best_score is None or score < best_score:
-            best_score = score
-            best_count = count
-            target_shards = shards
-            if score[0] == 0:
-                break
+        candidate = (score, count, shards)
+        if best_any is None or score < best_any[0]:
+            best_any = candidate
+        if shards >= desired_chunks and (best_batch is None or score < best_batch[0]):
+            best_batch = candidate
+        if score[0] == 0 and shards >= desired_chunks:
+            break
+        if count >= 32 and selected_units >= desired_units and best_batch is not None:
+            break
+    best = best_batch or best_any
+    if best is None:
+        return None
+    _best_score, best_count, target_shards = best
     if best_count <= 0 or target_shards <= 0:
         return None
     selected = pending[:best_count]

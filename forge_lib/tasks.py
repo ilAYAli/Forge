@@ -517,11 +517,16 @@ def claim_task(
     max_attempts: int = 0,
 ) -> dict[str, Any] | None:
     if manifest_path is not None and isinstance(manifest.get("template"), dict):
-        from .chunking import adaptive_rechunk_pending_tasks
+        from .chunking import adaptive_live_rechunk_enabled, adaptive_rechunk_pending_tasks
 
         with adaptive_claim_lock(manifest_path):
             manifest = load_manifest(manifest_path)
-            if adaptive_rechunk_due(manifest, worker):
+            live_rechunk = adaptive_live_rechunk_enabled(manifest)
+            if stop_requested(manifest):
+                return None
+            if worker_drained(manifest, worker):
+                return None
+            if live_rechunk and adaptive_rechunk_due(manifest, worker):
                 adaptive_rechunk_pending_tasks(
                     manifest_path,
                     manifest,
@@ -530,12 +535,6 @@ def claim_task(
                 )
                 mark_adaptive_rechunk(manifest, worker)
                 manifest = load_manifest(manifest_path)
-            if stop_requested(manifest):
-                return None
-            if worker_drained(manifest, worker):
-                return None
-            claim_dir(manifest).mkdir(parents=True, exist_ok=True)
-            digest = manifest_checksum(manifest)
             max_attempts = max(0, int(max_attempts))
 
             def claim_order(item: dict[str, Any]) -> tuple[int, bool, int]:
@@ -547,61 +546,77 @@ def claim_task(
                     -index if preferred == worker else index,
                 )
 
-            for task in sorted(manifest["tasks"], key=claim_order):
-                if task_complete(manifest, task):
-                    continue
-                fail_path = task_fail_path(manifest, task)
-                fail_payload: dict[str, Any] | None = None
-                attempt = 1
-                if fail_path.exists():
-                    if not retry_failed:
+            for claim_pass in range(2):
+                claim_dir(manifest).mkdir(parents=True, exist_ok=True)
+                digest = manifest_checksum(manifest)
+                for task in sorted(manifest["tasks"], key=claim_order):
+                    preferred = str(task.get("claim_worker") or "").strip()
+                    if live_rechunk and preferred and preferred != worker:
                         continue
-                    fail_payload = read_state_json(fail_path)
-                    attempt = task_attempt_from_payload(fail_payload) + 1
-                    if max_attempts > 0 and attempt > max_attempts:
+                    if task_complete(manifest, task):
                         continue
-                running_state = task_running_state(manifest, task, lease_seconds=lease_seconds)
-                if running_state == "running":
-                    continue
-                if running_state == "stale":
-                    task_running_path(manifest, task).unlink(missing_ok=True)
-                claim_state = task_claim_state(manifest, task, lease_seconds=lease_seconds)
-                task_claim = task_claim_dir(manifest, task)
-                if claim_state == "claimed":
-                    continue
-                if claim_state == "stale":
-                    if not remove_stale_claim(manifest, task, lease_seconds=lease_seconds):
+                    fail_path = task_fail_path(manifest, task)
+                    fail_payload: dict[str, Any] | None = None
+                    attempt = 1
+                    if fail_path.exists():
+                        if not retry_failed:
+                            continue
+                        fail_payload = read_state_json(fail_path)
+                        attempt = task_attempt_from_payload(fail_payload) + 1
+                        if max_attempts > 0 and attempt > max_attempts:
+                            continue
+                    running_state = task_running_state(manifest, task, lease_seconds=lease_seconds)
+                    if running_state == "running":
                         continue
-                try:
-                    task_claim.mkdir(parents=True)
-                except FileExistsError:
+                    if running_state == "stale":
+                        task_running_path(manifest, task).unlink(missing_ok=True)
+                    claim_state = task_claim_state(manifest, task, lease_seconds=lease_seconds)
+                    task_claim = task_claim_dir(manifest, task)
+                    if claim_state == "claimed":
+                        continue
+                    if claim_state == "stale":
+                        if not remove_stale_claim(manifest, task, lease_seconds=lease_seconds):
+                            continue
+                    try:
+                        task_claim.mkdir(parents=True)
+                    except FileExistsError:
+                        continue
+                    payload = {
+                        "schema": SCHEMA,
+                        "task": task["id"],
+                        "index": task.get("index"),
+                        "claim_id": uuid.uuid4().hex,
+                        "worker": worker,
+                        "worker_id": worker_id or worker,
+                        "profile": profile,
+                        "claimed_at": now(),
+                        "claimed_epoch": epoch(),
+                        "heartbeat_epoch": epoch(),
+                        "lease_seconds": lease_seconds,
+                        "manifest_sha256": digest,
+                        "task_execution_sha256": task_execution_checksum(manifest, task),
+                        "attempt": attempt,
+                    }
+                    if max_attempts > 0:
+                        payload["max_attempts"] = max_attempts
+                    write_json(task_claim_path(manifest, task), payload)
+                    write_json(task_heartbeat_path(manifest, task), payload)
+                    return {
+                        "task": task["id"],
+                        "index": task.get("index"),
+                        "claim": payload,
+                        "task_payload": copy.deepcopy(task),
+                    }
+                if claim_pass == 0 and live_rechunk and adaptive_rechunk_pending_tasks(
+                    manifest_path,
+                    manifest,
+                    lease_seconds=lease_seconds,
+                    worker=worker,
+                    reassign_foreign=True,
+                ):
+                    manifest = load_manifest(manifest_path)
                     continue
-                payload = {
-                    "schema": SCHEMA,
-                    "task": task["id"],
-                    "index": task.get("index"),
-                    "claim_id": uuid.uuid4().hex,
-                    "worker": worker,
-                    "worker_id": worker_id or worker,
-                    "profile": profile,
-                    "claimed_at": now(),
-                    "claimed_epoch": epoch(),
-                    "heartbeat_epoch": epoch(),
-                    "lease_seconds": lease_seconds,
-                    "manifest_sha256": digest,
-                    "task_execution_sha256": task_execution_checksum(manifest, task),
-                    "attempt": attempt,
-                }
-                if max_attempts > 0:
-                    payload["max_attempts"] = max_attempts
-                write_json(task_claim_path(manifest, task), payload)
-                write_json(task_heartbeat_path(manifest, task), payload)
-                return {
-                    "task": task["id"],
-                    "index": task.get("index"),
-                    "claim": payload,
-                    "task_payload": copy.deepcopy(task),
-                }
+                break
             return None
 
     if stop_requested(manifest):
@@ -1111,6 +1126,8 @@ def coordinator_status_summary(coordinator: str, *, lease_seconds: int) -> dict[
 
 def coordinator_has_claimable_or_active_work(coordinator: str, *, lease_seconds: int) -> bool:
     summary = coordinator_status_summary(coordinator, lease_seconds=lease_seconds)
+    if isinstance(summary, dict) and isinstance(summary.get("stop"), dict):
+        return False
     counts = summary.get("counts") if isinstance(summary, dict) else None
     if not isinstance(counts, dict):
         return False

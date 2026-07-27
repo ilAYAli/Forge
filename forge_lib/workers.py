@@ -1093,9 +1093,8 @@ def deploy_work_command(
         "--manifest", manifest_path,
         "--coordinator", coordinator,
         "--worker", str(worker["host"]),
-        "--worker-id", worker_label(
+        "--worker-id", worker_process_id(
             str(worker["host"]),
-            str(worker["profile"]),
             worker.get("_slot"),
             worker.get("_slots"),
         ),
@@ -1222,6 +1221,31 @@ def kill_run_workers(run_dir: Path, *, timeout: float = 30.0) -> int:
         return 0
     with concurrent.futures.ThreadPoolExecutor(max_workers=len(targets)) as executor:
         return sum(executor.map(kill_target, targets.items()))
+
+
+def cleanup_lingering_resume_workers(
+    run_dir: Path,
+    *,
+    lease_seconds: int,
+    label: str,
+) -> int:
+    manifest_path = run_dir / RUN_MANIFEST_NAME
+    if not manifest_path.exists():
+        return 0
+    manifest = load_manifest(manifest_path)
+    if not stop_requested(manifest) or run_active_task_count(
+        manifest,
+        lease_seconds=lease_seconds,
+    ) > 0:
+        return 0
+    killed = kill_run_workers(run_dir)
+    process_dir = worker_process_dir(manifest)
+    if process_dir.is_dir():
+        for path in process_dir.glob("*.json"):
+            path.unlink(missing_ok=True)
+    if killed:
+        print(f"{label}: stopped {killed} lingering worker process(es)")
+    return killed
 
 
 def start_wait_monitor(
@@ -1382,11 +1406,18 @@ def clear_restart_requests(manifest: dict[str, Any], run_name: str, *, label: st
         print(f"{label}: cleared launch request for {run_name}")
 
 
-def clear_resume_markers(manifest: dict[str, Any], run_name: str, *, label: str) -> None:
-    stop_path = stop_request_path(manifest)
-    if stop_path.exists():
-        stop_path.unlink()
-        print(f"{label}: cleared stop request for {run_name}")
+def clear_resume_markers(
+    manifest: dict[str, Any],
+    run_name: str,
+    *,
+    label: str,
+    clear_stop: bool = True,
+) -> None:
+    if clear_stop:
+        stop_path = stop_request_path(manifest)
+        if stop_path.exists():
+            stop_path.unlink()
+            print(f"{label}: cleared stop request for {run_name}")
     launch_path = launch_request_path(manifest)
     launch = read_state_json(launch_path)
     if launch_path.exists() and launch_request_stale(launch):
@@ -1652,6 +1683,18 @@ def worker_label(host: str, profile: str, slot: Any = None, slots: Any = None) -
         return f"{label}#{slot_index}"
     return label
 
+
+def worker_process_id(host: str, slot: Any = None, slots: Any = None) -> str:
+    try:
+        slot_index = int(slot or 0)
+        slot_count = int(slots or 0)
+    except (TypeError, ValueError):
+        return host
+    if slot_index > 0 and slot_count > 1:
+        return f"{host}#{slot_index}"
+    return host
+
+
 def deploy_setup_key(worker: dict[str, Any]) -> tuple[Any, ...]:
     return (
         worker.get("host"),
@@ -1850,6 +1893,12 @@ def run_deploy(args: argparse.Namespace) -> int:
     label = str(getattr(args, "command_label", "deploy"))
     if bool(getattr(args, "replace", False)) and planned_run_dir.exists():
         kill_run_workers(planned_run_dir)
+    elif bool(getattr(args, "resume", False)) and planned_run_dir.exists():
+        cleanup_lingering_resume_workers(
+            planned_run_dir,
+            lease_seconds=lease_seconds,
+            label=label,
+        )
     with scheduler_lock():
         summaries = load_run_summaries(lease_seconds=lease_seconds)
         target = next((summary for summary in summaries if str(summary.get("run")) == run_name), None)
@@ -3285,7 +3334,7 @@ def cmd_resume(args: argparse.Namespace) -> int:
             clear_restart_requests(manifest, run_name, label="resume")
             print(f"resume: {run_name} already active ({active_count} task(s)); no workers launched")
             continue
-        clear_resume_markers(manifest, run_name, label="resume")
+        clear_resume_markers(manifest, run_name, label="resume", clear_stop=False)
         resume_args = argparse.Namespace(
             manifest=str(manifest_path),
             workers=str(args.workers) if args.workers else str(workers_path),

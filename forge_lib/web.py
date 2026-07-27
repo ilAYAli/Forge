@@ -51,6 +51,7 @@ _HTML = r"""<!DOCTYPE html>
     /* run card */
     .run { border: 1px solid var(--border); border-radius: 7px; overflow: hidden; }
     .run.current { border-color: #2a3848; }
+    .run.stopping { border-color: rgba(200,142,74,.65); }
     .run.failed  { border-color: #3d2424; }
     .run.stopped-early { border-color: rgba(200,142,74,.65); }
     .run.done    { border-color: var(--border); opacity: .65; }
@@ -84,6 +85,7 @@ _HTML = r"""<!DOCTYPE html>
     .run-spacer { flex: 1; min-width: 0; }
     .badge { font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 10px; flex-shrink: 0; }
     .badge.current { background: rgba(212,168,34,.15); color: var(--yel); }
+    .badge.stopping { background: rgba(200,142,74,.16); color: var(--warn); }
     .badge.failed  { background: rgba(217,95,95,.15);  color: var(--red); }
     .badge.done    { background: rgba(77,179,106,.12);  color: var(--grn); }
     .badge.queued  { background: rgba(118,118,128,.15); color: var(--dim); }
@@ -502,7 +504,7 @@ _HTML = r"""<!DOCTYPE html>
 
     function runIsActive(r) {
       const state = String(r?.state || '');
-      return state === 'current' || state === 'queued' || state === 'stalled';
+      return state === 'current' || state === 'stopping' || state === 'queued' || state === 'stalled';
     }
 
     function ensureAudioContext() {
@@ -1840,7 +1842,7 @@ _HTML = r"""<!DOCTYPE html>
       const pending = r.sections?.pending || {count:0, groups:{}};
       const fail    = r.sections?.fail    || {count:0, groups:{}};
       const display = r.display || {};
-      const isCurrent = state === 'current';
+      const isCurrent = state === 'current' || state === 'stopping';
 
       const pct = r.tasks > 0 ? (r.done/r.tasks*100).toFixed(1) : 0;
       const eta = etaFromFields(display.fields);
@@ -3061,7 +3063,12 @@ def _run_api_command(run: str, cmd: str, *, server: ThreadingHTTPServer | None =
     if cmd == "hide":
         _hide_web_run(run)
         return subprocess.CompletedProcess(["hide", run], 0, stdout="run hidden\n", stderr="")
-    if cmd in ("stop", "resume", "retry"):
+    if cmd == "stop":
+        result = _run_web_cli(["stop", run, "--no-wait"])
+        if result.returncode == 0:
+            _invalidate_status_cache()
+        return result
+    if cmd in ("resume", "retry"):
         return _run_web_cli([cmd, run])
     raise ValueError(f"unknown command: {cmd}")
 
