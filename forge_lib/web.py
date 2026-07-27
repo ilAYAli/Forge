@@ -828,9 +828,8 @@ _HTML = r"""<!DOCTYPE html>
       if (col === 'shard' || col === 'task') return String(t.index);
       if (col === 'progress') return esc(taskProgressText(t));
       if (col === 'output') return esc(pd?.output!=null ? String(pd.output) : '');
-      if (col === 'rate') return pd?.fallback_estimate ? '' : esc(fmtRate(pd?.rate));
+      if (col === 'rate') return esc(fmtRate(pd?.rate));
       if (col === 'eta') {
-        if (pd?.fallback_estimate) return '';
         const etaSec = remainingEtaS(pd);
         const prefix = pd?.eta_estimate ? '~' : '';
         return etaSec!=null ? esc(prefix + fmtEta(etaSec)) : '';
@@ -851,8 +850,8 @@ _HTML = r"""<!DOCTYPE html>
       if (col === 'shard' || col === 'task') return String(t.index);
       if (col === 'progress') return pd?.done ?? '';
       if (col === 'output') return pd?.output ?? '';
-      if (col === 'rate') return pd?.fallback_estimate ? '' : pd?.rate ?? '';
-      if (col === 'eta') return pd?.fallback_estimate ? 1e9 : remainingEtaS(pd) ?? 1e9;
+      if (col === 'rate') return pd?.rate ?? '';
+      if (col === 'eta') return remainingEtaS(pd) ?? 1e9;
       return '';
     }
 
@@ -897,7 +896,7 @@ _HTML = r"""<!DOCTYPE html>
       ).join('') + '</tr></thead>';
       const tbody = '<tbody>' + tasks.map(t => {
         const pd = t.progress_data;
-        const etaSec  = pd?.fallback_estimate ? null : remainingEtaS(pd);
+        const etaSec  = remainingEtaS(pd);
         const etaAttr = etaSec!=null
           ? ` data-etas="${etaSec}"${pd?.eta_estimate?' data-eta-estimate="1"':''}`
           : '';

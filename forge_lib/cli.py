@@ -682,12 +682,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     stop = sub.add_parser(
         "stop",
-        help="Stop new claims and release active task claims.",
+        help="Stop new claims and wait for active chunks to finish.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     stop.add_argument("run", nargs="?", help="Run name or run directory to stop.")
     stop.add_argument("--all", action="store_true", help="Request stop for all current runs.")
     stop.add_argument("--lease-seconds", type=int, default=600, help="Claim lease duration before stale.")
+    stop.add_argument("--interval-seconds", type=float, default=5.0, help="Polling interval while waiting for chunks to finish.")
+    stop.add_argument("--force", action="store_true", help="Kill active workers and release active claims immediately.")
     stop.set_defaults(func=cmd_stop)
 
     drain = sub.add_parser(

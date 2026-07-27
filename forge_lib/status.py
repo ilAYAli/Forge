@@ -900,8 +900,6 @@ def progress_text(data: dict[str, Any]) -> str:
     if isinstance(done, int) and isinstance(total, int) and total > 0 and done >= total:
         parts.append("finalizing")
         return ", ".join(parts)
-    if data.get("fallback_estimate") and done == 0:
-        return ", ".join(parts)
     eta = progress_data_eta_text(data, done, total)
     if eta:
         parts.append(eta)
@@ -2053,6 +2051,7 @@ def request_stop_for_run(
     *,
     lease_seconds: int,
     reason: str | None = None,
+    preserve_active_tasks: bool = False,
 ) -> dict[str, Any]:
     from .workers import kill_run_workers
 
@@ -2088,35 +2087,39 @@ def request_stop_for_run(
     if launch_path.exists():
         launch_path.unlink()
         cleared.append("launch")
-    killed = kill_run_workers(manifest_path.parent)
-    released = release_active_claims(manifest, lease_seconds=lease_seconds)
-    for task in active_tasks:
-        task_id = str(task["id"])
-        if task_id in released:
-            continue
-        release_claim(manifest, task)
-        released.append(task_id)
     reset: list[str] = []
-    for task in active_tasks:
-        if task_complete(manifest, task):
-            continue
-        task_done_path(manifest, task).unlink(missing_ok=True)
-        task_fail_path(manifest, task).unlink(missing_ok=True)
-        task_running_path(manifest, task).unlink(missing_ok=True)
-        task_cancel_path(manifest, task).unlink(missing_ok=True)
-        shutil.rmtree(task_claim_dir(manifest, task), ignore_errors=True)
-        if not task_preserves_partial_outputs(task):
-            for output in task_outputs(task):
-                if output.is_dir() and not output.is_symlink():
-                    shutil.rmtree(output, ignore_errors=True)
-                else:
-                    output.unlink(missing_ok=True)
-        reset.append(str(task["id"]))
-    finalizer = manifest.get("finalize")
-    if isinstance(finalizer, dict):
-        from .labeling import cleanup_partials
+    killed = 0
+    released: list[str] = []
+    if not preserve_active_tasks:
+        killed = kill_run_workers(manifest_path.parent)
+        released = release_active_claims(manifest, lease_seconds=lease_seconds)
+        for task in active_tasks:
+            task_id = str(task["id"])
+            if task_id in released:
+                continue
+            release_claim(manifest, task)
+            released.append(task_id)
+        for task in active_tasks:
+            if task_complete(manifest, task):
+                continue
+            task_done_path(manifest, task).unlink(missing_ok=True)
+            task_fail_path(manifest, task).unlink(missing_ok=True)
+            task_running_path(manifest, task).unlink(missing_ok=True)
+            task_cancel_path(manifest, task).unlink(missing_ok=True)
+            shutil.rmtree(task_claim_dir(manifest, task), ignore_errors=True)
+            if not task_preserves_partial_outputs(task):
+                for output in task_outputs(task):
+                    if output.is_dir() and not output.is_symlink():
+                        shutil.rmtree(output, ignore_errors=True)
+                    else:
+                        output.unlink(missing_ok=True)
+            reset.append(str(task["id"]))
+    if not preserve_active_tasks:
+        finalizer = manifest.get("finalize")
+        if isinstance(finalizer, dict):
+            from .labeling import cleanup_partials
 
-        cleanup_partials(manifest, finalizer)
+            cleanup_partials(manifest, finalizer)
     return {
         "cleared": cleared,
         "killed": killed,
@@ -2237,14 +2240,37 @@ def cmd_stop(args: argparse.Namespace) -> int:
     stopped = 0
     for path in targets:
         manifest = load_manifest(path)
-        stop_result = request_stop_for_run(path, manifest, lease_seconds=args.lease_seconds)
+        stop_result = request_stop_for_run(
+            path,
+            manifest,
+            lease_seconds=args.lease_seconds,
+            preserve_active_tasks=not bool(getattr(args, "force", False)),
+        )
         stopped += 1
-        message = f"stop requested: {path.parent.name} released={len(stop_result['released'])}"
-        if stop_result["killed"]:
-            message += f" killed={stop_result['killed']}"
+        if bool(getattr(args, "force", False)):
+            message = f"stop requested: {path.parent.name}"
+            if stop_result["released"]:
+                message += f" released={len(stop_result['released'])}"
+            if stop_result["killed"]:
+                message += f" killed={stop_result['killed']}"
+            if stop_result["cleared"]:
+                message += f" cleared={','.join(stop_result['cleared'])}"
+            if stop_result["reset"]:
+                message += f" reset={len(stop_result['reset'])}"
+            print(message)
+            continue
         if stop_result["cleared"]:
-            message += f" cleared={','.join(stop_result['cleared'])}"
-        print(message)
+            print(f"stop requested: {path.parent.name} waiting; cleared={','.join(stop_result['cleared'])}")
+        else:
+            print(f"stop requested: {path.parent.name} waiting for active chunks to finish")
+        while True:
+            summary = status_summary(load_manifest(path), lease_seconds=args.lease_seconds)
+            counts = summary["counts"]
+            active = counts["running"] + counts["claimed"] + counts["stale"]
+            if active == 0:
+                print(f"stop complete: {path.parent.name}")
+                break
+            time.sleep(max(0.5, float(args.interval_seconds)))
     if stopped == 0:
         print("no current runs to stop")
     return 0
@@ -3479,6 +3505,35 @@ def task_progress_candidate_paths(manifest: dict[str, Any], task: dict[str, Any]
             paths.append(output)
     return paths
 
+
+def selfplay_pgn_progress_data(
+    path: Path,
+    config: Any,
+    *,
+    eta_epoch: float,
+) -> dict[str, Any] | None:
+    if path.suffix.lower() != ".pgn" or not isinstance(config, dict):
+        return None
+    try:
+        text = log_tail(path)
+    except OSError:
+        return None
+    done = len(re.findall(r"(?m)^\[Event(?:\s|$)", text))
+    if done <= 0:
+        return None
+    total_value = config.get("total")
+    total = total_value if isinstance(total_value, int) else parse_int(str(total_value)) if total_value is not None else None
+    data: dict[str, Any] = {
+        "kind": "metadata",
+        "done": min(done, total) if isinstance(total, int) and total > 0 else done,
+        "unit": str(config.get("unit") or "games"),
+        "eta_epoch": eta_epoch,
+    }
+    if isinstance(total, int) and total > 0:
+        data["total"] = total
+    return normalize_progress_data(data)
+
+
 def parse_task_progress_text(text: str, config: Any, *, eta_epoch: float) -> dict[str, Any] | None:
     if isinstance(config, dict) and config.get("log_regex"):
         try:
@@ -3557,6 +3612,7 @@ def parse_task_progress_text(text: str, config: Any, *, eta_epoch: float) -> dic
 
 def task_log_progress_data(manifest: dict[str, Any], task: dict[str, Any]) -> dict[str, Any] | None:
     config = task.get("progress")
+    best: dict[str, Any] | None = None
     for path in task_progress_candidate_paths(manifest, task):
         try:
             text = log_tail(path)
@@ -3564,9 +3620,22 @@ def task_log_progress_data(manifest: dict[str, Any], task: dict[str, Any]) -> di
         except OSError:
             continue
         data = parse_task_progress_text(text, config, eta_epoch=eta_epoch)
-        if data is not None:
-            return data
-    return None
+        pgn_data = (
+            selfplay_pgn_progress_data(path, config, eta_epoch=eta_epoch)
+            if str(manifest.get("kind") or "").lower() == "selfplay"
+            else None
+        )
+        for candidate in (data, pgn_data):
+            if candidate is None:
+                continue
+            candidate_done = candidate.get("done")
+            best_done = best.get("done") if isinstance(best, dict) else None
+            if best is None or (
+                isinstance(candidate_done, int)
+                and (not isinstance(best_done, int) or candidate_done > best_done)
+            ):
+                best = candidate
+    return best
 
 def task_heartbeat_progress_data(manifest: dict[str, Any], task: dict[str, Any]) -> dict[str, Any] | None:
     path = task_heartbeat_path(manifest, task)
@@ -3680,14 +3749,31 @@ def status_summary(manifest: dict[str, Any], *, lease_seconds: int) -> dict[str,
             observed = progress_data.get("done")
             if isinstance(observed, int) and observed > 0:
                 progress_done[unit] = progress_done.get(unit, 0) + min(observed, task_total)
-        if progress_data is None and config_progress is not None and state in {"running", "claimed", "stale"}:
+        progress_rate = progress_data.get("rate") if isinstance(progress_data, dict) else None
+        progress_done_value = progress_data.get("done") if isinstance(progress_data, dict) else None
+        needs_fallback_rate = (
+            progress_data is None
+            or (
+                progress_done_value == 0
+                and not (
+                    isinstance(progress_rate, (int, float))
+                    and progress_rate > 0
+                )
+            )
+        )
+        if needs_fallback_rate and config_progress is not None and state in {"running", "claimed", "stale"}:
             unit, total = config_progress
-            progress_data = fallback_progress_data(
+            fallback_data = fallback_progress_data(
                 unit,
                 total,
                 fallback_rates.get(unit),
                 running_elapsed_seconds(running_payload),
             )
+            if fallback_data is not None:
+                if isinstance(progress_data, dict):
+                    fallback_data["fields"] = progress_data.get("fields", {})
+                    fallback_data["text"] = progress_text(fallback_data)
+                progress_data = fallback_data
         if progress_data is not None and config_progress is not None and state in {"running", "claimed", "stale"}:
             unit, task_total = config_progress
             offset_unit, offset = progress_task_offsets.get(str(task["id"]), (unit, 0))

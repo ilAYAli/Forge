@@ -251,7 +251,7 @@ class LabelingProgressTests(unittest.TestCase):
             self.assertIn("workers=2", active_worker_summary(summary))
             self.assertIn("output=240", active_worker_summary(summary))
             self.assertNotIn("speedup=", active_worker_summary(summary))
-            self.assertEqual("speedup=0.3x", run_speedup_field(summary))
+            self.assertEqual("speedup=1.5x", run_speedup_field(summary))
 
             for index in range(2):
                 with (logs / f"label_{index}.log").open("a", encoding="utf-8") as file:
@@ -297,7 +297,7 @@ class LabelingProgressTests(unittest.TestCase):
         self.assertIn("min=late:8/s", text)
         self.assertIn("max=early:10.0/s", text)
         self.assertNotIn("speedup=", text)
-        self.assertEqual("speedup=0.4x", run_speedup_field(summary))
+        self.assertEqual("speedup=1.8x", run_speedup_field(summary))
 
 
 if __name__ == "__main__":

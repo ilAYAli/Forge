@@ -679,8 +679,8 @@ except SystemExit as exc:
         self.assertIn("selectionRefreshDeferredAt", web._HTML)
         self.assertIn("if (shouldDeferRefreshForSelection()) return;", web._HTML)
         self.assertIn("pd?.eta_estimate ? '~' : ''", web._HTML)
-        self.assertIn("pd?.fallback_estimate ? '' : esc(fmtRate(pd?.rate))", web._HTML)
-        self.assertIn("if (pd?.fallback_estimate) return '';", web._HTML)
+        self.assertIn("if (col === 'rate') return esc(fmtRate(pd?.rate));", web._HTML)
+        self.assertNotIn("pd?.fallback_estimate ? '' : esc(fmtRate(pd?.rate))", web._HTML)
         self.assertIn("data-eta-estimate", web._HTML)
         self.assertIn("return r.toFixed(4) + '/s'", web._HTML)
         self.assertIn("function graphDomain", web._HTML)
@@ -826,7 +826,10 @@ except SystemExit as exc:
         self.assertIn("if (key === 'wins') return 1", web._HTML)
         self.assertIn("if (key === 'draws') return 2", web._HTML)
         self.assertIn("if (key === 'losses') return 3", web._HTML)
-        self.assertIn("const markers = plotted.map(s => graphPointMarkers(", web._HTML)
+        self.assertIn(
+            "const markers = plotted.map(s => graphSeriesName(s.name) === 'games/s' ? '' : graphPointMarkers(",
+            web._HTML,
+        )
         self.assertIn('`<g clip-path="url(#${clipId})">${paths}${markers}</g>`', web._HTML)
         self.assertIn(".graph-row.combined .graph-axis { height: 72px; }", web._HTML)
         self.assertIn(".graph-row.combined .graph-value { display: none; }", web._HTML)
@@ -1230,7 +1233,6 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
         self.assertIn("clearOldHashState()", web._HTML)
         self.assertNotIn("location.replace('#'", web._HTML)
         self.assertIn('path = self.path.split("?", 1)[0]', inspect.getsource(web._Handler.do_GET))
-        self.assertNotIn("games/s", web._HTML)
         self.assertIn("ThreadingHTTPServer", web.ThreadingHTTPServer.__name__)
 
     def test_web_restart_command_schedules_server_restart(self) -> None:
@@ -1405,7 +1407,7 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
         assert data is not None
         self.assertTrue(data["eta_estimate"])
         self.assertTrue(data["fallback_estimate"])
-        self.assertEqual("games=0/2", data["text"])
+        self.assertEqual("games=0/2, eta~=3s", data["text"])
 
     def test_web_status_api_returns_cached_payload_while_refreshing(self) -> None:
         import forge_lib.web as web
@@ -3639,6 +3641,50 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
         self.assertIn("-pgnout file=\"{output_dir}/selfplay_0000.pgn\" notation=uci", command)
         self.assertIn("Games:", manifest["tasks"][0]["progress"]["log_regex"])
 
+    def test_selfplay_live_progress_prefers_completed_pgn_games_over_zero_log(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            logs = root / "logs"
+            output = root / "output"
+            logs.mkdir()
+            output.mkdir()
+            task = {
+                "id": "selfplay_0000",
+                "outputs": [str(output / "selfplay_0000.pgn")],
+                "progress": {
+                    "unit": "games",
+                    "total": 16,
+                    "log_regex": (
+                        r"Games:\s+(?P<done>\d+),\s+Wins:\s+(?P<wins>\d+),"
+                        r"\s+Losses:\s+(?P<losses>\d+),\s+Draws:\s+(?P<draws>\d+)"
+                    ),
+                },
+            }
+            manifest = {
+                "kind": "selfplay",
+                "work_dir": str(root),
+                "log_dir": str(logs),
+                "tasks": [task],
+            }
+            (logs / "selfplay_0000.log").write_text(
+                "Games: 0, Wins: 0, Losses: 0, Draws: 0\n",
+                encoding="utf-8",
+            )
+            (output / "selfplay_0000.pgn").write_text(
+                '[Event "game 1"]\n[Result "1-0"]\n\n1. e4 1-0\n\n'
+                '[Event "game 2"]\n[Result "1/2-1/2"]\n\n1. d4 1/2-1/2\n\n'
+                '[Event "game 3"]\n[Result "0-1"]\n\n1. c4 0-1\n',
+                encoding="utf-8",
+            )
+
+            data = forge.task_log_progress_data(manifest, task)
+
+            self.assertIsNotNone(data)
+            assert data is not None
+            self.assertEqual(3, data["done"])
+            self.assertEqual(16, data["total"])
+            self.assertEqual("games=3/16", data["text"])
+
     def test_selfplay_template_assigns_distinct_deterministic_seed_per_shard(self) -> None:
         template_path = ROOT / "templates" / "selfplay.template.json"
         template = forge.load_template(template_path)
@@ -3705,11 +3751,257 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
         totals = [task["progress"]["total"] for task in manifest["tasks"]]
 
         self.assertEqual(0, rc)
-        self.assertEqual(60, manifest["template"]["parameters"]["shards"])
-        self.assertEqual(60, len(manifest["tasks"]))
+        self.assertEqual(15, manifest["template"]["parameters"]["shards"])
+        self.assertEqual(15, len(manifest["tasks"]))
         self.assertEqual(64, sum(totals))
-        self.assertEqual(1, min(totals))
-        self.assertEqual(2, max(totals))
+        self.assertEqual(4, min(totals))
+        self.assertEqual(6, max(totals))
+
+    def test_selfplay_command_auto_sizes_shards_from_chunk_history(self) -> None:
+        from forge_lib import selfplay_chunks
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cache_path = root / "selfplay-chunk-history.json"
+            template = forge.load_template(forge.template_path("selfplay"))
+            parsed_params = forge.parse_selfplay_template_parameters(
+                "selfplay",
+                template,
+                [
+                    "--engine", "~/assets/engines/enyo_9696dac",
+                    "--games", "600",
+                    "--chunk-time-seconds", "120",
+                    "--uci", "nnue_file=~/code/cpp/chess/enyo/net/default.nn",
+                ],
+            )
+            signature = selfplay_chunks.selfplay_chunk_signature(parsed_params)
+            key = selfplay_chunks.selfplay_chunk_signature_key(signature)
+            forge.write_json(cache_path, {
+                "schema": selfplay_chunks.SELFPLAY_CHUNK_CACHE_SCHEMA,
+                "records": {
+                    key: {
+                        "label": selfplay_chunks.selfplay_chunk_signature_label(signature),
+                        "rate": 0.05,
+                        "samples": 3,
+                        "updated_epoch": 1.0,
+                    }
+                },
+            })
+
+            stdout = io.StringIO()
+            with mock.patch("forge_lib.selfplay_chunks.selfplay_chunk_cache_path", return_value=cache_path):
+                with contextlib.redirect_stdout(stdout):
+                    rc = forge.cmd_template_run(argparse.Namespace(
+                        template="selfplay",
+                        template_args=[
+                            "--dry-run",
+                            "--workers", "worker-a:1",
+                            "--engine", "~/assets/engines/enyo_9696dac",
+                            "--games", "600",
+                            "--chunk-time-seconds", "120",
+                            "--uci", "nnue_file=~/code/cpp/chess/enyo/net/default.nn",
+                        ],
+                    ))
+            manifest = json.loads(stdout.getvalue())
+            totals = [task["progress"]["total"] for task in manifest["tasks"]]
+
+        self.assertEqual(0, rc)
+        self.assertEqual(100, manifest["template"]["parameters"]["shards"])
+        self.assertEqual(100, len(manifest["tasks"]))
+        self.assertEqual(6, min(totals))
+        self.assertEqual(6, max(totals))
+
+    def test_selfplay_default_chunk_games_is_15_for_5_minutes(self) -> None:
+        from forge_lib import selfplay_chunks
+
+        self.assertEqual(15, selfplay_chunks.selfplay_default_chunk_games({"chunk_time_seconds": 300}))
+
+    def test_selfplay_chunk_history_records_throughput_from_completed_tasks(self) -> None:
+        from forge_lib import selfplay_chunks
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            state = root / "state"
+            state.mkdir()
+            cache_path = root / "selfplay-chunk-history.json"
+            manifest = {
+                "schema": "forge.task.v1",
+                "name": "selfplay-test",
+                "kind": "selfplay",
+                "state_dir": str(state),
+                "template": {
+                    "parameters": {
+                        "engine": "~/assets/engines/enyo_9696dac",
+                        "games": 40,
+                        "threads": 1,
+                        "hash": 128,
+                        "concurrency": 1,
+                        "nodes": 5000,
+                        "restart": "off",
+                        "tc": "10+0.1",
+                    }
+                },
+                "tasks": [
+                    {
+                        "id": "selfplay_0000",
+                        "index": 0,
+                        "progress": {"unit": "games", "total": 20},
+                    },
+                    {
+                        "id": "selfplay_0001",
+                        "index": 1,
+                        "progress": {"unit": "games", "total": 20},
+                    },
+                ],
+            }
+            forge.write_json(state / "selfplay_0000.done.json", {
+                "schema": "forge.task.v1",
+                "rc": 0,
+                "elapsed_s": 100.0,
+            })
+            forge.write_json(state / "selfplay_0001.done.json", {
+                "schema": "forge.task.v1",
+                "rc": 0,
+                "elapsed_s": 200.0,
+            })
+
+            record = selfplay_chunks.record_selfplay_chunk_history(manifest, cache_path=cache_path)
+            payload = forge.read_json(cache_path)
+
+        self.assertIsNotNone(record)
+        self.assertEqual("forge.selfplay.chunk-history.v1", payload["schema"])
+        signature = selfplay_chunks.selfplay_chunk_signature(manifest["template"]["parameters"])
+        key = selfplay_chunks.selfplay_chunk_signature_key(signature)
+        stored = payload["records"][key]
+        self.assertEqual(1, stored["samples"])
+        self.assertAlmostEqual(40 / 300.0, stored["rate"], places=6)
+
+    def test_selfplay_chunk_history_updates_after_each_completed_chunk(self) -> None:
+        from forge_lib import selfplay_chunks
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            state = root / "state"
+            state.mkdir()
+            cache_path = root / "selfplay-chunk-history.json"
+            manifest = {
+                "schema": "forge.task.v1",
+                "name": "selfplay-test",
+                "kind": "selfplay",
+                "state_dir": str(state),
+                "template": {
+                    "parameters": {
+                        "engine": "~/assets/engines/enyo_9696dac",
+                        "games": 40,
+                        "threads": 1,
+                        "hash": 128,
+                        "concurrency": 1,
+                        "nodes": 5000,
+                        "restart": "off",
+                        "tc": "10+0.1",
+                    }
+                },
+                "tasks": [
+                    {
+                        "id": "selfplay_0000",
+                        "index": 0,
+                        "progress": {"unit": "games", "total": 20},
+                    },
+                    {
+                        "id": "selfplay_0001",
+                        "index": 1,
+                        "progress": {"unit": "games", "total": 20},
+                    },
+                ],
+            }
+            forge.write_json(state / "selfplay_0000.done.json", {
+                "schema": "forge.task.v1",
+                "rc": 0,
+                "elapsed_s": 100.0,
+            })
+            forge.write_json(state / "selfplay_0001.done.json", {
+                "schema": "forge.task.v1",
+                "rc": 0,
+                "elapsed_s": 200.0,
+            })
+
+            first = selfplay_chunks.record_selfplay_chunk_task_result(
+                manifest,
+                manifest["tasks"][0],
+                cache_path=cache_path,
+            )
+            second = selfplay_chunks.record_selfplay_chunk_task_result(
+                manifest,
+                manifest["tasks"][1],
+                cache_path=cache_path,
+            )
+            payload = forge.read_json(cache_path)
+
+        self.assertIsNotNone(first)
+        self.assertIsNotNone(second)
+        signature = selfplay_chunks.selfplay_chunk_signature(manifest["template"]["parameters"])
+        key = selfplay_chunks.selfplay_chunk_signature_key(signature)
+        stored = payload["records"][key]
+        self.assertEqual(2, stored["samples"])
+        self.assertAlmostEqual(0.15, stored["rate"], places=6)
+
+    def test_selfplay_claim_rechunks_pending_tasks_from_throughput(self) -> None:
+        from forge_lib import selfplay_chunks
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            state = root / "state"
+            claims = root / "claims"
+            state.mkdir()
+            claims.mkdir()
+            template_path = forge.template_path("selfplay")
+            template = forge.load_template(template_path)
+            params = forge.parse_selfplay_template_parameters(
+                "selfplay",
+                template,
+                [
+                    "--engine", "~/assets/engines/enyo_9696dac",
+                    "--games", "52",
+                    "--shards", "2",
+                ],
+            )
+            manifest = forge.expand_template("selfplay", template_path, template, params)
+            manifest["state_dir"] = str(state)
+            manifest["claim_dir"] = str(claims)
+            manifest_path = root / "manifest.json"
+            forge.write_json(manifest_path, manifest)
+            cache_path = root / "selfplay-chunk-history.json"
+            signature = selfplay_chunks.selfplay_chunk_signature(params)
+            key = selfplay_chunks.selfplay_chunk_signature_key(signature)
+            forge.write_json(cache_path, {
+                "schema": selfplay_chunks.SELFPLAY_CHUNK_CACHE_SCHEMA,
+                "records": {
+                    key: {
+                        "label": selfplay_chunks.selfplay_chunk_signature_label(signature),
+                        "rate": 16 / 300.0,
+                        "samples": 3,
+                        "updated_epoch": 1.0,
+                    }
+                },
+            })
+
+            with mock.patch("forge_lib.selfplay_chunks.selfplay_chunk_cache_path", return_value=cache_path):
+                claimed = forge.claim_task(
+                    manifest,
+                    manifest_path=manifest_path,
+                    worker="worker-a",
+                    profile=None,
+                    lease_seconds=600,
+                    retry_failed=False,
+                )
+
+            updated = forge.load_manifest(manifest_path)
+            totals = [task["progress"]["total"] for task in updated["tasks"]]
+
+        self.assertIsNotNone(claimed)
+        self.assertEqual(4, len(updated["tasks"]))
+        self.assertTrue(all(total <= 16 for total in totals))
+        self.assertGreater(max(totals), min(totals))
 
     def test_selfplay_status_graph_aggregates_completed_fastchess_shards(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -3956,7 +4248,7 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
                 for item in template["requirements"]["commands"]
                 if item["name"] == "engine"
             )
-            command = raw.replace("{engine}", f"~/assets/engines/enyo_{target}")
+            command = raw.format(engine=f"~/assets/engines/enyo_{target}")
 
             result = subprocess.run(
                 ["sh", "-c", command],
@@ -4238,7 +4530,7 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
         self.assertNotIn("worker-a: OK", output)
         self.assertIn("worker-b: FAILED rc=7", output)
         self.assertIn("  boom", output)
-        self.assertEqual("sh: failed on 1/2 host(s): worker-b\n", stderr.getvalue())
+        self.assertEqual("sh: failed on 1/2 host(s):\n  worker-b:\n      boom\n", stderr.getvalue())
 
     def test_shell_stream_text_uses_crlf_for_tty_output(self) -> None:
         class TtyStream(io.StringIO):
@@ -5769,16 +6061,21 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
             forge.write_json(forge.task_running_path(manifest, task), {"task": task["id"]})
 
             with mock.patch("forge_lib.workers.kill_run_workers", return_value=1):
-                forge.request_stop_for_run(run / "manifest.json", manifest, lease_seconds=600)
+                forge.request_stop_for_run(
+                    run / "manifest.json",
+                    manifest,
+                    lease_seconds=600,
+                    preserve_active_tasks=True,
+                )
 
             self.assertTrue(output.is_file())
-            self.assertEqual("pending", forge.task_state(manifest, task, lease_seconds=600))
+            self.assertEqual("running", forge.task_state(manifest, task, lease_seconds=600))
             self.assertEqual(
                 {task["id"]: 8},
                 forge.read_json(forge.stop_request_path(manifest))["task_progress"],
             )
-            summary = forge.status_summary(manifest, lease_seconds=600)
-            self.assertEqual(8, summary["progress_done"]["games"])
+            resumed = forge.prepare_run_resume(run / "manifest.json", manifest)
+            self.assertEqual({"preserved": 8, "continued": 1}, resumed)
 
     def test_resume_seals_partial_progress_and_runs_only_remainder(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -10626,7 +10923,7 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
                 )
                 self.assertEqual(0, rc)
                 text = stdout.getvalue()
-                self.assertIn("tasks=1/4 speedup=0.3x", text)
+                self.assertIn("tasks=1/4 speedup=1.1x", text)
                 self.assertIn("active: 3 rows=177k/500k workers=2 output=68k min=worker-b:20k max=worker-a:48k", text)
                 self.assertNotIn("max=worker-a:48k speedup=", text)
                 self.assertNotIn("active workers:", text)
@@ -10659,7 +10956,7 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
                 )
                 self.assertIn("active: \033[33m3\033[0m", color_line)
                 self.assertIn("workers=2 output=68k min=worker-b:20k max=worker-a:48k", color_line)
-                self.assertIn(f"speedup=\033[{forge.STATUS_BLUE_SGR}m0.3x\033[0m", color_stdout.getvalue())
+                self.assertIn(f"speedup=\033[{forge.STATUS_BLUE_SGR}m1.1x\033[0m", color_stdout.getvalue())
                 self.assertNotIn("workers=\033[", color_line)
                 self.assertNotIn("output=\033[", color_line)
                 self.assertNotIn("min=\033[", color_line)
@@ -11300,6 +11597,22 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
                 json.dumps({"task": "task_1", "worker": "worker-a", "started_epoch": 1000.0}),
                 encoding="utf-8",
             )
+            task = manifest["tasks"][1]
+            forge.task_claim_dir(manifest, task).mkdir(parents=True)
+            forge.write_json(
+                forge.task_heartbeat_path(manifest, task),
+                {
+                    "task": "task_1",
+                    "worker": "worker-a",
+                    "heartbeat_epoch": 1001.0,
+                    "progress_data": {
+                        "kind": "metadata",
+                        "done": 0,
+                        "total": 1000,
+                        "unit": "games",
+                    },
+                },
+            )
             (logs / "task_1.log").write_text("", encoding="utf-8")
 
             with self.patch_runs_dir(runs), mock.patch("forge_lib.status.epoch", return_value=1001.0):
@@ -11323,7 +11636,7 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
                 self.assertIn("  games=1000/2000 tasks=1/2 eta=1m40s", text)
                 self.assertIn("  active: 1", text)
                 self.assertNotIn("  active: 1 games=1000/2000", text)
-                self.assertIn("worker-a shard=1 [games=0/1000]", text)
+                self.assertIn("worker-a shard=1 [games=0/1000, eta~=1m39s]", text)
 
     def test_status_labels_overdue_fallback_eta_as_unknown(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -11397,7 +11710,7 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
                 self.assertIn("  games=1000/2000 tasks=1/2 eta=unknown", text)
                 self.assertIn("  active: 1", text)
                 self.assertNotIn("  active: 1 games=1000/2000", text)
-                self.assertIn("worker-a shard=1 [games=0/1000]", text)
+                self.assertIn("worker-a shard=1 [games=0/1000, eta~=unknown]", text)
 
     def test_status_ignores_undeclared_domain_progress(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -11477,12 +11790,14 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
                 })
 
                 stdout = io.StringIO()
-                with contextlib.redirect_stdout(stdout):
-                    stop = forge.cmd_stop(argparse.Namespace(run="active", all=False, lease_seconds=600))
+                with mock.patch("forge_lib.status.status_summary", return_value={"counts": {"running": 0, "claimed": 0, "stale": 0}}):
+                    with contextlib.redirect_stdout(stdout):
+                        stop = forge.cmd_stop(argparse.Namespace(run="active", all=False, lease_seconds=600, interval_seconds=0.0))
                 self.assertEqual(0, stop)
-                self.assertIn("stop requested: active released=1", stdout.getvalue())
-                self.assertFalse(forge.task_claim_dir(loaded, task).exists())
-                self.assertFalse(forge.task_running_path(loaded, task).exists())
+                self.assertIn("stop requested: active waiting", stdout.getvalue())
+                self.assertIn("stop complete: active", stdout.getvalue())
+                self.assertTrue(forge.task_claim_dir(loaded, task).exists())
+                self.assertTrue(forge.task_running_path(loaded, task).exists())
                 result = forge.claim_task(
                     forge.load_manifest(run_dir / "manifest.json"),
                     worker="worker",
@@ -11596,13 +11911,61 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
             with self.patch_runs_dir(runs):
                 stdout = io.StringIO()
                 with contextlib.redirect_stdout(stdout):
-                    rc = forge.cmd_stop(argparse.Namespace(run="queued", all=False, lease_seconds=600))
+                    rc = forge.cmd_stop(argparse.Namespace(run="queued", all=False, lease_seconds=600, interval_seconds=0.0))
 
             self.assertEqual(0, rc)
             self.assertTrue(forge.stop_request_path(manifest).exists())
             self.assertFalse(forge.queue_request_path(manifest).exists())
             self.assertFalse(forge.launch_request_path(manifest).exists())
-            self.assertIn("stop requested: queued released=0 cleared=queue,launch", stdout.getvalue())
+            self.assertIn("stop requested: queued waiting; cleared=queue,launch", stdout.getvalue())
+            self.assertIn("stop complete: queued", stdout.getvalue())
+
+    def test_stop_force_kills_active_workers_immediately(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            runs = root / "runs"
+            run_dir = runs / "active"
+            run_dir.mkdir(parents=True)
+            manifest = {
+                "schema": "forge.task.v1",
+                "name": "active",
+                "work_dir": str(root),
+                "state_dir": str(run_dir / "state"),
+                "log_dir": str(run_dir / "logs"),
+                "claim_dir": str(run_dir / "claims"),
+                "tasks": [
+                    {"id": "task_0", "index": 0, "command": "true", "outputs": [str(run_dir / "outputs/0.txt")]},
+                ],
+            }
+            (run_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+            with self.patch_runs_dir(runs):
+                loaded = forge.load_manifest(run_dir / "manifest.json")
+                claimed = forge.claim_task(
+                    loaded,
+                    worker="worker",
+                    profile=None,
+                    lease_seconds=600,
+                    retry_failed=False,
+                )
+                self.assertEqual("task_0", claimed["task"])
+                task = loaded["tasks"][0]
+                forge.write_json(forge.task_running_path(loaded, task), {
+                    "task": "task_0",
+                    "worker": "worker",
+                })
+
+                stdout = io.StringIO()
+                with mock.patch("forge_lib.workers.kill_run_workers", return_value=2) as kill_workers:
+                    with contextlib.redirect_stdout(stdout):
+                        rc = forge.cmd_stop(argparse.Namespace(run="active", all=False, lease_seconds=600, force=True))
+
+                self.assertEqual(0, rc)
+                kill_workers.assert_called_once()
+                self.assertIn("stop requested: active", stdout.getvalue())
+                self.assertIn("killed=2", stdout.getvalue())
+                self.assertFalse(forge.task_claim_dir(loaded, task).exists())
+                self.assertFalse(forge.task_running_path(loaded, task).exists())
 
     def test_drain_prevents_worker_claims_until_cleared(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -11772,6 +12135,7 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
 
             with (
                 mock.patch.dict(os.environ, {"FORGE_COORDINATOR_RUNS": ""}),
+                mock.patch("forge_lib.status.configured_coordinator_runs", return_value=None),
                 mock.patch("forge_lib.status.load_run_summaries", return_value=summaries),
                 mock.patch("forge_lib.status.run_state", side_effect=lambda item: item["test_state"]),
                 mock.patch("forge_lib.status.mark_deleted_run_for_web") as mark_deleted,
