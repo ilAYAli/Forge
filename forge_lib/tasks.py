@@ -18,6 +18,34 @@ def adaptive_claim_lock(manifest_path: Path) -> Any:
         finally:
             fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
+ADAPTIVE_RECHUNK_MIN_INTERVAL_SECONDS = 5.0
+
+def adaptive_rechunk_marker_path(manifest: dict[str, Any], worker: str) -> Path:
+    digest = hashlib.sha256(worker.encode("utf-8")).hexdigest()[:16]
+    return state_dir(manifest) / "adaptive-rechunk" / f"{digest}.json"
+
+def adaptive_rechunk_due(
+    manifest: dict[str, Any],
+    worker: str,
+    *,
+    interval_seconds: float = ADAPTIVE_RECHUNK_MIN_INTERVAL_SECONDS,
+) -> bool:
+    marker = adaptive_rechunk_marker_path(manifest, worker)
+    try:
+        return epoch() - marker.stat().st_mtime >= interval_seconds
+    except OSError:
+        return True
+
+def mark_adaptive_rechunk(manifest: dict[str, Any], worker: str) -> None:
+    marker = adaptive_rechunk_marker_path(manifest, worker)
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    write_json(marker, {
+        "schema": SCHEMA,
+        "worker": worker,
+        "checked_at": now(),
+        "checked_epoch": epoch(),
+    })
+
 
 def task_done_path(manifest: dict[str, Any], task: dict[str, Any]) -> Path:
     return state_dir(manifest) / f"{task['id']}.done.json"
@@ -493,13 +521,15 @@ def claim_task(
 
         with adaptive_claim_lock(manifest_path):
             manifest = load_manifest(manifest_path)
-            adaptive_rechunk_pending_tasks(
-                manifest_path,
-                manifest,
-                lease_seconds=lease_seconds,
-                worker=worker,
-            )
-            manifest = load_manifest(manifest_path)
+            if adaptive_rechunk_due(manifest, worker):
+                adaptive_rechunk_pending_tasks(
+                    manifest_path,
+                    manifest,
+                    lease_seconds=lease_seconds,
+                    worker=worker,
+                )
+                mark_adaptive_rechunk(manifest, worker)
+                manifest = load_manifest(manifest_path)
             if stop_requested(manifest):
                 return None
             if worker_drained(manifest, worker):
@@ -566,7 +596,12 @@ def claim_task(
                     payload["max_attempts"] = max_attempts
                 write_json(task_claim_path(manifest, task), payload)
                 write_json(task_heartbeat_path(manifest, task), payload)
-                return {"task": task["id"], "index": task.get("index"), "claim": payload}
+                return {
+                    "task": task["id"],
+                    "index": task.get("index"),
+                    "claim": payload,
+                    "task_payload": copy.deepcopy(task),
+                }
             return None
 
     if stop_requested(manifest):
@@ -635,7 +670,12 @@ def claim_task(
             payload["max_attempts"] = max_attempts
         write_json(task_claim_path(manifest, task), payload)
         write_json(task_heartbeat_path(manifest, task), payload)
-        return {"task": task["id"], "index": task.get("index"), "claim": payload}
+        return {
+            "task": task["id"],
+            "index": task.get("index"),
+            "claim": payload,
+            "task_payload": copy.deepcopy(task),
+        }
     return None
 
 def remove_stale_claim(manifest: dict[str, Any], task: dict[str, Any], *, lease_seconds: int) -> bool:
@@ -841,6 +881,7 @@ def coordinator_result_payload(
     worker: str,
     state: str,
     worker_id: str | None = None,
+    coordinator_manifest_sha256: str | None = None,
 ) -> tuple[dict[str, Any], Path]:
     coordinator_outputs = task_outputs(coordinator_task, coordinator_manifest)
     local_outputs = task_outputs(local_task, local_manifest)
@@ -861,7 +902,10 @@ def coordinator_result_payload(
         else task_fail_path(coordinator_manifest, coordinator_task)
     )
     payload = dict(local_payload)
-    payload["manifest_sha256"] = manifest_checksum(coordinator_manifest)
+    payload["manifest_sha256"] = (
+        coordinator_manifest_sha256
+        or manifest_checksum(coordinator_manifest)
+    )
     payload["task_execution_sha256"] = task_execution_checksum(
         coordinator_manifest,
         coordinator_task,
@@ -925,6 +969,7 @@ def sync_task_result(
     worker: str,
     claim_id: str | None,
     worker_id: str | None = None,
+    coordinator_manifest_sha256: str | None = None,
 ) -> None:
     local_done = task_done_path(local_manifest, local_task)
     local_fail = task_fail_path(local_manifest, local_task)
@@ -957,6 +1002,7 @@ def sync_task_result(
         worker=worker,
         worker_id=worker_id,
         state=state,
+        coordinator_manifest_sha256=coordinator_manifest_sha256,
     )
     sync_payload_path = local_state_path.with_suffix(local_state_path.suffix + ".sync.json")
     write_json(sync_payload_path, payload)
@@ -1224,7 +1270,7 @@ def cmd_work(args: argparse.Namespace) -> int:
     os.environ["FORGE_PYTHON"] = sys.executable
     local_manifest_path = expand_path(args.manifest)
     local_manifest_base = load_manifest(local_manifest_path)
-    coordinator_manifest = load_coordinator_manifest(args.coordinator)
+    coordinator_manifest = copy.deepcopy(local_manifest_base)
     local_manifest = worker_execution_manifest(
         local_manifest_base,
         profile=args.profile,
@@ -1269,9 +1315,20 @@ def cmd_work(args: argparse.Namespace) -> int:
         claim_id = str(claim_payload.get("claim_id") or "")
         attempt = task_attempt_from_payload(claim_payload)
         task_attempts = max(0, int(getattr(args, "task_attempts", 1)))
-        # Adaptive rechunking can materialize a new task as part of the claim.
-        # Refresh both views before looking up or executing that task.
-        coordinator_manifest = load_coordinator_manifest(args.coordinator)
+        # Claims include the exact task materialized by adaptive rechunking.
+        # Merge that task into the deployed manifest instead of downloading the
+        # entire, potentially very large coordinator manifest for every claim.
+        claimed_task = claim.get("task_payload")
+        if isinstance(claimed_task, dict):
+            coordinator_manifest["tasks"] = [
+                task
+                for task in coordinator_manifest["tasks"]
+                if str(task.get("id") or "") != task_id
+            ]
+            coordinator_manifest["tasks"].append(copy.deepcopy(claimed_task))
+        else:
+            # Compatibility with an older coordinator during a rolling update.
+            coordinator_manifest = load_coordinator_manifest(args.coordinator)
         local_manifest = worker_execution_manifest(
             coordinator_manifest,
             profile=args.profile,
@@ -1338,6 +1395,9 @@ def cmd_work(args: argparse.Namespace) -> int:
                 worker=args.worker,
                 worker_id=worker_id,
                 claim_id=claim_id,
+                coordinator_manifest_sha256=str(
+                    claim_payload.get("manifest_sha256") or ""
+                ) or None,
             )
             try:
                 from .chunking import record_adaptive_chunk_task_result

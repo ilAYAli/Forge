@@ -1486,6 +1486,10 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
         self.assertNotIn("done", compact_run["sections"])
         self.assertEqual("task_active", compact_run["sections"]["active"]["tasks"][0]["id"])
         self.assertEqual(9998, compact_run["sections"]["pending"]["count"])
+        self.assertEqual(
+            {"count": 9998, "ranges": "1-9998"},
+            compact_run["sections"]["pending"]["groups"]["task"],
+        )
 
     def test_web_status_api_uses_coordinator_payload_before_first_refresh(self) -> None:
         import forge_lib.web as web
@@ -7936,10 +7940,17 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
                 force=False,
                 fail_fast=False,
             )
-            claim = {"task": "task_new", "claim": {"claim_id": "claim-new"}}
+            claim = {
+                "task": "task_new",
+                "claim": {
+                    "claim_id": "claim-new",
+                    "manifest_sha256": "dynamic-manifest",
+                },
+                "task_payload": refreshed["tasks"][0],
+            }
 
             with (
-                mock.patch("forge_lib.tasks.load_coordinator_manifest", side_effect=[initial, refreshed]),
+                mock.patch("forge_lib.tasks.load_coordinator_manifest") as load_manifest_mock,
                 mock.patch("forge_lib.tasks.check_coordinator_cli"),
                 mock.patch("forge_lib.tasks.check_requirements"),
                 mock.patch("forge_lib.tasks.claim_from_coordinator", return_value=claim),
@@ -7952,6 +7963,7 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
 
             self.assertEqual(0, rc)
             self.assertEqual("task_new", run_task_mock.call_args.args[1]["id"])
+            load_manifest_mock.assert_not_called()
 
     def test_run_task_resolves_dynamic_output_dir_placeholder(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -13702,6 +13714,19 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
             self.assertEqual("starved", states["worker-a#1"])
             self.assertEqual("running", states["worker-a#2"])
             self.assertEqual("stale", states["worker-a#3"])
+
+    def test_adaptive_rechunk_checks_are_throttled_per_worker(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            manifest = {
+                "schema": "forge.task.v1",
+                "state_dir": str(Path(tmp) / "state"),
+                "tasks": [],
+            }
+
+            self.assertTrue(forge.adaptive_rechunk_due(manifest, "worker-a"))
+            forge.mark_adaptive_rechunk(manifest, "worker-a")
+            self.assertFalse(forge.adaptive_rechunk_due(manifest, "worker-a"))
+            self.assertTrue(forge.adaptive_rechunk_due(manifest, "worker-b"))
 
     def test_deploy_work_command_includes_task_complete_options(self) -> None:
         worker = {"host": "pwa-mbp", "profile": "pwa-mbp", "local": False}

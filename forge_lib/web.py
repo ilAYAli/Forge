@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from .core import *
-from .status import PROGRESS_GRAPH_VERSION, configured_coordinator_runs
+from .status import PROGRESS_GRAPH_VERSION, configured_coordinator_runs, format_status_values
 from .tasks import parse_coordinator, shell_join
 
 _ASSETS_DIR = Path(__file__).resolve().parent.parent / "assets"
@@ -1718,7 +1718,7 @@ _HTML = r"""<!DOCTYPE html>
 
     function renderGroups(groups) {
       return Object.entries(groups||{}).sort().map(([lbl, vals]) =>
-        `<div class="group-row">${esc(lbl||'unlabeled')} [${vals.length}]: ${fmtRanges(vals)}</div>`
+        `<div class="group-row">${esc(lbl||'unlabeled')} [${Number(vals?.count ?? vals?.length ?? 0)}]: ${esc(vals?.ranges ?? fmtRanges(vals))}</div>`
       ).join('');
     }
 
@@ -2828,6 +2828,16 @@ def _compact_web_api_run(run: dict[str, Any]) -> dict[str, Any]:
             for key in fields
             if key in section
         }
+        groups = compact_sections[name].get("groups")
+        if isinstance(groups, dict):
+            compact_sections[name]["groups"] = {
+                str(label): {
+                    "count": len(values),
+                    "ranges": format_status_values(values),
+                }
+                for label, values in groups.items()
+                if isinstance(values, list)
+            }
     compact["sections"] = compact_sections
     return compact
 
