@@ -3695,7 +3695,7 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
             output.mkdir()
             task = {
                 "id": "selfplay_0000",
-                "outputs": [str(output / "selfplay_0000.pgn")],
+                "outputs": ["{output_dir}/selfplay_0000.pgn"],
                 "progress": {
                     "unit": "games",
                     "total": 16,
@@ -3709,6 +3709,7 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
                 "kind": "selfplay",
                 "work_dir": str(root),
                 "log_dir": str(logs),
+                "vars": {"output_dir": str(output)},
                 "tasks": [task],
             }
             (logs / "selfplay_0000.log").write_text(

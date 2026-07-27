@@ -3588,7 +3588,7 @@ def normalize_progress_data(raw: Any) -> dict[str, Any] | None:
 
 def task_progress_candidate_paths(manifest: dict[str, Any], task: dict[str, Any]) -> list[Path]:
     paths = [task_log_path(manifest, task)]
-    for output in task_outputs(task):
+    for output in task_outputs(task, manifest):
         if output not in paths:
             paths.append(output)
     return paths
