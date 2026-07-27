@@ -7868,6 +7868,78 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
             sleep_mock.assert_called_once()
             run_task_mock.assert_called_once()
 
+    def test_worker_refreshes_manifest_after_dynamic_task_claim(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest_path = root / "manifest.json"
+            initial = {
+                "schema": "forge.task.v1",
+                "name": "dynamic-claim",
+                "work_dir": str(root),
+                "tasks": [{"id": "task_old", "index": 0, "command": "true", "outputs": []}],
+            }
+            refreshed = {
+                **initial,
+                "tasks": [{"id": "task_new", "index": 1, "command": "true", "outputs": []}],
+            }
+            forge.write_json(manifest_path, initial)
+            args = argparse.Namespace(
+                manifest=str(manifest_path),
+                coordinator=str(manifest_path),
+                profile=None,
+                worker="worker-a",
+                lease_seconds=600,
+                max_tasks=1,
+                idle_seconds=0.0,
+                retry_failed=False,
+                task_attempts=1,
+                force=False,
+                fail_fast=False,
+            )
+            claim = {"task": "task_new", "claim": {"claim_id": "claim-new"}}
+
+            with (
+                mock.patch("forge_lib.tasks.load_coordinator_manifest", side_effect=[initial, refreshed]),
+                mock.patch("forge_lib.tasks.check_coordinator_cli"),
+                mock.patch("forge_lib.tasks.check_requirements"),
+                mock.patch("forge_lib.tasks.claim_from_coordinator", return_value=claim),
+                mock.patch("forge_lib.tasks.heartbeat_on_coordinator"),
+                mock.patch("forge_lib.tasks.run_task", return_value=0) as run_task_mock,
+                mock.patch("forge_lib.tasks.sync_task_result"),
+                mock.patch("forge_lib.tasks.release_on_coordinator"),
+            ):
+                rc = forge.cmd_work(args)
+
+            self.assertEqual(0, rc)
+            self.assertEqual("task_new", run_task_mock.call_args.args[1]["id"])
+
+    def test_run_task_resolves_dynamic_output_dir_placeholder(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            output_dir = root / "outputs"
+            manifest = {
+                "schema": "forge.task.v1",
+                "name": "dynamic-output",
+                "work_dir": str(root),
+                "state_dir": str(root / "state"),
+                "log_dir": str(root / "logs"),
+                "vars": {"output_dir": str(output_dir)},
+                "tasks": [{
+                    "id": "task_new",
+                    "index": 1,
+                    "command": "printf ok > {output_dir}/task_new.txt",
+                    "outputs": ["{output_dir}/task_new.txt"],
+                }],
+            }
+            task = manifest["tasks"][0]
+
+            rc = forge.run_task(manifest, task, force=False)
+
+            self.assertEqual(0, rc)
+            self.assertEqual("ok", (output_dir / "task_new.txt").read_text(encoding="utf-8"))
+            self.assertTrue(forge.task_done_path(manifest, task).exists())
+            self.assertFalse(forge.task_fail_path(manifest, task).exists())
+
     def test_run_task_terminates_child_group_on_signal(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

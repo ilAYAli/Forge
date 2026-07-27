@@ -105,11 +105,27 @@ def worker_drain_path(manifest: dict[str, Any], worker: str) -> Path:
 def worker_drained(manifest: dict[str, Any], worker: str) -> bool:
     return worker_drain_path(manifest, worker).exists()
 
-def task_outputs(task: dict[str, Any]) -> list[Path]:
+def task_outputs(
+    task: dict[str, Any],
+    manifest: dict[str, Any] | None = None,
+) -> list[Path]:
     outputs = task.get("outputs", [])
     if not isinstance(outputs, list):
         raise SystemExit(f"{task['id']}: outputs must be a list")
-    return [expand_path(str(path)) for path in outputs]
+    if manifest is None:
+        return [expand_path(str(path)) for path in outputs]
+    values = task_template_values(manifest, task)
+    resolved = []
+    for path in outputs:
+        value = str(path)
+        try:
+            value = value.format(**values)
+        except KeyError:
+            # Unmaterialized example/template manifests may intentionally omit
+            # runtime variables. Real runs provide them before execution.
+            pass
+        resolved.append(expand_path(value))
+    return resolved
 
 def task_resume_config(task: dict[str, Any]) -> dict[str, Any]:
     config = task.get("resume")
@@ -122,7 +138,7 @@ def task_preserves_partial_outputs(task: dict[str, Any]) -> bool:
     return task_resume_strategy(task) == "split-progress"
 
 def format_command(manifest: dict[str, Any], task: dict[str, Any]) -> str:
-    outputs = task_outputs(task)
+    outputs = task_outputs(task, manifest)
     values = task_template_values(manifest, task)
     values["output"] = str(outputs[0]) if outputs else ""
     command = str(task.get("command") or "")
@@ -137,7 +153,7 @@ def task_complete(manifest: dict[str, Any], task: dict[str, Any]) -> bool:
     payload = read_state_json(done)
     if isinstance(payload, dict) and payload.get("soft_cancel"):
         return True
-    return all(path.exists() for path in task_outputs(task))
+    return all(path.exists() for path in task_outputs(task, manifest))
 
 def task_cancel_payload(manifest: dict[str, Any], task: dict[str, Any]) -> dict[str, Any] | None:
     payload = read_state_json(task_cancel_path(manifest, task))
@@ -286,7 +302,7 @@ def run_task(
     check_requirements(manifest)
     state_dir(manifest).mkdir(parents=True, exist_ok=True)
     log_dir(manifest).mkdir(parents=True, exist_ok=True)
-    for output in task_outputs(task):
+    for output in task_outputs(task, manifest):
         output.parent.mkdir(parents=True, exist_ok=True)
         if output.is_dir() and not output.is_symlink():
             shutil.rmtree(output)
@@ -410,7 +426,7 @@ def run_task(
         "log": str(log_path),
         "manifest_sha256": manifest_checksum(manifest),
         "task_execution_sha256": task_execution_checksum(manifest, task),
-        "outputs": [file_record(path) for path in task_outputs(task) if path.exists()],
+        "outputs": [file_record(path) for path in task_outputs(task, manifest) if path.exists()],
     }
     if max_attempts > 0:
         payload["max_attempts"] = max_attempts
@@ -419,7 +435,10 @@ def run_task(
         payload["skipped"] = True
         payload["skip_reason"] = str(soft_cancel.get("reason") or "soft_cancel")
         payload["cancel"] = soft_cancel
-    if rc == 0 and (soft_cancel is not None or all(path.exists() for path in task_outputs(task))):
+    if rc == 0 and (
+        soft_cancel is not None
+        or all(path.exists() for path in task_outputs(task, manifest))
+    ):
         write_json(task_done_path(manifest, task), payload)
     else:
         write_json(task_fail_path(manifest, task), payload)
@@ -786,8 +805,8 @@ def coordinator_result_payload(
     worker: str,
     state: str,
 ) -> tuple[dict[str, Any], Path]:
-    coordinator_outputs = task_outputs(coordinator_task)
-    local_outputs = task_outputs(local_task)
+    coordinator_outputs = task_outputs(coordinator_task, coordinator_manifest)
+    local_outputs = task_outputs(local_task, local_manifest)
     output_records = []
     worker_outputs = []
     for local_path, coordinator_path in zip(local_outputs, coordinator_outputs):
@@ -878,7 +897,10 @@ def sync_task_result(
     heartbeat_on_coordinator(coordinator, str(coordinator_task["id"]), worker, claim_id)
 
     transfers = []
-    for local_path, coordinator_path in zip(task_outputs(local_task), task_outputs(coordinator_task)):
+    for local_path, coordinator_path in zip(
+        task_outputs(local_task, local_manifest),
+        task_outputs(coordinator_task, coordinator_manifest),
+    ):
         if local_path.exists():
             transfers.append((local_path, coordinator_path))
 
@@ -1180,6 +1202,14 @@ def cmd_work(args: argparse.Namespace) -> int:
         claim_id = str(claim_payload.get("claim_id") or "")
         attempt = task_attempt_from_payload(claim_payload)
         task_attempts = max(0, int(getattr(args, "task_attempts", 1)))
+        # Adaptive rechunking can materialize a new task as part of the claim.
+        # Refresh both views before looking up or executing that task.
+        coordinator_manifest = load_coordinator_manifest(args.coordinator)
+        local_manifest = worker_execution_manifest(
+            coordinator_manifest,
+            profile=args.profile,
+            manifest_path=local_manifest_path,
+        )
         coordinator_task = find_task(coordinator_manifest, task_id=task_id, index=None)
         local_task = find_task(local_manifest, task_id=task_id, index=None)
         stop_heartbeat = threading.Event()
