@@ -46,6 +46,7 @@ COMMON_COMMANDS = [
     "stop",
     "resume",
     "retry",
+    "recover",
     "worker",
     "status",
     "update",
@@ -668,6 +669,26 @@ def build_parser() -> argparse.ArgumentParser:
     )
     verify.add_argument("run", help="Run name or run directory.")
     verify.set_defaults(func=cmd_verify)
+
+    recover = sub.add_parser(
+        "recover",
+        help="Recover successful worker outputs that were recorded as failures.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    recover.add_argument("run", help="Stopped run name or run directory.")
+    recover.add_argument(
+        "--workers",
+        help="Workers file; defaults to the run's workers.json snapshot.",
+    )
+    recover.add_argument("--jobs", type=int, default=8, help="Maximum concurrent recovery transfers.")
+    recover.add_argument(
+        "--remote-timeout-seconds",
+        type=float,
+        default=180.0,
+        help="Timeout for each worker output transfer.",
+    )
+    recover.add_argument("--dry-run", action="store_true", help="Check recoverability without copying or changing state.")
+    recover.set_defaults(func=cmd_recover)
 
     merge = sub.add_parser(
         "merge",

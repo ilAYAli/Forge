@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import fcntl
+import tempfile
 
 from collections.abc import Callable
 
@@ -41,6 +42,214 @@ from forge_lib.workers import run_queue_launcher
 
 raise SystemExit(run_queue_launcher(json.loads(sys.argv[1])))
 """
+
+
+def recovery_worker_output_path(
+    manifest: dict[str, Any],
+    task: dict[str, Any],
+    fail_payload: dict[str, Any],
+    coordinator_output: Path,
+) -> Path:
+    worker_payload = fail_payload.get("worker")
+    worker_log = worker_payload.get("log") if isinstance(worker_payload, dict) else None
+    if not worker_log:
+        raise RuntimeError(f"{task['id']}: failure marker has no worker log path")
+    worker_run_dir = Path(str(worker_log)).parent.parent
+    vars_obj = manifest.get("vars")
+    vars_obj = vars_obj if isinstance(vars_obj, dict) else {}
+    coordinator_output_dir = expand_path(str(vars_obj.get("output_dir") or ""))
+    coordinator_run_dir = expand_path(str(vars_obj.get("run_dir") or Path(str(manifest["state_dir"])).parent))
+    try:
+        relative = coordinator_output.relative_to(coordinator_output_dir)
+        return worker_run_dir / "outputs" / relative
+    except ValueError:
+        pass
+    try:
+        relative = coordinator_output.relative_to(coordinator_run_dir)
+        return worker_run_dir / relative
+    except ValueError as exc:
+        raise RuntimeError(
+            f"{task['id']}: output {coordinator_output} is outside the run paths"
+        ) from exc
+
+
+def copy_from_worker(
+    worker: dict[str, Any],
+    source: Path,
+    destination: Path,
+    *,
+    timeout: float,
+) -> None:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if is_local_worker(worker):
+        if not source.is_file():
+            raise FileNotFoundError(source)
+        shutil.copy2(source, destination)
+        return
+    result = run_process_command_with_retries(
+        [
+            "rsync",
+            "-a",
+            "-e",
+            RSYNC_SSH,
+            worker_rsync_target(worker, str(source)),
+            str(destination),
+        ],
+        timeout=timeout,
+        retries=SSH_TRANSIENT_RETRY_COUNT,
+    )
+    if result.returncode != 0:
+        detail = result.stderr.strip() or result.stdout.strip()
+        raise RuntimeError(detail or f"{worker['host']}:{source}: recovery transfer failed")
+
+
+def recover_failed_task(
+    *,
+    manifest: dict[str, Any],
+    task: dict[str, Any],
+    worker: dict[str, Any],
+    fail_payload: dict[str, Any],
+    timeout: float,
+    dry_run: bool,
+) -> dict[str, Any]:
+    coordinator_outputs = task_outputs(task, manifest)
+    if not coordinator_outputs:
+        raise RuntimeError(f"{task['id']}: task has no declared outputs")
+    worker_outputs = [
+        recovery_worker_output_path(manifest, task, fail_payload, output)
+        for output in coordinator_outputs
+    ]
+    if dry_run:
+        for source in worker_outputs:
+            if is_local_worker(worker):
+                if not source.is_file():
+                    raise FileNotFoundError(source)
+                continue
+            check = run_worker_shell(
+                worker,
+                "test -f " + shlex.quote(str(source)),
+                timeout=timeout,
+                retries=SSH_TRANSIENT_RETRY_COUNT,
+            )
+            if check.returncode != 0:
+                raise FileNotFoundError(f"{worker['host']}:{source}")
+        return {"task": task["id"], "outputs": len(worker_outputs), "dry_run": True}
+
+    run_dir = state_dir(manifest).parent
+    staging_root = run_dir / ".recover"
+    staging_root.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix=f"{task['id']}-", dir=staging_root) as tmp:
+        staged_outputs: list[Path] = []
+        for index, (source, destination) in enumerate(zip(worker_outputs, coordinator_outputs)):
+            staged = Path(tmp) / f"{index:04d}-{destination.name}"
+            copy_from_worker(worker, source, staged, timeout=timeout)
+            if not staged.is_file():
+                raise RuntimeError(f"{task['id']}: recovered output is not a file: {source}")
+            staged_outputs.append(staged)
+
+        output_records = []
+        worker_records = []
+        for source, staged, destination in zip(worker_outputs, staged_outputs, coordinator_outputs):
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            os.replace(staged, destination)
+            record = file_record(destination)
+            output_records.append(record)
+            worker_records.append({**record, "path": str(source)})
+
+    payload = copy.deepcopy(fail_payload)
+    payload["outputs"] = output_records
+    payload["recovered"] = True
+    payload["recovered_at"] = now()
+    payload["sync_state"] = "recovered"
+    payload["manifest_sha256"] = manifest_checksum(manifest)
+    payload["task_execution_sha256"] = task_execution_checksum(manifest, task)
+    worker_payload = payload.get("worker")
+    if not isinstance(worker_payload, dict):
+        worker_payload = {"name": str(worker["host"])}
+        payload["worker"] = worker_payload
+    worker_payload["outputs"] = worker_records
+    write_json(task_done_path(manifest, task), payload)
+    task_fail_path(manifest, task).unlink(missing_ok=True)
+    return {"task": task["id"], "outputs": len(output_records), "dry_run": False}
+
+
+def cmd_recover(args: argparse.Namespace) -> int:
+    manifest_path, manifest = load_run_manifest(args.run)
+    if not stop_requested(manifest):
+        raise SystemExit(f"{manifest_path.parent.name}: recovery requires a stopped run")
+    summary = status_summary(manifest, lease_seconds=600)
+    if int(summary.get("active_count") or 0) > 0:
+        raise SystemExit(f"{manifest_path.parent.name}: recovery requires no active tasks")
+
+    workers_path = expand_path(args.workers) if args.workers else manifest_path.parent / RUN_WORKERS_NAME
+    workers = worker_records_from_payload(
+        read_json(workers_path),
+        label=str(workers_path),
+    )
+    workers_by_host = {str(worker["host"]): worker for worker in workers}
+    candidates: list[tuple[dict[str, Any], dict[str, Any], dict[str, Any]]] = []
+    skipped = 0
+    for task in manifest["tasks"]:
+        fail_path = task_fail_path(manifest, task)
+        if not fail_path.exists():
+            continue
+        payload = read_state_json(fail_path, missing_ok=False)
+        if payload is None or int(payload.get("rc", -1)) != 0 or payload.get("outputs"):
+            skipped += 1
+            continue
+        worker_payload = payload.get("worker")
+        host = (
+            str(worker_payload.get("name") or worker_payload.get("host") or "")
+            if isinstance(worker_payload, dict)
+            else str(worker_payload or payload.get("host") or "")
+        )
+        worker = workers_by_host.get(host)
+        if worker is None:
+            skipped += 1
+            continue
+        candidates.append((task, payload, worker))
+
+    recovered = 0
+    missing = 0
+    errors: list[str] = []
+
+    def recover(item: tuple[dict[str, Any], dict[str, Any], dict[str, Any]]) -> dict[str, Any]:
+        task, payload, worker = item
+        return recover_failed_task(
+            manifest=manifest,
+            task=task,
+            worker=worker,
+            fail_payload=payload,
+            timeout=max(1.0, float(args.remote_timeout_seconds)),
+            dry_run=bool(args.dry_run),
+        )
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, int(args.jobs))) as pool:
+        future_tasks = {pool.submit(recover, item): str(item[0]["id"]) for item in candidates}
+        for future in concurrent.futures.as_completed(future_tasks):
+            task_id = future_tasks[future]
+            try:
+                future.result()
+                recovered += 1
+            except FileNotFoundError as exc:
+                missing += 1
+                errors.append(f"{task_id}: missing: {exc}")
+            except Exception as exc:
+                errors.append(f"{task_id}: {exc}")
+
+    action = "recoverable" if args.dry_run else "recovered"
+    print(
+        f"recover: {action}={recovered}/{len(candidates)} "
+        f"missing={missing} errors={len(errors) - missing} skipped={skipped}"
+    )
+    for detail in errors:
+        print(f"  {detail}", file=sys.stderr)
+    try:
+        staging_root = state_dir(manifest).parent / ".recover"
+        staging_root.rmdir()
+    except OSError:
+        pass
+    return 1 if errors else 0
 _INPUT_TREE_SYNC_LOCK = threading.Lock()
 _SYNCED_INPUT_TREES: set[tuple[str, str, str]] = set()
 

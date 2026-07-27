@@ -7940,6 +7940,114 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
             self.assertTrue(forge.task_done_path(manifest, task).exists())
             self.assertFalse(forge.task_fail_path(manifest, task).exists())
 
+    def test_recover_restores_all_outputs_and_leaves_missing_failures(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run_dir = root / "runs" / "recover-run"
+            worker_run = root / "worker-state" / "recover-run"
+            output_dir = run_dir / "outputs"
+            manifest = {
+                "schema": "forge.task.v1",
+                "name": "recover-run",
+                "work_dir": str(root),
+                "state_dir": str(run_dir / "state"),
+                "log_dir": str(run_dir / "logs"),
+                "claim_dir": str(run_dir / "claims"),
+                "vars": {
+                    "run_dir": str(run_dir),
+                    "output_dir": str(output_dir),
+                },
+                "tasks": [
+                    {
+                        "id": "task_ok",
+                        "index": 0,
+                        "command": "true",
+                        "outputs": [
+                            "{output_dir}/task_ok-a.txt",
+                            "{output_dir}/nested/task_ok-b.txt",
+                        ],
+                    },
+                    {
+                        "id": "task_missing",
+                        "index": 1,
+                        "command": "true",
+                        "outputs": ["{output_dir}/task_missing.txt"],
+                    },
+                ],
+            }
+            run_dir.mkdir(parents=True)
+            forge.write_json(run_dir / "manifest.json", manifest)
+            forge.write_json(
+                run_dir / "workers.json",
+                {
+                    "schema": "forge.workers.v1",
+                    "workers": [{"host": "localhost", "local": True}],
+                },
+            )
+            forge.write_json(forge.stop_request_path(manifest), {"reason": "test"})
+            for task in manifest["tasks"]:
+                forge.write_json(
+                    forge.task_fail_path(manifest, task),
+                    {
+                        "schema": "forge.task.v1",
+                        "task": task["id"],
+                        "index": task["index"],
+                        "rc": 0,
+                        "outputs": [],
+                        "worker": {
+                            "name": "localhost",
+                            "log": str(worker_run / "logs" / f"{task['id']}.log"),
+                            "outputs": [],
+                        },
+                    },
+                )
+            (worker_run / "outputs" / "nested").mkdir(parents=True)
+            (worker_run / "outputs" / "task_ok-a.txt").write_text("first", encoding="utf-8")
+            (worker_run / "outputs" / "nested" / "task_ok-b.txt").write_text("second", encoding="utf-8")
+            args = argparse.Namespace(
+                run=str(run_dir),
+                workers=None,
+                jobs=2,
+                remote_timeout_seconds=10.0,
+                dry_run=False,
+            )
+
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                rc = forge.cmd_recover(args)
+
+            self.assertEqual(1, rc)
+            self.assertEqual("first", (output_dir / "task_ok-a.txt").read_text(encoding="utf-8"))
+            self.assertEqual("second", (output_dir / "nested" / "task_ok-b.txt").read_text(encoding="utf-8"))
+            done = forge.read_json(forge.task_done_path(manifest, manifest["tasks"][0]))
+            self.assertTrue(done["recovered"])
+            self.assertEqual(2, len(done["outputs"]))
+            self.assertFalse(forge.task_fail_path(manifest, manifest["tasks"][0]).exists())
+            self.assertTrue(forge.task_fail_path(manifest, manifest["tasks"][1]).exists())
+
+    def test_recover_requires_stopped_run(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp) / "active"
+            manifest = {
+                "schema": "forge.task.v1",
+                "name": "active",
+                "work_dir": str(run_dir),
+                "state_dir": str(run_dir / "state"),
+                "log_dir": str(run_dir / "logs"),
+                "tasks": [],
+            }
+            run_dir.mkdir()
+            forge.write_json(run_dir / "manifest.json", manifest)
+            args = argparse.Namespace(
+                run=str(run_dir),
+                workers=None,
+                jobs=1,
+                remote_timeout_seconds=10.0,
+                dry_run=False,
+            )
+
+            with self.assertRaisesRegex(SystemExit, "requires a stopped run"):
+                forge.cmd_recover(args)
+
     def test_run_task_terminates_child_group_on_signal(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
