@@ -13646,6 +13646,63 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
         self.assertNotIn("--retry-failed", work)
         self.assertIn("--retry-failed", retry_work)
 
+    def test_deploy_work_command_assigns_stable_slot_id(self) -> None:
+        command = forge.deploy_work_command(
+            worker={
+                "host": "pwa-wsl",
+                "profile": "linux",
+                "local": False,
+                "_slot": 3,
+                "_slots": 8,
+            },
+            manifest={"tasks": [{"id": "task_0000"}]},
+            coordinator="pwa-5090:/tmp/manifest.json",
+        )
+
+        self.assertIn("--worker pwa-wsl", command)
+        self.assertIn("--worker-id 'pwa-wsl/linux#3'", command)
+
+    def test_worker_process_status_identifies_starved_and_stale_slots(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest = {
+                "schema": "forge.task.v1",
+                "name": "process-status",
+                "state_dir": str(root / "state"),
+                "tasks": [],
+            }
+            process_dir = forge.worker_process_dir(manifest)
+            process_dir.mkdir(parents=True)
+            forge.write_json(process_dir / "idle.json", {
+                "worker": "worker-a",
+                "worker_id": "worker-a#1",
+                "state": "idle",
+                "state_since_epoch": 70.0,
+                "heartbeat_epoch": 99.0,
+            })
+            forge.write_json(process_dir / "running.json", {
+                "worker": "worker-a",
+                "worker_id": "worker-a#2",
+                "state": "running",
+                "state_since_epoch": 90.0,
+                "heartbeat_epoch": 99.0,
+            })
+            forge.write_json(process_dir / "stale.json", {
+                "worker": "worker-a",
+                "worker_id": "worker-a#3",
+                "state": "idle",
+                "state_since_epoch": 40.0,
+                "heartbeat_epoch": 50.0,
+            })
+
+            with mock.patch("forge_lib.status.epoch", return_value=100.0):
+                rows = forge.worker_process_status_rows(manifest, pending=10)
+
+            states = {row["worker_id"]: row["state"] for row in rows}
+            self.assertEqual("starved", states["worker-a#1"])
+            self.assertEqual("running", states["worker-a#2"])
+            self.assertEqual("stale", states["worker-a#3"])
+
     def test_deploy_work_command_includes_task_complete_options(self) -> None:
         worker = {"host": "pwa-mbp", "profile": "pwa-mbp", "local": False}
         manifest = {"tasks": [{"id": "task_0000"}]}

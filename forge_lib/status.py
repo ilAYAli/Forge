@@ -1508,6 +1508,10 @@ def run_status_payload(summary: dict[str, Any]) -> dict[str, Any]:
                 "summary": active_worker_summary_payload(summary),
                 "summary_text": active_summary,
             },
+            "workers": {
+                "count": len(summary.get("worker_processes", [])),
+                "processes": copy.deepcopy(summary.get("worker_processes", [])),
+            },
             "pending": {
                 "count": counts["pending"],
                 "tasks": copy.deepcopy(summary["pending"]),
@@ -2422,6 +2426,70 @@ def status_worker(manifest: dict[str, Any], task: dict[str, Any], state: str) ->
         if worker:
             return worker_group_name(str(worker))
     return ""
+
+def status_worker_id(manifest: dict[str, Any], task: dict[str, Any], state: str) -> str:
+    paths: list[Path] = []
+    if state == "done":
+        paths.append(task_done_path(manifest, task))
+    elif state == "fail":
+        paths.append(task_fail_path(manifest, task))
+    elif state in {"claimed", "running", "stale"}:
+        paths.extend([
+            task_claim_path(manifest, task),
+            task_running_path(manifest, task),
+        ])
+    for path in paths:
+        payload = read_state_json(path)
+        if payload is None:
+            continue
+        worker_id = payload.get("worker_id")
+        worker = payload.get("worker")
+        if isinstance(worker, dict):
+            worker_id = worker_id or worker.get("process_id")
+        if worker_id:
+            return str(worker_id)
+    return status_worker(manifest, task, state)
+
+def worker_process_status_rows(
+    manifest: dict[str, Any],
+    *,
+    pending: int,
+    stale_seconds: float = 30.0,
+    starved_seconds: float = 15.0,
+) -> list[dict[str, Any]]:
+    directory = worker_process_dir(manifest)
+    if not directory.is_dir():
+        return []
+    current_epoch = epoch()
+    rows = []
+    for path in sorted(directory.glob("*.json")):
+        payload = read_state_json(path)
+        if payload is None:
+            continue
+        worker_id = str(payload.get("worker_id") or "").strip()
+        if not worker_id:
+            continue
+        state = str(payload.get("state") or "unknown")
+        heartbeat_epoch = parse_float(payload.get("heartbeat_epoch")) or 0.0
+        state_since_epoch = parse_float(payload.get("state_since_epoch")) or heartbeat_epoch
+        heartbeat_age = max(0.0, current_epoch - heartbeat_epoch) if heartbeat_epoch else 0.0
+        state_age = max(0.0, current_epoch - state_since_epoch) if state_since_epoch else 0.0
+        if state == "stopped":
+            continue
+        if heartbeat_epoch and heartbeat_age > stale_seconds:
+            display_state = "stale"
+        elif state == "idle" and pending > 0 and state_age >= starved_seconds:
+            display_state = "starved"
+        else:
+            display_state = state
+        rows.append({
+            "worker": str(payload.get("worker") or worker_group_name(worker_id)),
+            "worker_id": worker_id,
+            "state": display_state,
+            "state_age_s": round(state_age, 1),
+            "heartbeat_age_s": round(heartbeat_age, 1),
+        })
+    return rows
 
 def log_tail(path: Path, *, max_bytes: int = 8192) -> str:
     with path.open("rb") as file:
@@ -3808,6 +3876,7 @@ def status_summary(manifest: dict[str, Any], *, lease_seconds: int) -> dict[str,
             "label": task_display_label(manifest, task),
             "state": state,
             "worker": worker,
+            "worker_id": status_worker_id(manifest, task, state),
             "progress": progress,
         }
         if progress_data:
@@ -3854,6 +3923,10 @@ def status_summary(manifest: dict[str, Any], *, lease_seconds: int) -> dict[str,
         progress_unit_totals,
     )
     progress_graph = run_progress_history_graph(manifest, current_progress_graph)
+    worker_processes = worker_process_status_rows(
+        manifest,
+        pending=counts["pending"],
+    )
 
     return {
         "tasks": len(manifest["tasks"]),
@@ -3869,6 +3942,7 @@ def status_summary(manifest: dict[str, Any], *, lease_seconds: int) -> dict[str,
         "progress_outputs": progress_outputs,
         "worker_outputs": worker_outputs,
         "worker_rates": worker_rates,
+        "worker_processes": worker_processes,
         "queue": queue_payload,
         "launch": launch_payload,
         "launch_state": launch_state,
@@ -3990,7 +4064,10 @@ def print_status_details(
                 else ""
             )
             label = f" {str(row['label'])}" if row.get("label") else ""
-            worker = format_status_key(str(row["worker"] or "unknown"), [])
+            worker = format_status_key(
+                str(row.get("worker_id") or row["worker"] or "unknown"),
+                [],
+            )
             state = (
                 f" [{colorize(state_name, status_color(state_name), enabled=color_enabled)}]"
                 if state_name != "running"
@@ -4010,6 +4087,14 @@ def print_status_details(
     if stale_rows:
         print(f"{indent}{color_count_line('stale', len(stale_rows), 'red', color_enabled=color_enabled)}")
         print_active_rows(stale_rows)
+    process_rows = summary.get("worker_processes")
+    if isinstance(process_rows, list) and process_rows:
+        print(f"{indent}{color_count_line('worker processes', len(process_rows), 'cyan', color_enabled=color_enabled)}")
+        for process in process_rows:
+            worker_id = str(process.get("worker_id") or "unknown")
+            state_name = str(process.get("state") or "unknown")
+            age = compact_duration(float(process.get("state_age_s") or 0))
+            print(f"{indent}  {worker_id} [{state_name}] {age}")
     print_pending_status(summary, color_enabled=color_enabled, show_empty=show_empty, indent=indent)
     print_status_group("fail", summary["groups"]["fail"], color_enabled=color_enabled, show_empty=show_empty, indent=indent)
     if show_diagnostics and summary.get("diagnostics"):

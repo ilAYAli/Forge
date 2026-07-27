@@ -105,6 +105,39 @@ def worker_drain_path(manifest: dict[str, Any], worker: str) -> Path:
 def worker_drained(manifest: dict[str, Any], worker: str) -> bool:
     return worker_drain_path(manifest, worker).exists()
 
+def worker_process_dir(manifest: dict[str, Any]) -> Path:
+    return state_dir(manifest) / "worker-processes"
+
+def worker_process_path(manifest: dict[str, Any], worker_id: str) -> Path:
+    digest = hashlib.sha256(worker_id.encode("utf-8")).hexdigest()[:16]
+    return worker_process_dir(manifest) / f"{digest}.json"
+
+def update_worker_process_heartbeat(
+    manifest: dict[str, Any],
+    *,
+    worker: str,
+    worker_id: str,
+    process_state: str,
+) -> dict[str, Any]:
+    path = worker_process_path(manifest, worker_id)
+    previous = read_state_json(path)
+    timestamp = now()
+    timestamp_epoch = epoch()
+    same_state = isinstance(previous, dict) and previous.get("state") == process_state
+    payload = {
+        "schema": SCHEMA,
+        "worker": worker,
+        "worker_id": worker_id,
+        "state": process_state,
+        "state_since": previous.get("state_since") if same_state else timestamp,
+        "state_since_epoch": previous.get("state_since_epoch") if same_state else timestamp_epoch,
+        "heartbeat_at": timestamp,
+        "heartbeat_epoch": timestamp_epoch,
+    }
+    worker_process_dir(manifest).mkdir(parents=True, exist_ok=True)
+    write_json(path, payload)
+    return payload
+
 def task_outputs(
     task: dict[str, Any],
     manifest: dict[str, Any] | None = None,
@@ -449,6 +482,7 @@ def claim_task(
     *,
     manifest_path: Path | None = None,
     worker: str,
+    worker_id: str | None = None,
     profile: str | None,
     lease_seconds: int,
     retry_failed: bool,
@@ -518,6 +552,7 @@ def claim_task(
                     "index": task.get("index"),
                     "claim_id": uuid.uuid4().hex,
                     "worker": worker,
+                    "worker_id": worker_id or worker,
                     "profile": profile,
                     "claimed_at": now(),
                     "claimed_epoch": epoch(),
@@ -586,6 +621,7 @@ def claim_task(
             "index": task.get("index"),
             "claim_id": uuid.uuid4().hex,
             "worker": worker,
+            "worker_id": worker_id or worker,
             "profile": profile,
             "claimed_at": now(),
             "claimed_epoch": epoch(),
@@ -804,6 +840,7 @@ def coordinator_result_payload(
     local_task: dict[str, Any],
     worker: str,
     state: str,
+    worker_id: str | None = None,
 ) -> tuple[dict[str, Any], Path]:
     coordinator_outputs = task_outputs(coordinator_task, coordinator_manifest)
     local_outputs = task_outputs(local_task, local_manifest)
@@ -833,6 +870,7 @@ def coordinator_result_payload(
     payload["outputs"] = output_records
     payload["worker"] = {
         "name": worker,
+        "process_id": worker_id or worker,
         "host": local_payload.get("host"),
         "platform": local_payload.get("platform"),
         "profile_manifest_sha256": manifest_checksum(local_manifest),
@@ -886,6 +924,7 @@ def sync_task_result(
     local_task: dict[str, Any],
     worker: str,
     claim_id: str | None,
+    worker_id: str | None = None,
 ) -> None:
     local_done = task_done_path(local_manifest, local_task)
     local_fail = task_fail_path(local_manifest, local_task)
@@ -916,6 +955,7 @@ def sync_task_result(
         coordinator_task=coordinator_task,
         local_task=local_task,
         worker=worker,
+        worker_id=worker_id,
         state=state,
     )
     sync_payload_path = local_state_path.with_suffix(local_state_path.suffix + ".sync.json")
@@ -936,6 +976,7 @@ def cmd_claim(args: argparse.Namespace) -> int:
         manifest,
         manifest_path=expand_path(args.manifest),
         worker=args.worker,
+        worker_id=getattr(args, "worker_id", None),
         profile=args.profile,
         lease_seconds=args.lease_seconds,
         retry_failed=args.retry_failed,
@@ -984,6 +1025,9 @@ def claim_from_coordinator(args: argparse.Namespace) -> dict[str, Any] | None:
         "--lease-seconds", str(args.lease_seconds),
         "--json",
     ]
+    worker_id = str(getattr(args, "worker_id", "") or "").strip()
+    if worker_id:
+        command.extend(["--worker-id", worker_id])
     if args.profile:
         command.extend(["--profile", args.profile])
     task_attempts = max(0, int(getattr(args, "task_attempts", 1)))
@@ -1047,15 +1091,23 @@ def release_on_coordinator(
 
 def heartbeat_on_coordinator(
     coordinator: str,
-    task_id: str,
+    task_id: str | None,
     worker: str,
     claim_id: str | None,
     progress_data: dict[str, Any] | None = None,
     running: bool = False,
+    worker_id: str | None = None,
+    process_state: str | None = None,
 ) -> dict[str, Any]:
-    command = ["heartbeat", "--manifest", "{manifest}", "--task", task_id, "--worker", worker, "--json"]
+    command = ["heartbeat", "--manifest", "{manifest}", "--worker", worker, "--json"]
+    if task_id:
+        command.extend(["--task", task_id])
     if claim_id:
         command.extend(["--claim-id", claim_id])
+    if worker_id:
+        command.extend(["--worker-id", worker_id])
+    if process_state:
+        command.extend(["--process-state", process_state])
     if running:
         command.append("--running")
     if progress_data:
@@ -1091,6 +1143,7 @@ def heartbeat_loop(
     coordinator: str,
     task_id: str,
     worker: str,
+    worker_id: str,
     claim_id: str | None,
     local_manifest: dict[str, Any],
     local_task: dict[str, Any],
@@ -1109,6 +1162,8 @@ def heartbeat_loop(
                 worker,
                 claim_id,
                 task_log_progress_data(local_manifest, local_task),
+                worker_id=worker_id,
+                process_state="running",
             )
             cancel_payload = response.get("cancel") if isinstance(response, dict) else None
             if isinstance(cancel_payload, dict):
@@ -1177,11 +1232,23 @@ def cmd_work(args: argparse.Namespace) -> int:
     )
     check_coordinator_cli(args.coordinator)
     check_requirements(local_manifest)
+    worker_id = str(getattr(args, "worker_id", "") or args.worker)
     completed = 0
     failed = 0
     idle_deadline: float | None = None
 
     while args.max_tasks <= 0 or completed < args.max_tasks:
+        try:
+            heartbeat_on_coordinator(
+                args.coordinator,
+                None,
+                args.worker,
+                None,
+                worker_id=worker_id,
+                process_state="idle",
+            )
+        except Exception as exc:
+            print(f"{worker_id}: process heartbeat failed: {exc}", file=sys.stderr)
         claim = claim_from_coordinator(args)
         if claim is None:
             idle_seconds = max(0.0, float(args.idle_seconds))
@@ -1220,6 +1287,7 @@ def cmd_work(args: argparse.Namespace) -> int:
                 "coordinator": args.coordinator,
                 "task_id": task_id,
                 "worker": args.worker,
+                "worker_id": worker_id,
                 "claim_id": claim_id,
                 "local_manifest": local_manifest,
                 "local_task": local_task,
@@ -1239,6 +1307,8 @@ def cmd_work(args: argparse.Namespace) -> int:
                 args.worker,
                 claim_id,
                 running=True,
+                worker_id=worker_id,
+                process_state="running",
             )
             cancel_payload = response.get("cancel") if isinstance(response, dict) else None
             if isinstance(cancel_payload, dict):
@@ -1266,6 +1336,7 @@ def cmd_work(args: argparse.Namespace) -> int:
                 coordinator_task=coordinator_task,
                 local_task=local_task,
                 worker=args.worker,
+                worker_id=worker_id,
                 claim_id=claim_id,
             )
             try:
@@ -1315,7 +1386,18 @@ def cmd_work(args: argparse.Namespace) -> int:
             if args.fail_fast or rc in {124, 130, 143} or (args.retry_failed and task_attempts <= 1):
                 return rc
 
-    print(f"worker={args.worker} completed={completed} failed={failed}")
+    try:
+        heartbeat_on_coordinator(
+            args.coordinator,
+            None,
+            args.worker,
+            None,
+            worker_id=worker_id,
+            process_state="stopped",
+        )
+    except Exception as exc:
+        print(f"{worker_id}: process heartbeat failed: {exc}", file=sys.stderr)
+    print(f"worker={worker_id} completed={completed} failed={failed}")
     return 0 if failed == 0 else 1
 
 def cmd_doctor(args: argparse.Namespace) -> int:
@@ -1340,6 +1422,24 @@ def cmd_doctor(args: argparse.Namespace) -> int:
 
 def cmd_heartbeat(args: argparse.Namespace) -> int:
     manifest = load_manifest(expand_path(args.manifest))
+    worker_id = str(getattr(args, "worker_id", "") or "").strip()
+    process_state = str(getattr(args, "process_state", "") or "").strip()
+    process_payload = None
+    if worker_id and process_state:
+        process_payload = update_worker_process_heartbeat(
+            manifest,
+            worker=args.worker,
+            worker_id=worker_id,
+            process_state=process_state,
+        )
+    if not args.task:
+        if process_payload is None:
+            raise SystemExit("heartbeat requires --task or --worker-id with --process-state")
+        if getattr(args, "json", False):
+            print(json.dumps({"task": None, "process": process_payload}, sort_keys=True))
+        else:
+            print(worker_id)
+        return 0
     task = find_task(manifest, task_id=args.task, index=None)
     progress_data = None
     if args.progress_json:
@@ -1359,7 +1459,11 @@ def cmd_heartbeat(args: argparse.Namespace) -> int:
     )
     cancel_payload = task_cancel_payload(manifest, task)
     if getattr(args, "json", False):
-        print(json.dumps({"task": task["id"], "cancel": cancel_payload}, sort_keys=True))
+        print(json.dumps({
+            "task": task["id"],
+            "cancel": cancel_payload,
+            "process": process_payload,
+        }, sort_keys=True))
     else:
         print(task["id"])
     return 0

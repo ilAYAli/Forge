@@ -1093,6 +1093,12 @@ def deploy_work_command(
         "--manifest", manifest_path,
         "--coordinator", coordinator,
         "--worker", str(worker["host"]),
+        "--worker-id", worker_label(
+            str(worker["host"]),
+            str(worker["profile"]),
+            worker.get("_slot"),
+            worker.get("_slots"),
+        ),
         "--idle-seconds", str(DEFAULT_DEPLOY_WORK_IDLE_SECONDS),
         *profile_args,
     ]

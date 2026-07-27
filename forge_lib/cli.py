@@ -526,6 +526,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     claim.add_argument("--manifest", required=True, help="Coordinator manifest.")
     claim.add_argument("--worker", required=True, help="Worker name for the claim.")
+    claim.add_argument("--worker-id", help="Stable worker process/slot identifier.")
     claim.add_argument("--profile", help="Profile name recorded with the claim.")
     claim.add_argument("--lease-seconds", type=int, default=600, help="Claim lease duration before stale.")
     claim.add_argument("--retry-failed", action="store_true", help="Allow failed tasks to be claimed again.")
@@ -552,8 +553,14 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     heartbeat.add_argument("--manifest", required=True, help="Coordinator manifest.")
-    heartbeat.add_argument("--task", required=True, help="Task id to refresh.")
+    heartbeat.add_argument("--task", help="Task id to refresh.")
     heartbeat.add_argument("--worker", required=True, help="Expected worker owner.")
+    heartbeat.add_argument("--worker-id", help="Stable worker process/slot identifier.")
+    heartbeat.add_argument(
+        "--process-state",
+        choices=("idle", "running", "stopped"),
+        help="Worker process lifecycle state.",
+    )
     heartbeat.add_argument("--claim-id", help="Expected claim id.")
     heartbeat.add_argument("--progress-json", help="Optional JSON progress object to store with the heartbeat.")
     heartbeat.add_argument("--running", action="store_true", help="Mark the task as running on the coordinator.")
@@ -573,6 +580,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     work.add_argument("--profile", help="Path-map/profile name for this worker.")
     work.add_argument("--worker", default=socket.gethostname(), help="Worker name recorded in claims.")
+    work.add_argument("--worker-id", help="Stable worker process/slot identifier.")
     work.add_argument("--lease-seconds", type=int, default=600, help="Claim lease duration before stale.")
     work.add_argument("--max-tasks", type=int, default=0, help="Maximum tasks to run; 0 means until no work remains.")
     work.add_argument("--idle-seconds", type=float, default=0.0, help="Wait this long for more coordinator work after a no-claim result.")

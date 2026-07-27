@@ -824,7 +824,7 @@ _HTML = r"""<!DOCTYPE html>
           ? pd.eta_epoch - pd.eta_s : null;
         const stTag = t.state&&t.state!=='running'
           ? ` <span style="color:var(--dim);font-size:11px"${hbTime!=null?` data-hbt="${hbTime}"`:''}>[${esc(t.state)}${hbTime!=null?' '+fmtAge(Date.now()/1000-hbTime):''}]</span>` : '';
-        return `${esc(t.worker||'?')}${stTag}`;
+        return `${esc(t.worker_id||t.worker||'?')}${stTag}`;
       }
       if (col === 'label') return esc(t.label||'');
       if (col === 'shard' || col === 'task') return String(t.index);
@@ -847,7 +847,7 @@ _HTML = r"""<!DOCTYPE html>
         const number = parseFloat(value.replace(/%$/, ''));
         return value && !Number.isNaN(number) ? String(number) : value;
       }
-      if (col === 'worker') return t.worker || '';
+      if (col === 'worker') return t.worker_id || t.worker || '';
       if (col === 'label') return t.label || '';
       if (col === 'shard' || col === 'task') return String(t.index);
       if (col === 'progress') return pd?.done ?? '';
@@ -1722,6 +1722,14 @@ _HTML = r"""<!DOCTYPE html>
       ).join('');
     }
 
+    function renderWorkerProcesses(processes) {
+      return (processes || []).map(process => {
+        const state = String(process.state || 'unknown');
+        const age = fmtAge(Number(process.state_age_s || 0));
+        return `<div class="group-row">${esc(process.worker_id || process.worker || '?')} [${esc(state)}] ${esc(age)}</div>`;
+      }).join('');
+    }
+
     function commandDisplayText(command) {
       return String(command || '').replace(/\s+/g, ' ').trim();
     }
@@ -1828,6 +1836,7 @@ _HTML = r"""<!DOCTYPE html>
     function renderRun(r) {
       const state  = r.state||'empty';
       const active  = r.sections?.active  || {count:0, tasks:[]};
+      const workers = r.sections?.workers || {count:0, processes:[]};
       const pending = r.sections?.pending || {count:0, groups:{}};
       const fail    = r.sections?.fail    || {count:0, groups:{}};
       const display = r.display || {};
@@ -1916,6 +1925,13 @@ _HTML = r"""<!DOCTYPE html>
         sections.push(makeSection(r.run, 'active',
           `active: <b>${active.count}</b>`, 'yel',
           ws + renderTasks(active.tasks), false
+        ));
+      }
+
+      if (workers.count > 0) {
+        sections.push(makeSection(r.run, 'workers',
+          `worker processes: <b>${workers.count}</b>`, 'dim',
+          renderWorkerProcesses(workers.processes), false
         ));
       }
 
@@ -2797,12 +2813,14 @@ def _compact_web_api_run(run: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(sections, dict):
         return compact
     compact_sections: dict[str, Any] = {}
-    for name in ("active", "pending", "fail"):
+    for name in ("active", "workers", "pending", "fail"):
         section = sections.get(name)
         if not isinstance(section, dict):
             continue
         if name == "active":
             fields = ("count", "fields", "summary", "summary_text", "tasks")
+        elif name == "workers":
+            fields = ("count", "processes")
         else:
             fields = ("count", "groups")
         compact_sections[name] = {
