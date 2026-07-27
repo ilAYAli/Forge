@@ -4,6 +4,7 @@ import copy
 import fcntl
 import hashlib
 import json
+import math
 import re
 import time
 from contextlib import contextmanager
@@ -11,14 +12,26 @@ from pathlib import Path
 from typing import Any
 
 from .core import *
-from .tasks import task_done_path, task_heartbeat_path, task_running_path, task_state
+from .manifest import state_dir
+from .tasks import (
+    read_state_json,
+    task_done_path,
+    task_heartbeat_path,
+    task_running_path,
+    task_state,
+)
 
 
 SELFPLAY_CHUNK_CACHE_SCHEMA = "forge.selfplay.chunk-history.v1"
 SELFPLAY_CHUNK_CACHE_NAME = "selfplay-chunk-history.json"
+ADAPTIVE_PROCESS_RATE_SCHEMA = "forge.adaptive.process-rate.v1"
+ADAPTIVE_PROCESS_RATE_DIR = "adaptive-process-rates"
 DEFAULT_SELFPLAY_CHUNK_TIME_SECONDS = 300
 DEFAULT_SELFPLAY_COLD_START_THROUGHPUT = 15 / 300
 DEFAULT_SELFPLAY_CHUNK_HISTORY_WEIGHT = 4
+ADAPTIVE_RATE_WARMUP_FRACTION = 0.20
+ADAPTIVE_RATE_WARMUP_MIN_UNITS = 4
+ADAPTIVE_RATE_WARMUP_MAX_UNITS = 40
 
 
 def _parse_int(value: object) -> int | None:
@@ -37,6 +50,36 @@ def _parse_float(value: object) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def adaptive_rate_warmup_units(total: int) -> int:
+    return min(
+        total,
+        max(
+            ADAPTIVE_RATE_WARMUP_MIN_UNITS,
+            min(
+                ADAPTIVE_RATE_WARMUP_MAX_UNITS,
+                int(math.ceil(total * ADAPTIVE_RATE_WARMUP_FRACTION)),
+            ),
+        ),
+    )
+
+
+def adaptive_blended_throughput(
+    cached_rate: float | None,
+    observed_rate: float | None,
+    *,
+    observed_units: int,
+    warmup_units: int,
+) -> float | None:
+    cached = _parse_float(cached_rate)
+    observed = _parse_float(observed_rate)
+    if observed is None or observed <= 0:
+        return cached if cached is not None and cached > 0 else None
+    if cached is None or cached <= 0:
+        return observed
+    confidence = min(1.0, max(0, observed_units) / max(1, warmup_units))
+    return cached * (1.0 - confidence) + observed * confidence
 
 
 def selfplay_chunk_cache_dir() -> Path:
@@ -69,6 +112,9 @@ def selfplay_chunk_signature(params: dict[str, Any]) -> dict[str, Any]:
     worker = str(params.get("__forge_worker") or "").strip()
     if worker:
         signature["worker"] = worker
+    worker_id = str(params.get("__forge_worker_id") or "").strip()
+    if worker_id:
+        signature["worker_id"] = worker_id
     return signature
 
 
@@ -163,6 +209,101 @@ def adaptive_template_parameters(manifest: dict[str, Any]) -> dict[str, Any]:
     name = template.get("name") if isinstance(template, dict) else None
     result["__forge_template_name"] = str(name or manifest.get("kind") or "task")
     return result
+
+
+def adaptive_process_rate_path(manifest: dict[str, Any], worker_id: str) -> Path:
+    digest = hashlib.sha256(worker_id.encode("utf-8")).hexdigest()[:16]
+    return state_dir(manifest) / ADAPTIVE_PROCESS_RATE_DIR / f"{digest}.json"
+
+
+def adaptive_process_cached_throughput(
+    manifest: dict[str, Any],
+    worker_id: str | None,
+) -> float | None:
+    process_id = str(worker_id or "").strip()
+    if not process_id:
+        return None
+    payload = read_state_json(adaptive_process_rate_path(manifest, process_id))
+    if (
+        not isinstance(payload, dict)
+        or payload.get("schema") != ADAPTIVE_PROCESS_RATE_SCHEMA
+        or str(payload.get("worker_id") or "") != process_id
+    ):
+        return None
+    rate = _parse_float(payload.get("rate"))
+    return float(rate) if rate is not None and rate > 0 else None
+
+
+def adaptive_worker_cached_throughput(
+    manifest: dict[str, Any],
+    *,
+    worker: str | None,
+    worker_id: str | None,
+    cache_path: Path | None = None,
+) -> float | None:
+    worker_name = str(worker or "").strip()
+    process_id = str(worker_id or "").strip()
+    params = adaptive_template_parameters(manifest)
+    candidates = [adaptive_process_cached_throughput(manifest, process_id)]
+    if worker_name and process_id:
+        candidates.append(selfplay_cached_throughput(
+            {
+                **params,
+                "__forge_worker": worker_name,
+                "__forge_worker_id": process_id,
+            },
+            cache_path=cache_path,
+        ))
+    if worker_name:
+        candidates.append(selfplay_cached_throughput(
+            {**params, "__forge_worker": worker_name},
+            cache_path=cache_path,
+        ))
+    return next((rate for rate in candidates if rate is not None and rate > 0), None)
+
+
+def record_adaptive_process_chunk_rate(
+    manifest: dict[str, Any],
+    *,
+    worker: str,
+    worker_id: str,
+    rate: float,
+    units: int,
+    elapsed_s: float,
+    started_at: Any = None,
+) -> dict[str, Any] | None:
+    if not worker_id or rate <= 0 or units <= 0 or elapsed_s <= 0:
+        return None
+    path = adaptive_process_rate_path(manifest, worker_id)
+    previous = read_state_json(path)
+    valid_previous = (
+        isinstance(previous, dict)
+        and previous.get("schema") == ADAPTIVE_PROCESS_RATE_SCHEMA
+        and str(previous.get("worker_id") or "") == worker_id
+    )
+    previous_rate = _parse_float(previous.get("rate")) if valid_previous else None
+    previous_samples = _parse_int(previous.get("samples")) if valid_previous else None
+    previous_samples = max(0, previous_samples or 0)
+    if previous_rate is not None and previous_rate > 0 and previous_samples > 0:
+        weight = min(previous_samples, DEFAULT_SELFPLAY_CHUNK_HISTORY_WEIGHT)
+        blended_rate = (previous_rate * weight + rate) / (weight + 1)
+    else:
+        blended_rate = rate
+    payload = {
+        "schema": ADAPTIVE_PROCESS_RATE_SCHEMA,
+        "template": str(adaptive_template_parameters(manifest)["__forge_template_name"]),
+        "worker": worker,
+        "worker_id": worker_id,
+        "rate": blended_rate,
+        "samples": previous_samples + 1,
+        "last_rate": rate,
+        "last_units": units,
+        "last_elapsed_s": elapsed_s,
+        "last_started_at": started_at,
+        "updated_epoch": time.time(),
+    }
+    write_json(path, payload)
+    return payload
 
 
 def adaptive_split_config(template_data: dict[str, Any]) -> tuple[str, str, str] | None:
@@ -437,7 +578,12 @@ def record_selfplay_chunk_task_result(
         return None
     done = read_json(done_path)
     rc = _parse_int(done.get("rc")) if isinstance(done, dict) else None
-    if not isinstance(done, dict) or rc != 0:
+    if (
+        not isinstance(done, dict)
+        or rc != 0
+        or bool(done.get("soft_cancel"))
+        or bool(done.get("skipped"))
+    ):
         return None
     elapsed = _parse_float(done.get("elapsed_s"))
     if elapsed is None or elapsed <= 0:
@@ -456,13 +602,34 @@ def record_selfplay_chunk_task_result(
             or done.get("host")
             or ""
         ).strip()
+        worker_id = str(worker_value.get("process_id") or done.get("worker_id") or "").strip()
     else:
         worker = str(worker_value or done.get("host") or "").strip()
+        worker_id = str(done.get("worker_id") or "").strip()
     if worker:
         _record_selfplay_chunk_rate(
             {**params, "__forge_worker": worker},
             rate=rate,
             cache_path=cache_path,
+        )
+    if worker and worker_id:
+        _record_selfplay_chunk_rate(
+            {
+                **params,
+                "__forge_worker": worker,
+                "__forge_worker_id": worker_id,
+            },
+            rate=rate,
+            cache_path=cache_path,
+        )
+        record_adaptive_process_chunk_rate(
+            manifest,
+            worker=worker,
+            worker_id=worker_id,
+            rate=rate,
+            units=units,
+            elapsed_s=elapsed,
+            started_at=done.get("started_at"),
         )
     return aggregate
 
@@ -473,6 +640,7 @@ def adaptive_rechunk_pending_tasks(
     *,
     lease_seconds: int,
     worker: str | None = None,
+    worker_id: str | None = None,
     reassign_foreign: bool = False,
     cache_path: Path | None = None,
 ) -> dict[str, Any] | None:
@@ -500,6 +668,7 @@ def adaptive_rechunk_pending_tasks(
         return None
 
     worker_name = str(worker or "").strip()
+    process_id = str(worker_id or "").strip()
     if reassign_foreign and not worker_name:
         return None
 
@@ -519,9 +688,9 @@ def adaptive_rechunk_pending_tasks(
     if not pending:
         return None
 
-    signature_params = {**params, "__forge_template_name": str(template.get("name") or manifest.get("kind") or "task")}
     live_done = 0
     live_elapsed = 0.0
+    live_warmup_units = 0
     now_epoch = time.time()
     if worker_name:
         for task in manifest.get("tasks") or []:
@@ -537,6 +706,8 @@ def adaptive_rechunk_pending_tasks(
                 continue
             if str(running.get("worker") or heartbeat.get("worker") or "").strip() != worker_name:
                 continue
+            if process_id and str(heartbeat.get("worker_id") or running.get("worker_id") or "").strip() != process_id:
+                continue
             started = _parse_float(running.get("started_epoch") or heartbeat.get("claimed_epoch"))
             progress = heartbeat.get("progress_data")
             done = _parse_int(progress.get("done")) if isinstance(progress, dict) else None
@@ -547,16 +718,22 @@ def adaptive_rechunk_pending_tasks(
                 continue
             live_done += max(0, done)
             live_elapsed += elapsed
+            task_total = adaptive_task_units(task, unit)
+            if task_total > 0:
+                live_warmup_units += adaptive_rate_warmup_units(task_total)
     live_rate = live_done / live_elapsed if live_done > 0 and live_elapsed > 0 else None
-    cached_rate = (
-        selfplay_cached_throughput(
-            {**signature_params, "__forge_worker": worker_name},
-            cache_path=cache_path,
-        )
-        if worker_name
-        else None
+    cached_rate = adaptive_worker_cached_throughput(
+        manifest,
+        worker=worker_name,
+        worker_id=process_id,
+        cache_path=cache_path,
     )
-    effective_rate = live_rate if live_rate is not None and live_rate > 0 else cached_rate
+    effective_rate = adaptive_blended_throughput(
+        cached_rate,
+        live_rate,
+        observed_units=live_done,
+        warmup_units=live_warmup_units,
+    )
     if effective_rate is not None and effective_rate > 0:
         estimated_games = max(1, int(round(effective_rate * selfplay_chunk_target_seconds(params))))
     else:
@@ -578,9 +755,16 @@ def adaptive_rechunk_pending_tasks(
     if not reassign_foreign and lower <= first_units <= upper:
         return None
 
-    worker_slots = adaptive_worker_slot_count(manifest_path, worker_name) if worker_name else 1
     chunks_per_slot = max(1, int(chunking.get("rechunk_chunks_per_slot", 2)))
-    desired_chunks = max(1, worker_slots * chunks_per_slot)
+    desired_chunks = (
+        1
+        if process_id
+        else max(
+            1,
+            (adaptive_worker_slot_count(manifest_path, worker_name) if worker_name else 1)
+            * chunks_per_slot,
+        )
+    )
     desired_units = estimated_games * desired_chunks
     selected_units = 0
     best_any: tuple[tuple[float, int], int, int] | None = None
@@ -682,6 +866,7 @@ def selfplay_rechunk_pending_tasks(
     *,
     lease_seconds: int,
     worker: str | None = None,
+    worker_id: str | None = None,
     cache_path: Path | None = None,
 ) -> dict[str, Any] | None:
     return adaptive_rechunk_pending_tasks(
@@ -689,6 +874,7 @@ def selfplay_rechunk_pending_tasks(
         manifest,
         lease_seconds=lease_seconds,
         worker=worker,
+        worker_id=worker_id,
         cache_path=cache_path,
     )
 

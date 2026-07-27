@@ -810,6 +810,74 @@ def infer_progress_rate(
     inferred["text"] = progress_text(inferred)
     return inferred
 
+def calibrated_progress_rate(
+    manifest: dict[str, Any],
+    worker: str | None,
+    worker_id: str | None,
+    fallback_rate: float | None,
+) -> float | None:
+    try:
+        from .chunking import (
+            adaptive_worker_cached_throughput,
+        )
+
+        cached_rate = adaptive_worker_cached_throughput(
+            manifest,
+            worker=worker,
+            worker_id=worker_id,
+        )
+    except (OSError, SystemExit, ValueError):
+        cached_rate = None
+    if isinstance(cached_rate, (int, float)) and cached_rate > 0:
+        return float(cached_rate)
+    if isinstance(fallback_rate, (int, float)) and fallback_rate > 0:
+        return float(fallback_rate)
+    return None
+
+def stabilize_progress_eta(
+    progress_data: dict[str, Any] | None,
+    calibrated_rate: float | None,
+) -> dict[str, Any] | None:
+    from .chunking import adaptive_blended_throughput, adaptive_rate_warmup_units
+
+    if not isinstance(progress_data, dict):
+        return progress_data
+    if not isinstance(calibrated_rate, (int, float)) or calibrated_rate <= 0:
+        return progress_data
+    done = progress_data.get("done")
+    total = progress_data.get("total")
+    observed_rate = progress_data.get("rate")
+    if (
+        not isinstance(done, int)
+        or done <= 0
+        or not isinstance(total, int)
+        or total <= 0
+        or done >= total
+        or not isinstance(observed_rate, (int, float))
+        or observed_rate <= 0
+    ):
+        return progress_data
+
+    warmup_units = adaptive_rate_warmup_units(total)
+    if done >= warmup_units:
+        return progress_data
+
+    eta_rate = adaptive_blended_throughput(
+        float(calibrated_rate),
+        float(observed_rate),
+        observed_units=done,
+        warmup_units=warmup_units,
+    )
+    eta_s = progress_eta_seconds(done, total, eta_rate)
+    if eta_s is None:
+        return progress_data
+    stabilized = dict(progress_data)
+    stabilized["eta_s"] = eta_s
+    stabilized["eta_estimate"] = True
+    stabilized["eta_calibrated"] = True
+    stabilized["text"] = progress_text(stabilized)
+    return stabilized
+
 def progress_output_rate(progress_data: dict[str, Any] | None, elapsed_s: float | None) -> float | None:
     if not isinstance(progress_data, dict) or elapsed_s is None or elapsed_s <= 0:
         return None
@@ -3813,11 +3881,24 @@ def status_summary(manifest: dict[str, Any], *, lease_seconds: int) -> dict[str,
         for worker, rates in completed_worker_task_rates.items()
         if rates
     }
+    calibrated_process_rates: dict[str, float | None] = {}
+
+    def process_calibrated_rate(worker: str | None, worker_id: str | None, unit: str) -> float | None:
+        key = worker_id or worker or "unknown"
+        if key not in calibrated_process_rates:
+            calibrated_process_rates[key] = calibrated_progress_rate(
+                manifest,
+                worker,
+                worker_id,
+                fallback_worker_rates.get(worker or "unknown") or fallback_rates.get(unit),
+            )
+        return calibrated_process_rates[key]
 
     for task in manifest["tasks"]:
         state = task_state(manifest, task, lease_seconds=lease_seconds)
         counts[state] += 1
         worker = status_worker(manifest, task, state)
+        worker_id = status_worker_id(manifest, task, state)
         index = task_display_index(task)
         config_progress = progress_config_unit_total(task)
         progress_config = task.get("progress")
@@ -3866,7 +3947,7 @@ def status_summary(manifest: dict[str, Any], *, lease_seconds: int) -> dict[str,
             fallback_data = fallback_progress_data(
                 unit,
                 total,
-                fallback_worker_rates.get(worker or "unknown") or fallback_rates.get(unit),
+                process_calibrated_rate(worker, worker_id, unit),
                 running_elapsed_seconds(running_payload),
             )
             if fallback_data is not None:
@@ -3874,6 +3955,12 @@ def status_summary(manifest: dict[str, Any], *, lease_seconds: int) -> dict[str,
                     fallback_data["fields"] = progress_data.get("fields", {})
                     fallback_data["text"] = progress_text(fallback_data)
                 progress_data = fallback_data
+        if progress_data is not None and config_progress is not None and state in {"running", "claimed", "stale"}:
+            unit, _task_total = config_progress
+            progress_data = stabilize_progress_eta(
+                progress_data,
+                process_calibrated_rate(worker, worker_id, unit),
+            )
         if progress_data is not None and config_progress is not None and state in {"running", "claimed", "stale"}:
             unit, task_total = config_progress
             offset_unit, offset = progress_task_offsets.get(str(task["id"]), (unit, 0))
@@ -3891,7 +3978,7 @@ def status_summary(manifest: dict[str, Any], *, lease_seconds: int) -> dict[str,
             "label": task_display_label(manifest, task),
             "state": state,
             "worker": worker,
-            "worker_id": status_worker_id(manifest, task, state),
+            "worker_id": worker_id,
             "progress": progress,
         }
         if progress_data:

@@ -526,14 +526,16 @@ def claim_task(
                 return None
             if worker_drained(manifest, worker):
                 return None
-            if live_rechunk and adaptive_rechunk_due(manifest, worker):
+            scheduler_id = worker_id or worker
+            if live_rechunk and adaptive_rechunk_due(manifest, scheduler_id):
                 adaptive_rechunk_pending_tasks(
                     manifest_path,
                     manifest,
                     lease_seconds=lease_seconds,
                     worker=worker,
+                    worker_id=worker_id,
                 )
-                mark_adaptive_rechunk(manifest, worker)
+                mark_adaptive_rechunk(manifest, scheduler_id)
                 manifest = load_manifest(manifest_path)
             max_attempts = max(0, int(max_attempts))
 
@@ -612,6 +614,7 @@ def claim_task(
                     manifest,
                     lease_seconds=lease_seconds,
                     worker=worker,
+                    worker_id=worker_id,
                     reassign_foreign=True,
                 ):
                     manifest = load_manifest(manifest_path)
@@ -798,6 +801,7 @@ def update_claim_heartbeat(
             "task": task["id"],
             "index": task.get("index"),
             "worker": worker,
+            "worker_id": payload.get("worker_id") or worker,
             "claim_id": claim_id,
             "started_at": payload["heartbeat_at"],
             "started_epoch": payload["heartbeat_epoch"],
@@ -1056,6 +1060,12 @@ def cmd_release(args: argparse.Namespace) -> int:
     if args.task:
         task = find_task(manifest, task_id=args.task, index=None)
         release_claim(manifest, task, worker=args.worker, claim_id=args.claim_id)
+        try:
+            from .chunking import record_adaptive_chunk_task_result
+
+            record_adaptive_chunk_task_result(manifest, task)
+        except (OSError, SystemExit, ValueError):
+            pass
         print(task["id"])
         return 0
     if not args.worker:
@@ -1416,12 +1426,6 @@ def cmd_work(args: argparse.Namespace) -> int:
                     claim_payload.get("manifest_sha256") or ""
                 ) or None,
             )
-            try:
-                from .chunking import record_adaptive_chunk_task_result
-
-                record_adaptive_chunk_task_result(coordinator_manifest, coordinator_task)
-            except Exception:
-                pass
         except SystemExit as exc:
             sync_failed = True
             failed += 1
