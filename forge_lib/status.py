@@ -1553,7 +1553,7 @@ def run_status_payload(summary: dict[str, Any]) -> dict[str, Any]:
     payload = {
         key: copy.deepcopy(value)
         for key, value in summary.items()
-        if key != "manifest_payload"
+        if key not in {"manifest_payload", "rows"}
     }
     payload.update({
         "run": summary["run"],
@@ -1606,6 +1606,10 @@ def run_status_payload(summary: dict[str, Any]) -> dict[str, Any]:
             },
         },
     })
+    # Pending shards are already represented by count/groups. Including every
+    # pending task here makes status --json scale with the queue size and is
+    # not useful to the normal CLI/API consumers.
+    payload["sections"]["pending"].pop("tasks", None)
     if isinstance(created_at, str) and created_at.strip():
         payload["created_at"] = created_at.strip()
     metadata = summary.get("metadata")
