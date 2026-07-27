@@ -1447,6 +1447,46 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
                     web._STATUS_REFRESHING,
                 ) = previous
 
+    def test_web_status_api_omits_duplicate_task_rows(self) -> None:
+        import forge_lib.web as web
+
+        run = {
+            "run": "large-run",
+            "state": "current",
+            "tasks": 10000,
+            "done": 1,
+            "pending": 9998,
+            "fail": 0,
+            "rows": [{"id": f"task_{index}"} for index in range(10000)],
+            "active": [{"id": "task_active"}],
+            "pending_groups": {"task": list(range(1, 9999))},
+            "sections": {
+                "active": {
+                    "count": 1,
+                    "fields": ["workers=1"],
+                    "tasks": [{"id": "task_active", "progress": "items=1/2"}],
+                },
+                "pending": {
+                    "count": 9998,
+                    "groups": {"task": list(range(1, 9999))},
+                    "tasks": list(range(1, 9999)),
+                },
+                "fail": {"count": 0, "groups": {}},
+                "done": {"count": 1, "groups": {"worker": [0]}},
+            },
+        }
+
+        compact = web._compact_web_api_payload({"runs": [run]})
+        compact_run = compact["runs"][0]
+
+        self.assertNotIn("rows", compact_run)
+        self.assertNotIn("active", compact_run)
+        self.assertNotIn("pending_groups", compact_run)
+        self.assertNotIn("tasks", compact_run["sections"]["pending"])
+        self.assertNotIn("done", compact_run["sections"])
+        self.assertEqual("task_active", compact_run["sections"]["active"]["tasks"][0]["id"])
+        self.assertEqual(9998, compact_run["sections"]["pending"]["count"])
+
     def test_web_status_api_uses_coordinator_payload_before_first_refresh(self) -> None:
         import forge_lib.web as web
 

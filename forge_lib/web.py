@@ -2770,6 +2770,62 @@ def _empty_status_payload(*, loading: bool, error: str | None) -> dict[str, Any]
         data["error"] = error
     return data
 
+
+_WEB_API_RUN_FIELDS = {
+    "commands",
+    "completed_at",
+    "created_at",
+    "display",
+    "done",
+    "fail",
+    "pending",
+    "progress_graph",
+    "run",
+    "sections",
+    "state",
+    "tasks",
+}
+
+
+def _compact_web_api_run(run: dict[str, Any]) -> dict[str, Any]:
+    compact = {
+        key: value
+        for key, value in run.items()
+        if key in _WEB_API_RUN_FIELDS
+    }
+    sections = run.get("sections")
+    if not isinstance(sections, dict):
+        return compact
+    compact_sections: dict[str, Any] = {}
+    for name in ("active", "pending", "fail"):
+        section = sections.get(name)
+        if not isinstance(section, dict):
+            continue
+        if name == "active":
+            fields = ("count", "fields", "summary", "summary_text", "tasks")
+        else:
+            fields = ("count", "groups")
+        compact_sections[name] = {
+            key: section[key]
+            for key in fields
+            if key in section
+        }
+    compact["sections"] = compact_sections
+    return compact
+
+
+def _compact_web_api_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    compact = dict(payload)
+    runs = payload.get("runs")
+    if isinstance(runs, list):
+        compact["runs"] = [
+            _compact_web_api_run(run)
+            for run in runs
+            if isinstance(run, dict)
+        ]
+    return compact
+
+
 def _api_status() -> bytes:
     global _STATUS_CACHE, _STATUS_CACHE_EPOCH, _STATUS_CACHE_ERROR
     now = time.time()
@@ -2797,7 +2853,7 @@ def _api_status() -> bytes:
     cached["refreshing"] = refreshing
     if error:
         cached["error"] = error
-    return json.dumps(cached).encode()
+    return json.dumps(_compact_web_api_payload(cached), separators=(",", ":")).encode()
 
 def _invalidate_status_cache() -> None:
     global _STATUS_CACHE, _STATUS_CACHE_EPOCH, _STATUS_CACHE_ERROR
