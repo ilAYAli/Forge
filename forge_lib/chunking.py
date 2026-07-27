@@ -309,6 +309,7 @@ def adaptive_autosized_shards(
         return None
     signature_params = {**params, "__forge_template_name": template_name}
     worker_rates: list[float] = []
+    worker_names: list[str] = []
     workers = worker_payload.get("workers")
     if isinstance(workers, list):
         for worker in workers:
@@ -319,15 +320,17 @@ def adaptive_autosized_shards(
             ).strip()
             if not name:
                 continue
+            worker_names.append(name)
             worker_rate = selfplay_cached_throughput(
                 {**signature_params, "__forge_worker": name},
                 cache_path=cache_path,
             )
             if worker_rate is not None and worker_rate > 0:
                 worker_rates.append(worker_rate)
-    rate = min(worker_rates) if worker_rates else selfplay_cached_throughput(
-        signature_params, cache_path=cache_path
-    )
+    if worker_names:
+        rate = min(worker_rates) if len(worker_rates) == len(worker_names) else None
+    else:
+        rate = selfplay_cached_throughput(signature_params, cache_path=cache_path)
     target_seconds = selfplay_chunk_target_seconds(params)
     target_units = max(1, int(round(rate * target_seconds))) if rate else max(1, int(cold_units))
     shards = max(1, (total + target_units - 1) // target_units)
@@ -422,6 +425,7 @@ def adaptive_rechunk_pending_tasks(
     manifest: dict[str, Any],
     *,
     lease_seconds: int,
+    worker: str | None = None,
     cache_path: Path | None = None,
 ) -> dict[str, Any] | None:
     from .templates import expand_template, load_template
@@ -456,7 +460,15 @@ def adaptive_rechunk_pending_tasks(
         return None
 
     signature_params = {**params, "__forge_template_name": str(template.get("name") or manifest.get("kind") or "task")}
-    cached_rate = selfplay_cached_throughput(signature_params, cache_path=cache_path)
+    worker_name = str(worker or "").strip()
+    cached_rate = (
+        selfplay_cached_throughput(
+            {**signature_params, "__forge_worker": worker_name},
+            cache_path=cache_path,
+        )
+        if worker_name
+        else None
+    )
     if cached_rate is not None and cached_rate > 0:
         estimated_games = max(1, int(round(cached_rate * selfplay_chunk_target_seconds(params))))
     else:
@@ -535,12 +547,14 @@ def selfplay_rechunk_pending_tasks(
     manifest: dict[str, Any],
     *,
     lease_seconds: int,
+    worker: str | None = None,
     cache_path: Path | None = None,
 ) -> dict[str, Any] | None:
     return adaptive_rechunk_pending_tasks(
         manifest_path,
         manifest,
         lease_seconds=lease_seconds,
+        worker=worker,
         cache_path=cache_path,
     )
 

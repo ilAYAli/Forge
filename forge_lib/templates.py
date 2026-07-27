@@ -836,8 +836,20 @@ def auto_adaptive_shards(
     return result
 
 
-def auto_selfplay_shards(params: dict[str, Any], worker_payload: dict[str, Any]) -> int:
-    return selfplay_autosized_shards(params, worker_payload)
+def auto_selfplay_shards(
+    params: dict[str, Any],
+    worker_payload: dict[str, Any],
+    template: dict[str, Any] | None = None,
+) -> int:
+    if template is None:
+        return selfplay_autosized_shards(params, worker_payload)
+    return auto_adaptive_shards(
+        "selfplay",
+        template,
+        params,
+        worker_payload,
+        cold_units=15,
+    )
 
 
 def cmd_template_run(args: argparse.Namespace) -> int:
@@ -877,7 +889,11 @@ def cmd_template_run(args: argparse.Namespace) -> int:
             selfplay_workers_payload = sprt_worker_slots_payload(workers_arg)
         if not shards_supplied:
             params = dict(params)
-            params["shards"] = auto_selfplay_shards(params, selfplay_workers_payload or {})
+            params["shards"] = auto_selfplay_shards(
+                params,
+                selfplay_workers_payload or {},
+                template,
+            )
     elif template_name == "spsa":
         params = parse_template_parameters(template_name, template, template_args)
         shards_supplied = template_parameter_supplied(template, template_args, {"shards"})

@@ -444,6 +444,7 @@ def claim_task(
                 manifest_path,
                 manifest,
                 lease_seconds=lease_seconds,
+                worker=worker,
             )
             manifest = load_manifest(manifest_path)
             if stop_requested(manifest):

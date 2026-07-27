@@ -3775,7 +3775,11 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
                     "--uci", "nnue_file=~/code/cpp/chess/enyo/net/default.nn",
                 ],
             )
-            signature = selfplay_chunks.selfplay_chunk_signature(parsed_params)
+            signature = selfplay_chunks.selfplay_chunk_signature({
+                **parsed_params,
+                "__forge_template_name": "selfplay",
+                "__forge_worker": "worker-a",
+            })
             key = selfplay_chunks.selfplay_chunk_signature_key(signature)
             forge.write_json(cache_path, {
                 "schema": selfplay_chunks.SELFPLAY_CHUNK_CACHE_SCHEMA,
@@ -3830,7 +3834,10 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
             cache_path = Path(tmp) / "chunk-history.json"
             records = {}
             for name, (_total_key, _total, target_units) in cases.items():
-                signature = chunking.selfplay_chunk_signature({"__forge_template_name": name})
+                signature = chunking.selfplay_chunk_signature({
+                    "__forge_template_name": name,
+                    "__forge_worker": "worker-a",
+                })
                 records[chunking.selfplay_chunk_signature_key(signature)] = {
                     "label": name,
                     "rate": target_units / 300.0,
@@ -3854,6 +3861,38 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
                         cache_path=cache_path,
                     )
                     self.assertEqual((total + target_units - 1) // target_units, shards)
+
+    def test_adaptive_initial_size_ignores_aggregate_history_for_uncalibrated_worker(self) -> None:
+        from forge_lib import chunking
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cache_path = Path(tmp) / "chunk-history.json"
+            signature = chunking.selfplay_chunk_signature({
+                "__forge_template_name": "selfplay",
+            })
+            forge.write_json(cache_path, {
+                "schema": chunking.SELFPLAY_CHUNK_CACHE_SCHEMA,
+                "records": {
+                    chunking.selfplay_chunk_signature_key(signature): {
+                        "label": "selfplay",
+                        "rate": 10.0,
+                        "samples": 20,
+                        "updated_epoch": 1.0,
+                    },
+                },
+            })
+            template = forge.load_template(forge.template_path("selfplay"))
+
+            shards = chunking.adaptive_autosized_shards(
+                "selfplay",
+                template,
+                {"games": 600, "chunk_time_seconds": 300},
+                {"workers": [{"host": "new-worker"}]},
+                cold_units=15,
+                cache_path=cache_path,
+            )
+
+        self.assertEqual(40, shards)
 
     def test_adaptive_chunk_units_support_spsa_split_games(self) -> None:
         from forge_lib import chunking
@@ -4158,7 +4197,10 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
             manifest_path = root / "manifest.json"
             forge.write_json(manifest_path, manifest)
             cache_path = root / "chunk-history.json"
-            signature = chunking.selfplay_chunk_signature({"__forge_template_name": "sprt"})
+            signature = chunking.selfplay_chunk_signature({
+                "__forge_template_name": "sprt",
+                "__forge_worker": "worker-a",
+            })
             key = chunking.selfplay_chunk_signature_key(signature)
             forge.write_json(cache_path, {
                 "schema": chunking.SELFPLAY_CHUNK_CACHE_SCHEMA,
@@ -6136,6 +6178,8 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
 
         self.assertEqual("retry", Path(command[2]).name if "/" in command[2] else command[2])
         self.assertEqual("failed-a", command[3])
+        self.assertEqual("--workers", command[4])
+        self.assertTrue(command[5].endswith("/failed-a/workers.json"))
 
     def test_retry_with_workers_preserves_live_queue_launch_reservation(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
