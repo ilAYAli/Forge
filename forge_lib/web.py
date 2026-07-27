@@ -594,7 +594,7 @@ _HTML = r"""<!DOCTYPE html>
     let taskColWidths = null;
     let taskSort = {col: 'eta', dir: 1};
 
-    const BASE_TASK_COLS = ['worker','label','shard','progress','output','rate'];
+    const BASE_TASK_COLS = ['worker','label','shard','progress'];
     const FIELD_TASK_COLS = [
       {name: 'elo',  keys: ['elo','elo~','Elo']},
       {name: 'ci',   keys: ['ci','err','error','+/-','elo_ci']},
@@ -800,6 +800,8 @@ _HTML = r"""<!DOCTYPE html>
 
     function taskColumns(tasks) {
       const cols = BASE_TASK_COLS.slice();
+      if ((tasks||[]).some(t => t.progress_data?.output != null)) cols.push('output');
+      cols.push('rate');
       for (const field of FIELD_TASK_COLS) {
         if ((tasks||[]).some(t => firstProgressField(t.progress_data, field.keys))) {
           cols.push(field.name);
