@@ -27,6 +27,27 @@ sys.path.insert(0, str(ROOT))
 import forge  # noqa: E402
 
 
+def write_chunk_history(
+    path: Path,
+    *entries: tuple[dict[str, Any], float, int],
+) -> None:
+    from forge_lib import calibration
+
+    records = {}
+    for params, rate, samples in entries:
+        signature = calibration.adaptive_chunk_signature(params)
+        records[calibration.adaptive_chunk_signature_key(signature)] = {
+            "label": calibration.adaptive_chunk_signature_label(signature),
+            "rate": rate,
+            "samples": samples,
+            "updated_epoch": 1.0,
+        }
+    forge.write_json(path, {
+        "schema": calibration.CHUNK_CACHE_SCHEMA,
+        "records": records,
+    })
+
+
 class ForgeTests(unittest.TestCase):
     def setUp(self) -> None:
         self._isolated_env_dir = tempfile.TemporaryDirectory()
@@ -3862,8 +3883,6 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
         self.assertEqual(6, max(totals))
 
     def test_selfplay_command_auto_sizes_shards_from_chunk_history(self) -> None:
-        from forge_lib import selfplay_chunks
-
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             cache_path = root / "selfplay-chunk-history.json"
@@ -3878,26 +3897,14 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
                     "--uci", "nnue_file=~/code/cpp/chess/enyo/net/default.nn",
                 ],
             )
-            signature = selfplay_chunks.selfplay_chunk_signature({
+            write_chunk_history(cache_path, ({
                 **parsed_params,
                 "__forge_template_name": "selfplay",
                 "__forge_worker": "worker-a",
-            })
-            key = selfplay_chunks.selfplay_chunk_signature_key(signature)
-            forge.write_json(cache_path, {
-                "schema": selfplay_chunks.SELFPLAY_CHUNK_CACHE_SCHEMA,
-                "records": {
-                    key: {
-                        "label": selfplay_chunks.selfplay_chunk_signature_label(signature),
-                        "rate": 0.05,
-                        "samples": 3,
-                        "updated_epoch": 1.0,
-                    }
-                },
-            })
+            }, 0.05, 3))
 
             stdout = io.StringIO()
-            with mock.patch("forge_lib.chunking.selfplay_chunk_cache_path", return_value=cache_path):
+            with mock.patch("forge_lib.calibration.adaptive_chunk_cache_path", return_value=cache_path):
                 with contextlib.redirect_stdout(stdout):
                     rc = forge.cmd_template_run(argparse.Namespace(
                         template="selfplay",
@@ -3935,22 +3942,13 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
         }
         with tempfile.TemporaryDirectory() as tmp:
             cache_path = Path(tmp) / "chunk-history.json"
-            records = {}
-            for name, (_total_key, _total, target_units) in cases.items():
-                signature = chunking.selfplay_chunk_signature({
+            write_chunk_history(cache_path, *[
+                ({
                     "__forge_template_name": name,
                     "__forge_worker": "worker-a",
-                })
-                records[chunking.selfplay_chunk_signature_key(signature)] = {
-                    "label": name,
-                    "rate": target_units / 300.0,
-                    "samples": 3,
-                    "updated_epoch": 1.0,
-                }
-            forge.write_json(cache_path, {
-                "schema": chunking.SELFPLAY_CHUNK_CACHE_SCHEMA,
-                "records": records,
-            })
+                }, target_units / 300.0, 3)
+                for name, (_total_key, _total, target_units) in cases.items()
+            ])
 
             for name, (total_key, total, target_units) in cases.items():
                 with self.subTest(template=name):
@@ -3970,20 +3968,10 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
 
         with tempfile.TemporaryDirectory() as tmp:
             cache_path = Path(tmp) / "chunk-history.json"
-            signature = chunking.selfplay_chunk_signature({
-                "__forge_template_name": "selfplay",
-            })
-            forge.write_json(cache_path, {
-                "schema": chunking.SELFPLAY_CHUNK_CACHE_SCHEMA,
-                "records": {
-                    chunking.selfplay_chunk_signature_key(signature): {
-                        "label": "selfplay",
-                        "rate": 10.0,
-                        "samples": 20,
-                        "updated_epoch": 1.0,
-                    },
-                },
-            })
+            write_chunk_history(
+                cache_path,
+                ({"__forge_template_name": "selfplay"}, 10.0, 20),
+            )
             template = forge.load_template(forge.template_path("selfplay"))
 
             shards = chunking.adaptive_autosized_shards(
@@ -4015,22 +4003,13 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
 
         with tempfile.TemporaryDirectory() as tmp:
             cache_path = Path(tmp) / "chunk-history.json"
-            records = {}
-            for worker, rate in (("fast", 1.0), ("slow", 0.1)):
-                signature = chunking.selfplay_chunk_signature({
+            write_chunk_history(cache_path, *[
+                ({
                     "__forge_template_name": "selfplay",
                     "__forge_worker": worker,
-                })
-                records[chunking.selfplay_chunk_signature_key(signature)] = {
-                    "label": "selfplay",
-                    "rate": rate,
-                    "samples": 2,
-                    "updated_epoch": 1.0,
-                }
-            forge.write_json(cache_path, {
-                "schema": chunking.SELFPLAY_CHUNK_CACHE_SCHEMA,
-                "records": records,
-            })
+                }, rate, 2)
+                for worker, rate in (("fast", 1.0), ("slow", 0.1))
+            ])
             template = forge.load_template(forge.template_path("selfplay"))
 
             shards = chunking.adaptive_autosized_shards(
@@ -4132,7 +4111,7 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
                 "claim_id": "claim-1",
             })
 
-            with mock.patch("forge_lib.chunking.selfplay_chunk_cache_path", return_value=cache_path):
+            with mock.patch("forge_lib.calibration.adaptive_chunk_cache_path", return_value=cache_path):
                 forge.cmd_release(argparse.Namespace(
                     manifest=str(manifest_path),
                     task=task["id"],
@@ -4321,21 +4300,12 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
             manifest_path = root / "manifest.json"
             forge.write_json(manifest_path, manifest)
             cache_path = root / "selfplay-chunk-history.json"
-            signature = selfplay_chunks.selfplay_chunk_signature(params)
-            key = selfplay_chunks.selfplay_chunk_signature_key(signature)
-            forge.write_json(cache_path, {
-                "schema": selfplay_chunks.SELFPLAY_CHUNK_CACHE_SCHEMA,
-                "records": {
-                    key: {
-                        "label": selfplay_chunks.selfplay_chunk_signature_label(signature),
-                        "rate": 16 / 300.0,
-                        "samples": 3,
-                        "updated_epoch": 1.0,
-                    }
-                },
-            })
+            write_chunk_history(
+                cache_path,
+                ({**params, "__forge_template_name": "selfplay"}, 16 / 300.0, 3),
+            )
 
-            with mock.patch("forge_lib.chunking.selfplay_chunk_cache_path", return_value=cache_path):
+            with mock.patch("forge_lib.calibration.adaptive_chunk_cache_path", return_value=cache_path):
                 claimed = forge.claim_task(
                     manifest,
                     manifest_path=manifest_path,
@@ -4379,24 +4349,12 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
             manifest_path = root / "manifest.json"
             forge.write_json(manifest_path, manifest)
             cache_path = root / "chunk-history.json"
-            signature = chunking.selfplay_chunk_signature({
+            write_chunk_history(cache_path, ({
                 "__forge_template_name": "sprt",
                 "__forge_worker": "worker-a",
-            })
-            key = chunking.selfplay_chunk_signature_key(signature)
-            forge.write_json(cache_path, {
-                "schema": chunking.SELFPLAY_CHUNK_CACHE_SCHEMA,
-                "records": {
-                    key: {
-                        "label": "sprt",
-                        "rate": 10 / 300.0,
-                        "samples": 3,
-                        "updated_epoch": 1.0,
-                    },
-                },
-            })
+            }, 10 / 300.0, 3))
 
-            with mock.patch("forge_lib.chunking.selfplay_chunk_cache_path", return_value=cache_path):
+            with mock.patch("forge_lib.calibration.adaptive_chunk_cache_path", return_value=cache_path):
                 claimed = forge.claim_task(
                     manifest,
                     manifest_path=manifest_path,
@@ -4438,10 +4396,7 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
             manifest_path = root / "manifest.json"
             forge.write_json(manifest_path, manifest)
             cache_path = root / "chunk-history.json"
-            forge.write_json(cache_path, {
-                "schema": chunking.SELFPLAY_CHUNK_CACHE_SCHEMA,
-                "records": {},
-            })
+            write_chunk_history(cache_path)
             for worker_id, target in (("mac#1", 24), ("mac#2", 64)):
                 chunking.record_adaptive_process_chunk_rate(
                     manifest,
@@ -4452,7 +4407,7 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
                     elapsed_s=300,
                 )
 
-            with mock.patch("forge_lib.chunking.selfplay_chunk_cache_path", return_value=cache_path):
+            with mock.patch("forge_lib.calibration.adaptive_chunk_cache_path", return_value=cache_path):
                 slow_claim = forge.claim_task(
                     manifest,
                     manifest_path=manifest_path,
@@ -4512,23 +4467,12 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
                 ],
             })
             cache_path = root / "chunk-history.json"
-            signature = chunking.selfplay_chunk_signature({
+            write_chunk_history(cache_path, ({
                 "__forge_template_name": "selfplay",
                 "__forge_worker": "fast",
-            })
-            forge.write_json(cache_path, {
-                "schema": chunking.SELFPLAY_CHUNK_CACHE_SCHEMA,
-                "records": {
-                    chunking.selfplay_chunk_signature_key(signature): {
-                        "label": "selfplay",
-                        "rate": 64 / 300,
-                        "samples": 3,
-                        "updated_epoch": 1.0,
-                    },
-                },
-            })
+            }, 64 / 300, 3))
 
-            with mock.patch("forge_lib.chunking.selfplay_chunk_cache_path", return_value=cache_path):
+            with mock.patch("forge_lib.calibration.adaptive_chunk_cache_path", return_value=cache_path):
                 claimed = forge.claim_task(
                     manifest,
                     manifest_path=manifest_path,
@@ -4628,24 +4572,13 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
             })
             forge.write_json(manifest_path, manifest)
             cache_path = root / "chunk-history.json"
-            signature = chunking.selfplay_chunk_signature({
+            write_chunk_history(cache_path, ({
                 "__forge_template_name": "selfplay",
                 "__forge_worker": "slow",
-            })
-            forge.write_json(cache_path, {
-                "schema": chunking.SELFPLAY_CHUNK_CACHE_SCHEMA,
-                "records": {
-                    chunking.selfplay_chunk_signature_key(signature): {
-                        "label": "selfplay",
-                        "rate": 0.1,
-                        "samples": 3,
-                        "updated_epoch": 1.0,
-                    },
-                },
-            })
+            }, 0.1, 3))
 
             with (
-                mock.patch("forge_lib.chunking.selfplay_chunk_cache_path", return_value=cache_path),
+                mock.patch("forge_lib.calibration.adaptive_chunk_cache_path", return_value=cache_path),
                 mock.patch("forge_lib.chunking.time.time", return_value=1000.0),
             ):
                 claimed = forge.claim_task(

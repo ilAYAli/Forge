@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 import shlex
 
+from .calibration import adaptive_blended_throughput, adaptive_rate_warmup_units
 from .config import default_notify_command, speedup_single_host_workers
 from .core import *
 from .manifest import *
@@ -838,8 +839,6 @@ def stabilize_progress_eta(
     progress_data: dict[str, Any] | None,
     calibrated_rate: float | None,
 ) -> dict[str, Any] | None:
-    from .chunking import adaptive_blended_throughput, adaptive_rate_warmup_units
-
     if not isinstance(progress_data, dict):
         return progress_data
     if not isinstance(calibrated_rate, (int, float)) or calibrated_rate <= 0:

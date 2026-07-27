@@ -6,7 +6,7 @@ import tempfile
 from .config import *
 from .manifest import *
 from .labeling import build_inventory
-from .chunking import adaptive_autosized_shards, selfplay_autosized_shards
+from .chunking import adaptive_autosized_shards
 from .spsa import (
     attach_spsa_manifest_config,
     auto_spsa_shards,
@@ -839,10 +839,8 @@ def auto_adaptive_shards(
 def auto_selfplay_shards(
     params: dict[str, Any],
     worker_payload: dict[str, Any],
-    template: dict[str, Any] | None = None,
+    template: dict[str, Any],
 ) -> int:
-    if template is None:
-        return selfplay_autosized_shards(params, worker_payload)
     return auto_adaptive_shards(
         "selfplay",
         template,

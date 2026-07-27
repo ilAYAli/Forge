@@ -1,37 +1,54 @@
 from __future__ import annotations
 
 import copy
-import fcntl
-import hashlib
-import json
-import math
 import re
 import time
-from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
+from .calibration import (
+    CHUNK_CACHE_SCHEMA as ADAPTIVE_CHUNK_CACHE_SCHEMA,
+    PROCESS_RATE_DIR as ADAPTIVE_PROCESS_RATE_DIR,
+    PROCESS_RATE_SCHEMA as ADAPTIVE_PROCESS_RATE_SCHEMA,
+    RATE_HISTORY_WEIGHT as DEFAULT_SELFPLAY_CHUNK_HISTORY_WEIGHT,
+    RATE_WARMUP_FRACTION as ADAPTIVE_RATE_WARMUP_FRACTION,
+    RATE_WARMUP_MAX_UNITS as ADAPTIVE_RATE_WARMUP_MAX_UNITS,
+    RATE_WARMUP_MIN_UNITS as ADAPTIVE_RATE_WARMUP_MIN_UNITS,
+    SELFPLAY_CHUNK_CACHE_NAME,
+    SELFPLAY_CHUNK_CACHE_SCHEMA,
+    adaptive_blended_throughput,
+    adaptive_cached_throughput,
+    adaptive_chunk_cache_path,
+    adaptive_chunk_signature,
+    adaptive_chunk_signature_key,
+    adaptive_chunk_signature_label,
+    adaptive_process_cached_throughput,
+    adaptive_process_rate_path,
+    adaptive_rate_warmup_units,
+    adaptive_template_parameters,
+    adaptive_worker_cached_throughput,
+    load_adaptive_chunk_history,
+    load_selfplay_chunk_history,
+    record_adaptive_chunk_rate,
+    record_adaptive_process_chunk_rate,
+    selfplay_cached_throughput,
+    selfplay_chunk_cache_path,
+    selfplay_chunk_signature,
+    selfplay_chunk_signature_key,
+    selfplay_chunk_signature_label,
+    write_adaptive_chunk_history,
+    write_selfplay_chunk_history,
+)
 from .core import *
-from .manifest import state_dir
 from .tasks import (
-    read_state_json,
     task_done_path,
     task_heartbeat_path,
     task_running_path,
     task_state,
 )
 
-
-SELFPLAY_CHUNK_CACHE_SCHEMA = "forge.selfplay.chunk-history.v1"
-SELFPLAY_CHUNK_CACHE_NAME = "selfplay-chunk-history.json"
-ADAPTIVE_PROCESS_RATE_SCHEMA = "forge.adaptive.process-rate.v1"
-ADAPTIVE_PROCESS_RATE_DIR = "adaptive-process-rates"
 DEFAULT_SELFPLAY_CHUNK_TIME_SECONDS = 300
 DEFAULT_SELFPLAY_COLD_START_THROUGHPUT = 15 / 300
-DEFAULT_SELFPLAY_CHUNK_HISTORY_WEIGHT = 4
-ADAPTIVE_RATE_WARMUP_FRACTION = 0.20
-ADAPTIVE_RATE_WARMUP_MIN_UNITS = 4
-ADAPTIVE_RATE_WARMUP_MAX_UNITS = 40
 
 
 def _parse_int(value: object) -> int | None:
@@ -52,107 +69,6 @@ def _parse_float(value: object) -> float | None:
         return None
 
 
-def adaptive_rate_warmup_units(total: int) -> int:
-    return min(
-        total,
-        max(
-            ADAPTIVE_RATE_WARMUP_MIN_UNITS,
-            min(
-                ADAPTIVE_RATE_WARMUP_MAX_UNITS,
-                int(math.ceil(total * ADAPTIVE_RATE_WARMUP_FRACTION)),
-            ),
-        ),
-    )
-
-
-def adaptive_blended_throughput(
-    cached_rate: float | None,
-    observed_rate: float | None,
-    *,
-    observed_units: int,
-    warmup_units: int,
-) -> float | None:
-    cached = _parse_float(cached_rate)
-    observed = _parse_float(observed_rate)
-    if observed is None or observed <= 0:
-        return cached if cached is not None and cached > 0 else None
-    if cached is None or cached <= 0:
-        return observed
-    confidence = min(1.0, max(0, observed_units) / max(1, warmup_units))
-    return cached * (1.0 - confidence) + observed * confidence
-
-
-def selfplay_chunk_cache_dir() -> Path:
-    return expand_path("~/.cache/forge")
-
-
-def selfplay_chunk_cache_path() -> Path:
-    return selfplay_chunk_cache_dir() / SELFPLAY_CHUNK_CACHE_NAME
-
-
-@contextmanager
-def locked_selfplay_chunk_history(*, cache_path: Path | None = None):
-    path = cache_path or selfplay_chunk_cache_path()
-    lock_path = Path(str(path) + ".lock")
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
-    with lock_path.open("a+", encoding="utf-8") as lock_file:
-        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
-        try:
-            yield
-        finally:
-            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
-
-
-def selfplay_chunk_signature(params: dict[str, Any]) -> dict[str, Any]:
-    template_name = str(params.get("__forge_template_name") or "selfplay")
-    signature = {
-        "kind": template_name,
-        "template": template_name,
-    }
-    worker = str(params.get("__forge_worker") or "").strip()
-    if worker:
-        signature["worker"] = worker
-    worker_id = str(params.get("__forge_worker_id") or "").strip()
-    if worker_id:
-        signature["worker_id"] = worker_id
-    return signature
-
-
-def selfplay_chunk_signature_label(signature: dict[str, Any]) -> str:
-    return str(signature.get("template") or signature.get("kind") or "selfplay")
-
-
-def selfplay_chunk_signature_key(signature: dict[str, Any]) -> str:
-    payload = json.dumps(signature, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    return hashlib.sha256(payload).hexdigest()
-
-
-def load_selfplay_chunk_history(*, cache_path: Path | None = None) -> dict[str, Any]:
-    path = cache_path or selfplay_chunk_cache_path()
-    try:
-        payload = read_json(path)
-    except (OSError, SystemExit):
-        payload = None
-    if not isinstance(payload, dict) or payload.get("schema") != SELFPLAY_CHUNK_CACHE_SCHEMA:
-        return {
-            "schema": SELFPLAY_CHUNK_CACHE_SCHEMA,
-            "records": {},
-        }
-    records = payload.get("records")
-    if not isinstance(records, dict):
-        records = {}
-    return {
-        "schema": SELFPLAY_CHUNK_CACHE_SCHEMA,
-        "records": records,
-    }
-
-
-def write_selfplay_chunk_history(payload: dict[str, Any], *, cache_path: Path | None = None) -> None:
-    path = cache_path or selfplay_chunk_cache_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    write_json(path, payload)
-
-
 def selfplay_chunk_target_seconds(params: dict[str, Any]) -> int:
     value = _parse_int(params.get("chunk_time_seconds"))
     if value is None or value <= 0:
@@ -163,30 +79,6 @@ def selfplay_chunk_target_seconds(params: dict[str, Any]) -> int:
 def selfplay_default_chunk_games(params: dict[str, Any]) -> int:
     target_seconds = selfplay_chunk_target_seconds(params)
     return max(1, int(round(target_seconds * DEFAULT_SELFPLAY_COLD_START_THROUGHPUT)))
-
-
-def selfplay_observed_throughput(manifest: dict[str, Any]) -> float | None:
-    total_games = 0
-    total_elapsed = 0.0
-    for task in manifest.get("tasks") or []:
-        if not isinstance(task, dict):
-            continue
-        done_path = task_done_path(manifest, task)
-        done = read_json(done_path) if done_path.exists() else None
-        rc = _parse_int(done.get("rc")) if isinstance(done, dict) else None
-        if not isinstance(done, dict) or rc != 0:
-            continue
-        elapsed = _parse_float(done.get("elapsed_s"))
-        if elapsed is None or elapsed <= 0:
-            continue
-        games = selfplay_task_games(task)
-        if games <= 0:
-            continue
-        total_games += games
-        total_elapsed += float(elapsed)
-    if total_games <= 0 or total_elapsed <= 0:
-        return None
-    return total_games / total_elapsed
 
 
 def selfplay_task_games(task: dict[str, Any]) -> int:
@@ -200,110 +92,6 @@ def selfplay_task_games(task: dict[str, Any]) -> int:
     if match:
         return int(match.group(1)) * 2
     return 0
-
-
-def adaptive_template_parameters(manifest: dict[str, Any]) -> dict[str, Any]:
-    template = manifest.get("template")
-    params = template.get("parameters") if isinstance(template, dict) else {}
-    result = dict(params) if isinstance(params, dict) else {}
-    name = template.get("name") if isinstance(template, dict) else None
-    result["__forge_template_name"] = str(name or manifest.get("kind") or "task")
-    return result
-
-
-def adaptive_process_rate_path(manifest: dict[str, Any], worker_id: str) -> Path:
-    digest = hashlib.sha256(worker_id.encode("utf-8")).hexdigest()[:16]
-    return state_dir(manifest) / ADAPTIVE_PROCESS_RATE_DIR / f"{digest}.json"
-
-
-def adaptive_process_cached_throughput(
-    manifest: dict[str, Any],
-    worker_id: str | None,
-) -> float | None:
-    process_id = str(worker_id or "").strip()
-    if not process_id:
-        return None
-    payload = read_state_json(adaptive_process_rate_path(manifest, process_id))
-    if (
-        not isinstance(payload, dict)
-        or payload.get("schema") != ADAPTIVE_PROCESS_RATE_SCHEMA
-        or str(payload.get("worker_id") or "") != process_id
-    ):
-        return None
-    rate = _parse_float(payload.get("rate"))
-    return float(rate) if rate is not None and rate > 0 else None
-
-
-def adaptive_worker_cached_throughput(
-    manifest: dict[str, Any],
-    *,
-    worker: str | None,
-    worker_id: str | None,
-    cache_path: Path | None = None,
-) -> float | None:
-    worker_name = str(worker or "").strip()
-    process_id = str(worker_id or "").strip()
-    params = adaptive_template_parameters(manifest)
-    candidates = [adaptive_process_cached_throughput(manifest, process_id)]
-    if worker_name and process_id:
-        candidates.append(selfplay_cached_throughput(
-            {
-                **params,
-                "__forge_worker": worker_name,
-                "__forge_worker_id": process_id,
-            },
-            cache_path=cache_path,
-        ))
-    if worker_name:
-        candidates.append(selfplay_cached_throughput(
-            {**params, "__forge_worker": worker_name},
-            cache_path=cache_path,
-        ))
-    return next((rate for rate in candidates if rate is not None and rate > 0), None)
-
-
-def record_adaptive_process_chunk_rate(
-    manifest: dict[str, Any],
-    *,
-    worker: str,
-    worker_id: str,
-    rate: float,
-    units: int,
-    elapsed_s: float,
-    started_at: Any = None,
-) -> dict[str, Any] | None:
-    if not worker_id or rate <= 0 or units <= 0 or elapsed_s <= 0:
-        return None
-    path = adaptive_process_rate_path(manifest, worker_id)
-    previous = read_state_json(path)
-    valid_previous = (
-        isinstance(previous, dict)
-        and previous.get("schema") == ADAPTIVE_PROCESS_RATE_SCHEMA
-        and str(previous.get("worker_id") or "") == worker_id
-    )
-    previous_rate = _parse_float(previous.get("rate")) if valid_previous else None
-    previous_samples = _parse_int(previous.get("samples")) if valid_previous else None
-    previous_samples = max(0, previous_samples or 0)
-    if previous_rate is not None and previous_rate > 0 and previous_samples > 0:
-        weight = min(previous_samples, DEFAULT_SELFPLAY_CHUNK_HISTORY_WEIGHT)
-        blended_rate = (previous_rate * weight + rate) / (weight + 1)
-    else:
-        blended_rate = rate
-    payload = {
-        "schema": ADAPTIVE_PROCESS_RATE_SCHEMA,
-        "template": str(adaptive_template_parameters(manifest)["__forge_template_name"]),
-        "worker": worker,
-        "worker_id": worker_id,
-        "rate": blended_rate,
-        "samples": previous_samples + 1,
-        "last_rate": rate,
-        "last_units": units,
-        "last_elapsed_s": elapsed_s,
-        "last_started_at": started_at,
-        "updated_epoch": time.time(),
-    }
-    write_json(path, payload)
-    return payload
 
 
 def adaptive_split_config(template_data: dict[str, Any]) -> tuple[str, str, str] | None:
@@ -383,93 +171,6 @@ def adaptive_worker_slot_count(manifest_path: Path, worker: str) -> int:
     return max(1, slots)
 
 
-def selfplay_cached_throughput(params: dict[str, Any], *, cache_path: Path | None = None) -> float | None:
-    signature = selfplay_chunk_signature(params)
-    key = selfplay_chunk_signature_key(signature)
-    history = load_selfplay_chunk_history(cache_path=cache_path)
-    record = history["records"].get(key)
-    if not isinstance(record, dict):
-        return None
-    rate = _parse_float(record.get("rate"))
-    if rate is None or rate <= 0:
-        return None
-    return float(rate)
-
-
-def selfplay_estimated_chunk_games(
-    params: dict[str, Any],
-    *,
-    cache_path: Path | None = None,
-) -> int | None:
-    rate = selfplay_cached_throughput(params, cache_path=cache_path)
-    target_seconds = selfplay_chunk_target_seconds(params)
-    if rate is None or rate <= 0:
-        return selfplay_default_chunk_games(params)
-    estimated = int(round(rate * target_seconds))
-    return max(1, estimated)
-
-
-def _record_selfplay_chunk_rate(
-    params: dict[str, Any],
-    *,
-    rate: float,
-    samples: int = 1,
-    cache_path: Path | None = None,
-) -> dict[str, Any] | None:
-    if rate <= 0 or samples <= 0:
-        return None
-
-    signature = selfplay_chunk_signature(params)
-    key = selfplay_chunk_signature_key(signature)
-    with locked_selfplay_chunk_history(cache_path=cache_path):
-        history = load_selfplay_chunk_history(cache_path=cache_path)
-        record = history["records"].get(key)
-        previous_rate = _parse_float(record.get("rate")) if isinstance(record, dict) else None
-        previous_samples = int(record.get("samples") or 0) if isinstance(record, dict) else 0
-
-        if previous_rate is not None and previous_rate > 0 and previous_samples > 0:
-            weight = min(previous_samples, DEFAULT_SELFPLAY_CHUNK_HISTORY_WEIGHT)
-            blended_rate = (previous_rate * weight + rate * samples) / (weight + samples)
-        else:
-            blended_rate = rate
-
-        history["records"][key] = {
-            "label": selfplay_chunk_signature_label(signature),
-            "rate": blended_rate,
-            "samples": previous_samples + samples,
-            "updated_epoch": time.time(),
-        }
-        write_selfplay_chunk_history(history, cache_path=cache_path)
-        return history["records"][key]
-
-
-def selfplay_autosized_shards(
-    params: dict[str, Any],
-    worker_payload: dict[str, Any],
-    *,
-    cache_path: Path | None = None,
-) -> int | None:
-    games = _parse_int(params.get("games"))
-    if games is None or games <= 0:
-        return None
-    slots = 0
-    workers = worker_payload.get("workers")
-    if isinstance(workers, list):
-        for worker in workers:
-            if isinstance(worker, dict):
-                try:
-                    slots += max(0, int(worker.get("slots", 1)))
-                except (TypeError, ValueError):
-                    continue
-            else:
-                slots += 1
-    estimated_games = selfplay_estimated_chunk_games(params, cache_path=cache_path)
-    shards = (games + estimated_games - 1) // estimated_games
-    if slots > 0:
-        shards = max(slots, ((shards + slots - 1) // slots) * slots)
-    return max(1, shards)
-
-
 def adaptive_autosized_shards(
     template_name: str,
     template_data: dict[str, Any],
@@ -532,7 +233,7 @@ def adaptive_autosized_shards(
     return min(total, shards)
 
 
-def record_selfplay_chunk_history(
+def record_adaptive_chunk_history(
     manifest: dict[str, Any],
     *,
     cache_path: Path | None = None,
@@ -560,10 +261,10 @@ def record_selfplay_chunk_history(
         return None
 
     params = adaptive_template_parameters(manifest)
-    return _record_selfplay_chunk_rate(params, rate=rate, cache_path=cache_path)
+    return record_adaptive_chunk_rate(params, rate=rate, cache_path=cache_path)
 
 
-def record_selfplay_chunk_task_result(
+def record_adaptive_chunk_task_result(
     manifest: dict[str, Any],
     task: dict[str, Any],
     *,
@@ -593,7 +294,7 @@ def record_selfplay_chunk_task_result(
         return None
     params = adaptive_template_parameters(manifest)
     rate = units / elapsed
-    aggregate = _record_selfplay_chunk_rate(params, rate=rate, cache_path=cache_path)
+    aggregate = record_adaptive_chunk_rate(params, rate=rate, cache_path=cache_path)
     worker_value = done.get("worker")
     if isinstance(worker_value, dict):
         worker = str(
@@ -607,13 +308,13 @@ def record_selfplay_chunk_task_result(
         worker = str(worker_value or done.get("host") or "").strip()
         worker_id = str(done.get("worker_id") or "").strip()
     if worker:
-        _record_selfplay_chunk_rate(
+        record_adaptive_chunk_rate(
             {**params, "__forge_worker": worker},
             rate=rate,
             cache_path=cache_path,
         )
     if worker and worker_id:
-        _record_selfplay_chunk_rate(
+        record_adaptive_chunk_rate(
             {
                 **params,
                 "__forge_worker": worker,
@@ -860,35 +561,6 @@ def adaptive_rechunk_pending_tasks(
     }
 
 
-def selfplay_rechunk_pending_tasks(
-    manifest_path: Path,
-    manifest: dict[str, Any],
-    *,
-    lease_seconds: int,
-    worker: str | None = None,
-    worker_id: str | None = None,
-    cache_path: Path | None = None,
-) -> dict[str, Any] | None:
-    return adaptive_rechunk_pending_tasks(
-        manifest_path,
-        manifest,
-        lease_seconds=lease_seconds,
-        worker=worker,
-        worker_id=worker_id,
-        cache_path=cache_path,
-    )
-
-
-# Generic public names. The older selfplay names remain aliases so existing
-# installations keep their calibration file and third-party callers do not
-# lose history during the scheduler migration.
-ADAPTIVE_CHUNK_CACHE_SCHEMA = SELFPLAY_CHUNK_CACHE_SCHEMA
-adaptive_chunk_cache_path = selfplay_chunk_cache_path
-adaptive_chunk_signature = selfplay_chunk_signature
-adaptive_chunk_signature_key = selfplay_chunk_signature_key
-adaptive_chunk_signature_label = selfplay_chunk_signature_label
-load_adaptive_chunk_history = load_selfplay_chunk_history
-write_adaptive_chunk_history = write_selfplay_chunk_history
-adaptive_cached_throughput = selfplay_cached_throughput
-record_adaptive_chunk_history = record_selfplay_chunk_history
-record_adaptive_chunk_task_result = record_selfplay_chunk_task_result
+# Legacy function names remain available through forge_lib.selfplay_chunks.
+record_selfplay_chunk_history = record_adaptive_chunk_history
+record_selfplay_chunk_task_result = record_adaptive_chunk_task_result

@@ -1064,8 +1064,8 @@ def cmd_release(args: argparse.Namespace) -> int:
             from .chunking import record_adaptive_chunk_task_result
 
             record_adaptive_chunk_task_result(manifest, task)
-        except (OSError, SystemExit, ValueError):
-            pass
+        except Exception as exc:
+            print(f"{task['id']}: calibration warning: {exc}", file=sys.stderr)
         print(task["id"])
         return 0
     if not args.worker:

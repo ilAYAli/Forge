@@ -1,0 +1,76 @@
+{
+  "schema": "forge.template.v1",
+  "name": "tb-sf-oracle-relabel",
+  "kind": "sf-oracle-relabel",
+  "description": "Relabel Enyo self-play PGN shards with exact Syzygy WDL for <=6-piece positions and a Stockfish static-eval oracle for everything else",
+  "run_name": "tb-sf-oracle-relabel-{timestamp}",
+  "work_dir": "~/code/cpp/chess/nnue",
+  "parameters": {
+    "pgn_dir": {
+      "required": true,
+      "worker_path": true
+    },
+    "output": {
+      "required": true,
+      "worker_path": true
+    },
+    "sf_engine": {
+      "default": "~/assets/engines/candidate"
+    },
+    "sf_net": {
+      "default": "~/assets/nets/nn-0ee0657fb25e.nnue"
+    },
+    "sf_hash": {
+      "type": "int",
+      "default": 64
+    },
+    "tb_pieces": {
+      "type": "int",
+      "default": 6
+    },
+    "skip_plies": {
+      "type": "int",
+      "default": 8
+    },
+    "min_depth": {
+      "type": "int",
+      "default": 1
+    },
+    "max_abs_cp": {
+      "type": "int",
+      "default": 10000
+    },
+    "shards": {
+      "aliases": [
+        "shard_count"
+      ],
+      "type": "int"
+    }
+  },
+  "task": {
+    "split": {
+      "count": "shards"
+    },
+    "label": "tb-sf-oracle:{shard}",
+    "outputs": [
+      "{output_dir}/{task_name}.bullet"
+    ],
+    "command": ".venv/bin/python3 tools/bullet/selfplay_to_bullet_tb_sf_oracle.py --pgn-dir {pgn_dir} --output {output_dir}/{task_name}.bullet --shard-slice {task_index}/{task_count} --sf-engine {sf_engine} --sf-net {sf_net} --sf-hash {sf_hash} --tb-pieces {tb_pieces} --skip-plies {skip_plies} --min-depth {min_depth} --max-abs-cp {max_abs_cp}",
+    "progress": {
+      "unit": "positions",
+      "log_regex": "read=(?P<done>\\d+) selected=(?P<selected>\\d+) written=(?P<output>\\d+) rate=(?P<rate>[0-9.]+)/s",
+      "series": [
+        {
+          "name": "labels/s",
+          "field": "rate",
+          "x": "done",
+          "scale": "linear"
+        }
+      ]
+    }
+  },
+  "finalize": {
+    "type": "bullet-labels",
+    "output": "{output}"
+  }
+}
