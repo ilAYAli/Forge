@@ -645,7 +645,40 @@ def git_checkout_template_parameters(template: dict[str, Any], params: dict[str,
     return result
 
 
+def derived_template_parameters(template: dict[str, Any], params: dict[str, Any]) -> dict[str, Any]:
+    result = dict(params)
+    preserve = {
+        str(item)
+        for item in result.pop("__forge_preserve_derived", [])
+    } if isinstance(result.get("__forge_preserve_derived"), list) else set()
+    specs = template.get("parameters")
+    if not isinstance(specs, dict):
+        return result
+    for name, spec in specs.items():
+        if not isinstance(spec, dict):
+            continue
+        derive = spec.get("derive")
+        if not isinstance(derive, dict) or derive.get("type") != "glob-count":
+            continue
+        if str(name) in preserve:
+            continue
+        source_name = str(derive.get("from") or "").strip()
+        pattern = str(derive.get("pattern") or "*")
+        source = result.get(source_name)
+        if not isinstance(source, str):
+            raise SystemExit(f"{name}: derived source parameter {source_name!r} is missing")
+        directory = expand_path(source)
+        if not directory.is_dir():
+            raise SystemExit(f"{name}: derived source is not a directory: {directory}")
+        count = sum(1 for path in directory.glob(pattern) if path.is_file())
+        if count <= 0:
+            raise SystemExit(f"{name}: no files matching {pattern!r} in {directory}")
+        result[str(name)] = count
+    return result
+
+
 def expand_template(template_name: str, template_path_: Path, template: dict[str, Any], params: dict[str, Any]) -> dict[str, Any]:
+    params = derived_template_parameters(template, params)
     params = git_checkout_template_parameters(template, params)
     values = run_name_values(template_name, params)
     values.update(shell_value_format_values(values))
@@ -668,6 +701,12 @@ def expand_template(template_name: str, template_path_: Path, template: dict[str
     if not isinstance(split, dict):
         raise SystemExit(f"{template_name}: task.split must be an object")
     task_count, shards, split_unit = resolve_split_count(split, values)
+    try:
+        split_start = int(template_value(split.get("start", 0), values))
+    except (TypeError, ValueError) as exc:
+        raise SystemExit("task.split.start must be a non-negative integer") from exc
+    if split_start < 0:
+        raise SystemExit("task.split.start must be a non-negative integer")
     width = max(4, len(str(task_count - 1)))
     task_prefix = str(task_template.get("prefix") or kind or template_name)
     task_prefix = re.sub(r"[^A-Za-z0-9._-]+", "_", task_prefix).strip("._-") or "task"
@@ -681,6 +720,7 @@ def expand_template(template_name: str, template_path_: Path, template: dict[str
         output_templates = [str(task_template["output"])]
     progress_template = task_template.get("progress") or template.get("progress")
     tasks: list[dict[str, Any]] = []
+    range_offset = split_start
     for index in range(task_count):
         task_name = f"{task_prefix}_{index:0{width}d}"
         task_values = dict(values)
@@ -693,6 +733,8 @@ def expand_template(template_name: str, template_path_: Path, template: dict[str
             "shard": shard,
             "shard_pairs": shard // 2 if isinstance(shard, int) else "",
             "chunk": shard,
+            "shard_start": range_offset,
+            "chunk_start": range_offset,
             "output_dir": "{output_dir}",
             "run_dir": "{run_dir}",
         })
@@ -727,7 +769,15 @@ def expand_template(template_name: str, template_path_: Path, template: dict[str
             if shards[index] is not None and "total" not in progress:
                 progress["total"] = shards[index]
             task["progress"] = progress
+        if isinstance(shard, int) and split_unit and "start" in split:
+            task["adaptive_range"] = {
+                "unit": split_unit,
+                "start": range_offset,
+                "count": shard,
+            }
         tasks.append(task)
+        if isinstance(shard, int):
+            range_offset += shard
 
     manifest = {
         "schema": SCHEMA,
@@ -940,6 +990,7 @@ def cmd_template_run(args: argparse.Namespace) -> int:
             )
     else:
         params = parse_template_parameters(template_name, template, template_args)
+        params = derived_template_parameters(template, params)
         shards_param = template.get("parameters", {}).get("shards")
         if isinstance(shards_param, dict):
             shards_supplied = template_parameter_supplied(template, template_args, {"shards", "shard_count"})
@@ -956,7 +1007,17 @@ def cmd_template_run(args: argparse.Namespace) -> int:
                 params = dict(params)
                 total = as_int(params.get(total_key), label=f"{template_name}.{total_key}")
                 configured = as_int(shards_param.get("default", 1), label=f"{template_name}.shards")
-                cold_units = max(1, (total + configured - 1) // configured)
+                chunking = template.get("chunking")
+                initial_units = (
+                    int(chunking.get("initial_units", 0))
+                    if isinstance(chunking, dict)
+                    else 0
+                )
+                cold_units = (
+                    max(1, initial_units)
+                    if initial_units > 0
+                    else max(1, (total + configured - 1) // configured)
+                )
                 params["shards"] = auto_adaptive_shards(
                     template_name,
                     template,

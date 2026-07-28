@@ -6,7 +6,31 @@
   "run_name": "selfplay-to-bullet-{pgn_dir_stem}-{timestamp}",
   "work_dir": "{nnue_repo}",
   "materialize_inputs": true,
+  "chunking": {
+    "live_rechunk": true,
+    "initial_units": 1,
+    "rechunk_chunks_per_slot": 2,
+    "min_chunks_per_slot": 2
+  },
   "parameters": {
+    "chunk_time_seconds": {
+      "type": "int",
+      "default": 300,
+      "help": "Target wall-clock seconds per adaptively sized chunk"
+    },
+    "pgns": {
+      "type": "int",
+      "default": 1,
+      "derive": {
+        "type": "glob-count",
+        "from": "pgn_dir",
+        "pattern": "*.pgn"
+      }
+    },
+    "pgn_start": {
+      "type": "int",
+      "default": 0
+    },
     "nnue_repo": {
       "default": "~/code/cpp/chess/nnue",
       "worker_path": true,
@@ -103,14 +127,17 @@
   },
   "task": {
     "split": {
-      "count": "shards"
+      "total": "pgns",
+      "count": "shards",
+      "unit": "pgns",
+      "start": "pgn_start"
     },
     "label": "selfplay-to-bullet:{task_number}/{task_count}",
     "outputs": [
       "{output_dir}/{task_name}.bullet",
       "{output_dir}/{task_name}.stats.json"
     ],
-    "command": ".venv/bin/python3 tools/bullet/selfplay_to_bullet.py --pgn-dir ~/.cache/forge/inputs/selfplay/{timestamp}-{pgn_dir_stem} --output {output_dir}/{task_name}.bullet --stats {output_dir}/{task_name}.stats.json --label-mode {label_mode} --shard-slice {task_index}/{task_count} --skip-plies {skip_plies} --min-depth {min_depth} --max-abs-cp {max_abs_cp} --bullet-manifest ~/.cache/forge/tools/bullet/d372d487aedfeb8bdc256b9f694dbcd41016bf82/Cargo.toml",
+    "command": ".venv/bin/python3 tools/bullet/selfplay_to_bullet.py --pgn-dir ~/.cache/forge/inputs/selfplay/{timestamp}-{pgn_dir_stem} --output {output_dir}/{task_name}.bullet --stats {output_dir}/{task_name}.stats.json --label-mode {label_mode} --shard-range {shard_start}/{shard} --skip-plies {skip_plies} --min-depth {min_depth} --max-abs-cp {max_abs_cp} --bullet-manifest ~/.cache/forge/tools/bullet/d372d487aedfeb8bdc256b9f694dbcd41016bf82/Cargo.toml",
     "progress": {
       "unit": "pgns",
       "log_regex": "\\[(?P<done>\\d+)/(?P<total>\\d+)\\].*?\\+(?P<output>\\d+) rows",

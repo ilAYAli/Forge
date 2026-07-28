@@ -1859,7 +1859,9 @@ def materialize_run(
             inline_defaults_path=inline_worker_defaults,
         )
     )
-    if materialized.get("tasks"):
+    from .chunking import adaptive_live_rechunk_enabled
+
+    if materialized.get("tasks") and not adaptive_live_rechunk_enabled(materialized):
         assign_task_claim_workers(
             materialized,
             workers_from_payload(payload, label=workers_arg),

@@ -389,6 +389,12 @@ def adaptive_rechunk_pending_tasks(
     if not pending:
         return None
 
+    ranged_pending = all(
+        isinstance(task.get("adaptive_range"), dict)
+        and str(task["adaptive_range"].get("unit") or "") == unit
+        for task in pending
+    )
+
     live_done = 0
     live_elapsed = 0.0
     live_warmup_units = 0
@@ -439,7 +445,21 @@ def adaptive_rechunk_pending_tasks(
         estimated_games = max(1, int(round(effective_rate * selfplay_chunk_target_seconds(params))))
     else:
         estimated_games = max(1, int(chunking.get("initial_units") or 1))
-    if reassign_foreign:
+    if ranged_pending:
+        pending.sort(key=lambda task: int(task["adaptive_range"]["start"]))
+        contiguous = [pending[0]]
+        expected = (
+            int(pending[0]["adaptive_range"]["start"])
+            + adaptive_task_units(pending[0], unit)
+        )
+        for task in pending[1:]:
+            start = int(task["adaptive_range"]["start"])
+            if start != expected:
+                break
+            contiguous.append(task)
+            expected += adaptive_task_units(task, unit)
+        pending = contiguous
+    elif reassign_foreign:
         pending.sort(key=lambda task: int(task.get("index", 0)))
     else:
         pending.sort(key=lambda task: (
@@ -499,7 +519,12 @@ def adaptive_rechunk_pending_tasks(
         **params,
         total_key: selected_units,
         count_key: target_shards,
+        "__forge_preserve_derived": [total_key],
     }
+    split_data = template_data.get("task", {}).get("split", {})
+    start_key = split_data.get("start") if isinstance(split_data, dict) else None
+    if ranged_pending and isinstance(start_key, str) and start_key:
+        replan_params[start_key] = int(selected[0]["adaptive_range"]["start"])
     if "seed" in params:
         replan_params["seed"] = int(params.get("seed") or 1) + min(
             int(task.get("index", 0)) for task in selected

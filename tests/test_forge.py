@@ -3775,6 +3775,95 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
             self.assertEqual("rate", series[0]["field"])
             self.assertEqual("output", series[0]["x"])
 
+    def test_selfplay_conversion_derives_contiguous_adaptive_pgn_ranges(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            pgn_dir = root / "pgns"
+            pgn_dir.mkdir()
+            for index in range(10):
+                (pgn_dir / f"{index:02d}.pgn").touch()
+            template_path = ROOT / "templates" / "selfplay-to-sf-oracle.template.json"
+            template = forge.load_template(template_path)
+            params = forge.parse_template_parameters(
+                "selfplay-to-sf-oracle",
+                template,
+                [
+                    "--pgn-dir", str(pgn_dir),
+                    "--output", str(root / "output.bullet"),
+                    "--shards", "3",
+                ],
+            )
+
+            manifest = forge.expand_template(
+                "selfplay-to-sf-oracle",
+                template_path,
+                template,
+                params,
+            )
+
+            self.assertEqual(
+                [
+                    {"unit": "pgns", "start": 0, "count": 4},
+                    {"unit": "pgns", "start": 4, "count": 3},
+                    {"unit": "pgns", "start": 7, "count": 3},
+                ],
+                [task["adaptive_range"] for task in manifest["tasks"]],
+            )
+            self.assertIn("--shard-range 4/3", manifest["tasks"][1]["command"])
+
+    def test_conversion_live_rechunk_preserves_contiguous_pgn_ranges(self) -> None:
+        from forge_lib import chunking
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            pgn_dir = root / "pgns"
+            pgn_dir.mkdir()
+            for index in range(10):
+                (pgn_dir / f"{index:02d}.pgn").touch()
+            (root / "state").mkdir()
+            (root / "claims").mkdir()
+            template_path = ROOT / "templates" / "selfplay-to-sf-oracle.template.json"
+            template = forge.load_template(template_path)
+            params = forge.parse_template_parameters(
+                "selfplay-to-sf-oracle",
+                template,
+                [
+                    "--pgn-dir", str(pgn_dir),
+                    "--output", str(root / "output.bullet"),
+                    "--shards", "10",
+                ],
+            )
+            manifest = forge.expand_template(
+                "selfplay-to-sf-oracle",
+                template_path,
+                template,
+                params,
+            )
+            manifest["state_dir"] = str(root / "state")
+            manifest["claim_dir"] = str(root / "claims")
+            manifest_path = root / "manifest.json"
+            forge.write_json(manifest_path, manifest)
+            with mock.patch(
+                "forge_lib.chunking.adaptive_worker_cached_throughput",
+                return_value=5 / 300,
+            ):
+                claimed = forge.claim_task(
+                    manifest,
+                    manifest_path=manifest_path,
+                    worker="worker",
+                    worker_id="worker#1",
+                    profile=None,
+                    lease_seconds=600,
+                    retry_failed=False,
+                )
+
+            updated = forge.load_manifest(manifest_path)
+            task = next(task for task in updated["tasks"] if task["id"] == claimed["task"])
+
+        self.assertEqual({"unit": "pgns", "start": 0, "count": 5}, task["adaptive_range"])
+        self.assertEqual(5, task["progress"]["total"])
+        self.assertIn("--shard-range 0/5", task["command"])
+
     def test_run_progress_graph_accepts_reserved_series_without_custom_fields(self) -> None:
         progress = {
             "unit": "pgns",
