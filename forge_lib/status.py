@@ -821,11 +821,17 @@ def calibrated_progress_rate(
         from .chunking import (
             adaptive_worker_cached_throughput,
         )
+        from .calibration import adaptive_template_parameters
 
-        cached_rate = adaptive_worker_cached_throughput(
-            manifest,
-            worker=worker,
-            worker_id=worker_id,
+        params = adaptive_template_parameters(manifest)
+        cached_rate = (
+            None
+            if params.get("__forge_work_unit")
+            else adaptive_worker_cached_throughput(
+                manifest,
+                worker=worker,
+                worker_id=worker_id,
+            )
         )
     except (OSError, SystemExit, ValueError):
         cached_rate = None

@@ -99,6 +99,7 @@ def adaptive_chunk_signature(params: dict[str, Any]) -> dict[str, Any]:
     template = str(params.get("__forge_template_name") or "selfplay")
     signature = {"kind": template, "template": template}
     for key, field in (
+        ("__forge_work_unit", "work_unit"),
         ("__forge_worker", "worker"),
         ("__forge_worker_id", "worker_id"),
     ):
@@ -193,6 +194,17 @@ def adaptive_template_parameters(manifest: dict[str, Any]) -> dict[str, Any]:
     result = dict(params) if isinstance(params, dict) else {}
     name = template.get("name") if isinstance(template, dict) else None
     result["__forge_template_name"] = str(name or manifest.get("kind") or "task")
+    path_value = template.get("path") if isinstance(template, dict) else None
+    if isinstance(path_value, str) and path_value:
+        try:
+            template_data = read_json(expand_path(path_value))
+        except (OSError, SystemExit):
+            template_data = None
+        chunking = template_data.get("chunking") if isinstance(template_data, dict) else None
+        work = chunking.get("work") if isinstance(chunking, dict) else None
+        signature = work.get("signature") if isinstance(work, dict) else None
+        if isinstance(signature, str) and signature:
+            result["__forge_work_unit"] = signature
     return result
 
 
@@ -218,6 +230,11 @@ def _process_rate_payload(
         or payload.get("schema") != PROCESS_RATE_SCHEMA
         or str(payload.get("worker_id") or "") != process_id
     ):
+        return None
+    expected_work_unit = str(
+        adaptive_template_parameters(manifest).get("__forge_work_unit") or ""
+    )
+    if str(payload.get("work_unit") or "") != expected_work_unit:
         return None
     return payload
 
@@ -296,6 +313,9 @@ def record_adaptive_process_chunk_rate(
         "last_started_at": started_at,
         "updated_epoch": time.time(),
     }
+    work_unit = adaptive_template_parameters(manifest).get("__forge_work_unit")
+    if isinstance(work_unit, str) and work_unit:
+        payload["work_unit"] = work_unit
     write_json(adaptive_process_rate_path(manifest, worker_id), payload)
     return payload
 

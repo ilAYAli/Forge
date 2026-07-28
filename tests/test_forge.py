@@ -3877,6 +3877,195 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
         self.assertIn("--shard-range 0/5", task["command"])
         self.assertTrue(all(str(root / "outputs") in output for output in task["outputs"]))
 
+    def test_conversion_live_rechunk_targets_input_bytes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            pgn_dir = root / "pgns"
+            pgn_dir.mkdir()
+            for index, size in enumerate((100, 100, 100, 1000, 100)):
+                (pgn_dir / f"{index:02d}.pgn").write_bytes(b"x" * size)
+            (root / "state").mkdir()
+            (root / "claims").mkdir()
+            template_path = ROOT / "templates" / "selfplay-to-sf-oracle.template.json"
+            template = forge.load_template(template_path)
+            params = forge.parse_template_parameters(
+                "selfplay-to-sf-oracle",
+                template,
+                [
+                    "--pgn-dir", str(pgn_dir),
+                    "--output", str(root / "output.bullet"),
+                    "--shards", "5",
+                ],
+            )
+            manifest = forge.expand_template(
+                "selfplay-to-sf-oracle",
+                template_path,
+                template,
+                params,
+            )
+            manifest.update({
+                "state_dir": str(root / "state"),
+                "claim_dir": str(root / "claims"),
+                "vars": {"output_dir": str(root / "outputs")},
+            })
+            manifest_path = root / "manifest.json"
+            forge.write_json(manifest_path, manifest)
+
+            with mock.patch(
+                "forge_lib.chunking.adaptive_worker_cached_throughput",
+                return_value=1.0,
+            ):
+                claimed = forge.claim_task(
+                    manifest,
+                    manifest_path=manifest_path,
+                    worker="worker",
+                    worker_id="worker#1",
+                    profile=None,
+                    lease_seconds=600,
+                    retry_failed=False,
+                )
+
+            updated = forge.load_manifest(manifest_path)
+            task = next(task for task in updated["tasks"] if task["id"] == claimed["task"])
+
+        self.assertEqual({"unit": "pgns", "start": 0, "count": 3}, task["adaptive_range"])
+
+    def test_conversion_live_rechunk_does_not_combine_oversized_pgn(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            pgn_dir = root / "pgns"
+            pgn_dir.mkdir()
+            for index, size in enumerate((1000, 100, 100)):
+                (pgn_dir / f"{index:02d}.pgn").write_bytes(b"x" * size)
+            (root / "state").mkdir()
+            (root / "claims").mkdir()
+            template_path = ROOT / "templates" / "selfplay-to-sf-oracle.template.json"
+            template = forge.load_template(template_path)
+            params = forge.parse_template_parameters(
+                "selfplay-to-sf-oracle",
+                template,
+                [
+                    "--pgn-dir", str(pgn_dir),
+                    "--output", str(root / "output.bullet"),
+                    "--shards", "3",
+                ],
+            )
+            manifest = forge.expand_template(
+                "selfplay-to-sf-oracle",
+                template_path,
+                template,
+                params,
+            )
+            manifest.update({
+                "state_dir": str(root / "state"),
+                "claim_dir": str(root / "claims"),
+                "vars": {"output_dir": str(root / "outputs")},
+            })
+            manifest_path = root / "manifest.json"
+            forge.write_json(manifest_path, manifest)
+
+            with mock.patch(
+                "forge_lib.chunking.adaptive_worker_cached_throughput",
+                return_value=1.0,
+            ):
+                claimed = forge.claim_task(
+                    manifest,
+                    manifest_path=manifest_path,
+                    worker="worker",
+                    worker_id="worker#1",
+                    profile=None,
+                    lease_seconds=600,
+                    retry_failed=False,
+                )
+
+            updated = forge.load_manifest(manifest_path)
+            task = next(task for task in updated["tasks"] if task["id"] == claimed["task"])
+
+        self.assertEqual({"unit": "pgns", "start": 0, "count": 1}, task["adaptive_range"])
+
+    def test_conversion_calibration_records_input_bytes_per_second(self) -> None:
+        from forge_lib import chunking
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            pgn_dir = root / "pgns"
+            outputs = root / "outputs"
+            state = root / "state"
+            for path in (pgn_dir, outputs, state):
+                path.mkdir()
+            (pgn_dir / "00.pgn").write_bytes(b"x" * 100)
+            (pgn_dir / "01.pgn").write_bytes(b"x" * 300)
+            bullet = outputs / "chunk.bullet"
+            stats = outputs / "chunk.stats.json"
+            bullet.write_bytes(b"x" * 32)
+            forge.write_json(stats, {
+                "schema": "enyo.label-stats.v1",
+                "read": 2,
+                "written": 1,
+            })
+            template_path = ROOT / "templates" / "selfplay-to-sf-oracle.template.json"
+            task = {
+                "id": "chunk",
+                "outputs": [str(bullet), str(stats)],
+                "progress": {"unit": "pgns", "total": 2},
+                "adaptive_range": {"unit": "pgns", "start": 0, "count": 2},
+            }
+            manifest = {
+                "schema": "forge.task.v1",
+                "kind": "selfplay-to-sf-oracle",
+                "state_dir": str(state),
+                "template": {
+                    "name": "selfplay-to-sf-oracle",
+                    "path": str(template_path),
+                    "parameters": {"pgn_dir": str(pgn_dir)},
+                },
+                "tasks": [task],
+            }
+            forge.write_json(state / "chunk.done.json", {
+                "schema": "forge.task.v1",
+                "rc": 0,
+                "elapsed_s": 4,
+            })
+            cache_path = root / "history.json"
+
+            result = chunking.record_adaptive_chunk_task_result(
+                manifest,
+                task,
+                cache_path=cache_path,
+            )
+
+        assert result is not None
+        self.assertAlmostEqual(100.0, result["rate"])
+
+    def test_conversion_byte_calibration_ignores_legacy_pgn_process_rate(self) -> None:
+        from forge_lib import chunking
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest = {
+                "kind": "selfplay-to-sf-oracle",
+                "state_dir": str(root / "state"),
+                "template": {
+                    "name": "selfplay-to-sf-oracle",
+                    "path": str(ROOT / "templates" / "selfplay-to-sf-oracle.template.json"),
+                    "parameters": {},
+                },
+            }
+            process_path = chunking.adaptive_process_rate_path(manifest, "worker#1")
+            process_path.parent.mkdir(parents=True)
+            forge.write_json(process_path, {
+                "schema": chunking.ADAPTIVE_PROCESS_RATE_SCHEMA,
+                "template": "selfplay-to-sf-oracle",
+                "worker": "worker",
+                "worker_id": "worker#1",
+                "rate": 0.1,
+                "samples": 3,
+            })
+
+            rate = chunking.adaptive_process_cached_throughput(manifest, "worker#1")
+
+        self.assertIsNone(rate)
+
     def test_conversion_adaptive_rechunk_finalizes_complete_dataset(self) -> None:
         from forge_lib.labeling import finalize_labeling
 

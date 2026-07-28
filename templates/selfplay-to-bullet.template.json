@@ -10,7 +10,13 @@
     "live_rechunk": true,
     "initial_units": 1,
     "rechunk_chunks_per_slot": 2,
-    "min_chunks_per_slot": 2
+    "min_chunks_per_slot": 2,
+    "work": {
+      "type": "glob-bytes",
+      "from": "pgn_dir",
+      "pattern": "*.pgn",
+      "signature": "pgn-bytes-v1"
+    }
   },
   "parameters": {
     "chunk_time_seconds": {

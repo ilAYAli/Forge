@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import functools
 import re
 import time
 from pathlib import Path
@@ -121,6 +122,92 @@ def adaptive_task_units(task: dict[str, Any], unit: str) -> int:
     return selfplay_task_games(task) if unit == "games" else 0
 
 
+def adaptive_work_config(template_data: dict[str, Any]) -> dict[str, Any] | None:
+    chunking = template_data.get("chunking")
+    work = chunking.get("work") if isinstance(chunking, dict) else None
+    if (
+        isinstance(work, dict)
+        and work.get("type") == "glob-bytes"
+        and isinstance(work.get("from"), str)
+        and isinstance(work.get("pattern"), str)
+    ):
+        return work
+    return None
+
+
+@functools.lru_cache(maxsize=16)
+def _glob_file_weights(
+    directory: str,
+    pattern: str,
+    directory_mtime_ns: int,
+) -> tuple[int, ...]:
+    del directory_mtime_ns
+    return tuple(max(1, path.stat().st_size) for path in sorted(Path(directory).glob(pattern)))
+
+
+def adaptive_file_weights(
+    manifest: dict[str, Any],
+    template_data: dict[str, Any],
+) -> tuple[int, ...] | None:
+    work = adaptive_work_config(template_data)
+    template = manifest.get("template")
+    params = template.get("parameters") if isinstance(template, dict) else None
+    source_key = work.get("from") if isinstance(work, dict) else None
+    source_value = params.get(source_key) if isinstance(params, dict) and isinstance(source_key, str) else None
+    if not isinstance(source_value, str) or not source_value:
+        return None
+    directory = expand_path(source_value)
+    try:
+        directory_mtime_ns = directory.stat().st_mtime_ns
+    except OSError:
+        return None
+    try:
+        weights = _glob_file_weights(
+            str(directory),
+            str(work.get("pattern")),
+            directory_mtime_ns,
+        )
+    except OSError:
+        return None
+    return weights or None
+
+
+def adaptive_task_work(
+    manifest: dict[str, Any],
+    task: dict[str, Any],
+    unit: str,
+    *,
+    template_data: dict[str, Any] | None = None,
+    completed_units: int | None = None,
+) -> int:
+    units = adaptive_task_units(task, unit)
+    if units <= 0:
+        return 0
+    adaptive_range = task.get("adaptive_range")
+    if not isinstance(adaptive_range, dict):
+        return units
+    if template_data is None:
+        template = manifest.get("template")
+        path_value = template.get("path") if isinstance(template, dict) else None
+        if not isinstance(path_value, str) or not path_value:
+            return units
+        try:
+            from .templates import load_template
+
+            template_data = load_template(expand_path(path_value))
+        except (OSError, SystemExit):
+            return units
+    weights = adaptive_file_weights(manifest, template_data)
+    if weights is None:
+        return units
+    start = _parse_int(adaptive_range.get("start"))
+    if start is None or start < 0:
+        return units
+    count = units if completed_units is None else min(units, max(0, completed_units))
+    end = min(len(weights), start + count)
+    return sum(weights[start:end]) if end > start else units
+
+
 def adaptive_completed_units(task: dict[str, Any], unit: str) -> int | None:
     adaptive_range = task.get("adaptive_range")
     if not isinstance(adaptive_range, dict) or unit != "pgns":
@@ -204,6 +291,10 @@ def adaptive_autosized_shards(
     if total is None or total <= 0:
         return None
     signature_params = {**params, "__forge_template_name": template_name}
+    work = adaptive_work_config(template_data)
+    work_signature = work.get("signature") if isinstance(work, dict) else None
+    if isinstance(work_signature, str) and work_signature:
+        signature_params["__forge_work_unit"] = work_signature
     worker_rates: list[float] = []
     worker_names: list[str] = []
     workers = worker_payload.get("workers")
@@ -273,7 +364,7 @@ def record_adaptive_chunk_history(
         observed_units = adaptive_completed_units(task, unit)
         if observed_units is not None and observed_units != units:
             continue
-        total_units += units
+        total_units += adaptive_task_work(manifest, task, unit)
         total_elapsed += elapsed
     rate = total_units / total_elapsed if total_units > 0 and total_elapsed > 0 else None
     if rate is None or rate <= 0:
@@ -315,7 +406,10 @@ def record_adaptive_chunk_task_result(
     if observed_units is not None and observed_units != units:
         return None
     params = adaptive_template_parameters(manifest)
-    rate = units / elapsed
+    work_units = adaptive_task_work(manifest, task, unit)
+    if work_units <= 0:
+        return None
+    rate = work_units / elapsed
     aggregate = record_adaptive_chunk_rate(params, rate=rate, cache_path=cache_path)
     worker_value = done.get("worker")
     if isinstance(worker_value, dict):
@@ -350,7 +444,7 @@ def record_adaptive_chunk_task_result(
             worker=worker,
             worker_id=worker_id,
             rate=rate,
-            units=units,
+            units=work_units,
             elapsed_s=elapsed,
             started_at=done.get("started_at"),
         )
@@ -389,6 +483,7 @@ def adaptive_rechunk_pending_tasks(
     params = template.get("parameters")
     if not isinstance(params, dict):
         return None
+    weighted_work = adaptive_work_config(template_data) is not None
 
     worker_name = str(worker or "").strip()
     process_id = str(worker_id or "").strip()
@@ -445,9 +540,21 @@ def adaptive_rechunk_pending_tasks(
             elapsed = now_epoch - started
             if elapsed < 30:
                 continue
-            live_done += max(0, done)
+            observed_work = adaptive_task_work(
+                manifest,
+                task,
+                unit,
+                template_data=template_data,
+                completed_units=max(0, done),
+            )
+            live_done += max(0, observed_work)
             live_elapsed += elapsed
-            task_total = adaptive_task_units(task, unit)
+            task_total = adaptive_task_work(
+                manifest,
+                task,
+                unit,
+                template_data=template_data,
+            )
             if task_total > 0:
                 live_warmup_units += adaptive_rate_warmup_units(task_total)
     live_rate = live_done / live_elapsed if live_done > 0 and live_elapsed > 0 else None
@@ -490,11 +597,24 @@ def adaptive_rechunk_pending_tasks(
             if str(task.get("claim_worker") or "").strip() == worker_name
             else int(task.get("index", 0)),
         ))
+    task_work = {
+        str(task.get("id") or id(task)): adaptive_task_work(
+            manifest,
+            task,
+            unit,
+            template_data=template_data,
+        )
+        for task in pending
+    }
+
+    def work_units(task: dict[str, Any]) -> int:
+        return task_work[str(task.get("id") or id(task))]
+
     tolerance = max(2, estimated_games // 4)
     lower = max(1, estimated_games - tolerance)
     upper = estimated_games + tolerance
-    current_max_games = max((adaptive_task_units(task, unit) for task in pending), default=0)
-    first_units = adaptive_task_units(pending[0], unit)
+    current_max_games = max((work_units(task) for task in pending), default=0)
+    first_units = work_units(pending[0])
     if not reassign_foreign and lower <= first_units <= upper:
         return None
 
@@ -513,10 +633,10 @@ def adaptive_rechunk_pending_tasks(
     best_any: tuple[tuple[float, int], int, int] | None = None
     best_batch: tuple[tuple[float, int], int, int] | None = None
     for count, task in enumerate(pending, start=1):
-        selected_units += adaptive_task_units(task, unit)
+        selected_units += work_units(task)
         if selected_units <= 0:
             continue
-        shards = max(1, int(round(selected_units / estimated_games)))
+        shards = 1 if weighted_work else max(1, int(round(selected_units / estimated_games)))
         average = selected_units / shards
         score = (abs(average - estimated_games) / estimated_games, count)
         candidate = (score, count, shards)
@@ -526,7 +646,11 @@ def adaptive_rechunk_pending_tasks(
             best_batch = candidate
         if score[0] == 0 and shards >= desired_chunks:
             break
-        if count >= 32 and selected_units >= desired_units and best_batch is not None:
+        if (
+            count >= (4096 if weighted_work else 32)
+            and selected_units >= desired_units
+            and best_batch is not None
+        ):
             break
     best = best_batch or best_any
     if best is None:
@@ -535,6 +659,7 @@ def adaptive_rechunk_pending_tasks(
     if best_count <= 0 or target_shards <= 0:
         return None
     selected = pending[:best_count]
+    selected_work = sum(work_units(task) for task in selected)
     selected_units = sum(adaptive_task_units(task, unit) for task in selected)
 
     replan_params = {
@@ -608,6 +733,7 @@ def adaptive_rechunk_pending_tasks(
         "remaining_games": selected_units,
         "current_max_games": current_max_games,
         "target_games": estimated_games,
+        "selected_work": selected_work,
         "replacement_tasks": len(replacement_tasks),
         "kept_tasks": len(kept_tasks),
         "pending_tasks": len(pending_ids),
