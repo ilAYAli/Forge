@@ -1371,9 +1371,10 @@ def active_or_queued_blockers(run_name: str, *, lease_seconds: int) -> list[dict
 def queue_resume_command(args: argparse.Namespace, run_name: str) -> list[str]:
     command_name = "retry" if bool(getattr(args, "retry_failed", False)) else "resume"
     command = [sys.executable, str(script_path()), command_name, run_name]
-    workers = str(getattr(args, "workers", "") or "").strip()
-    if not workers:
-        workers = str(run_dir_for_name(run_name) / RUN_WORKERS_NAME)
+    # The run snapshot is durable; args.workers may be a temporary file uploaded
+    # by coordinator delegation and is removed as soon as the initial command
+    # returns.  A queued launch can happen hours later.
+    workers = str(run_dir_for_name(run_name) / RUN_WORKERS_NAME)
     command.extend(["--workers", workers])
     if int(getattr(args, "jobs", 4)) != 4:
         command.extend(["--jobs", str(args.jobs)])

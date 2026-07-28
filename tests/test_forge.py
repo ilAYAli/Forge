@@ -6590,6 +6590,15 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
         self.assertEqual("--workers", command[4])
         self.assertTrue(command[5].endswith("/failed-a/workers.json"))
 
+    def test_queued_command_uses_durable_run_workers_snapshot(self) -> None:
+        args = self.retry_args(run="queued-a", workers="/tmp/forge.ephemeral")
+
+        command = forge.queue_resume_command(args, "queued-a")
+
+        self.assertEqual("--workers", command[4])
+        self.assertTrue(command[5].endswith("/queued-a/workers.json"))
+        self.assertNotEqual("/tmp/forge.ephemeral", command[5])
+
     def test_retry_with_workers_preserves_live_queue_launch_reservation(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             runs = Path(tmp) / "runs"
