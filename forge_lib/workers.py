@@ -43,6 +43,7 @@ raise SystemExit(run_queue_launcher(json.loads(sys.argv[1])))
 """
 _INPUT_TREE_SYNC_LOCK = threading.Lock()
 _SYNCED_INPUT_TREES: set[tuple[str, str, str]] = set()
+_SYNCED_DIRECTORY_TREES: set[tuple[str, str]] = set()
 
 
 @contextlib.contextmanager
@@ -897,10 +898,30 @@ def sync_inputs_to_worker(
 
     synced = 0
     for local_item, remote_item in zip(local_inputs, remote_inputs):
-        src = expand_path(str(local_item.get("path") or ""))
+        src = expand_path(str(local_item.get("source") or local_item.get("path") or ""))
         dst = str(remote_item.get("path") or "")
         if not src.exists():
             raise RuntimeError(f"input does not exist: {src}")
+        if remote_item.get("tree") == "directory":
+            if not src.is_dir():
+                raise RuntimeError(f"directory input is not a directory: {src}")
+            if is_local_worker(worker) and src.resolve() == expand_path(dst).resolve():
+                continue
+            key = (worker_host(worker), dst)
+            with _INPUT_TREE_SYNC_LOCK:
+                if key in _SYNCED_DIRECTORY_TREES:
+                    continue
+                copy_dir_to_worker(
+                    worker,
+                    src,
+                    dst,
+                    timeout=timeout,
+                    tracker=tracker,
+                    retries=retries,
+                )
+                _SYNCED_DIRECTORY_TREES.add(key)
+            synced += 1
+            continue
         if remote_item.get("tree") == "lc0-inventory":
             digest = str(remote_item.get("digest") or "")
             key = (worker_host(worker), dst, digest)

@@ -301,6 +301,11 @@ def parse_template_parameters_with_unknown(
             repeatable_defaults[str(name)] = list(default)
         elif "default" in spec:
             kwargs["default"] = spec["default"]
+        choices = spec.get("choices")
+        if choices is not None:
+            if not isinstance(choices, list) or not choices:
+                raise SystemExit(f"{template_name}: parameter {name} choices must be a non-empty list")
+            kwargs["choices"] = choices
         if value_type == "int":
             kwargs["type"] = int
         elif value_type == "float":
@@ -429,14 +434,25 @@ def materialize_template_inputs(template: dict[str, Any], manifest: dict[str, An
     materialized = []
     seen: set[str] = set()
     for item in inputs:
-        worker_path = str(item.get("path") or "")
-        local_path = expand_path(worker_path)
-        if not local_path.is_file():
-            raise SystemExit(f"template input does not exist: {worker_path}")
-        if worker_path in seen:
+        source_path = str(item.get("source") or item.get("path") or "")
+        worker_path = str(item.get("path") or source_path)
+        local_path = expand_path(source_path)
+        if item.get("tree") == "directory":
+            if not local_path.is_dir():
+                raise SystemExit(f"template input directory does not exist: {source_path}")
+            record = {**item, "source": source_path, "path": worker_path}
+        elif local_path.is_file():
+            record = {
+                **item,
+                **file_record(local_path),
+                "source": source_path,
+                "path": worker_path,
+            }
+        else:
+            raise SystemExit(f"template input does not exist: {source_path}")
+        if source_path in seen:
             continue
-        seen.add(worker_path)
-        record = {**item, **file_record(local_path), "path": worker_path}
+        seen.add(source_path)
         materialized.append(record)
     requirements["inputs"] = materialized
 
@@ -961,11 +977,10 @@ def cmd_template_run(args: argparse.Namespace) -> int:
     manifest = expand_template(template_name, path, template, params)
     if bool(template.get("materialize_inputs", False)):
         materialize_template_inputs(template, manifest, params)
-    if inventory_info is not None:
-        finalizer = manifest.get("finalize")
-        if isinstance(finalizer, dict):
-            finalizer["replace"] = bool(run_options.replace)
-        output = expand_path(str(params["output"]))
+    finalizer = manifest.get("finalize")
+    if isinstance(finalizer, dict) and finalizer.get("type") == "bullet-labels":
+        finalizer["replace"] = bool(run_options.replace)
+        output = expand_path(str(finalizer.get("output") or ""))
         if output.exists() and not run_options.replace:
             raise SystemExit(f"{output}: exists; pass --replace to overwrite")
     comment = clean_manifest_text(run_options.comment, label="--comment")

@@ -202,6 +202,20 @@ verified on every selected worker. Engine executables are not copied between
 platforms; `enyo_<commit>` engines are built and deployed locally when missing,
 using the same worker-local mechanism as SPRT.
 
+Convert a self-play PGN directory into distributed BulletFormat shards and
+concatenate them into one dataset:
+
+```sh
+forge run selfplay-to-bullet \
+  --pgn-dir ~/path/to/selfplay/outputs \
+  --output ~/assets/data/selfplay.bullet \
+  --shards 64
+```
+
+The template pins and synchronizes the NNUE and Bullet repositories, installs
+the Python dependency, and synchronizes the PGN directory once per worker host
+before tasks start.
+
 ### Distributed SPSA (“Simultaneous Perturbation Stochastic Approximation.”)
 
 `spsa` runs exact fixed-game matches rather than SPRTs. One long-lived Forge

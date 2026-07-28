@@ -16017,6 +16017,45 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
             self.assertEqual(source.read_text(encoding="utf-8"), (worker_root / "source.jsonl").read_text(encoding="utf-8"))
             self.assertIn("localhost/worker: synced 1 input file(s)", stdout.getvalue())
 
+    def test_sync_inputs_copies_declared_directory_tree(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "coordinator" / "pgns"
+            target = root / "worker" / "pgns"
+            source.mkdir(parents=True)
+            (source / "a.pgn").write_text("[Event \"a\"]\n", encoding="utf-8")
+            (source / "nested").mkdir()
+            (source / "nested" / "b.pgn").write_text("[Event \"b\"]\n", encoding="utf-8")
+            manifest = {
+                "schema": "forge.task.v1",
+                "name": "directory-input-sync",
+                "requirements": {
+                    "inputs": [{
+                        "name": "PGN corpus",
+                        "source": str(source),
+                        "path": str(target),
+                        "tree": "directory",
+                    }],
+                },
+                "tasks": [],
+            }
+            worker = {
+                "host": "localhost",
+                "profile": "worker",
+                "local": True,
+            }
+
+            self.assertEqual(1, forge.sync_inputs_to_worker(worker, manifest))
+            self.assertEqual(
+                "[Event \"a\"]\n",
+                (target / "a.pgn").read_text(encoding="utf-8"),
+            )
+            self.assertEqual(
+                "[Event \"b\"]\n",
+                (target / "nested" / "b.pgn").read_text(encoding="utf-8"),
+            )
+            self.assertEqual(0, forge.sync_inputs_to_worker(worker, manifest))
+
     def test_sync_inputs_skips_matching_remote_input(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

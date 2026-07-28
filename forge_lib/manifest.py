@@ -341,7 +341,10 @@ def check_requirements(manifest: dict[str, Any]) -> None:
         check_command_requirement(item)
 
     for item in input_requirement_items(manifest):
-        path = expand_path(str(item.get("path", "")))
+        source = expand_path(str(item.get("source") or ""))
+        path = source if item.get("source") and source.exists() else expand_path(
+            str(item.get("path", ""))
+        )
         if not path.exists():
             raise SystemExit(f"required input missing: {path}")
         expected_sha = str(item.get("sha256") or "").strip()
