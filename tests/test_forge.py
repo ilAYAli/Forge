@@ -3765,6 +3765,15 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
         self.assertIn("-pgnout file=\"{output_dir}/selfplay_0000.pgn\" notation=uci", command)
         self.assertIn("Games:", manifest["tasks"][0]["progress"]["log_regex"])
 
+    def test_selfplay_conversion_templates_define_throughput_graph(self) -> None:
+        for name in ("selfplay-to-bullet", "selfplay-to-sf-oracle"):
+            template = forge.load_template(ROOT / "templates" / f"{name}.template.json")
+            series = template["task"]["progress"]["series"]
+
+            self.assertEqual("pgns/s", series[0]["name"])
+            self.assertEqual("rate", series[0]["field"])
+            self.assertEqual("done", series[0]["x"])
+
     def test_selfplay_live_progress_prefers_completed_pgn_games_over_zero_log(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
