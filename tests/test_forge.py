@@ -16065,6 +16065,28 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
             )
             self.assertEqual(0, forge.sync_inputs_to_worker(worker, manifest))
 
+    def test_copy_dir_to_remote_worker_expands_tilde_before_rsync(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "source"
+            source.mkdir()
+            worker = {"host": "remote", "profile": "worker", "local": False}
+
+            with (
+                mock.patch(
+                    "forge_lib.workers.run_worker_shell",
+                    return_value=subprocess.CompletedProcess(["mkdir"], 0, stdout="", stderr=""),
+                ) as run_shell,
+                mock.patch(
+                    "forge_lib.workers.run_process_command_with_retries",
+                    return_value=subprocess.CompletedProcess(["rsync"], 0, stdout="", stderr=""),
+                ),
+            ):
+                forge.copy_dir_to_worker(worker, source, "~/.cache/forge/inputs/tree")
+
+            mkdir_script = run_shell.call_args.args[1]
+            self.assertIn(".expanduser().mkdir(parents=True, exist_ok=True)", mkdir_script)
+            self.assertNotIn("mkdir -p '~", mkdir_script)
+
     def test_sync_inputs_skips_matching_remote_input(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

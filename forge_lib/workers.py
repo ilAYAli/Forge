@@ -629,9 +629,13 @@ def copy_dir_to_worker(
         target = expand_path(dst)
         shutil.copytree(src, target, dirs_exist_ok=True)
         return
+    mkdir_code = (
+        "from pathlib import Path; "
+        f"Path({json.dumps(dst)}).expanduser().mkdir(parents=True, exist_ok=True)"
+    )
     mkdir = run_worker_shell(
         worker,
-        "mkdir -p " + shlex.quote(dst),
+        shell_join([worker_python(worker), "-c", mkdir_code]),
         timeout=timeout,
         tracker=tracker,
         retries=retries,
