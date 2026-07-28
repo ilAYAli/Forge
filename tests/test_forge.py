@@ -3983,6 +3983,70 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
 
         self.assertEqual({"unit": "pgns", "start": 0, "count": 1}, task["adaptive_range"])
 
+    def test_conversion_live_rechunk_splits_existing_pending_range(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            pgn_dir = root / "pgns"
+            pgn_dir.mkdir()
+            for index, size in enumerate((100, 100, 1000)):
+                (pgn_dir / f"{index:02d}.pgn").write_bytes(b"x" * size)
+            (root / "state").mkdir()
+            (root / "claims").mkdir()
+            template_path = ROOT / "templates" / "selfplay-to-sf-oracle.template.json"
+            template = forge.load_template(template_path)
+            params = forge.parse_template_parameters(
+                "selfplay-to-sf-oracle",
+                template,
+                [
+                    "--pgn-dir", str(pgn_dir),
+                    "--output", str(root / "output.bullet"),
+                    "--shards", "1",
+                ],
+            )
+            manifest = forge.expand_template(
+                "selfplay-to-sf-oracle",
+                template_path,
+                template,
+                params,
+            )
+            manifest.update({
+                "state_dir": str(root / "state"),
+                "claim_dir": str(root / "claims"),
+                "vars": {"output_dir": str(root / "outputs")},
+            })
+            manifest_path = root / "manifest.json"
+            forge.write_json(manifest_path, manifest)
+
+            with mock.patch(
+                "forge_lib.chunking.adaptive_worker_cached_throughput",
+                return_value=1.0,
+            ):
+                claimed = forge.claim_task(
+                    manifest,
+                    manifest_path=manifest_path,
+                    worker="worker",
+                    worker_id="worker#1",
+                    profile=None,
+                    lease_seconds=600,
+                    retry_failed=False,
+                )
+
+            updated = forge.load_manifest(manifest_path)
+            claimed_task = next(
+                task for task in updated["tasks"] if task["id"] == claimed["task"]
+            )
+            ranges = sorted(
+                (
+                    int(task["adaptive_range"]["start"]),
+                    int(task["adaptive_range"]["count"]),
+                    task.get("claim_worker"),
+                )
+                for task in updated["tasks"]
+            )
+
+        self.assertEqual({"unit": "pgns", "start": 0, "count": 2}, claimed_task["adaptive_range"])
+        self.assertEqual([(0, 2, "worker"), (2, 1, None)], ranges)
+
     def test_conversion_calibration_records_input_bytes_per_second(self) -> None:
         from forge_lib import chunking
 

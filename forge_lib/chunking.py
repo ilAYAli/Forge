@@ -610,12 +610,36 @@ def adaptive_rechunk_pending_tasks(
     def work_units(task: dict[str, Any]) -> int:
         return task_work[str(task.get("id") or id(task))]
 
+    weighted_split_count: int | None = None
+    if weighted_work and ranged_pending:
+        first_range = pending[0]["adaptive_range"]
+        first_start = int(first_range["start"])
+        first_count = adaptive_task_units(pending[0], unit)
+        weights = adaptive_file_weights(manifest, template_data)
+        if weights is not None and first_count > 1:
+            cumulative = 0
+            best: tuple[int, int] | None = None
+            for count in range(1, first_count + 1):
+                index = first_start + count - 1
+                cumulative += weights[index] if index < len(weights) else 1
+                score = abs(cumulative - estimated_games)
+                if best is None or score < best[0]:
+                    best = (score, count)
+                if cumulative >= estimated_games:
+                    break
+            if best is not None and best[1] < first_count:
+                weighted_split_count = best[1]
+
     tolerance = max(2, estimated_games // 4)
     lower = max(1, estimated_games - tolerance)
     upper = estimated_games + tolerance
     current_max_games = max((work_units(task) for task in pending), default=0)
     first_units = work_units(pending[0])
-    if not reassign_foreign and lower <= first_units <= upper:
+    if (
+        weighted_split_count is None
+        and not reassign_foreign
+        and lower <= first_units <= upper
+    ):
         return None
 
     chunks_per_slot = max(1, int(chunking.get("rechunk_chunks_per_slot", 2)))
@@ -629,38 +653,50 @@ def adaptive_rechunk_pending_tasks(
         )
     )
     desired_units = estimated_games * desired_chunks
-    selected_units = 0
-    best_any: tuple[tuple[float, int], int, int] | None = None
-    best_batch: tuple[tuple[float, int], int, int] | None = None
-    for count, task in enumerate(pending, start=1):
-        selected_units += work_units(task)
-        if selected_units <= 0:
-            continue
-        shards = 1 if weighted_work else max(1, int(round(selected_units / estimated_games)))
-        average = selected_units / shards
-        score = (abs(average - estimated_games) / estimated_games, count)
-        candidate = (score, count, shards)
-        if best_any is None or score < best_any[0]:
-            best_any = candidate
-        if shards >= desired_chunks and (best_batch is None or score < best_batch[0]):
-            best_batch = candidate
-        if score[0] == 0 and shards >= desired_chunks:
-            break
-        if (
-            count >= (4096 if weighted_work else 32)
-            and selected_units >= desired_units
-            and best_batch is not None
-        ):
-            break
-    best = best_batch or best_any
-    if best is None:
-        return None
-    _best_score, best_count, target_shards = best
-    if best_count <= 0 or target_shards <= 0:
-        return None
-    selected = pending[:best_count]
-    selected_work = sum(work_units(task) for task in selected)
-    selected_units = sum(adaptive_task_units(task, unit) for task in selected)
+    if weighted_split_count is not None:
+        selected = [pending[0]]
+        selected_units = weighted_split_count
+        selected_work = adaptive_task_work(
+            manifest,
+            pending[0],
+            unit,
+            template_data=template_data,
+            completed_units=selected_units,
+        )
+        target_shards = 1
+    else:
+        selected_work = 0
+        best_any: tuple[tuple[float, int], int, int] | None = None
+        best_batch: tuple[tuple[float, int], int, int] | None = None
+        for count, task in enumerate(pending, start=1):
+            selected_work += work_units(task)
+            if selected_work <= 0:
+                continue
+            shards = 1 if weighted_work else max(1, int(round(selected_work / estimated_games)))
+            average = selected_work / shards
+            score = (abs(average - estimated_games) / estimated_games, count)
+            candidate = (score, count, shards)
+            if best_any is None or score < best_any[0]:
+                best_any = candidate
+            if shards >= desired_chunks and (best_batch is None or score < best_batch[0]):
+                best_batch = candidate
+            if score[0] == 0 and shards >= desired_chunks:
+                break
+            if (
+                count >= (4096 if weighted_work else 32)
+                and selected_work >= desired_units
+                and best_batch is not None
+            ):
+                break
+        best = best_batch or best_any
+        if best is None:
+            return None
+        _best_score, best_count, target_shards = best
+        if best_count <= 0 or target_shards <= 0:
+            return None
+        selected = pending[:best_count]
+        selected_work = sum(work_units(task) for task in selected)
+        selected_units = sum(adaptive_task_units(task, unit) for task in selected)
 
     replan_params = {
         **params,
@@ -685,6 +721,29 @@ def adaptive_rechunk_pending_tasks(
     replanned_tasks = replanned.get("tasks")
     if not isinstance(replanned_tasks, list) or not replanned_tasks:
         return None
+    primary_task_count = len(replanned_tasks)
+    if weighted_split_count is not None:
+        original = selected[0]
+        original_units = adaptive_task_units(original, unit)
+        remainder_units = original_units - selected_units
+        remainder_start = int(original["adaptive_range"]["start"]) + selected_units
+        remainder_params = {
+            **params,
+            total_key: remainder_units,
+            count_key: 1,
+            "__forge_preserve_derived": [total_key],
+        }
+        if isinstance(start_key, str) and start_key:
+            remainder_params[start_key] = remainder_start
+        remainder = expand_template(
+            str(template_data.get("name") or manifest.get("kind") or "task"),
+            template_path,
+            template_data,
+            remainder_params,
+        ).get("tasks")
+        if not isinstance(remainder, list) or not remainder:
+            return None
+        replanned_tasks = [*replanned_tasks, *remainder]
 
     kept_tasks = [
         task
@@ -706,7 +765,7 @@ def adaptive_rechunk_pending_tasks(
         new_id = f"{prefix}_{new_index:0{width}d}"
         repl["id"] = new_id
         repl["index"] = new_index
-        if worker_name:
+        if worker_name and offset < primary_task_count:
             repl["claim_worker"] = worker_name
         if isinstance(repl.get("command"), str):
             repl["command"] = repl["command"].replace(old_id, new_id)
