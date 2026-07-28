@@ -3811,7 +3811,10 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
 
         self.assertIsNotNone(graph)
         self.assertEqual("pgns/s", graph["series"][0]["name"])
-        self.assertEqual([0.5, 0.25], [point["y"] for point in graph["series"][0]["points"]])
+        self.assertEqual(2, graph["x_total"])
+        self.assertEqual("tasks", graph["x_unit"])
+        self.assertAlmostEqual(0.7, graph["series"][0]["points"][0]["x"])
+        self.assertAlmostEqual(0.75, graph["series"][0]["points"][0]["y"])
 
     def test_selfplay_live_progress_prefers_completed_pgn_games_over_zero_log(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

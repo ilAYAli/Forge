@@ -2953,8 +2953,11 @@ def run_progress_graph_from_rows(
     is_sprt = kind == "sprt"
     is_labeling = kind == "label"
     is_selfplay = kind == "selfplay"
+    is_conversion = kind in {"selfplay-to-bullet", "selfplay-to-sf-oracle"}
     label_x = 0.0
     label_worker_rates: dict[str, float] = {}
+    conversion_x = 0.0
+    conversion_rates: dict[str, float] = {}
     selfplay_rows: list[dict[str, Any]] = []
     x_unit = ""
     for row in rows:
@@ -2975,6 +2978,11 @@ def run_progress_graph_from_rows(
         fields = data.get("fields")
         fields = normalize_progress_fields(fields if isinstance(fields, dict) else {})
         graph_data = dict(data)
+        if is_conversion:
+            done = progress_numeric_value("done", graph_data, fields)
+            total = progress_numeric_value("total", graph_data, fields)
+            if done is not None and total is not None and total > 0:
+                conversion_x += min(1.0, max(0.0, done / total))
         config_progress = progress_config_unit_total(task)
         if config_progress is not None and isinstance(data.get("done"), int):
             unit, task_total = config_progress
@@ -3007,6 +3015,10 @@ def run_progress_graph_from_rows(
             if x is None or y is None:
                 continue
             field_name = str(spec["field"]).lower()
+            if is_conversion and field_name == "rate":
+                if row.get("state") == "running" and y > 0:
+                    conversion_rates[spec["name"]] = conversion_rates.get(spec["name"], 0.0) + y
+                continue
             if is_selfplay and field_name in {"wins", "losses", "draws"}:
                 selfplay_values[spec["name"]] = y
                 if selfplay_done is None:
@@ -3040,6 +3052,11 @@ def run_progress_graph_from_rows(
         points_by_name["total"] = [{"x": label_x, "y": sum(label_worker_rates.values())}]
         for worker, rate in sorted(label_worker_rates.items()):
             points_by_name[worker] = [{"x": label_x, "y": rate}]
+
+    if is_conversion and conversion_x > 0:
+        x_unit = "tasks"
+        for name, rate in conversion_rates.items():
+            points_by_name[name] = [{"x": conversion_x, "y": rate}]
 
     if is_selfplay and selfplay_rows:
         totals: dict[str, float] = {}
@@ -3080,7 +3097,7 @@ def run_progress_graph_from_rows(
     series = []
     for name, points in points_by_name.items():
         points.sort(key=lambda point: point["x"])
-        if len(points) >= 2 or (is_labeling and points) or (is_selfplay and name == "games/s" and points) or (name.lower() == "ci" and points):
+        if len(points) >= 2 or (is_labeling and points) or (is_conversion and points) or (is_selfplay and name == "games/s" and points) or (name.lower() == "ci" and points):
             series.append(graph_series_with_options(name, points, options_by_name.get(name)))
     if not series:
         return None
@@ -3089,6 +3106,8 @@ def run_progress_graph_from_rows(
         "x_unit": x_unit,
         "series": series,
     }
+    if is_conversion:
+        result["x_total"] = len(manifest["tasks"])
     if is_selfplay and selfplay_rows:
         wins = int(totals.get("wins", 0.0))
         draws = int(totals.get("draws", 0.0))
