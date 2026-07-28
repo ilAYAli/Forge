@@ -133,11 +133,12 @@
       "unit": "pgns",
       "log_regex": "\\[(?P<done>\\d+)/(?P<total>\\d+)\\].*?\\+(?P<output>\\d+) rows",
       "output_unit": "positions",
+      "output_mode": "sum",
       "series": [
         {
-          "name": "pgns/s",
+          "name": "positions/s",
           "field": "rate",
-          "x": "done",
+          "x": "output",
           "scale": "linear",
           "smooth": true
         }

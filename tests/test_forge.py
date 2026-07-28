@@ -3770,15 +3770,16 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
             template = forge.load_template(ROOT / "templates" / f"{name}.template.json")
             series = template["task"]["progress"]["series"]
 
-            self.assertEqual("pgns/s", series[0]["name"])
+            self.assertEqual("sum", template["task"]["progress"]["output_mode"])
+            self.assertEqual("positions/s", series[0]["name"])
             self.assertEqual("rate", series[0]["field"])
-            self.assertEqual("done", series[0]["x"])
+            self.assertEqual("output", series[0]["x"])
 
     def test_run_progress_graph_accepts_reserved_series_without_custom_fields(self) -> None:
         progress = {
             "unit": "pgns",
             "total": 10,
-            "series": [{"name": "pgns/s", "field": "rate", "x": "done"}],
+            "series": [{"name": "positions/s", "field": "rate", "x": "output"}],
         }
         manifest = {
             "schema": "forge.task.v1",
@@ -3793,12 +3794,18 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
             {
                 "id": "task_0",
                 "state": "running",
-                "progress_data": {"kind": "metadata", "done": 4, "total": 10, "rate": 0.5},
+                "progress_data": {
+                    "kind": "metadata", "done": 4, "total": 10,
+                    "output": 400, "rate": 0.5,
+                },
             },
             {
                 "id": "task_1",
                 "state": "running",
-                "progress_data": {"kind": "metadata", "done": 3, "total": 10, "rate": 0.25},
+                "progress_data": {
+                    "kind": "metadata", "done": 3, "total": 10,
+                    "output": 300, "rate": 0.25,
+                },
             },
         ]
 
@@ -3810,11 +3817,31 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
         )
 
         self.assertIsNotNone(graph)
-        self.assertEqual("pgns/s", graph["series"][0]["name"])
-        self.assertEqual(2, graph["x_total"])
-        self.assertEqual("tasks", graph["x_unit"])
-        self.assertAlmostEqual(0.7, graph["series"][0]["points"][0]["x"])
-        self.assertAlmostEqual(0.75, graph["series"][0]["points"][0]["y"])
+        self.assertEqual("positions/s", graph["series"][0]["name"])
+        self.assertEqual(2000, graph["x_total"])
+        self.assertEqual("positions", graph["x_unit"])
+        self.assertAlmostEqual(700, graph["series"][0]["points"][0]["x"])
+        self.assertAlmostEqual(75.0, graph["series"][0]["points"][0]["y"])
+
+    def test_progress_output_sum_tracks_current_attempt(self) -> None:
+        config = {
+            "unit": "pgns",
+            "output_unit": "positions",
+            "output_mode": "sum",
+            "log_regex": r"\[(?P<done>\d+)/(?P<total>\d+)\].*?\+(?P<output>\d+) rows",
+        }
+        text = "\n".join([
+            "[1/3] old.pgn -> +100 rows",
+            "[2/3] old2.pgn -> +200 rows",
+            "[1/3] new.pgn -> +10 rows",
+            "[2/3] new2.pgn -> +20 rows",
+        ])
+
+        progress = forge.parse_task_progress_text(text, config, eta_epoch=1.0)
+
+        self.assertIsNotNone(progress)
+        self.assertEqual(2, progress["done"])
+        self.assertEqual(30, progress["output"])
 
     def test_selfplay_live_progress_prefers_completed_pgn_games_over_zero_log(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

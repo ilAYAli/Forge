@@ -2846,7 +2846,7 @@ def progress_series_specs(config: dict[str, Any], *, kind: str | None = None) ->
     return specs
 
 def progress_numeric_value(name: str, data: dict[str, Any], fields: dict[str, str]) -> float | None:
-    if name in {"done", "total", "output", "rate", "global_done", "global_total"}:
+    if name in {"done", "total", "output", "output_rate", "rate", "global_done", "global_total"}:
         value = data.get(name)
         if isinstance(value, (int, float)) and math.isfinite(float(value)):
             return float(value)
@@ -2956,8 +2956,8 @@ def run_progress_graph_from_rows(
     is_conversion = kind in {"selfplay-to-bullet", "selfplay-to-sf-oracle"}
     label_x = 0.0
     label_worker_rates: dict[str, float] = {}
-    conversion_x = 0.0
-    conversion_rates: dict[str, float] = {}
+    conversion_rows: list[dict[str, float | str]] = []
+    conversion_series_names: set[str] = set()
     selfplay_rows: list[dict[str, Any]] = []
     x_unit = ""
     for row in rows:
@@ -2981,8 +2981,16 @@ def run_progress_graph_from_rows(
         if is_conversion:
             done = progress_numeric_value("done", graph_data, fields)
             total = progress_numeric_value("total", graph_data, fields)
-            if done is not None and total is not None and total > 0:
-                conversion_x += min(1.0, max(0.0, done / total))
+            output = progress_numeric_value("output", graph_data, fields)
+            rate = progress_numeric_value("rate", graph_data, fields)
+            if done is not None and done > 0:
+                conversion_rows.append({
+                    "state": str(row.get("state") or ""),
+                    "done": done,
+                    "total": total or 0.0,
+                    "output": output or 0.0,
+                    "rate": rate or 0.0,
+                })
         config_progress = progress_config_unit_total(task)
         if config_progress is not None and isinstance(data.get("done"), int):
             unit, task_total = config_progress
@@ -3015,9 +3023,8 @@ def run_progress_graph_from_rows(
             if x is None or y is None:
                 continue
             field_name = str(spec["field"]).lower()
-            if is_conversion and field_name == "rate":
-                if row.get("state") == "running" and y > 0:
-                    conversion_rates[spec["name"]] = conversion_rates.get(spec["name"], 0.0) + y
+            if is_conversion and field_name in {"output_rate", "rate"}:
+                conversion_series_names.add(spec["name"])
                 continue
             if is_selfplay and field_name in {"wins", "losses", "draws"}:
                 selfplay_values[spec["name"]] = y
@@ -3053,10 +3060,35 @@ def run_progress_graph_from_rows(
         for worker, rate in sorted(label_worker_rates.items()):
             points_by_name[worker] = [{"x": label_x, "y": rate}]
 
-    if is_conversion and conversion_x > 0:
-        x_unit = "tasks"
-        for name, rate in conversion_rates.items():
-            points_by_name[name] = [{"x": conversion_x, "y": rate}]
+    conversion_total_estimate: int | None = None
+    if is_conversion and conversion_rows:
+        completed = [item for item in conversion_rows if item["state"] == "done" and item["output"] > 0]
+        observed = completed or [item for item in conversion_rows if item["output"] > 0]
+        observed_done = sum(float(item["done"]) for item in observed)
+        observed_output = sum(float(item["output"]) for item in observed)
+        positions_per_pgn = observed_output / observed_done if observed_done > 0 else 0.0
+        completed_output = sum(float(item["output"]) for item in completed)
+        running_done = sum(
+            float(item["done"]) for item in conversion_rows if item["state"] == "running"
+        )
+        conversion_x = completed_output + positions_per_pgn * running_done
+        aggregate_pgn_rate = sum(
+            float(item["rate"]) for item in conversion_rows if item["state"] == "running"
+        )
+        known_totals = [float(item["total"]) for item in conversion_rows if item["total"] > 0]
+        average_total = sum(known_totals) / len(known_totals) if known_totals else 0.0
+        total_pgns = average_total * len(manifest["tasks"])
+        if positions_per_pgn > 0 and total_pgns > 0:
+            conversion_total_estimate = max(
+                int(conversion_x),
+                int(round(positions_per_pgn * total_pgns)),
+            )
+        x_unit = "positions"
+        for name in conversion_series_names:
+            points_by_name[name] = [{
+                "x": conversion_x,
+                "y": aggregate_pgn_rate * positions_per_pgn,
+            }]
 
     if is_selfplay and selfplay_rows:
         totals: dict[str, float] = {}
@@ -3107,7 +3139,8 @@ def run_progress_graph_from_rows(
         "series": series,
     }
     if is_conversion:
-        result["x_total"] = len(manifest["tasks"])
+        if conversion_total_estimate is not None:
+            result["x_total"] = conversion_total_estimate
     if is_selfplay and selfplay_rows:
         wins = int(totals.get("wins", 0.0))
         draws = int(totals.get("draws", 0.0))
@@ -3441,6 +3474,13 @@ def run_progress_history_graph(
     current_graph: dict[str, Any] | None,
 ) -> dict[str, Any] | None:
     history = append_progress_history(manifest, progress_graph_snapshot(current_graph))
+    kind = str(manifest_metadata(manifest).get("kind") or manifest.get("kind") or "")
+    if (
+        current_graph is not None
+        and kind.lower() in {"selfplay-to-bullet", "selfplay-to-sf-oracle"}
+        and len(history) < 2
+    ):
+        return current_graph
     if all(task_complete(manifest, task) for task in manifest.get("tasks", [])):
         if current_graph is not None and (
             not isinstance(current_graph.get("selfplay"), dict)
@@ -3454,12 +3494,12 @@ def run_progress_history_graph(
         return progress_graph_from_history(
             history,
             current_graph,
-            kind=str(manifest_metadata(manifest).get("kind") or manifest.get("kind") or ""),
+            kind=kind,
         )
     return progress_graph_from_history(
         history,
         current_graph,
-        kind=str(manifest_metadata(manifest).get("kind") or manifest.get("kind") or ""),
+        kind=kind,
     )
 
 def sprt_summary_rows(summary: dict[str, Any]) -> list[dict[str, Any]]:
@@ -3621,7 +3661,7 @@ def sprt_aggregate_decision(summary: dict[str, Any]) -> dict[str, Any] | None:
         "games": int(stats["weight_total"]),
     }
 
-PROGRESS_RESERVED_FIELDS = {"done", "total", "output", "rate"}
+PROGRESS_RESERVED_FIELDS = {"done", "total", "output", "output_rate", "rate"}
 
 def normalize_progress_fields(raw: Any) -> dict[str, str]:
     if not isinstance(raw, dict):
@@ -3760,10 +3800,25 @@ def parse_task_progress_text(text: str, config: Any, *, eta_epoch: float) -> dic
             progress_re = re.compile(str(config["log_regex"]))
         except re.error:
             return None
-        for line in reversed(text.splitlines()):
+        matched_lines: list[tuple[str, re.Match[str]]] = []
+        for line in text.splitlines():
             match = progress_re.search(line)
-            if not match:
-                continue
+            if match:
+                matched_lines.append((line, match))
+        cumulative_output: int | None = None
+        if config.get("output_mode") == "sum":
+            cumulative_output = 0
+            previous_done: int | None = None
+            for _line, match in matched_lines:
+                matched_done = parse_int(match.groupdict().get("done"))
+                matched_output = parse_int(match.groupdict().get("output"))
+                if matched_done is not None and previous_done is not None and matched_done <= previous_done:
+                    cumulative_output = 0
+                if matched_output is not None:
+                    cumulative_output += matched_output
+                if matched_done is not None:
+                    previous_done = matched_done
+        for line, match in reversed(matched_lines):
             done = parse_int(match.groupdict().get("done"))
             if done is None:
                 continue
@@ -3772,6 +3827,8 @@ def parse_task_progress_text(text: str, config: Any, *, eta_epoch: float) -> dic
                 total_value = config.get("total")
                 total = total_value if isinstance(total_value, int) else parse_int(str(total_value)) if total_value is not None else None
             output = parse_int(match.groupdict().get("output"))
+            if cumulative_output is not None:
+                output = cumulative_output
             rate = parse_float(match.groupdict().get("rate"))
             data: dict[str, Any] = {
                 "done": done,
@@ -3872,6 +3929,7 @@ def task_heartbeat_progress_data(manifest: dict[str, Any], task: dict[str, Any])
 
 def status_summary(manifest: dict[str, Any], *, lease_seconds: int) -> dict[str, Any]:
     clear_state_diagnostics()
+    manifest_kind = str(manifest_metadata(manifest).get("kind") or "").lower()
     queue_payload = read_state_json(queue_request_path(manifest))
     launch_payload = read_state_json(launch_request_path(manifest))
     stop_payload = read_state_json(stop_request_path(manifest))
@@ -3960,9 +4018,14 @@ def status_summary(manifest: dict[str, Any], *, lease_seconds: int) -> dict[str,
             progress_data = task_heartbeat_progress_data(manifest, task)
             if progress_data is None and state in {"running", "stale"}:
                 progress_data = task_log_progress_data(manifest, task)
+            elif manifest_kind in {"selfplay-to-bullet", "selfplay-to-sf-oracle"}:
+                progress_data = task_log_progress_data(manifest, task) or progress_data
         running_payload = task_running_payload(manifest, task) if state in {"running", "claimed", "stale"} else None
         if isinstance(progress_config, dict):
             progress_data = infer_progress_rate(progress_data, running_payload)
+        output_rate = progress_output_rate(progress_data, running_elapsed_seconds(running_payload))
+        if isinstance(progress_data, dict) and output_rate is not None:
+            progress_data = {**progress_data, "output_rate": output_rate}
         if config_progress is not None and state == "done":
             unit, task_total = config_progress
             done_payload = task_done_payload(manifest, task)
