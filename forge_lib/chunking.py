@@ -567,7 +567,13 @@ def adaptive_rechunk_pending_tasks(
             repl["label"] = repl["label"].replace(old_id, new_id)
         outputs = repl.get("outputs")
         if isinstance(outputs, list):
-            repl["outputs"] = [str(path).replace(old_id, new_id) for path in outputs]
+            output_dir = str(
+                manifest.get("vars", {}).get("output_dir") or "{output_dir}"
+            )
+            repl["outputs"] = [
+                str(path).replace(old_id, new_id).replace("{output_dir}", output_dir)
+                for path in outputs
+            ]
         replacement_tasks.append(repl)
 
     if not replacement_tasks:

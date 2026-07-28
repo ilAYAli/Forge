@@ -154,13 +154,32 @@ def finalize_labeling(manifest_path: Path, manifest: dict[str, Any]) -> dict[str
     if output.exists() and not bool(finalizer.get("replace", False)):
         raise ValueError(f"{output}: exists; pass --replace to overwrite")
 
-    tasks = sorted(manifest["tasks"], key=lambda task: int(task.get("index", 0)))
+    ranged = all(
+        isinstance(task.get("adaptive_range"), dict)
+        for task in manifest["tasks"]
+    )
+    tasks = sorted(
+        manifest["tasks"],
+        key=lambda task: int(
+            task["adaptive_range"].get("start", 0)
+            if ranged
+            else task.get("index", 0)
+        ),
+    )
     totals: dict[str, int] = {}
     expected_bytes = 0
     expected_positions = 0
     shard_rows = []
+    expected_start = 0
     for expected_index, task in enumerate(tasks):
-        if int(task.get("index", -1)) != expected_index:
+        adaptive_range = task.get("adaptive_range")
+        if ranged:
+            start = int(adaptive_range.get("start", -1))
+            count = int(adaptive_range.get("count", 0))
+            if start != expected_start or count <= 0:
+                raise ValueError("labeling adaptive ranges are not contiguous")
+            expected_start += count
+        elif int(task.get("index", -1)) != expected_index:
             raise ValueError("labeling shard indices are not contiguous")
         outputs = task_outputs(task)
         if len(outputs) != 2:
@@ -175,7 +194,7 @@ def finalize_labeling(manifest_path: Path, manifest: dict[str, Any]) -> dict[str
         written = int(stats.get("written", -1))
         if written != size // RECORD_BYTES:
             raise ValueError(f"{task['id']}: written count does not match bytes")
-        if int(stats.get("shard_index", -1)) != expected_index:
+        if not ranged and int(stats.get("shard_index", -1)) != expected_index:
             raise ValueError(f"{task['id']}: stats shard index mismatch")
         expected_bytes += size
         expected_positions += written
@@ -183,7 +202,10 @@ def finalize_labeling(manifest_path: Path, manifest: dict[str, Any]) -> dict[str
             if key in {"read", "selected", "written"} or key.startswith("skipped_"):
                 if isinstance(value, int):
                     totals[key] = totals.get(key, 0) + value
-        shard_rows.append({"index": expected_index, "bytes": size, "written": written})
+        shard_row = {"index": expected_index, "bytes": size, "written": written}
+        if ranged:
+            shard_row.update({"start": start, "count": count})
+        shard_rows.append(shard_row)
 
     temp = output.with_name(f".{output.name}.partial.{os.getpid()}")
     temp.unlink(missing_ok=True)

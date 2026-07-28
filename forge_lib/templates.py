@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import shlex
 import tempfile
 
@@ -658,15 +659,23 @@ def derived_template_parameters(template: dict[str, Any], params: dict[str, Any]
         if not isinstance(spec, dict):
             continue
         derive = spec.get("derive")
-        if not isinstance(derive, dict) or derive.get("type") != "glob-count":
+        if not isinstance(derive, dict):
             continue
         if str(name) in preserve:
             continue
+        derive_type = str(derive.get("type") or "")
         source_name = str(derive.get("from") or "").strip()
-        pattern = str(derive.get("pattern") or "*")
         source = result.get(source_name)
         if not isinstance(source, str):
             raise SystemExit(f"{name}: derived source parameter {source_name!r} is missing")
+        if derive_type == "path-key":
+            resolved = str(expand_path(source).resolve())
+            digest = hashlib.sha256(resolved.encode("utf-8")).hexdigest()[:16]
+            result[str(name)] = f"{Path(resolved).name}-{digest}"
+            continue
+        if derive_type != "glob-count":
+            continue
+        pattern = str(derive.get("pattern") or "*")
         directory = expand_path(source)
         if not directory.is_dir():
             raise SystemExit(f"{name}: derived source is not a directory: {directory}")

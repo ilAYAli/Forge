@@ -31,6 +31,13 @@
       "type": "int",
       "default": 0
     },
+    "pgn_cache_key": {
+      "default": "selfplay",
+      "derive": {
+        "type": "path-key",
+        "from": "pgn_dir"
+      }
+    },
     "nnue_repo": {
       "default": "~/code/cpp/chess/nnue",
       "worker_path": true,
@@ -124,7 +131,7 @@
       {
         "name": "Stockfish-net evaluator",
         "path": "{sf_engine}",
-        "command": "engine={sf_engine_shell}; net=~/.cache/forge/inputs/sf-net/{timestamp}-{sf_net_stem}; printf '%s\\n' uci \"setoption name nnue_file value $net\" isready 'position startpos' eval quit | \"$engine\"",
+        "command": "engine={sf_engine_shell}; net=~/.cache/forge/inputs/sf-net/{sf_net_stem}; printf '%s\\n' uci \"setoption name nnue_file value $net\" isready 'position startpos' eval quit | \"$engine\"",
         "contains": "eval ",
         "timeout_s": 30
       }
@@ -133,13 +140,13 @@
       {
         "name": "self-play PGN directory",
         "source": "{pgn_dir}",
-        "path": "~/.cache/forge/inputs/selfplay/{timestamp}-{pgn_dir_stem}",
+        "path": "~/.cache/forge/inputs/selfplay/{pgn_cache_key}",
         "tree": "directory"
       },
       {
         "name": "Stockfish NNUE net",
         "source": "{sf_net}",
-        "path": "~/.cache/forge/inputs/sf-net/{timestamp}-{sf_net_stem}"
+        "path": "~/.cache/forge/inputs/sf-net/{sf_net_stem}"
       }
     ]
   },
@@ -155,7 +162,7 @@
       "{output_dir}/{task_name}.bullet",
       "{output_dir}/{task_name}.stats.json"
     ],
-    "command": ".venv/bin/python3 tools/bullet/selfplay_to_bullet_sf_oracle.py --pgn-dir ~/.cache/forge/inputs/selfplay/{timestamp}-{pgn_dir_stem} --output {output_dir}/{task_name}.bullet --stats {output_dir}/{task_name}.stats.json --shard-range {shard_start}/{shard} --skip-plies {skip_plies} --min-depth {min_depth} --max-abs-cp {max_abs_cp} --sf-engine {sf_engine_shell} --sf-net ~/.cache/forge/inputs/sf-net/{timestamp}-{sf_net_stem} --sf-hash {sf_hash} --bullet-manifest ~/.cache/forge/tools/bullet/d372d487aedfeb8bdc256b9f694dbcd41016bf82/Cargo.toml",
+    "command": ".venv/bin/python3 tools/bullet/selfplay_to_bullet_sf_oracle.py --pgn-dir ~/.cache/forge/inputs/selfplay/{pgn_cache_key} --output {output_dir}/{task_name}.bullet --stats {output_dir}/{task_name}.stats.json --shard-range {shard_start}/{shard} --skip-plies {skip_plies} --min-depth {min_depth} --max-abs-cp {max_abs_cp} --sf-engine {sf_engine_shell} --sf-net ~/.cache/forge/inputs/sf-net/{sf_net_stem} --sf-hash {sf_hash} --bullet-manifest ~/.cache/forge/tools/bullet/d372d487aedfeb8bdc256b9f694dbcd41016bf82/Cargo.toml",
     "progress": {
       "unit": "pgns",
       "log_regex": "\\[(?P<done>\\d+)/(?P<total>\\d+)\\].*?\\+(?P<output>\\d+) rows",

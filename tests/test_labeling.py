@@ -137,6 +137,31 @@ class LabelingFinalizationTests(unittest.TestCase):
             self.assertEqual(summary, json.loads((Path(tmp) / "dataset-summary.json").read_text()))
             self.assertEqual([], list(Path(tmp).glob(".dataset.bullet.partial.*")))
 
+    def test_merges_adaptive_ranges_in_source_order(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            manifest_path, manifest = self.make_run(Path(tmp))
+            tasks = manifest["tasks"]
+            tasks[0]["index"] = 20
+            tasks[0]["adaptive_range"] = {"unit": "pgns", "start": 0, "count": 2}
+            tasks[1]["index"] = 7
+            tasks[1]["adaptive_range"] = {"unit": "pgns", "start": 2, "count": 3}
+            tasks[2]["index"] = 99
+            tasks[2]["adaptive_range"] = {"unit": "pgns", "start": 5, "count": 1}
+            for task in tasks:
+                stats_path = Path(task["outputs"][1])
+                stats = json.loads(stats_path.read_text(encoding="utf-8"))
+                stats["shard_index"] = 0
+                stats_path.write_text(json.dumps(stats), encoding="utf-8")
+
+            summary = finalize_labeling(manifest_path, manifest)
+
+            assert summary is not None
+            self.assertEqual(b"a" * 32 + b"b" * 32 + b"c" * 32, Path(summary["output"]).read_bytes())
+            self.assertEqual(
+                [(0, 2), (2, 3), (5, 1)],
+                [(shard["start"], shard["count"]) for shard in summary["shards"]],
+            )
+
     def test_refuses_existing_output_without_replace(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             manifest_path, manifest = self.make_run(Path(tmp))

@@ -3800,6 +3800,12 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
                 template,
                 params,
             )
+            second_manifest = forge.expand_template(
+                "selfplay-to-sf-oracle",
+                template_path,
+                template,
+                params,
+            )
 
             self.assertEqual(
                 [
@@ -3810,6 +3816,9 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
                 [task["adaptive_range"] for task in manifest["tasks"]],
             )
             self.assertIn("--shard-range 4/3", manifest["tasks"][1]["command"])
+            input_path = manifest["requirements"]["inputs"][0]["path"]
+            self.assertEqual(input_path, second_manifest["requirements"]["inputs"][0]["path"])
+            self.assertNotIn(manifest["name"].rsplit("-", 1)[-1], input_path)
 
     def test_conversion_live_rechunk_preserves_contiguous_pgn_ranges(self) -> None:
         from forge_lib import chunking
@@ -3841,6 +3850,7 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
             )
             manifest["state_dir"] = str(root / "state")
             manifest["claim_dir"] = str(root / "claims")
+            manifest["vars"] = {"output_dir": str(root / "outputs")}
             manifest_path = root / "manifest.json"
             forge.write_json(manifest_path, manifest)
             with mock.patch(
@@ -3863,6 +3873,7 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
         self.assertEqual({"unit": "pgns", "start": 0, "count": 5}, task["adaptive_range"])
         self.assertEqual(5, task["progress"]["total"])
         self.assertIn("--shard-range 0/5", task["command"])
+        self.assertTrue(all(str(root / "outputs") in output for output in task["outputs"]))
 
     def test_run_progress_graph_accepts_reserved_series_without_custom_fields(self) -> None:
         progress = {
