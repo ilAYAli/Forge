@@ -8,8 +8,14 @@
   "materialize_inputs": true,
   "chunking": {
     "live_rechunk": true,
-    "initial_units": 25,
-    "min_chunks_per_slot": 2
+    "initial_units": 6,
+    "min_chunks_per_slot": 2,
+    "signature_parameters": [
+      "tc",
+      "threads",
+      "concurrency",
+      "restart"
+    ]
   },
   "parameters": {
     "chunk_time_seconds": {
@@ -61,7 +67,7 @@
       "aliases": [
         "shard_count"
       ],
-      "help": "Number of Forge shards; defaults to about 25 games each and at least two complete configured worker-slot waves"
+      "help": "Number of Forge shards; defaults to about 6 games each until this workload is calibrated and at least two complete configured worker-slot waves"
     },
     "concurrency": {
       "type": "int",

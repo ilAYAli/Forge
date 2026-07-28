@@ -4528,13 +4528,19 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
         }
         with tempfile.TemporaryDirectory() as tmp:
             cache_path = Path(tmp) / "chunk-history.json"
-            write_chunk_history(cache_path, *[
-                ({
+            entries = []
+            for name, (total_key, total, target_units) in cases.items():
+                template = forge.load_template(forge.template_path(name))
+                params = {total_key: total, "chunk_time_seconds": 300}
+                workload = chunking.adaptive_workload_signature(template, params)
+                signature_params = {
                     "__forge_template_name": name,
                     "__forge_worker": "worker-a",
-                }, target_units / 300.0, 3)
-                for name, (_total_key, _total, target_units) in cases.items()
-            ])
+                }
+                if workload:
+                    signature_params["__forge_workload"] = workload
+                entries.append((signature_params, target_units / 300.0, 3))
+            write_chunk_history(cache_path, *entries)
 
             for name, (total_key, total, target_units) in cases.items():
                 with self.subTest(template=name):
@@ -4643,12 +4649,13 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
                 cache_path=cache_path,
             )
             history = chunking.load_selfplay_chunk_history(cache_path=cache_path)
+            params = chunking.adaptive_template_parameters(manifest)
             aggregate_key = chunking.selfplay_chunk_signature_key(
-                chunking.selfplay_chunk_signature({"__forge_template_name": "sprt"})
+                chunking.selfplay_chunk_signature(params)
             )
             worker_key = chunking.selfplay_chunk_signature_key(
                 chunking.selfplay_chunk_signature({
-                    "__forge_template_name": "sprt",
+                    **params,
                     "__forge_worker": "slow-worker",
                 })
             )
@@ -4936,7 +4943,7 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
             forge.write_json(manifest_path, manifest)
             cache_path = root / "chunk-history.json"
             write_chunk_history(cache_path, ({
-                "__forge_template_name": "sprt",
+                **chunking.adaptive_template_parameters(manifest),
                 "__forge_worker": "worker-a",
             }, 10 / 300.0, 3))
 
@@ -4961,6 +4968,48 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
             if task["id"] == claimed["task"]
         ))
         self.assertEqual(50, max(totals))
+
+    def test_sprt_calibration_is_scoped_by_speed_parameters(self) -> None:
+        from forge_lib import calibration
+
+        template_path = forge.template_path("sprt")
+        template = forge.load_template(template_path)
+        base = forge.parse_sprt_template_parameters(
+            "sprt",
+            template,
+            [
+                "--candidate", "~/assets/engines/candidate",
+                "--games", "100",
+                "--shards", "10",
+            ],
+        )
+        fast = forge.expand_template("sprt", template_path, template, base)
+        slow = forge.expand_template(
+            "sprt",
+            template_path,
+            template,
+            {**base, "tc": "60+0.6"},
+        )
+        more_games = forge.expand_template(
+            "sprt",
+            template_path,
+            template,
+            {**base, "games": 1000},
+        )
+
+        fast_signature = calibration.adaptive_chunk_signature(
+            calibration.adaptive_template_parameters(fast)
+        )
+        slow_signature = calibration.adaptive_chunk_signature(
+            calibration.adaptive_template_parameters(slow)
+        )
+        more_games_signature = calibration.adaptive_chunk_signature(
+            calibration.adaptive_template_parameters(more_games)
+        )
+
+        self.assertNotEqual(fast_signature, slow_signature)
+        self.assertEqual(fast_signature, more_games_signature)
+        self.assertEqual(6, template["chunking"]["initial_units"])
 
     def test_live_rechunk_assigns_each_process_its_calibrated_chunk_size(self) -> None:
         from forge_lib import chunking

@@ -27,6 +27,7 @@ from .calibration import (
     adaptive_process_rate_path,
     adaptive_rate_warmup_units,
     adaptive_template_parameters,
+    adaptive_workload_signature,
     adaptive_worker_cached_throughput,
     load_adaptive_chunk_history,
     load_selfplay_chunk_history,
@@ -295,6 +296,9 @@ def adaptive_autosized_shards(
     work_signature = work.get("signature") if isinstance(work, dict) else None
     if isinstance(work_signature, str) and work_signature:
         signature_params["__forge_work_unit"] = work_signature
+    workload_signature = adaptive_workload_signature(template_data, signature_params)
+    if workload_signature:
+        signature_params["__forge_workload"] = workload_signature
     worker_rates: list[float] = []
     worker_names: list[str] = []
     workers = worker_payload.get("workers")

@@ -100,6 +100,7 @@ def adaptive_chunk_signature(params: dict[str, Any]) -> dict[str, Any]:
     signature = {"kind": template, "template": template}
     for key, field in (
         ("__forge_work_unit", "work_unit"),
+        ("__forge_workload", "workload"),
         ("__forge_worker", "worker"),
         ("__forge_worker_id", "worker_id"),
     ):
@@ -107,6 +108,22 @@ def adaptive_chunk_signature(params: dict[str, Any]) -> dict[str, Any]:
         if value:
             signature[field] = value
     return signature
+
+
+def adaptive_workload_signature(
+    template_data: dict[str, Any],
+    params: dict[str, Any],
+) -> str | None:
+    chunking = template_data.get("chunking")
+    keys = chunking.get("signature_parameters") if isinstance(chunking, dict) else None
+    if not isinstance(keys, list) or not keys:
+        return None
+    values = {
+        str(key): params.get(str(key))
+        for key in keys
+        if isinstance(key, str) and key
+    }
+    return json.dumps(values, sort_keys=True, separators=(",", ":"))
 
 
 def adaptive_chunk_signature_label(signature: dict[str, Any]) -> str:
@@ -205,6 +222,9 @@ def adaptive_template_parameters(manifest: dict[str, Any]) -> dict[str, Any]:
         signature = work.get("signature") if isinstance(work, dict) else None
         if isinstance(signature, str) and signature:
             result["__forge_work_unit"] = signature
+        workload = adaptive_workload_signature(template_data, result)
+        if workload:
+            result["__forge_workload"] = workload
     return result
 
 
@@ -231,10 +251,12 @@ def _process_rate_payload(
         or str(payload.get("worker_id") or "") != process_id
     ):
         return None
-    expected_work_unit = str(
-        adaptive_template_parameters(manifest).get("__forge_work_unit") or ""
-    )
+    template_params = adaptive_template_parameters(manifest)
+    expected_work_unit = str(template_params.get("__forge_work_unit") or "")
     if str(payload.get("work_unit") or "") != expected_work_unit:
+        return None
+    expected_workload = str(template_params.get("__forge_workload") or "")
+    if str(payload.get("workload") or "") != expected_workload:
         return None
     return payload
 
@@ -313,9 +335,13 @@ def record_adaptive_process_chunk_rate(
         "last_started_at": started_at,
         "updated_epoch": time.time(),
     }
-    work_unit = adaptive_template_parameters(manifest).get("__forge_work_unit")
+    template_params = adaptive_template_parameters(manifest)
+    work_unit = template_params.get("__forge_work_unit")
     if isinstance(work_unit, str) and work_unit:
         payload["work_unit"] = work_unit
+    workload = template_params.get("__forge_workload")
+    if isinstance(workload, str) and workload:
+        payload["workload"] = workload
     write_json(adaptive_process_rate_path(manifest, worker_id), payload)
     return payload
 
