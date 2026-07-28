@@ -2584,6 +2584,35 @@ def log_tail(path: Path, *, max_bytes: int = 8192) -> str:
         file.seek(max(0, size - max_bytes))
         return file.read().decode("utf-8", errors="replace")
 
+def task_failure_reason(manifest: dict[str, Any], task: dict[str, Any]) -> str | None:
+    """Return a concise actionable reason from a failed task's log."""
+    payload = read_state_json(task_fail_path(manifest, task))
+    if not isinstance(payload, dict):
+        return None
+    log_name = payload.get("log")
+    path = Path(str(log_name)) if log_name else task_log_path(manifest, task)
+    try:
+        text = log_tail(path, max_bytes=16384)
+    except (OSError, ValueError):
+        return None
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if not lines:
+        return None
+    # Prefer explicit diagnostics, then use the final non-bookkeeping line.
+    diagnostic = next(
+        (
+            line
+            for line in reversed(lines)
+            if any(token in line.lower() for token in ("error", "fatal", "exception", "traceback"))
+        ),
+        None,
+    )
+    reason = diagnostic or next(
+        (line for line in reversed(lines) if " done " not in line),
+        lines[-1],
+    )
+    return reason[:500]
+
 def parse_int(value: object) -> int | None:
     if value is None:
         return None
@@ -3852,6 +3881,7 @@ def status_summary(manifest: dict[str, Any], *, lease_seconds: int) -> dict[str,
     completed_elapsed: dict[str, float] = {}
     progress_task_offsets: dict[str, tuple[str, int]] = {}
     progress_unit_totals: dict[str, int] = {}
+    failure_reasons: dict[str, dict[str, Any]] = {}
 
     for task in manifest["tasks"]:
         config_progress = progress_config_unit_total(task)
@@ -3984,6 +4014,13 @@ def status_summary(manifest: dict[str, Any], *, lease_seconds: int) -> dict[str,
             "worker_id": worker_id,
             "progress": progress,
         }
+        if state == "fail":
+            reason = task_failure_reason(manifest, task)
+            if reason:
+                entry = failure_reasons.setdefault(reason, {"reason": reason, "count": 0, "tasks": []})
+                entry["count"] += 1
+                if len(entry["tasks"]) < 3:
+                    entry["tasks"].append(index)
         if progress_data:
             row["progress_data"] = progress_data
             if progress_data.get("kind") == "metadata":
@@ -4054,6 +4091,10 @@ def status_summary(manifest: dict[str, Any], *, lease_seconds: int) -> dict[str,
         "stop": stop_payload,
         "progress_graph": progress_graph,
         "diagnostics": state_diagnostics(),
+        "failure_reasons": sorted(
+            failure_reasons.values(),
+            key=lambda item: (-int(item["count"]), str(item["reason"])),
+        ),
         "manifest_payload": manifest,
     }
 
@@ -4202,6 +4243,14 @@ def print_status_details(
             print(f"{indent}  {worker_id} [{state_name}] {age}")
     print_pending_status(summary, color_enabled=color_enabled, show_empty=show_empty, indent=indent)
     print_status_group("fail", summary["groups"]["fail"], color_enabled=color_enabled, show_empty=show_empty, indent=indent)
+    for item in summary.get("failure_reasons", []):
+        reason = str(item.get("reason") or "").strip()
+        if not reason:
+            continue
+        count = int(item.get("count") or 0)
+        tasks = format_status_values([value for value in item.get("tasks", []) if isinstance(value, (int, str))])
+        suffix = f" tasks={tasks}" if tasks != "-" else ""
+        print(f"{indent}  reason [{count}]: {reason}{suffix}")
     if show_diagnostics and summary.get("diagnostics"):
         print(f"{indent}{colorize('diagnostics:', 'yellow', enabled=color_enabled)}")
         for item in summary["diagnostics"]:

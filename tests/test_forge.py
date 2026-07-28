@@ -9789,7 +9789,8 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
             self.assertEqual("subtask=42/1000", payload["active"][0]["progress"])
             self.assertEqual("", payload["active"][0]["label"])
             self.assertEqual(1, payload["sections"]["active"]["count"])
-            self.assertEqual([3], payload["sections"]["pending"]["tasks"])
+            self.assertNotIn("tasks", payload["sections"]["pending"])
+            self.assertEqual([3], payload["sections"]["pending"]["groups"]["score:uci"])
             self.assertEqual([2], payload["sections"]["fail"]["groups"]["host-fail"])
             self.assertEqual(["tasks=1/4", "fail=1"], payload["display"]["fields"])
 

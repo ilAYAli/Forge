@@ -2,7 +2,7 @@
   "schema": "forge.template.v1",
   "name": "tb-sf-oracle-relabel",
   "kind": "sf-oracle-relabel",
-  "description": "Relabel Enyo self-play PGN shards with exact Syzygy WDL for <=6-piece positions and a Stockfish static-eval oracle for everything else",
+  "description": "Convert Enyo self-play PGN shards to Bullet, applying Syzygy WDL only to <=6-piece positions and preserving all other input labels",
   "run_name": "tb-sf-oracle-relabel-{timestamp}",
   "work_dir": "~/code/cpp/chess/nnue",
   "parameters": {
@@ -55,7 +55,7 @@
     "outputs": [
       "{output_dir}/{task_name}.bullet"
     ],
-    "command": ".venv/bin/python3 tools/bullet/selfplay_to_bullet_tb_sf_oracle.py --pgn-dir {pgn_dir} --output {output_dir}/{task_name}.bullet --shard-slice {task_index}/{task_count} --sf-engine {sf_engine} --sf-net {sf_net} --sf-hash {sf_hash} --tb-pieces {tb_pieces} --skip-plies {skip_plies} --min-depth {min_depth} --max-abs-cp {max_abs_cp}",
+    "command": ".venv/bin/python3 tools/bullet/selfplay_to_bullet_tb.py --pgn-dir {pgn_dir} --output {output_dir}/{task_name}.bullet --shard-slice {task_index}/{task_count} --tb-pieces {tb_pieces} --skip-plies {skip_plies} --min-depth {min_depth} --max-abs-cp {max_abs_cp}",
     "progress": {
       "unit": "positions",
       "log_regex": "read=(?P<done>\\d+) selected=(?P<selected>\\d+) written=(?P<output>\\d+) rate=(?P<rate>[0-9.]+)/s",

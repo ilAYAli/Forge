@@ -500,7 +500,9 @@ Minimal setup-only manifest:
 ```
 
 If `tasks` is empty, `start` verifies setup and stops. If workers use different
-paths, add `path_maps` and use matching worker profiles.
+paths, add `path_maps` and use matching worker profiles. Templates should use
+portable profile names such as `linux` or `macos`; machine-specific mappings
+belong in the user-owned worker configuration.
 
 For command requirements, use `requirements.commands`. For tools built from Git,
 use `requirements.repos` with a pinned `commit` plus a `probe` that proves the

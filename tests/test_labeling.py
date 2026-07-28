@@ -35,14 +35,15 @@ class Lc0InventoryTests(unittest.TestCase):
         self.assertIn("tools/score/label.py", template["task"]["command"])
         self.assertEqual("bullet-labels", template["finalize"]["type"])
 
-    def test_template_keeps_wsl_corpus_cache_on_native_ext4(self) -> None:
+    def test_template_cache_mapping_is_os_specific(self) -> None:
         template_path = Path(__file__).resolve().parents[1] / "templates" / "label.template.json"
         template = json.loads(template_path.read_text(encoding="utf-8"))
 
         self.assertEqual(
-            "/home/petter/.cache/forge",
-            template["path_maps"]["pwa-wsl"]["~/.cache/forge"],
+            "~/Library/Caches/forge",
+            template["path_maps"]["macos"]["~/.cache/forge"],
         )
+        self.assertEqual({"macos"}, set(template["path_maps"]))
 
     def test_digest_excludes_host_paths(self) -> None:
         files = [

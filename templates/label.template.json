@@ -6,11 +6,8 @@
   "run_name": "label-{source_stem}-{depth}-{timestamp}",
   "work_dir": "~/.cache/forge/repos/nnue-labeler",
   "path_maps": {
-    "pwa-mbp0": {
+    "macos": {
       "~/.cache/forge": "~/Library/Caches/forge"
-    },
-    "pwa-wsl": {
-      "~/.cache/forge": "/home/petter/.cache/forge"
     }
   },
   "parameters": {
