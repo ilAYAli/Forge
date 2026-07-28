@@ -943,19 +943,18 @@ def cmd_template_run(args: argparse.Namespace) -> int:
         shards_param = template.get("parameters", {}).get("shards")
         if isinstance(shards_param, dict):
             shards_supplied = template_parameter_supplied(template, template_args, {"shards", "shard_count"})
+            split = template.get("task", {}).get("split", {})
+            total_key = split.get("total") if isinstance(split, dict) else None
             needs_workers = (
                 not (run_options.print_manifest or run_options.dry_run)
-                or not shards_supplied
+                or (not shards_supplied and bool(total_key))
             )
             if needs_workers:
                 generic_workers_arg = resolved_workers_arg(run_options, config)
                 generic_workers_payload = sprt_worker_slots_payload(generic_workers_arg)
-            if not shards_supplied:
+            if not shards_supplied and total_key:
                 params = dict(params)
-                slots = sprt_worker_slot_count(generic_workers_payload or {})
-                split = template.get("task", {}).get("split", {})
-                total_key = split.get("total") if isinstance(split, dict) else None
-                total = as_int(params.get(total_key), label=f"{template_name}.{total_key}") if total_key else 1
+                total = as_int(params.get(total_key), label=f"{template_name}.{total_key}")
                 configured = as_int(shards_param.get("default", 1), label=f"{template_name}.shards")
                 cold_units = max(1, (total + configured - 1) // configured)
                 params["shards"] = auto_adaptive_shards(

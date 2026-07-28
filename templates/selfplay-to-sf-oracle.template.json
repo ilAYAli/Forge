@@ -1,0 +1,142 @@
+{
+  "schema": "forge.template.v1",
+  "name": "selfplay-to-sf-oracle",
+  "kind": "selfplay-to-sf-oracle",
+  "description": "Convert Enyo self-play PGNs into BulletFormat shards labeled by a Stockfish-net static-eval oracle",
+  "run_name": "selfplay-to-sf-oracle-{pgn_dir_stem}-{timestamp}",
+  "work_dir": "{nnue_repo}",
+  "materialize_inputs": true,
+  "parameters": {
+    "nnue_repo": {
+      "default": "~/code/cpp/chess/nnue",
+      "worker_path": true,
+      "git_checkout": true,
+      "checkout_output": "~/.cache/forge/repos/nnue/{full_commit}",
+      "help": "NNUE checkout containing the converter; its current commit is pinned for workers"
+    },
+    "pgn_dir": {
+      "required": true,
+      "worker_path": true,
+      "help": "Coordinator directory containing self-play PGN shards"
+    },
+    "output": {
+      "required": true,
+      "worker_path": true,
+      "help": "Final concatenated BulletFormat output"
+    },
+    "sf_engine": {
+      "default": "~/assets/engines/candidate",
+      "worker_path": true,
+      "help": "Worker-local Enyo evaluator supporting the UCI eval command"
+    },
+    "sf_net": {
+      "default": "~/assets/nets/nn-0ee0657fb25e.nnue",
+      "worker_path": true,
+      "help": "Coordinator Stockfish NNUE net synchronized to every worker"
+    },
+    "sf_hash": {
+      "type": "int",
+      "default": 64
+    },
+    "skip_plies": {
+      "type": "int",
+      "default": 8
+    },
+    "min_depth": {
+      "type": "int",
+      "default": 1
+    },
+    "max_abs_cp": {
+      "type": "int",
+      "default": 10000
+    },
+    "shards": {
+      "type": "int",
+      "default": 64,
+      "help": "Number of deterministic PGN file slices"
+    }
+  },
+  "requirements": {
+    "python_min": "3.11",
+    "git_min": "2.38",
+    "repos": [
+      {
+        "name": "nnue",
+        "url": "git@github.com:ilAYAli/nnue.git",
+        "path": "{nnue_repo}",
+        "remote": "origin",
+        "commit": "{nnue_repo_commit}",
+        "allow_untracked": true,
+        "install_timeout_s": 300,
+        "install": [
+          "PYTHON=python3; test ! -x /opt/homebrew/bin/python3 || PYTHON=/opt/homebrew/bin/python3; test -x .venv/bin/python3 || \"$PYTHON\" -m venv .venv; .venv/bin/python3 -m pip install -q python-chess"
+        ],
+        "probe": [
+          ".venv/bin/python3 -m unittest tools.tests.test_selfplay_to_bullet tools.tests.test_selfplay_to_bullet_sf_oracle"
+        ]
+      },
+      {
+        "name": "bullet",
+        "url": "https://github.com/jw1912/bullet.git",
+        "path": "~/.cache/forge/tools/bullet/d372d487aedfeb8bdc256b9f694dbcd41016bf82",
+        "remote": "origin",
+        "commit": "d372d487aedfeb8bdc256b9f694dbcd41016bf82",
+        "allow_untracked": true,
+        "build_timeout_s": 900,
+        "build": [
+          "cargo build -q -p bullet-utils --manifest-path Cargo.toml"
+        ],
+        "probe": [
+          "cargo run -q -p bullet-utils --manifest-path Cargo.toml -- --help >/dev/null"
+        ]
+      }
+    ],
+    "commands": [
+      {
+        "name": "cargo",
+        "path": "cargo",
+        "timeout_s": 20
+      },
+      {
+        "name": "Stockfish-net evaluator",
+        "path": "{sf_engine}",
+        "command": "engine={sf_engine_shell}; net=~/.cache/forge/inputs/sf-net/{timestamp}-{sf_net_stem}; printf '%s\\n' uci \"setoption name nnue_file value $net\" isready 'position startpos' eval quit | \"$engine\"",
+        "contains": "eval ",
+        "timeout_s": 30
+      }
+    ],
+    "inputs": [
+      {
+        "name": "self-play PGN directory",
+        "source": "{pgn_dir}",
+        "path": "~/.cache/forge/inputs/selfplay/{timestamp}-{pgn_dir_stem}",
+        "tree": "directory"
+      },
+      {
+        "name": "Stockfish NNUE net",
+        "source": "{sf_net}",
+        "path": "~/.cache/forge/inputs/sf-net/{timestamp}-{sf_net_stem}"
+      }
+    ]
+  },
+  "task": {
+    "split": {
+      "count": "shards"
+    },
+    "label": "selfplay-to-sf-oracle:{task_number}/{task_count}",
+    "outputs": [
+      "{output_dir}/{task_name}.bullet",
+      "{output_dir}/{task_name}.stats.json"
+    ],
+    "command": ".venv/bin/python3 tools/bullet/selfplay_to_bullet_sf_oracle.py --pgn-dir ~/.cache/forge/inputs/selfplay/{timestamp}-{pgn_dir_stem} --output {output_dir}/{task_name}.bullet --stats {output_dir}/{task_name}.stats.json --shard-slice {task_index}/{task_count} --skip-plies {skip_plies} --min-depth {min_depth} --max-abs-cp {max_abs_cp} --sf-engine {sf_engine_shell} --sf-net ~/.cache/forge/inputs/sf-net/{timestamp}-{sf_net_stem} --sf-hash {sf_hash} --bullet-manifest ~/.cache/forge/tools/bullet/d372d487aedfeb8bdc256b9f694dbcd41016bf82/Cargo.toml",
+    "progress": {
+      "unit": "pgns",
+      "log_regex": "\\[(?P<done>\\d+)/(?P<total>\\d+)\\].*?\\+(?P<output>\\d+) rows",
+      "output_unit": "positions"
+    }
+  },
+  "finalize": {
+    "type": "bullet-labels",
+    "output": "{output}"
+  }
+}

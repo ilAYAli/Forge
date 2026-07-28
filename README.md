@@ -216,6 +216,20 @@ The template pins and synchronizes the NNUE and Bullet repositories, installs
 the Python dependency, and synchronizes the PGN directory once per worker host
 before tasks start.
 
+Use the Stockfish-net static-evaluation oracle instead of the original Enyo
+scores with:
+
+```sh
+forge run selfplay-to-sf-oracle \
+  --pgn-dir data/selfplay/gen2/.pgn-input \
+  --output data/selfplay/gen3
+```
+
+The SF net is synchronized to every worker. The Enyo evaluator executable is
+platform-specific, so the template validates the configured worker-local
+`~/assets/engines/candidate` rather than copying a binary between operating
+systems.
+
 ### Distributed SPSA (“Simultaneous Perturbation Stochastic Approximation.”)
 
 `spsa` runs exact fixed-game matches rather than SPRTs. One long-lived Forge
