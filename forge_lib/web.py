@@ -722,17 +722,9 @@ _HTML = r"""<!DOCTYPE html>
       const selection = window.getSelection && window.getSelection();
       return !!(selection && !selection.isCollapsed && String(selection).trim());
     }
-    let selectionRefreshDeferredAt = null;
+    let selectionGesture = false;
     function shouldDeferRefreshForSelection() {
-      if (!hasTextSelection()) {
-        selectionRefreshDeferredAt = null;
-        return false;
-      }
-      const now = Date.now();
-      if (selectionRefreshDeferredAt == null) selectionRefreshDeferredAt = now;
-      if (now - selectionRefreshDeferredAt < 15000) return true;
-      selectionRefreshDeferredAt = null;
-      return false;
+      return selectionGesture || hasTextSelection();
     }
 
     function makeSection(run, section, titleHtml, titleCls, detailHtml, defaultOpen) {
@@ -874,7 +866,7 @@ _HTML = r"""<!DOCTYPE html>
     // Live ETA countdown — tick every second using eta_s relative to fetch time
     let lastFetchTime = null;
     function tickEtas() {
-      if (lastFetchTime == null) return;
+      if (lastFetchTime == null || shouldDeferRefreshForSelection()) return;
       const elapsed = Date.now() / 1000 - lastFetchTime;
       const now = Date.now() / 1000;
       document.querySelectorAll('[data-etas]').forEach(el => {
@@ -2129,6 +2121,13 @@ _HTML = r"""<!DOCTYPE html>
     document.addEventListener('click', () => {
       if (soundEnabled) ensureAudioContext();
     }, {once: true});
+    document.addEventListener('pointerdown', event => {
+      if (event.button === 0 && event.target.closest('#runs')) selectionGesture = true;
+    });
+    document.addEventListener('pointerup', () => {
+      setTimeout(() => { selectionGesture = false; }, 0);
+    });
+    window.addEventListener('blur', () => { selectionGesture = false; });
     window.addEventListener('resize', () => sizeGraphPointMarkers());
     refresh();
     setInterval(refresh, 5000);
