@@ -3773,9 +3773,21 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
             series = template["task"]["progress"]["series"]
 
             self.assertEqual("sum", template["task"]["progress"]["output_mode"])
+            self.assertEqual(".bullet", template["parameters"]["output"]["suffix"])
             self.assertEqual("positions/s", series[0]["name"])
             self.assertEqual("rate", series[0]["field"])
             self.assertEqual("output", series[0]["x"])
+
+    def test_selfplay_conversion_rejects_directory_looking_output(self) -> None:
+        template = forge.load_template(
+            ROOT / "templates" / "selfplay-to-sf-oracle.template.json"
+        )
+        with self.assertRaisesRegex(SystemExit, "--output must end with '.bullet'"):
+            forge.parse_template_parameters(
+                "selfplay-to-sf-oracle",
+                template,
+                ["--pgn-dir", "/tmp/pgns", "--output", "/tmp/gen4"],
+            )
 
     def test_selfplay_conversion_derives_contiguous_adaptive_pgn_ranges(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

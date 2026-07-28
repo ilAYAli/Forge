@@ -343,6 +343,24 @@ def parse_template_parameters_with_unknown(
                 for item in value
             ]
     normalize_file_paths(params, values)
+    for name, spec in params.items():
+        if not isinstance(spec, dict):
+            continue
+        required_suffix = spec.get("suffix")
+        if required_suffix is None:
+            continue
+        if not isinstance(required_suffix, str) or not required_suffix:
+            raise SystemExit(
+                f"{template_name}: parameter {name} suffix must be a non-empty string"
+            )
+        value = values.get(str(name))
+        candidates = value if isinstance(value, list) else [value]
+        for candidate in candidates:
+            if isinstance(candidate, str) and not candidate.endswith(required_suffix):
+                raise SystemExit(
+                    f"{template_name}: {template_arg_name(str(name))} must end with "
+                    f"{required_suffix!r}: {candidate}"
+                )
     return values, unknown
 
 

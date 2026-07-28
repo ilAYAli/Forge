@@ -59,6 +59,7 @@
     "output": {
       "required": true,
       "worker_path": true,
+      "suffix": ".bullet",
       "help": "Final concatenated BulletFormat output"
     },
     "label_mode": {
