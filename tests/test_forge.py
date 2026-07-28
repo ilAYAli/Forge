@@ -3774,6 +3774,45 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
             self.assertEqual("rate", series[0]["field"])
             self.assertEqual("done", series[0]["x"])
 
+    def test_run_progress_graph_accepts_reserved_series_without_custom_fields(self) -> None:
+        progress = {
+            "unit": "pgns",
+            "total": 10,
+            "series": [{"name": "pgns/s", "field": "rate", "x": "done"}],
+        }
+        manifest = {
+            "schema": "forge.task.v1",
+            "name": "conversion",
+            "kind": "selfplay-to-sf-oracle",
+            "tasks": [
+                {"id": "task_0", "index": 0, "command": "true", "outputs": [], "progress": progress},
+                {"id": "task_1", "index": 1, "command": "true", "outputs": [], "progress": progress},
+            ],
+        }
+        rows = [
+            {
+                "id": "task_0",
+                "state": "running",
+                "progress_data": {"kind": "metadata", "done": 4, "total": 10, "rate": 0.5},
+            },
+            {
+                "id": "task_1",
+                "state": "running",
+                "progress_data": {"kind": "metadata", "done": 3, "total": 10, "rate": 0.25},
+            },
+        ]
+
+        graph = forge.run_progress_graph_from_rows(
+            manifest,
+            rows,
+            {"task_0": ("pgns", 0), "task_1": ("pgns", 10)},
+            {"pgns": 20},
+        )
+
+        self.assertIsNotNone(graph)
+        self.assertEqual("pgns/s", graph["series"][0]["name"])
+        self.assertEqual([0.5, 0.25], [point["y"] for point in graph["series"][0]["points"]])
+
     def test_selfplay_live_progress_prefers_completed_pgn_games_over_zero_log(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

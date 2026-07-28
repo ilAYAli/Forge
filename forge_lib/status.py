@@ -2973,9 +2973,7 @@ def run_progress_graph_from_rows(
         if not isinstance(data, dict) or data.get("kind") != "metadata":
             continue
         fields = data.get("fields")
-        if not isinstance(fields, dict):
-            continue
-        fields = normalize_progress_fields(fields)
+        fields = normalize_progress_fields(fields if isinstance(fields, dict) else {})
         graph_data = dict(data)
         config_progress = progress_config_unit_total(task)
         if config_progress is not None and isinstance(data.get("done"), int):
