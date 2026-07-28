@@ -3875,6 +3875,147 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
         self.assertIn("--shard-range 0/5", task["command"])
         self.assertTrue(all(str(root / "outputs") in output for output in task["outputs"]))
 
+    def test_conversion_adaptive_rechunk_finalizes_complete_dataset(self) -> None:
+        from forge_lib.labeling import finalize_labeling
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            pgn_dir = root / "pgns"
+            output_dir = root / "outputs"
+            state_dir = root / "state"
+            claim_dir = root / "claims"
+            for path in (pgn_dir, output_dir, state_dir, claim_dir):
+                path.mkdir()
+            for index in range(6):
+                (pgn_dir / f"{index:02d}.pgn").touch()
+            template_path = ROOT / "templates" / "selfplay-to-sf-oracle.template.json"
+            template = forge.load_template(template_path)
+            final_output = root / "dataset.bullet"
+            params = forge.parse_template_parameters(
+                "selfplay-to-sf-oracle",
+                template,
+                [
+                    "--pgn-dir", str(pgn_dir),
+                    "--output", str(final_output),
+                    "--shards", "6",
+                ],
+            )
+            manifest = forge.expand_template(
+                "selfplay-to-sf-oracle",
+                template_path,
+                template,
+                params,
+            )
+            manifest.update({
+                "state_dir": str(state_dir),
+                "claim_dir": str(claim_dir),
+                "vars": {"output_dir": str(output_dir)},
+            })
+            manifest_path = root / "manifest.json"
+            forge.write_json(manifest_path, manifest)
+
+            with mock.patch(
+                "forge_lib.chunking.adaptive_worker_cached_throughput",
+                return_value=3 / 300,
+            ):
+                claimed = forge.claim_task(
+                    manifest,
+                    manifest_path=manifest_path,
+                    worker="worker",
+                    worker_id="worker#1",
+                    profile=None,
+                    lease_seconds=600,
+                    retry_failed=False,
+                )
+            self.assertIsNotNone(claimed)
+
+            updated = forge.load_manifest(manifest_path)
+            for task_index, task in enumerate(updated["tasks"]):
+                task["outputs"] = [
+                    str(path).replace("{output_dir}", str(output_dir))
+                    for path in task["outputs"]
+                ]
+                count = int(task["adaptive_range"]["count"])
+                bullet = Path(task["outputs"][0])
+                stats = Path(task["outputs"][1])
+                # A valid conversion may select no positions from its PGNs.
+                written = 0 if task_index == 0 else 1
+                bullet.write_bytes(b"x" * 32 * written)
+                forge.write_json(stats, {
+                    "schema": "enyo.label-stats.v1",
+                    "shard_index": 0,
+                    "read": count,
+                    "selected": written,
+                    "written": written,
+                })
+
+            summary = finalize_labeling(manifest_path, updated)
+
+            assert summary is not None
+            self.assertEqual(6, summary["task_totals"]["read"])
+            self.assertEqual(6, sum(shard["count"] for shard in summary["shards"]))
+            self.assertEqual(
+                list(range(6)),
+                [
+                    source_index
+                    for shard in summary["shards"]
+                    for source_index in range(shard["start"], shard["start"] + shard["count"])
+                ],
+            )
+            self.assertEqual(
+                sum(shard["written"] for shard in summary["shards"]) * 32,
+                final_output.stat().st_size,
+            )
+
+    def test_conversion_calibration_rejects_incomplete_success_marker(self) -> None:
+        from forge_lib import chunking
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            state = root / "state"
+            outputs = root / "outputs"
+            state.mkdir()
+            outputs.mkdir()
+            bullet = outputs / "chunk.bullet"
+            stats = outputs / "chunk.stats.json"
+            bullet.touch()
+            forge.write_json(stats, {
+                "schema": "enyo.label-stats.v1",
+                "read": 0,
+                "written": 0,
+            })
+            task = {
+                "id": "chunk",
+                "index": 0,
+                "command": "true",
+                "outputs": [str(bullet), str(stats)],
+                "progress": {"unit": "pgns", "total": 100},
+                "adaptive_range": {"unit": "pgns", "start": 0, "count": 100},
+            }
+            manifest = {
+                "schema": "forge.task.v1",
+                "kind": "selfplay-to-sf-oracle",
+                "state_dir": str(state),
+                "tasks": [task],
+            }
+            forge.write_json(state / "chunk.done.json", {
+                "schema": "forge.task.v1",
+                "rc": 0,
+                "elapsed_s": 0.1,
+            })
+
+            with (
+                mock.patch(
+                    "forge_lib.chunking.adaptive_manifest_split",
+                    return_value=("pgns", "shards", "pgns"),
+                ),
+                mock.patch("forge_lib.chunking.record_adaptive_chunk_rate") as record,
+            ):
+                result = chunking.record_adaptive_chunk_task_result(manifest, task)
+
+        self.assertIsNone(result)
+        record.assert_not_called()
+
     def test_run_progress_graph_accepts_reserved_series_without_custom_fields(self) -> None:
         progress = {
             "unit": "pgns",

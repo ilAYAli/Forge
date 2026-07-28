@@ -176,6 +176,22 @@ class LabelingFinalizationTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "invalid Bullet shard"):
                 finalize_labeling(manifest_path, manifest)
 
+    def test_accepts_empty_shard_when_stats_report_zero_written(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            manifest_path, manifest = self.make_run(Path(tmp))
+            task = manifest["tasks"][1]
+            Path(task["outputs"][0]).write_bytes(b"")
+            stats_path = Path(task["outputs"][1])
+            stats = json.loads(stats_path.read_text(encoding="utf-8"))
+            stats["written"] = 0
+            stats_path.write_text(json.dumps(stats), encoding="utf-8")
+
+            summary = finalize_labeling(manifest_path, manifest)
+
+            assert summary is not None
+            self.assertEqual(64, summary["merged_bytes"])
+            self.assertEqual(2, summary["positions"])
+
     def test_detached_wait_finalizes_before_success_summary(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

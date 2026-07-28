@@ -186,7 +186,7 @@ def finalize_labeling(manifest_path: Path, manifest: dict[str, Any]) -> dict[str
             raise ValueError(f"{task['id']}: expected Bullet and stats outputs")
         bullet, stats_path = outputs
         size = bullet.stat().st_size
-        if size == 0 or size % RECORD_BYTES:
+        if size % RECORD_BYTES:
             raise ValueError(f"{task['id']}: invalid Bullet shard size {size}")
         stats = json.loads(stats_path.read_text(encoding="utf-8"))
         if stats.get("schema") != STATS_SCHEMA:

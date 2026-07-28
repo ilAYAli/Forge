@@ -43,6 +43,7 @@ from .core import *
 from .tasks import (
     task_done_path,
     task_heartbeat_path,
+    task_outputs,
     task_running_path,
     task_state,
 )
@@ -118,6 +119,21 @@ def adaptive_task_units(task: dict[str, Any], unit: str) -> int:
             if total is not None and total > 0:
                 return total
     return selfplay_task_games(task) if unit == "games" else 0
+
+
+def adaptive_completed_units(task: dict[str, Any], unit: str) -> int | None:
+    adaptive_range = task.get("adaptive_range")
+    if not isinstance(adaptive_range, dict) or unit != "pgns":
+        return None
+    outputs = task_outputs(task)
+    if len(outputs) < 2 or not outputs[1].is_file():
+        return 0
+    try:
+        stats = read_json(outputs[1])
+    except (OSError, SystemExit):
+        return 0
+    observed = _parse_int(stats.get("read")) if isinstance(stats, dict) else None
+    return max(0, observed or 0)
 
 
 def adaptive_manifest_split(manifest: dict[str, Any]) -> tuple[str, str, str] | None:
@@ -254,6 +270,9 @@ def record_adaptive_chunk_history(
         units = adaptive_task_units(task, unit)
         if units <= 0:
             continue
+        observed_units = adaptive_completed_units(task, unit)
+        if observed_units is not None and observed_units != units:
+            continue
         total_units += units
         total_elapsed += elapsed
     rate = total_units / total_elapsed if total_units > 0 and total_elapsed > 0 else None
@@ -291,6 +310,9 @@ def record_adaptive_chunk_task_result(
         return None
     units = adaptive_task_units(task, unit)
     if units <= 0:
+        return None
+    observed_units = adaptive_completed_units(task, unit)
+    if observed_units is not None and observed_units != units:
         return None
     params = adaptive_template_parameters(manifest)
     rate = units / elapsed
