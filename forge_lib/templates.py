@@ -8,6 +8,7 @@ import tempfile
 from .config import *
 from .manifest import *
 from .labeling import attach_label_task_inputs, build_inventory
+from .task_inputs import attach_pgn_task_inputs
 from .chunking import adaptive_autosized_shards
 from .spsa import (
     attach_spsa_manifest_config,
@@ -1071,7 +1072,6 @@ def cmd_template_run(args: argparse.Namespace) -> int:
             needs_workers = (
                 not (run_options.print_manifest or run_options.dry_run)
                 or (not shards_supplied and bool(total_key))
-                or str(template.get("kind") or "").strip() == "label"
             )
             if needs_workers:
                 generic_workers_arg = resolved_workers_arg(run_options, config)
@@ -1098,14 +1098,6 @@ def cmd_template_run(args: argparse.Namespace) -> int:
                     generic_workers_payload or {},
                     cold_units=cold_units,
                 )
-            if str(template.get("kind") or "").strip() == "label" and generic_workers_payload is not None:
-                params = dict(params)
-                total = as_int(params.get(total_key), label=f"{template_name}.{total_key}")
-                slots = sprt_worker_slot_count(generic_workers_payload)
-                params["shards"] = min(
-                    total,
-                    max(slots, as_int(params.get("shards"), label=f"{template_name}.shards")),
-                )
     run_options = apply_template_run_defaults(template_name, run_options, template)
     inventory_info: dict[str, Any] | None = None
     if str(template.get("kind") or "").strip() == "label":
@@ -1122,6 +1114,8 @@ def cmd_template_run(args: argparse.Namespace) -> int:
     manifest = expand_template(template_name, path, template, params)
     if inventory_info is not None:
         attach_label_task_inputs(manifest, inventory_info)
+    if template_name in {"selfplay-to-bullet", "selfplay-to-sf-oracle"}:
+        attach_pgn_task_inputs(manifest)
     if bool(template.get("materialize_inputs", False)):
         materialize_template_inputs(template, manifest, params)
     finalizer = manifest.get("finalize")

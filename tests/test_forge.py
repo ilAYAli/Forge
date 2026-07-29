@@ -784,14 +784,12 @@ except SystemExit as exc:
         self.assertIn(".graph-value", web._HTML)
         self.assertIn("grid-template-columns: 58px minmax(240px, 1fr)", web._HTML)
         self.assertIn(".graph-x-axis", web._HTML)
-        self.assertIn(".graph-point", web._HTML)
-        self.assertIn("function sizeGraphPointMarkers", web._HTML)
-        self.assertIn('<ellipse class="graph-point"', web._HTML)
-        self.assertIn("const viewHeight = svg.viewBox?.baseVal?.height || GRAPH_H", web._HTML)
-        self.assertIn("const radiusX = 2.2 * (rect.height / viewHeight) / (rect.width / GRAPH_W)", web._HTML)
+        self.assertNotIn(".graph-point", web._HTML)
+        self.assertNotIn("function sizeGraphPointMarkers", web._HTML)
+        self.assertNotIn('<ellipse class="graph-point"', web._HTML)
         self.assertIn("function graphTicks", web._HTML)
         self.assertIn("function graphXAxisHtml", web._HTML)
-        self.assertIn("function graphPointMarkers", web._HTML)
+        self.assertNotIn("function graphPointMarkers", web._HTML)
         self.assertIn("const scaleExtras = yExtras.concat(band.flatMap", web._HTML)
         self.assertIn("font-variant-numeric: tabular-nums", web._HTML)
         self.assertIn("label.textContent = text", web._HTML)
@@ -856,11 +854,8 @@ except SystemExit as exc:
         self.assertIn("if (key === 'wins') return 1", web._HTML)
         self.assertIn("if (key === 'draws') return 2", web._HTML)
         self.assertIn("if (key === 'losses') return 3", web._HTML)
-        self.assertIn(
-            "const markers = plotted.map(s => graphSeriesName(s.name) === 'games/s' ? '' : graphPointMarkers(",
-            web._HTML,
-        )
-        self.assertIn('`<g clip-path="url(#${clipId})">${paths}${markers}</g>`', web._HTML)
+        self.assertNotIn("const markers = plotted.map(", web._HTML)
+        self.assertIn('`<g clip-path="url(#${clipId})">${paths}</g>`', web._HTML)
         self.assertIn(".graph-row.combined .graph-axis { height: 72px; }", web._HTML)
         self.assertIn(".graph-row.combined .graph-value { display: none; }", web._HTML)
         self.assertNotIn("GRAPH_SMALL_H", web._HTML)
@@ -1163,11 +1158,13 @@ console.log(JSON.stringify({band, domain, maxBandRadius, zero, last, delta: zero
 const runs = [
   {run: 'native-4.20.0-rc1-sprt-1500-20260630-141436'},
   {run: 'sprt-enyo_f908b4b-1000-20260630-152429', created_at: '2026-06-30T15:24:29+0200'},
+  {run: 'label-static-training-run2-test91-20260128-1817-20260729-215510'},
 ];
 console.log(runs.sort(compareRunsByCreated).map(run => run.run).join('\\n'));
 const done = {state:'done', created_at:'2026-07-02T21:16:00+0200', completed_at:'2026-07-03T00:42:00+0200'};
 console.log(JSON.stringify(runTiming(done, false)));
 console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.parse(done.completed_at) / 1000)));
+console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:00:00+02:00') / 1000)));
 """
         result = subprocess.run(
             ["node", "-e", probe],
@@ -1181,10 +1178,12 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
         self.assertEqual(0, result.returncode, result.stderr)
         self.assertEqual(
             [
+                "label-static-training-run2-test91-20260128-1817-20260729-215510",
                 "sprt-enyo_f908b4b-1000-20260630-152429",
                 "native-4.20.0-rc1-sprt-1500-20260630-141436",
                 '{"start":"02 Jul 21:16","elapsed":"3h26m"}',
                 '{"start":"21:16","elapsed":"3h26m"}',
+                '{"start":"29 Jul 21:55","elapsed":"4m"}',
             ],
             result.stdout.splitlines(),
         )
@@ -3220,7 +3219,6 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
                     stdout = io.StringIO()
                     template_args = [
                         "--dry-run",
-                        "--workers", "worker-a:3,worker-b:2",
                         "--source", str(source),
                         "--output", "/tmp/labels.bullet",
                         "--max-records", "40",
@@ -3246,14 +3244,14 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
 
                     self.assertEqual(0, rc)
                     manifest = json.loads(stdout.getvalue())
-                    self.assertEqual(5, len(manifest["tasks"]))
+                    self.assertEqual(4, len(manifest["tasks"]))
                     self.assertEqual([], manifest["requirements"]["inputs"])
                     task_input = manifest["tasks"][0]["inputs"][0]
                     self.assertEqual("lc0-inventory", task_input["tree"])
                     self.assertEqual(1, task_input["files"])
                     self.assertEqual("c" * 40, manifest["requirements"]["repos"][0]["commit"])
                     command = manifest["tasks"][0]["command"]
-                    self.assertIn("--max-records 8", command)
+                    self.assertIn("--max-records 10", command)
                     self.assertIn("--shard-count 1 --shard-index 0", command)
                     self.assertNotIn("{task_input}", command)
 
@@ -3971,6 +3969,8 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
             )
 
     def test_selfplay_conversion_derives_contiguous_adaptive_pgn_ranges(self) -> None:
+        from forge_lib.task_inputs import attach_pgn_task_inputs
+
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             pgn_dir = root / "pgns"
@@ -4001,6 +4001,8 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
                 template,
                 params,
             )
+            attach_pgn_task_inputs(manifest)
+            attach_pgn_task_inputs(second_manifest)
 
             self.assertEqual(
                 [
@@ -4010,10 +4012,22 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
                 ],
                 [task["adaptive_range"] for task in manifest["tasks"]],
             )
-            self.assertIn("--shard-range 4/3", manifest["tasks"][1]["command"])
-            input_path = manifest["requirements"]["inputs"][0]["path"]
-            self.assertEqual(input_path, second_manifest["requirements"]["inputs"][0]["path"])
-            self.assertNotIn(manifest["name"].rsplit("-", 1)[-1], input_path)
+            self.assertIn("--shard-range 0/3", manifest["tasks"][1]["command"])
+            input_item = manifest["tasks"][1]["inputs"][0]
+            self.assertEqual("file-set", input_item["tree"])
+            self.assertEqual(
+                ["04.pgn", "05.pgn", "06.pgn"],
+                [item["path"] for item in input_item["files"]],
+            )
+            self.assertEqual(
+                input_item["path"],
+                second_manifest["tasks"][1]["inputs"][0]["path"],
+            )
+            self.assertNotIn("{task_input}", manifest["tasks"][1]["command"])
+            self.assertEqual(
+                ["Stockfish NNUE net"],
+                [item["name"] for item in manifest["requirements"]["inputs"]],
+            )
 
     def test_conversion_live_rechunk_preserves_contiguous_pgn_ranges(self) -> None:
         from forge_lib import chunking
@@ -4068,6 +4082,10 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
         self.assertEqual({"unit": "pgns", "start": 0, "count": 5}, task["adaptive_range"])
         self.assertEqual(5, task["progress"]["total"])
         self.assertIn("--shard-range 0/5", task["command"])
+        self.assertEqual(
+            [f"{index:02d}.pgn" for index in range(5)],
+            [item["path"] for item in task["inputs"][0]["files"]],
+        )
         self.assertTrue(all(str(root / "outputs") in output for output in task["outputs"]))
 
     def test_conversion_live_rechunk_targets_input_bytes(self) -> None:
@@ -17005,6 +17023,63 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
             )
             self.assertTrue((destination / "training.1").is_file())
             self.assertFalse((destination / "training.0").exists())
+            self.assertEqual(
+                0,
+                forge.sync_task_inputs_from_coordinator(
+                    str(root / "manifest.json"),
+                    coordinator_task,
+                    local_task,
+                ),
+            )
+
+    def test_claimed_conversion_task_fetches_only_its_pgn_file_set(self) -> None:
+        from forge_lib.task_inputs import attach_pgn_task_inputs
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "pgns"
+            source.mkdir()
+            for index in range(4):
+                (source / f"{index}.pgn").write_text(
+                    f'[Event "{index}"]\n',
+                    encoding="utf-8",
+                )
+            template_path = ROOT / "templates" / "selfplay-to-bullet.template.json"
+            template = forge.load_template(template_path)
+            params = forge.parse_template_parameters(
+                "selfplay-to-bullet",
+                template,
+                [
+                    "--pgn-dir", str(source),
+                    "--output", str(root / "output.bullet"),
+                    "--shards", "2",
+                ],
+            )
+            manifest = forge.expand_template(
+                "selfplay-to-bullet",
+                template_path,
+                template,
+                params,
+            )
+            attach_pgn_task_inputs(manifest)
+            coordinator_task = manifest["tasks"][1]
+            destination = root / "worker-input"
+            local_task = copy.deepcopy(coordinator_task)
+            local_task["inputs"][0]["path"] = str(destination)
+
+            self.assertEqual(
+                1,
+                forge.sync_task_inputs_from_coordinator(
+                    str(root / "manifest.json"),
+                    coordinator_task,
+                    local_task,
+                ),
+            )
+            self.assertEqual(
+                ["2.pgn", "3.pgn"],
+                sorted(path.name for path in destination.glob("*.pgn")),
+            )
+            self.assertFalse((destination / "0.pgn").exists())
             self.assertEqual(
                 0,
                 forge.sync_task_inputs_from_coordinator(

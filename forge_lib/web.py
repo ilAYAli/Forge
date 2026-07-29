@@ -186,8 +186,6 @@ _HTML = r"""<!DOCTYPE html>
     .graph-band { fill: var(--blu); opacity: .18; stroke: none; }
     .graph-line { fill: none; stroke-width: 1.9; stroke-linecap: round; stroke-linejoin: round;
                   vector-effect: non-scaling-stroke; }
-    .graph-point { fill: var(--blu); stroke: #a9cfff; stroke-width: .75;
-                   vector-effect: non-scaling-stroke; }
     .graph-grid { stroke: #334052; stroke-width: .75; opacity: .72;
                   vector-effect: non-scaling-stroke; }
     .graph-zero { stroke: #7389a7; stroke-width: .9; stroke-dasharray: 4 6;
@@ -427,7 +425,8 @@ _HTML = r"""<!DOCTYPE html>
     }
 
     function runNameEpoch(r) {
-      const m = String(r?.run || '').match(/(?:^|-)(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(\d{2})?(?:$|-)/);
+      const matches = [...String(r?.run || '').matchAll(/(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(\d{2})?/g)];
+      const m = matches[matches.length - 1];
       if (!m) return null;
       return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), Number(m[4]), Number(m[5]), Number(m[6] || 0)).getTime() / 1000;
     }
@@ -713,7 +712,6 @@ _HTML = r"""<!DOCTYPE html>
       openState[id] = nowOpen;
       const hdr = el.previousElementSibling;
       if (hdr) { const a = hdr.querySelector('.arrow'); if (a) a.classList.toggle('open', nowOpen); }
-      if (nowOpen) requestAnimationFrame(() => sizeGraphPointMarkers(el));
       saveUiState();
     }
 
@@ -1251,28 +1249,6 @@ _HTML = r"""<!DOCTYPE html>
       return scaledLinePath(scaled);
     }
 
-    function graphPointMarkers(name, color, points, extras = [], w = GRAPH_W, h = GRAPH_H, xTotal = null) {
-      if (!points || points.length < 2) return '';
-      const scale = graphScale(name, points, extras, w, h, xTotal);
-      const stride = Math.max(1, Math.ceil(points.length / 48));
-      return points.filter((_, index) => index % stride === 0 || index === points.length - 1).map(point =>
-        `<ellipse class="graph-point" style="fill:${esc(color)}" cx="${scale.x(point.x).toFixed(1)}" cy="${scale.y(point.y).toFixed(1)}" rx="2.2" ry="2.2"></ellipse>`
-      ).join('');
-    }
-
-    function sizeGraphPointMarkers(root = document) {
-      root.querySelectorAll('svg.graph-live-hover').forEach(svg => {
-        const rect = svg.getBoundingClientRect();
-        if (!rect.width || !rect.height) return;
-        const viewHeight = svg.viewBox?.baseVal?.height || GRAPH_H;
-        const radiusX = 2.2 * (rect.height / viewHeight) / (rect.width / GRAPH_W);
-        svg.querySelectorAll('.graph-point').forEach(point => {
-          point.setAttribute('rx', radiusX.toFixed(3));
-          point.setAttribute('ry', '2.2');
-        });
-      });
-    }
-
     function scaledLinePath(scaled, move = true) {
       if (!scaled || !scaled.length) return '';
       let path = `${move ? 'M' : 'L'}${scaled[0].x.toFixed(1)},${scaled[0].y.toFixed(1)}`;
@@ -1515,7 +1491,6 @@ _HTML = r"""<!DOCTYPE html>
       const band = bandSeries ? graphConfidenceBandPoints(s, s.points, bandSeries.points || [], maxBandRadius, rawPoints) : [];
       const scaleExtras = yExtras.concat(band.flatMap(point => [point.lo, point.hi]));
       const path = sparkPath(s.name, s.points, scaleExtras, GRAPH_W, h, xTotal);
-      const markers = graphPointMarkers(s.name, s.color, s.points, scaleExtras, GRAPH_W, h, xTotal);
       const bandPath = confidenceBandPath(s.name, s.points, band, scaleExtras, GRAPH_W, h, xTotal);
       const grid = graphGridLines(s.name, s.points, scaleExtras, GRAPH_W, h);
       const zero = zeroLine(s.name, s.points, scaleExtras, GRAPH_W, h);
@@ -1543,7 +1518,6 @@ _HTML = r"""<!DOCTYPE html>
         + `<g clip-path="url(#${clipId})">`
         + (bandPath ? `<path class="graph-band" d="${esc(bandPath)}"></path>` : '')
         + `<path class="graph-line" d="${esc(path)}" style="stroke:${esc(s.color)}"></path>`
-        + markers
         + `</g>`
         + hover
         + `</svg>`
@@ -1603,15 +1577,6 @@ _HTML = r"""<!DOCTYPE html>
         const path = sparkPath(primary.name, s.points, allY, GRAPH_W, h, xTotal);
         return `<path class="graph-line" d="${esc(path)}" style="stroke:${esc(s.color)}"></path>`;
       }).join('');
-      const markers = plotted.map(s => graphSeriesName(s.name) === 'games/s' ? '' : graphPointMarkers(
-        primary.name,
-        s.color,
-        s.points,
-        allY,
-        GRAPH_W,
-        h,
-        xTotal,
-      )).join('');
       const hover = graphCombinedHoverZones(plotted, graph?.x_unit || 'records', GRAPH_W, h, xTotal);
       const latestX = primary.rawPoints[primary.rawPoints.length - 1]?.x;
       const valueSuffix = options.valueSuffix ?? '/s';
@@ -1628,7 +1593,7 @@ _HTML = r"""<!DOCTYPE html>
         + `<title>${esc(valueText)}</title>`
         + `<defs><clipPath id="${clipId}"><rect x="0" y="0" width="${GRAPH_W}" height="${h}"></rect></clipPath></defs>`
         + grid
-        + `<g clip-path="url(#${clipId})">${paths}${markers}</g>`
+        + `<g clip-path="url(#${clipId})">${paths}</g>`
         + hover
         + `</svg>`
         + `<span class="graph-x-axis">${graphXAxisHtml(primary.points, xTotal)}</span>`
@@ -2107,7 +2072,6 @@ _HTML = r"""<!DOCTYPE html>
             : '<div class="empty">no Forge runs found</div>');
         }
         el.innerHTML = parts.join('');
-        sizeGraphPointMarkers(el);
         initResizableTables();
         applySortToAllTables();
         saveUiState();
@@ -2134,7 +2098,6 @@ _HTML = r"""<!DOCTYPE html>
       setTimeout(() => { selectionGesture = false; }, 0);
     });
     window.addEventListener('blur', () => { selectionGesture = false; });
-    window.addEventListener('resize', () => sizeGraphPointMarkers());
     refresh();
     setInterval(refresh, 5000);
   </script>

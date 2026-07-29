@@ -336,11 +336,12 @@ def adaptive_autosized_shards(
     if slots > 0:
         chunking = template_data.get("chunking")
         min_per_slot = (
-            max(1, int(chunking.get("min_chunks_per_slot", 1)))
+            max(0, int(chunking.get("min_chunks_per_slot", 1)))
             if isinstance(chunking, dict)
             else 1
         )
-        shards = max(slots * min_per_slot, ((shards + slots - 1) // slots) * slots)
+        if min_per_slot > 0:
+            shards = max(slots * min_per_slot, ((shards + slots - 1) // slots) * slots)
     return min(total, shards)
 
 
@@ -716,12 +717,19 @@ def adaptive_rechunk_pending_tasks(
         replan_params["seed"] = int(params.get("seed") or 1) + min(
             int(task.get("index", 0)) for task in selected
         )
+    replan_template_name = str(
+        template_data.get("name") or manifest.get("kind") or "task"
+    )
     replanned = expand_template(
-        str(template_data.get("name") or manifest.get("kind") or "task"),
+        replan_template_name,
         template_path,
         template_data,
         replan_params,
     )
+    if replan_template_name in {"selfplay-to-bullet", "selfplay-to-sf-oracle"}:
+        from .task_inputs import attach_pgn_task_inputs
+
+        attach_pgn_task_inputs(replanned)
     replanned_tasks = replanned.get("tasks")
     if not isinstance(replanned_tasks, list) or not replanned_tasks:
         return None
@@ -739,12 +747,15 @@ def adaptive_rechunk_pending_tasks(
         }
         if isinstance(start_key, str) and start_key:
             remainder_params[start_key] = remainder_start
-        remainder = expand_template(
-            str(template_data.get("name") or manifest.get("kind") or "task"),
+        remainder_manifest = expand_template(
+            replan_template_name,
             template_path,
             template_data,
             remainder_params,
-        ).get("tasks")
+        )
+        if replan_template_name in {"selfplay-to-bullet", "selfplay-to-sf-oracle"}:
+            attach_pgn_task_inputs(remainder_manifest)
+        remainder = remainder_manifest.get("tasks")
         if not isinstance(remainder, list) or not remainder:
             return None
         replanned_tasks = [*replanned_tasks, *remainder]

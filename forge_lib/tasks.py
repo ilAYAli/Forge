@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import fcntl
+import tempfile
 from contextlib import contextmanager
 
 from .core import *
@@ -902,6 +903,88 @@ def sync_task_inputs_from_coordinator(
         destination = expand_path(str(local_item.get("path") or ""))
         tree = str(source_item.get("tree") or "")
         digest = str(source_item.get("digest") or "")
+        if tree == "file-set":
+            from .task_inputs import FILE_SET_MARKER, file_set_marker_matches
+
+            files = source_item.get("files")
+            if not digest or not isinstance(files, list) or not files:
+                raise RuntimeError(
+                    f"{coordinator_task['id']}: file-set input is missing digest or files"
+                )
+            normalized: list[tuple[str, int]] = []
+            for item in files:
+                if not isinstance(item, dict):
+                    raise RuntimeError(
+                        f"{coordinator_task['id']}: invalid file-set entry"
+                    )
+                relative = str(item.get("path") or "")
+                relative_path = Path(relative)
+                if (
+                    not relative
+                    or relative_path.is_absolute()
+                    or ".." in relative_path.parts
+                ):
+                    raise RuntimeError(
+                        f"{coordinator_task['id']}: unsafe file-set path {relative!r}"
+                    )
+                normalized.append((relative, int(item.get("bytes", -1))))
+            if file_set_marker_matches(destination, digest):
+                continue
+            shutil.rmtree(destination, ignore_errors=True)
+            destination.mkdir(parents=True, exist_ok=True)
+            if host:
+                with tempfile.NamedTemporaryFile(
+                    mode="w",
+                    encoding="utf-8",
+                    delete=False,
+                ) as file_list:
+                    for relative, _expected_bytes in normalized:
+                        file_list.write(relative + "\n")
+                    file_list_path = Path(file_list.name)
+                try:
+                    remote_source = f"{host}:{source.rstrip('/')}/"
+                    result = run_process_command_with_retries(
+                        [
+                            "rsync", "-a", f"--files-from={file_list_path}",
+                            "-e", RSYNC_SSH, remote_source, str(destination) + "/",
+                        ],
+                        retries=SSH_TRANSIENT_RETRY_COUNT,
+                    )
+                finally:
+                    file_list_path.unlink(missing_ok=True)
+                if result.returncode != 0:
+                    raise RuntimeError(
+                        result.stderr.strip()
+                        or result.stdout.strip()
+                        or f"{coordinator_task['id']}: task input transfer failed"
+                    )
+            else:
+                source_path = expand_path(source)
+                if not source_path.is_dir():
+                    raise RuntimeError(
+                        f"{coordinator_task['id']}: task input does not exist: {source_path}"
+                    )
+                for relative, _expected_bytes in normalized:
+                    source_file = source_path / relative
+                    target = destination / relative
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(source_file, target)
+            for relative, expected_bytes in normalized:
+                path = destination / relative
+                if not path.is_file() or (
+                    expected_bytes >= 0 and path.stat().st_size != expected_bytes
+                ):
+                    raise RuntimeError(
+                        f"{coordinator_task['id']}: incomplete task input {relative}"
+                    )
+            write_json(destination / FILE_SET_MARKER, {
+                "schema": "forge.file-set.v1",
+                "digest": digest,
+                "files": len(normalized),
+                "bytes": sum(size for _path, size in normalized if size >= 0),
+            })
+            synced += 1
+            continue
         if tree != "lc0-inventory":
             raise RuntimeError(f"{coordinator_task['id']}: unsupported task input tree {tree!r}")
         if not digest:

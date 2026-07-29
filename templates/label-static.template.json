@@ -12,7 +12,7 @@
   },
   "chunking": {
     "initial_units": 5000,
-    "min_chunks_per_slot": 1,
+    "min_chunks_per_slot": 0,
     "signature_version": "task-input-v1"
   },
   "parameters": {
@@ -74,8 +74,7 @@
     },
     "shards": {
       "type": "int",
-      "default": 152,
-      "help": "Number of deterministic file shards"
+      "help": "Override the adaptively calculated task count"
     }
   },
   "requirements": {
