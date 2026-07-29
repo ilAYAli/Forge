@@ -662,6 +662,8 @@ except SystemExit as exc:
         self.assertIn("['worker','label','shard','progress']", web._HTML)
         self.assertNotIn("['worker','label','task','progress','output','rate']", web._HTML)
         self.assertIn("taskSort.col === 'task'", web._HTML)
+        self.assertIn("av.localeCompare(bv, undefined", web._HTML)
+        self.assertIn("numeric: true", web._HTML)
         self.assertIn("toggleSound()", web._HTML)
         self.assertIn("notifyStartedJobs(data)", web._HTML)
         self.assertIn("playDing()", web._HTML)

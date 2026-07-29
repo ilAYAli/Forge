@@ -625,7 +625,10 @@ _HTML = r"""<!DOCTYPE html>
           const bv = b.cells[ci]?.dataset.sort ?? '';
           const an = parseFloat(av), bn = parseFloat(bv);
           if (!isNaN(an) && !isNaN(bn)) return (an - bn) * taskSort.dir;
-          return av.localeCompare(bv) * taskSort.dir;
+          return av.localeCompare(bv, undefined, {
+            numeric: true,
+            sensitivity: 'base',
+          }) * taskSort.dir;
         });
         rows.forEach(r => tbody.appendChild(r));
         tbl.querySelectorAll('.task-th').forEach((th, i) => {
