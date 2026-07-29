@@ -1099,7 +1099,7 @@ def cmd_template_run(args: argparse.Namespace) -> int:
                 )
     run_options = apply_template_run_defaults(template_name, run_options, template)
     inventory_info: dict[str, Any] | None = None
-    if template_name == "label":
+    if str(template.get("kind") or "").strip() == "label":
         inventory_info = build_inventory(str(params["source"]))
         params = dict(params)
         params["source_cache"] = "~/.cache/forge/inputs/" + str(inventory_info["digest"])

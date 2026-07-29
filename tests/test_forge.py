@@ -3192,6 +3192,43 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
             "--games", "256",
         ], args.template_args)
 
+    def test_label_kind_templates_expand_inventory_parameters(self) -> None:
+        digest = "d" * 64
+        for template_name in ("label", "label-static"):
+            with self.subTest(template=template_name):
+                stdout = io.StringIO()
+                template_args = [
+                    "--dry-run",
+                    "--source", "/tmp/lc0-input",
+                    "--output", "/tmp/labels.bullet",
+                    "--shards", "4",
+                ]
+                if template_name == "label-static":
+                    template_args += ["--net", "~/assets/nets/oracle.nnue"]
+                with (
+                    contextlib.redirect_stdout(stdout),
+                    mock.patch(
+                        "forge_lib.templates.build_inventory",
+                        return_value={"digest": digest},
+                    ),
+                    mock.patch(
+                        "forge_lib.templates.git_output_or_empty",
+                        return_value="c" * 40,
+                    ),
+                ):
+                    rc = forge.cmd_template_run(argparse.Namespace(
+                        template=template_name,
+                        template_args=template_args,
+                    ))
+
+                self.assertEqual(0, rc)
+                manifest = json.loads(stdout.getvalue())
+                inventory_input = manifest["requirements"]["inputs"][0]
+                self.assertEqual(f"~/.cache/forge/inputs/{digest}", inventory_input["path"])
+                self.assertEqual(digest, inventory_input["digest"])
+                self.assertEqual("c" * 40, manifest["requirements"]["repos"][0]["commit"])
+                self.assertNotIn("{source_cache}", manifest["tasks"][0]["command"])
+
     def test_sprt_command_alias_accepts_dashdash_passthrough(self) -> None:
         run_options, template_args = forge.parse_run_options([
             "--workers", "pwa-mbp:4",

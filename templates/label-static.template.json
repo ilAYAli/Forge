@@ -16,6 +16,12 @@
       "default": 300,
       "help": "Target wall-clock seconds per adaptively sized chunk"
     },
+    "labeler": {
+      "default": "~/code/cpp/chess/nnue",
+      "git_checkout": true,
+      "checkout_output": "~/.cache/forge/repos/nnue-labeler",
+      "help": "Coordinator NNUE checkout whose current HEAD supplies the labeling scripts"
+    },
     "source": {
       "required": true,
       "worker_path": true,
@@ -76,7 +82,7 @@
         "url": "git@github.com:ilAYAli/nnue.git",
         "path": "~/.cache/forge/repos/nnue-labeler",
         "remote": "origin",
-        "commit": "main",
+        "commit": "{labeler_commit}",
         "allow_untracked": true,
         "install_timeout_s": 300,
         "install": [
