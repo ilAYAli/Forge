@@ -103,12 +103,6 @@
         "path": "{engine}",
         "command": "test -x {engine} 2>/dev/null || command -v {engine} >/dev/null",
         "timeout_s": 20
-      },
-      {
-        "name": "net",
-        "path": "{net}",
-        "command": "test -f {net}",
-        "timeout_s": 20
       }
     ],
     "inputs": [
