@@ -5516,6 +5516,18 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
 
         self.assertEqual(16, params["games"])
 
+    def test_selfplay_template_has_sane_run_defaults(self) -> None:
+        template = forge.load_template(ROOT / "templates" / "selfplay.template.json")
+
+        params = forge.parse_selfplay_template_parameters("selfplay", template, [])
+
+        self.assertEqual(300000, params["games"])
+        self.assertEqual("~/assets/books/UHO_XXL_2022_+120_+149.epd", params["book"])
+        self.assertEqual(
+            ["nnue_file=~/assets/nets/nn-0ee0657fb25e.nnue"],
+            params["uci"],
+        )
+
     def test_selfplay_template_rejects_empty_uci_option_values(self) -> None:
         template_path = ROOT / "templates" / "selfplay.template.json"
         template = forge.load_template(template_path)

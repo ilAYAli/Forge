@@ -19,7 +19,7 @@
     },
     "games": {
       "type": "int",
-      "required": true,
+      "default": 300000,
       "help": "Total self-play games across all shards; must be even"
     },
     "shards": {
