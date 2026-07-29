@@ -3193,41 +3193,69 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
         ], args.template_args)
 
     def test_label_kind_templates_expand_inventory_parameters(self) -> None:
-        digest = "d" * 64
-        for template_name in ("label", "label-static"):
-            with self.subTest(template=template_name):
-                stdout = io.StringIO()
-                template_args = [
-                    "--dry-run",
-                    "--source", "/tmp/lc0-input",
-                    "--output", "/tmp/labels.bullet",
-                    "--shards", "4",
-                ]
-                if template_name == "label-static":
-                    template_args += ["--net", "~/assets/nets/oracle.nnue"]
-                with (
-                    contextlib.redirect_stdout(stdout),
-                    mock.patch(
-                        "forge_lib.templates.build_inventory",
-                        return_value={"digest": digest},
-                    ),
-                    mock.patch(
-                        "forge_lib.templates.git_output_or_empty",
-                        return_value="c" * 40,
-                    ),
-                ):
-                    rc = forge.cmd_template_run(argparse.Namespace(
-                        template=template_name,
-                        template_args=template_args,
-                    ))
+        from forge_lib.labeling import LC0_V6_RECORD_BYTES
 
-                self.assertEqual(0, rc)
-                manifest = json.loads(stdout.getvalue())
-                inventory_input = manifest["requirements"]["inputs"][0]
-                self.assertEqual(f"~/.cache/forge/inputs/{digest}", inventory_input["path"])
-                self.assertEqual(digest, inventory_input["digest"])
-                self.assertEqual("c" * 40, manifest["requirements"]["repos"][0]["commit"])
-                self.assertNotIn("{source_cache}", manifest["tasks"][0]["command"])
+        digest = "d" * 64
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "source"
+            source.mkdir()
+            files = []
+            for index in range(8):
+                path = source / f"training.{index}"
+                path.write_bytes(b"\0" * (LC0_V6_RECORD_BYTES * 10))
+                files.append({
+                    "path": path.name,
+                    "size": path.stat().st_size,
+                    "sha256": str(index) * 64,
+                })
+            inventory_info = {
+                "digest": digest,
+                "source": source,
+                "files": files,
+                "cache_home": root / "cache",
+            }
+            for template_name in ("label", "label-static"):
+                with self.subTest(template=template_name):
+                    stdout = io.StringIO()
+                    template_args = [
+                        "--dry-run",
+                        "--workers", "worker-a:3,worker-b:2",
+                        "--source", str(source),
+                        "--output", "/tmp/labels.bullet",
+                        "--max-records", "40",
+                        "--shards", "4",
+                    ]
+                    if template_name == "label-static":
+                        template_args += ["--net", "~/assets/nets/oracle.nnue"]
+                    with (
+                        contextlib.redirect_stdout(stdout),
+                        mock.patch(
+                            "forge_lib.templates.build_inventory",
+                            return_value=inventory_info,
+                        ),
+                        mock.patch(
+                            "forge_lib.templates.git_output_or_empty",
+                            return_value="c" * 40,
+                        ),
+                    ):
+                        rc = forge.cmd_template_run(argparse.Namespace(
+                            template=template_name,
+                            template_args=template_args,
+                        ))
+
+                    self.assertEqual(0, rc)
+                    manifest = json.loads(stdout.getvalue())
+                    self.assertEqual(5, len(manifest["tasks"]))
+                    self.assertEqual([], manifest["requirements"]["inputs"])
+                    task_input = manifest["tasks"][0]["inputs"][0]
+                    self.assertEqual("lc0-inventory", task_input["tree"])
+                    self.assertEqual(1, task_input["files"])
+                    self.assertEqual("c" * 40, manifest["requirements"]["repos"][0]["commit"])
+                    command = manifest["tasks"][0]["command"]
+                    self.assertIn("--max-records 8", command)
+                    self.assertIn("--shard-count 1 --shard-index 0", command)
+                    self.assertNotIn("{task_input}", command)
 
     def test_sprt_command_alias_accepts_dashdash_passthrough(self) -> None:
         run_options, template_args = forge.parse_run_options([
@@ -16920,6 +16948,59 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
                 (target / "nested" / "b.pgn").read_text(encoding="utf-8"),
             )
             self.assertEqual(0, forge.sync_inputs_to_worker(worker, manifest))
+
+    def test_claimed_task_fetches_only_its_inventory_bundle(self) -> None:
+        from forge_lib.labeling import build_inventory, build_inventory_subset
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "source"
+            source.mkdir()
+            (source / "training.0").write_bytes(b"\0" * 8356)
+            (source / "training.1").write_bytes(b"\1" * 8356)
+            inventory = build_inventory(source, cache_home=root / "cache")
+            bundle = build_inventory_subset(
+                inventory,
+                [inventory["files"][1]],
+                cache_home=root / "cache",
+            )
+            destination = root / "worker-input"
+            coordinator_task = {
+                "id": "label_0001",
+                "inputs": [{
+                    "source": str(bundle["cache_root"]),
+                    "path": "/coordinator-only/path",
+                    "tree": "lc0-inventory",
+                    "digest": bundle["digest"],
+                }],
+            }
+            local_task = {
+                "id": "label_0001",
+                "inputs": [{
+                    "path": str(destination),
+                    "tree": "lc0-inventory",
+                    "digest": bundle["digest"],
+                }],
+            }
+
+            self.assertEqual(
+                1,
+                forge.sync_task_inputs_from_coordinator(
+                    str(root / "manifest.json"),
+                    coordinator_task,
+                    local_task,
+                ),
+            )
+            self.assertTrue((destination / "training.1").is_file())
+            self.assertFalse((destination / "training.0").exists())
+            self.assertEqual(
+                0,
+                forge.sync_task_inputs_from_coordinator(
+                    str(root / "manifest.json"),
+                    coordinator_task,
+                    local_task,
+                ),
+            )
 
     def test_copy_dir_to_remote_worker_expands_tilde_before_rsync(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

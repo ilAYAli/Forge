@@ -880,6 +880,62 @@ def load_coordinator_manifest(coordinator: str) -> dict[str, Any]:
         return json.loads(result.stdout)
     return load_manifest(expand_path(manifest_path))
 
+def task_input_items(task: dict[str, Any]) -> list[dict[str, Any]]:
+    inputs = task.get("inputs", [])
+    if not isinstance(inputs, list) or not all(isinstance(item, dict) for item in inputs):
+        raise RuntimeError(f"{task.get('id', 'task')}: inputs must be a list of objects")
+    return inputs
+
+def sync_task_inputs_from_coordinator(
+    coordinator: str,
+    coordinator_task: dict[str, Any],
+    local_task: dict[str, Any],
+) -> int:
+    coordinator_inputs = task_input_items(coordinator_task)
+    local_inputs = task_input_items(local_task)
+    if len(coordinator_inputs) != len(local_inputs):
+        raise RuntimeError(f"{coordinator_task['id']}: profile mapping changed task input count")
+    synced = 0
+    host, _manifest_path = parse_coordinator(coordinator)
+    for source_item, local_item in zip(coordinator_inputs, local_inputs):
+        source = str(source_item.get("source") or source_item.get("path") or "")
+        destination = expand_path(str(local_item.get("path") or ""))
+        tree = str(source_item.get("tree") or "")
+        digest = str(source_item.get("digest") or "")
+        if tree != "lc0-inventory":
+            raise RuntimeError(f"{coordinator_task['id']}: unsupported task input tree {tree!r}")
+        if not digest:
+            raise RuntimeError(f"{coordinator_task['id']}: LC0 task input is missing digest")
+        from .labeling import marker_matches, verify_inventory_tree
+
+        if marker_matches(destination, digest):
+            continue
+        destination.mkdir(parents=True, exist_ok=True)
+        if host:
+            remote_source = f"{host}:{source.rstrip('/')}/"
+            result = run_process_command_with_retries(
+                [
+                    "rsync", "-aL", "--delete", "--exclude", ".verified.json",
+                    "-e", RSYNC_SSH, remote_source, str(destination) + "/",
+                ],
+                retries=SSH_TRANSIENT_RETRY_COUNT,
+            )
+            if result.returncode != 0:
+                raise RuntimeError(
+                    result.stderr.strip()
+                    or result.stdout.strip()
+                    or f"{coordinator_task['id']}: task input transfer failed"
+                )
+        else:
+            source_path = expand_path(source)
+            if not source_path.is_dir():
+                raise RuntimeError(f"{coordinator_task['id']}: task input does not exist: {source_path}")
+            shutil.copytree(source_path, destination, symlinks=False, dirs_exist_ok=True)
+            (destination / ".verified.json").unlink(missing_ok=True)
+        verify_inventory_tree(destination, digest)
+        synced += 1
+    return synced
+
 def worker_execution_manifest(
     manifest: dict[str, Any],
     *,
@@ -1419,6 +1475,13 @@ def cmd_work(args: argparse.Namespace) -> int:
             if isinstance(cancel_payload, dict):
                 write_json(task_cancel_path(local_manifest, local_task), cancel_payload)
                 cancel_task.set()
+            synced_inputs = sync_task_inputs_from_coordinator(
+                args.coordinator,
+                coordinator_task,
+                local_task,
+            )
+            if synced_inputs:
+                print(f"{task_id}: fetched {synced_inputs} task input bundle(s)", flush=True)
             rc = run_task(
                 local_manifest,
                 local_task,

@@ -10,6 +10,10 @@
       "~/.cache/forge": "~/Library/Caches/forge"
     }
   },
+  "chunking": {
+    "initial_units": 5000,
+    "min_chunks_per_slot": 1
+  },
   "parameters": {
     "chunk_time_seconds": {
       "type": "int",
@@ -120,7 +124,7 @@
       "{output_dir}/{task_name}.bullet",
       "{output_dir}/{task_name}.stats.json"
     ],
-    "command": ".venv/bin/python tools/score/label.py --input {source_cache} --inventory {inventory} --output {output_dir}/{task_name}.bullet --stats {output_dir}/{task_name}.stats.json --engine {engine} --depth {depth} --threads {threads} --hash {hash} --max-records {max_records} --min-ply {min_ply} {quiet_only_arg} --shard-count {task_count} --shard-index {task_index}",
+    "command": ".venv/bin/python tools/score/label.py --input {task_input} --inventory {task_inventory} --output {output_dir}/{task_name}.bullet --stats {output_dir}/{task_name}.stats.json --engine {engine} --depth {depth} --threads {threads} --hash {hash} --max-records {task_records} --min-ply {min_ply} {quiet_only_arg} --shard-count 1 --shard-index 0",
     "progress": {
       "unit": "records",
       "log_regex": "read=(?P<done>\\d+) selected=(?P<selected>\\d+) written=(?P<output>\\d+) rate=(?P<rate>[0-9.]+)/s",

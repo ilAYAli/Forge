@@ -7,7 +7,7 @@ import tempfile
 
 from .config import *
 from .manifest import *
-from .labeling import build_inventory
+from .labeling import attach_label_task_inputs, build_inventory
 from .chunking import adaptive_autosized_shards
 from .spsa import (
     attach_spsa_manifest_config,
@@ -1071,6 +1071,7 @@ def cmd_template_run(args: argparse.Namespace) -> int:
             needs_workers = (
                 not (run_options.print_manifest or run_options.dry_run)
                 or (not shards_supplied and bool(total_key))
+                or str(template.get("kind") or "").strip() == "label"
             )
             if needs_workers:
                 generic_workers_arg = resolved_workers_arg(run_options, config)
@@ -1097,16 +1098,30 @@ def cmd_template_run(args: argparse.Namespace) -> int:
                     generic_workers_payload or {},
                     cold_units=cold_units,
                 )
+            if str(template.get("kind") or "").strip() == "label" and generic_workers_payload is not None:
+                params = dict(params)
+                total = as_int(params.get(total_key), label=f"{template_name}.{total_key}")
+                slots = sprt_worker_slot_count(generic_workers_payload)
+                params["shards"] = min(
+                    total,
+                    max(slots, as_int(params.get("shards"), label=f"{template_name}.shards")),
+                )
     run_options = apply_template_run_defaults(template_name, run_options, template)
     inventory_info: dict[str, Any] | None = None
     if str(template.get("kind") or "").strip() == "label":
         inventory_info = build_inventory(str(params["source"]))
         params = dict(params)
+        params["shards"] = min(
+            as_int(params.get("shards"), label=f"{template_name}.shards"),
+            len(inventory_info["files"]),
+        )
         params["source_cache"] = "~/.cache/forge/inputs/" + str(inventory_info["digest"])
         params["inventory"] = params["source_cache"] + "/inventory.json"
         params["inventory_digest"] = str(inventory_info["digest"])
         params["quiet_only_arg"] = "--quiet-only" if bool(params["quiet_only"]) else "--no-quiet-only"
     manifest = expand_template(template_name, path, template, params)
+    if inventory_info is not None:
+        attach_label_task_inputs(manifest, inventory_info)
     if bool(template.get("materialize_inputs", False)):
         materialize_template_inputs(template, manifest, params)
     finalizer = manifest.get("finalize")
