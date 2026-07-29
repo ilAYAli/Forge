@@ -2619,6 +2619,8 @@ def run_control_command_args(name: str, args: argparse.Namespace) -> list[str]:
     command = [name]
     if args.run is not None:
         command.append(str(args.run))
+    if name == "extend":
+        command.extend(["--games", str(args.games)])
     if getattr(args, "workers", None):
         command.extend(["--workers", str(args.workers)])
     if bool(getattr(args, "wait", False)):
@@ -3123,6 +3125,29 @@ def run_local_job(args: argparse.Namespace) -> int:
     if bool(getattr(deploy_args, "queue_handled", False)):
         return rc
     if rc:
+        initial_launch = not bool(args.resume or args.replace or getattr(args, "attach_existing", False))
+        if initial_launch and manifest_path.exists():
+            failed_manifest = load_manifest(manifest_path)
+            failed_summary = status_summary(
+                failed_manifest,
+                lease_seconds=int(args.lease_seconds),
+            )
+            counts = failed_summary["counts"]
+            if (
+                counts["done"] == 0
+                and counts["fail"] == 0
+                and counts["running"] == 0
+                and counts["claimed"] == 0
+                and counts["stale"] == 0
+                and not stop_request_path(failed_manifest).exists()
+            ):
+                shutil.rmtree(run_dir)
+                mark_deleted_run_for_web(run_name)
+                print(
+                    f"{label}: removed undeployed run {run_name}",
+                    file=sys.stderr,
+                )
+                return rc
         if not ephemeral:
             print(f"{label}: inspect with: forge status {run_name} --verbose", file=sys.stderr)
         return rc
@@ -3392,6 +3417,99 @@ def cmd_resume(args: argparse.Namespace) -> int:
         )
         failed += 1 if cmd_run_job(resume_args) else 0
     return 1 if failed else 0
+
+
+def cmd_extend(args: argparse.Namespace) -> int:
+    from .templates import expand_template, load_template
+
+    coordinator_runs = configured_coordinator_runs()
+    if coordinator_runs and status_can_delegate(args.run):
+        return run_control_on_coordinator("extend", args, coordinator_runs)
+    run_name, manifest_path, _workers_path = materialized_run_paths(
+        run_dir_from_arg(args.run),
+        label=str(args.run),
+    )
+    manifest = load_manifest(manifest_path)
+    metadata = manifest_metadata(manifest)
+    if str(metadata.get("kind") or manifest.get("kind") or "").lower() != "sprt":
+        raise SystemExit("extend: only SPRT runs can be extended")
+    if int(args.games) <= 0:
+        raise SystemExit("extend: --games must be positive")
+    if run_active_task_count(manifest, lease_seconds=int(args.lease_seconds)) > 0:
+        raise SystemExit(f"extend: {run_name} still has active tasks")
+    current = status_summary(manifest, lease_seconds=int(args.lease_seconds))
+    if sprt_aggregate_decision(current) is not None:
+        raise SystemExit(f"extend: {run_name} already reached an SPRT bound")
+
+    template_record = manifest.get("template")
+    if not isinstance(template_record, dict):
+        raise SystemExit("extend: run has no template metadata")
+    template_path_value = template_record.get("path")
+    parameters = template_record.get("parameters")
+    if not isinstance(template_path_value, str) or not isinstance(parameters, dict):
+        raise SystemExit("extend: run has incomplete template metadata")
+    template_path_ = expand_path(template_path_value)
+    template = load_template(template_path_)
+    extra_games = int(args.games)
+    if extra_games % 2:
+        extra_games += 1
+    chunking = template.get("chunking")
+    initial_units = (
+        max(1, int(chunking.get("initial_units", 1)))
+        if isinstance(chunking, dict)
+        else 1
+    )
+    old_games = int(parameters.get("games") or 0)
+    old_tasks = list(manifest.get("tasks") or [])
+    extension_params = {
+        **parameters,
+        "games": extra_games,
+        "shards": max(1, math.ceil(extra_games / initial_units)),
+        "book_seed": int(parameters.get("book_seed", 1)) + len(old_tasks),
+        "book_offset": int(parameters.get("book_offset", 0)) + old_games // 2,
+    }
+    extension = expand_template("sprt", template_path_, template, extension_params)
+    existing_ids = {str(task.get("id")) for task in old_tasks}
+    next_index = max(
+        (int(task.get("index", -1)) for task in old_tasks),
+        default=-1,
+    ) + 1
+    for offset, task in enumerate(extension["tasks"]):
+        old_id = str(task["id"])
+        index = next_index + offset
+        width = max(4, len(str(index)))
+        new_id = f"sprt_{index:0{width}d}"
+        if new_id in existing_ids:
+            raise SystemExit(f"extend: duplicate task id {new_id}")
+        task["id"] = new_id
+        task["index"] = index
+        task["command"] = str(task["command"]).replace(old_id, new_id)
+        task["outputs"] = [
+            str(output).replace(old_id, new_id)
+            for output in task.get("outputs") or []
+        ]
+        old_tasks.append(task)
+        existing_ids.add(new_id)
+    manifest["tasks"] = old_tasks
+    template_record["parameters"] = {
+        **parameters,
+        "games": old_games + extra_games,
+        "shards": len(old_tasks),
+    }
+    for path in (
+        stop_request_path(manifest),
+        launch_request_path(manifest),
+        queue_request_path(manifest),
+        run_summary_path(manifest_path),
+    ):
+        path.unlink(missing_ok=True)
+    write_json(manifest_path, manifest)
+    print(
+        f"extend: {run_name} added={extra_games} total={old_games + extra_games} "
+        f"tasks={len(extension['tasks'])}",
+        flush=True,
+    )
+    return cmd_resume(args)
 
 def retry_run_paths(run: str | None, *, lease_seconds: int) -> list[tuple[str, Path, Path]]:
     if run:

@@ -278,8 +278,8 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
         description=(
             "Run the built-in SPRT template. This is equivalent to "
-            "`forge run sprt ...`. Forge consumes only orchestration "
-            "flags; other flags are passed to the SPRT template."
+            "`forge run sprt ...`. Unsupported options are rejected before "
+            "the run is created."
         ),
     )
     sprt.add_argument("template_args", nargs=argparse.REMAINDER, help="Run options and SPRT arguments.")
@@ -939,6 +939,34 @@ def build_parser() -> argparse.ArgumentParser:
     resume.add_argument("--no-color", action="store_true", help="Disable ANSI color output.")
     resume.add_argument("--verbose", action="store_true", help="Print setup and worker phase details.")
     resume.set_defaults(func=cmd_resume)
+
+    extend = sub.add_parser(
+        "extend",
+        help="Append games to a completed SPRT run and resume it.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    extend.add_argument("run", help="SPRT run name or run directory.")
+    extend.add_argument("--games", required=True, type=int, help="Additional games to append.")
+    extend.add_argument("--workers", help=WORKERS_ARG_HELP_RUN_DEFAULT)
+    extend.add_argument("--jobs", type=int, default=4)
+    extend.add_argument("--task-attempts", type=int, default=2)
+    extend.add_argument("--coordinator-host")
+    extend.add_argument("--remote-timeout-seconds", type=float, default=1800.0)
+    extend.add_argument("--wait", action="store_true")
+    extend.add_argument("--lease-seconds", type=int, default=600)
+    extend.add_argument("--interval-seconds", type=float, default=30.0)
+    extend.add_argument("--timeout-seconds", type=float, default=0.0)
+    extend.add_argument("--fail-on-fail", action=argparse.BooleanOptionalAction, default=True)
+    extend.add_argument("--verify", action=argparse.BooleanOptionalAction, default=None)
+    extend.add_argument("--merge")
+    extend.add_argument("--merge-force", action="store_true")
+    extend.add_argument("--newline-between", action="store_true")
+    extend.add_argument("--notify-command")
+    extend.add_argument("--task-complete-command")
+    extend.add_argument("--task-complete-sync", action="store_true")
+    extend.add_argument("--no-color", action="store_true")
+    extend.add_argument("--verbose", action="store_true")
+    extend.set_defaults(func=cmd_extend)
 
     retry = sub.add_parser(
         "retry",

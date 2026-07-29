@@ -696,6 +696,27 @@ def claim_task(
         }
     return None
 
+
+def reap_stale_tasks(manifest: dict[str, Any], *, lease_seconds: int) -> list[str]:
+    """Return expired claims/running markers to the pending queue."""
+    requeued: list[str] = []
+    for task in manifest.get("tasks") or []:
+        if task_complete(manifest, task):
+            continue
+        changed = False
+        if task_running_state(manifest, task, lease_seconds=lease_seconds) == "stale":
+            task_running_path(manifest, task).unlink(missing_ok=True)
+            changed = True
+        if task_claim_state(manifest, task, lease_seconds=lease_seconds) == "stale":
+            changed = remove_stale_claim(
+                manifest,
+                task,
+                lease_seconds=lease_seconds,
+            ) or changed
+        if changed:
+            requeued.append(str(task["id"]))
+    return requeued
+
 def remove_stale_claim(manifest: dict[str, Any], task: dict[str, Any], *, lease_seconds: int) -> bool:
     lock = task_stale_lock_dir(manifest, task)
     try:

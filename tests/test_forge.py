@@ -3204,7 +3204,10 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
 
     def test_sprt_command_auto_sizes_shards_to_worker_multiple(self) -> None:
         stdout = io.StringIO()
-        with contextlib.redirect_stdout(stdout):
+        with (
+            contextlib.redirect_stdout(stdout),
+            mock.patch("forge_lib.chunking.selfplay_cached_throughput", return_value=None),
+        ):
             rc = forge.cmd_template_run(argparse.Namespace(
                 template="sprt",
                 template_args=[
@@ -3219,16 +3222,19 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
 
         self.assertEqual(0, rc)
         self.assertEqual("quick smoke", manifest["comment"])
-        self.assertEqual(30, manifest["template"]["parameters"]["shards"])
-        self.assertEqual(30, len(manifest["tasks"]))
+        self.assertEqual(45, manifest["template"]["parameters"]["shards"])
+        self.assertEqual(45, len(manifest["tasks"]))
         totals = [task["progress"]["total"] for task in manifest["tasks"]]
         self.assertEqual(256, sum(totals))
-        self.assertEqual(8, min(totals))
-        self.assertEqual(10, max(totals))
+        self.assertEqual(4, min(totals))
+        self.assertEqual(6, max(totals))
 
     def test_sprt_command_rounds_fifty_target_shards_to_two_worker_waves(self) -> None:
         stdout = io.StringIO()
-        with contextlib.redirect_stdout(stdout):
+        with (
+            contextlib.redirect_stdout(stdout),
+            mock.patch("forge_lib.chunking.selfplay_cached_throughput", return_value=None),
+        ):
             rc = forge.cmd_template_run(argparse.Namespace(
                 template="sprt",
                 template_args=[
@@ -3242,12 +3248,12 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
         totals = [task["progress"]["total"] for task in manifest["tasks"]]
 
         self.assertEqual(0, rc)
-        self.assertEqual(88, manifest["template"]["parameters"]["shards"])
-        self.assertEqual(88, len(manifest["tasks"]))
+        self.assertEqual(220, manifest["template"]["parameters"]["shards"])
+        self.assertEqual(220, len(manifest["tasks"]))
         self.assertEqual(0, len(manifest["tasks"]) % 44)
         self.assertEqual(1250, sum(totals))
-        self.assertEqual(14, min(totals))
-        self.assertEqual(16, max(totals))
+        self.assertEqual(4, min(totals))
+        self.assertEqual(6, max(totals))
 
     def test_sprt_command_preserves_explicit_shards(self) -> None:
         stdout = io.StringIO()
@@ -3270,7 +3276,10 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
 
     def test_sprt_command_auto_shards_avoid_short_game_shards(self) -> None:
         stdout = io.StringIO()
-        with contextlib.redirect_stdout(stdout):
+        with (
+            contextlib.redirect_stdout(stdout),
+            mock.patch("forge_lib.chunking.selfplay_cached_throughput", return_value=None),
+        ):
             rc = forge.cmd_template_run(argparse.Namespace(
                 template="sprt",
                 template_args=[
@@ -3284,15 +3293,18 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
         totals = [task["progress"]["total"] for task in manifest["tasks"]]
 
         self.assertEqual(0, rc)
-        self.assertEqual(32, manifest["template"]["parameters"]["shards"])
-        self.assertEqual(32, len(manifest["tasks"]))
+        self.assertEqual(80, manifest["template"]["parameters"]["shards"])
+        self.assertEqual(80, len(manifest["tasks"]))
         self.assertEqual(400, sum(totals))
-        self.assertEqual(12, min(totals))
-        self.assertEqual(14, max(totals))
+        self.assertEqual(4, min(totals))
+        self.assertEqual(6, max(totals))
 
     def test_sprt_command_auto_shards_large_runs_by_target_games(self) -> None:
         stdout = io.StringIO()
-        with contextlib.redirect_stdout(stdout):
+        with (
+            contextlib.redirect_stdout(stdout),
+            mock.patch("forge_lib.chunking.selfplay_cached_throughput", return_value=None),
+        ):
             rc = forge.cmd_template_run(argparse.Namespace(
                 template="sprt",
                 template_args=[
@@ -3306,11 +3318,11 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
         totals = [task["progress"]["total"] for task in manifest["tasks"]]
 
         self.assertEqual(0, rc)
-        self.assertEqual(320, manifest["template"]["parameters"]["shards"])
-        self.assertEqual(320, len(manifest["tasks"]))
+        self.assertEqual(1344, manifest["template"]["parameters"]["shards"])
+        self.assertEqual(1344, len(manifest["tasks"]))
         self.assertEqual(8000, sum(totals))
-        self.assertEqual(24, min(totals))
-        self.assertEqual(26, max(totals))
+        self.assertEqual(4, min(totals))
+        self.assertEqual(6, max(totals))
 
     def test_run_template_uses_default_workers(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -3454,7 +3466,21 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
         self.assertTrue(manifest["name"].startswith("sprt-enyo_637c4be-256-"))
         self.assertIn(f"--candidate {target_arg}", manifest["tasks"][0]["command"])
 
-    def test_sprt_template_passes_unknown_sprt_args_through(self) -> None:
+    def test_sprt_template_rejects_unknown_arguments_before_creating_run(self) -> None:
+        template_path = ROOT / "templates" / "sprt.template.json"
+        template = forge.load_template(template_path)
+        with self.assertRaises(SystemExit):
+            forge.parse_sprt_template_parameters(
+                "sprt",
+                template,
+                [
+                    "--candidate", "~/assets/engines/enyo_9696dac",
+                    "--games", "125",
+                    "--totally-bogus-flag", "xyz",
+                ],
+            )
+
+    def test_sprt_template_exposes_hypothesis_and_opening_controls(self) -> None:
         template_path = ROOT / "templates" / "sprt.template.json"
         template = forge.load_template(template_path)
         params = forge.parse_sprt_template_parameters(
@@ -3462,21 +3488,105 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
             template,
             [
                 "--candidate", "~/assets/engines/enyo_9696dac",
-                "--reference", "~/assets/engines/reference-static",
-                "--games", "125",
-                "--shards", "3",
-                "--opening-order", "random",
-                "--custom-flag",
+                "--games", "12",
+                "--shards", "2",
+                "--elo0", "0",
+                "--elo1", "20",
+                "--alpha", "0.05",
+                "--beta", "0.15",
+                "--book-order", "sequential",
+                "--book-seed", "40",
+                "--book-offset", "100",
             ],
         )
         manifest = forge.expand_template("sprt", template_path, template, params)
+        first, second = manifest["tasks"]
 
-        self.assertEqual(["--opening-order", "random", "--custom-flag"], manifest["template"]["parameters"]["sprt_extra_args"])
-        self.assertIn("--reference ~/assets/engines/reference-static", manifest["tasks"][0]["command"])
-        self.assertIn("--opening-order random --custom-flag", manifest["tasks"][0]["command"])
-        self.assertIn("--games 42", manifest["tasks"][0]["command"])
-        self.assertIn("--games 41", manifest["tasks"][2]["command"])
-        self.assertNotIn("--games 125", manifest["tasks"][0]["command"])
+        for flag in (
+            "--elo0 0.0",
+            "--elo1 20.0",
+            "--alpha 0.05",
+            "--beta 0.15",
+            "--order sequential",
+        ):
+            self.assertIn(flag, first["command"])
+        self.assertIn("--srand 40 --book-offset 100", first["command"])
+        self.assertIn("--srand 41 --book-offset 103", second["command"])
+
+    def test_extend_sprt_appends_games_without_discarding_completed_tasks(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            runs = root / "runs"
+            run = runs / "borderline"
+            state = run / "state"
+            state.mkdir(parents=True)
+            template_path = forge.template_path("sprt")
+            template = forge.load_template(template_path)
+            params = forge.parse_sprt_template_parameters(
+                "sprt",
+                template,
+                [
+                    "--candidate", "~/assets/engines/enyo_9696dac",
+                    "--games", "12",
+                    "--shards", "2",
+                ],
+            )
+            manifest = forge.expand_template("sprt", template_path, template, params)
+            manifest["name"] = "borderline"
+            manifest["state_dir"] = str(state)
+            manifest["claim_dir"] = str(run / "claims")
+            manifest["log_dir"] = str(run / "logs")
+            forge.write_json(run / "manifest.json", manifest)
+            forge.write_json(run / "workers.json", {"workers": []})
+            for task in manifest["tasks"]:
+                forge.write_json(
+                    state / f"{task['id']}.done.json",
+                    {"task": task["id"], "rc": 0},
+                )
+
+            args = argparse.Namespace(
+                run="borderline",
+                games=10,
+                workers=None,
+                jobs=4,
+                task_attempts=2,
+                coordinator_host=None,
+                remote_timeout_seconds=1,
+                wait=False,
+                lease_seconds=600,
+                interval_seconds=1,
+                timeout_seconds=0,
+                fail_on_fail=True,
+                verify=None,
+                merge=None,
+                merge_force=False,
+                newline_between=False,
+                notify_command=None,
+                task_complete_command=None,
+                task_complete_sync=False,
+                no_color=True,
+                verbose=False,
+            )
+            with (
+                mock.patch.dict(os.environ, {"FORGE_RUNS_DIR": str(runs)}),
+                mock.patch("forge_lib.workers.cmd_resume", return_value=0) as resume,
+            ):
+                rc = forge.cmd_extend(args)
+
+            extended = forge.load_manifest(run / "manifest.json")
+            completed_preserved = all(
+                (state / f"sprt_{index:04d}.done.json").exists()
+                for index in range(2)
+            )
+
+        self.assertEqual(0, rc)
+        self.assertEqual(22, extended["template"]["parameters"]["games"])
+        self.assertEqual(4, len(extended["tasks"]))
+        self.assertEqual(["sprt_0000", "sprt_0001"], [
+            task["id"] for task in extended["tasks"][:2]
+        ])
+        self.assertTrue(completed_preserved)
+        resume.assert_called_once()
 
     def test_sprt_template_splits_games_evenly_by_shards(self) -> None:
         template_path = ROOT / "templates" / "sprt.template.json"
@@ -9168,7 +9278,10 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
                 })
                 forge.write_json(state / f"{task_id}.done.json", {"task": task_id, "host": "worker"})
                 (logs / f"{task_id}.log").write_text(
-                    f"[2/2] Elo  {10 - index * 20}.0 +/-  80.0 | LLR {0.1 - index * 0.2:.1f}/2.94 (  3%) | LOS 50.0% | draw   0.0%\n",
+                    f"[2/2] Elo  {10 - index * 20}.0 +/-  80.0 | "
+                    f"LLR {0.1 - index * 0.2:.1f}/2.94 (  3%) | LOS 50.0% | "
+                    f"WDL {1 - index}/{index}/{1} | "
+                    f"Ptnml {index}-0-{1 - index}-0-0 | draw   0.0%\n",
                     encoding="utf-8",
                 )
             manifest = {
@@ -9201,6 +9314,8 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
             self.assertAlmostEqual(0.0, series["elo"][0]["y"], places=1)
             self.assertAlmostEqual(0.0, series["elo"][-1]["y"], places=1)
             self.assertEqual([{"label": "sprt", "count": 2, "command": "true"}], payload["commands"])
+            self.assertEqual([1, 1, 2], payload["sprt"]["wdl"])
+            self.assertEqual([1, 0, 1, 0, 0], payload["sprt"]["pentanomial"])
 
     def test_wait_completes_sprt_when_aggregate_h1_is_reached(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -9257,6 +9372,10 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
             summary = json.loads((run / "summary.json").read_text(encoding="utf-8"))
             self.assertEqual("run_done", summary["event"])
             self.assertEqual("ok", summary["state"])
+            self.assertEqual(
+                "aggregate_sprt_bound",
+                summary["sprt"]["stopping_reason"]["reason"],
+            )
             self.assertEqual({"done": 3, "fail": 0, "running": 0, "claimed": 0, "stale": 0, "pending": 0}, summary["counts"])
             self.assertIn("games=20/30", summary["status_line"])
             stop = json.loads((state / "stop.json").read_text(encoding="utf-8"))
@@ -9850,6 +9969,27 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
             self.assertEqual("task_0000", reclaimed["task"])
             payload = forge.read_json(forge.task_claim_path(manifest, task))
             self.assertEqual("worker-b", payload["worker"])
+
+    def test_stale_reaper_returns_expired_task_to_pending(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest = {
+                "schema": "forge.task.v1",
+                "state_dir": str(root / "state"),
+                "claim_dir": str(root / "claims"),
+                "tasks": [{"id": "task_0000", "index": 0, "command": "true", "outputs": []}],
+            }
+            task = manifest["tasks"][0]
+            claim = forge.task_claim_dir(manifest, task)
+            claim.mkdir(parents=True)
+            old = forge.epoch() - 30
+            os.utime(claim, (old, old))
+
+            self.assertEqual("stale", forge.task_state(manifest, task, lease_seconds=1))
+            requeued = forge.reap_stale_tasks(manifest, lease_seconds=1)
+
+            self.assertEqual(["task_0000"], requeued)
+            self.assertEqual("pending", forge.task_state(manifest, task, lease_seconds=1))
 
     def test_stale_running_marker_does_not_block_reclaim(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

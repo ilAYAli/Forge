@@ -2652,7 +2652,9 @@ SPRT_PROGRESS_RE = re.compile(
     r"(?P<err>[+-]?(?:\d+(?:\.\d+)?|inf|nan))\s+\|\s+"
     r"LLR\s+(?P<llr>[+-]?\d+(?:\.\d+)?)/(?P<llr_bound>[+-]?(?:\d+(?:\.\d+)?|inf|nan))\s+"
     r"\(\s*(?P<llr_pct>[+-]?\d+(?:\.\d+)?)%\)\s+\|\s+"
-    r"LOS\s+(?P<los>[+-]?(?:\d+(?:\.\d+)?|inf|nan))\s*%\s+\|\s+"
+    r"LOS\s+(?P<los>[+-]?(?:\d+(?:\.\d+)?|inf|nan))\s*%"
+    r"(?:\s+\|\s+WDL\s+(?P<wdl>\d+/\d+/\d+)"
+    r"\s+\|\s+Ptnml\s+(?P<pentanomial>\d+-\d+-\d+-\d+-\d+))?\s+\|\s+"
     r"draw\s+(?P<draw>[+-]?(?:\d+(?:\.\d+)?|inf|nan))\s*%",
     re.IGNORECASE,
 )
@@ -2678,7 +2680,7 @@ FASTCHESS_GAMES_RE = re.compile(
     re.IGNORECASE,
 )
 
-SPRT_PROGRESS_FIELD_KEYS = {"elo", "ci", "llr", "los", "draw"}
+SPRT_PROGRESS_FIELD_KEYS = {"elo", "ci", "llr", "los", "wdl", "pentanomial", "draw"}
 
 def sprt_progress_line_fields(line: str) -> dict[str, str]:
     match = SPRT_PROGRESS_RE.search(line)
@@ -2688,13 +2690,17 @@ def sprt_progress_line_fields(line: str) -> dict[str, str]:
     llr = values["llr"].strip()
     llr_bound = values["llr_bound"].strip()
     llr_pct = values["llr_pct"].strip()
-    return {
+    fields = {
         "elo": values["elo"].strip(),
         "ci": values["err"].strip(),
         "llr": f"{llr}/{llr_bound} ({llr_pct}%)",
         "los": values["los"].strip(),
         "draw": values["draw"].strip(),
     }
+    for key in ("wdl", "pentanomial"):
+        if values.get(key):
+            fields[key] = values[key].strip()
+    return fields
 
 def fastchess_progress_fields(text: str) -> dict[str, str]:
     elo_match = FASTCHESS_ELO_RE.search(text)
@@ -3543,6 +3549,10 @@ def sprt_aggregate_stats(summary: dict[str, Any]) -> dict[str, Any]:
     llr_count = 0
     llr_bound: float | None = None
     llr_mixed_bound = False
+    wins = draws = losses = 0
+    pentanomial = [0, 0, 0, 0, 0]
+    wdl_available = False
+    pentanomial_available = False
 
     for row in sprt_summary_rows(summary):
         data = row.get("progress_data")
@@ -3555,6 +3565,22 @@ def sprt_aggregate_stats(summary: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(fields, dict):
             continue
         normalized_fields = normalize_progress_fields(fields)
+        wdl_text = normalized_fields.get("wdl")
+        if isinstance(wdl_text, str):
+            parts = wdl_text.split("/")
+            if len(parts) == 3 and all(part.isdigit() for part in parts):
+                row_wins, row_draws, row_losses = (int(part) for part in parts)
+                wins += row_wins
+                draws += row_draws
+                losses += row_losses
+                wdl_available = True
+        pentanomial_text = normalized_fields.get("pentanomial")
+        if isinstance(pentanomial_text, str):
+            parts = pentanomial_text.split("-")
+            if len(parts) == 5 and all(part.isdigit() for part in parts):
+                for index, part in enumerate(parts):
+                    pentanomial[index] += int(part)
+                pentanomial_available = True
         elo = progress_field_float(normalized_fields, "elo", "elo~", "Elo")
         if elo is None:
             continue
@@ -3597,6 +3623,8 @@ def sprt_aggregate_stats(summary: dict[str, Any]) -> dict[str, Any]:
         "llr_count": llr_count,
         "llr_bound": llr_bound,
         "llr_mixed_bound": llr_mixed_bound,
+        "wdl": [wins, draws, losses] if wdl_available else None,
+        "pentanomial": pentanomial if pentanomial_available else None,
     }
 
 def pooled_los_percent(elo: float, ci: float) -> float:
@@ -4429,6 +4457,12 @@ def _cmd_wait(args: argparse.Namespace) -> int:
             manifest = apply_profile(load_manifest(manifest_path), args.profile)
         except FileNotFoundError:
             return deleted()
+        requeued = reap_stale_tasks(
+            manifest,
+            lease_seconds=args.lease_seconds,
+        )
+        if requeued:
+            print(f"requeued stale tasks={len(requeued)}", flush=True)
         summary = status_summary(manifest, lease_seconds=args.lease_seconds)
         summary["metadata"] = manifest_metadata(manifest)
         counts = summary["counts"]
@@ -4643,6 +4677,19 @@ def run_completion_event_payload(
     progress = summary_progress(summary)
     if progress:
         payload["progress"] = progress
+    if summary_is_sprt(summary):
+        stats = sprt_aggregate_stats(summary)
+        sprt: dict[str, Any] = {}
+        if isinstance(stats.get("wdl"), list):
+            sprt["wdl"] = stats["wdl"]
+            sprt["wins"], sprt["draws"], sprt["losses"] = stats["wdl"]
+        if isinstance(stats.get("pentanomial"), list):
+            sprt["pentanomial"] = stats["pentanomial"]
+        decision = sprt_aggregate_decision(summary)
+        if decision is not None:
+            sprt["stopping_reason"] = decision
+        if sprt:
+            payload["sprt"] = sprt
     payload.update(metadata)
     return payload
 

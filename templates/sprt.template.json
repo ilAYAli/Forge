@@ -62,6 +62,25 @@
       "worker_path": true,
       "help": "Opening book"
     },
+    "book_order": {
+      "arg": "--order",
+      "choices": [
+        "random",
+        "sequential"
+      ],
+      "default": "random",
+      "help": "Opening-book order"
+    },
+    "book_seed": {
+      "type": "int",
+      "help": "Base opening random seed; defaults to a new run-specific seed and each shard adds its task index"
+    },
+    "book_offset": {
+      "arg": "--book-offset",
+      "type": "int",
+      "default": 0,
+      "help": "Zero-based opening-book offset"
+    },
     "shards": {
       "type": "int",
       "aliases": [
@@ -88,6 +107,26 @@
       "default": "10+0.1",
       "help": "SPRT time control"
     },
+    "elo0": {
+      "type": "float",
+      "default": 0.0,
+      "help": "SPRT null-hypothesis Elo"
+    },
+    "elo1": {
+      "type": "float",
+      "default": 5.0,
+      "help": "SPRT alternative-hypothesis Elo"
+    },
+    "alpha": {
+      "type": "float",
+      "default": 0.1,
+      "help": "SPRT false-positive probability"
+    },
+    "beta": {
+      "type": "float",
+      "default": 0.1,
+      "help": "SPRT false-negative probability"
+    },
     "restart": {
       "default": "on",
       "help": "SPRT restart mode"
@@ -100,9 +139,9 @@
       {
         "name": "sprt",
         "url": "git@github.com:ilAYAli/sprt.git",
-        "path": "~/.cache/forge/tools/sprt/a42658d7ff09c8334777fccd61e0928cf3108b57",
+        "path": "~/.cache/forge/tools/sprt/a99f574a670e30f3e0699fae891c679de6db5560",
         "remote": "origin",
-        "commit": "a42658d7ff09c8334777fccd61e0928cf3108b57",
+        "commit": "a99f574a670e30f3e0699fae891c679de6db5560",
         "allow_untracked": true,
         "probe": [
           "./sprt --help | grep -- '--no-ntfy'"
@@ -129,8 +168,8 @@
     "commands": [
       {
         "name": "sprt",
-        "path": "~/.cache/forge/tools/sprt/a42658d7ff09c8334777fccd61e0928cf3108b57/sprt",
-        "command": "~/.cache/forge/tools/sprt/a42658d7ff09c8334777fccd61e0928cf3108b57/sprt --help",
+        "path": "~/.cache/forge/tools/sprt/a99f574a670e30f3e0699fae891c679de6db5560/sprt",
+        "command": "~/.cache/forge/tools/sprt/a99f574a670e30f3e0699fae891c679de6db5560/sprt --help",
         "contains": "--no-ntfy",
         "timeout_s": 20
       },
@@ -173,10 +212,10 @@
     },
     "label": "sprt:{shard}",
     "output": "{output_dir}/{task_name}/logs/{task_name}.log",
-    "command": "~/.cache/forge/tools/sprt/a42658d7ff09c8334777fccd61e0928cf3108b57/sprt --candidate-uci Hash={hash} --reference-uci Hash={hash} {sprt_args} --games {shard} --fastchess ~/.cache/forge/tools/fastchess/3de44228aec904e688a4ad71c554eb9d461a5a2a/fastchess --log-dir {output_dir}/{task_name}/logs --name {task_name} --no-ntfy --no-eta",
+    "command": "~/.cache/forge/tools/sprt/a99f574a670e30f3e0699fae891c679de6db5560/sprt --candidate-uci Hash={hash} --reference-uci Hash={hash} {sprt_args} --games {shard} --srand {seed} --book-offset {book_offset} --fastchess ~/.cache/forge/tools/fastchess/3de44228aec904e688a4ad71c554eb9d461a5a2a/fastchess --log-dir {output_dir}/{task_name}/logs --name {task_name} --no-ntfy --no-eta",
     "progress": {
       "unit": "games",
-      "log_regex": "\\[\\s*(?P<done>\\d+)\\/(?P<total>\\d+)\\].*?Elo\\s+(?P<elo>[-+]?(?:\\d+(?:\\.\\d+)?|inf|nan))\\s+\\+/-\\s+(?P<ci>[-+]?(?:\\d+(?:\\.\\d+)?|inf|nan))\\s+\\|\\s+LLR\\s+(?P<llr>[+-]?\\d+(?:\\.\\d+)?/[+-]?(?:\\d+(?:\\.\\d+)?|inf|nan)\\s+\\(\\s*[+-]?\\d+(?:\\.\\d+)?%\\))\\s+\\|\\s+LOS\\s+(?P<los>[-+]?(?:\\d+(?:\\.\\d+)?|inf|nan))%\\s+\\|\\s+draw\\s+(?P<draw>[-+]?(?:\\d+(?:\\.\\d+)?|inf|nan))%(?:.*?ETA\\s+(?P<eta>\\S+))?",
+      "log_regex": "\\[\\s*(?P<done>\\d+)\\/(?P<total>\\d+)\\].*?Elo\\s+(?P<elo>[-+]?(?:\\d+(?:\\.\\d+)?|inf|nan))\\s+\\+/-\\s+(?P<ci>[-+]?(?:\\d+(?:\\.\\d+)?|inf|nan))\\s+\\|\\s+LLR\\s+(?P<llr>[+-]?\\d+(?:\\.\\d+)?/[+-]?(?:\\d+(?:\\.\\d+)?|inf|nan)\\s+\\(\\s*[+-]?\\d+(?:\\.\\d+)?%\\))\\s+\\|\\s+LOS\\s+(?P<los>[-+]?(?:\\d+(?:\\.\\d+)?|inf|nan))%(?:\\s+\\|\\s+WDL\\s+(?P<wdl>\\d+/\\d+/\\d+)\\s+\\|\\s+Ptnml\\s+(?P<pentanomial>\\d+-\\d+-\\d+-\\d+-\\d+))?\\s+\\|\\s+draw\\s+(?P<draw>[-+]?(?:\\d+(?:\\.\\d+)?|inf|nan))%(?:.*?ETA\\s+(?P<eta>\\S+))?",
       "series": [
         {
           "name": "llr",

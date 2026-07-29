@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import secrets
 import shlex
 import tempfile
 
@@ -160,7 +161,14 @@ def repeatable_arg_shell_values(template: dict[str, Any], values: dict[str, Any]
     return result
 
 
-SPRT_TEMPLATE_CONTROL_ARGS = {"chunk_time_seconds", "games", "hash", "shards"}
+SPRT_TEMPLATE_CONTROL_ARGS = {
+    "book_offset",
+    "book_seed",
+    "chunk_time_seconds",
+    "games",
+    "hash",
+    "shards",
+}
 
 
 def sprt_shell_word(value: str) -> str:
@@ -370,15 +378,20 @@ def parse_template_parameters(template_name: str, template: dict[str, Any], raw_
 
 
 def parse_sprt_template_parameters(template_name: str, template: dict[str, Any], raw_args: list[str]) -> dict[str, Any]:
-    values, unknown = parse_template_parameters_with_unknown(
-        template_name,
-        template,
-        raw_args,
-        allow_unknown=True,
-    )
+    values = parse_template_parameters(template_name, template, raw_args)
     validate_sprt_uci_options(values)
-    if unknown:
-        values["sprt_extra_args"] = unknown
+    elo0 = float(values.get("elo0", 0.0))
+    elo1 = float(values.get("elo1", 5.0))
+    if elo1 <= elo0:
+        raise SystemExit("sprt: --elo1 must be greater than --elo0")
+    for key in ("alpha", "beta"):
+        probability = float(values.get(key, 0.1))
+        if not 0.0 < probability < 1.0:
+            raise SystemExit(f"sprt: --{key} must be between 0 and 1")
+    if int(values.get("book_offset", 0)) < 0:
+        raise SystemExit("sprt: --book-offset must be non-negative")
+    if "book_seed" not in values:
+        values["book_seed"] = secrets.randbelow(2**31)
     return values
 
 
@@ -495,6 +508,7 @@ def parse_run_options(raw_args: list[str]) -> tuple[argparse.Namespace, list[str
     parser.add_argument("--workers")
     parser.add_argument("--jobs", type=int, default=4)
     parser.add_argument("--run")
+    parser.add_argument("--extend")
     parser.add_argument("--comment")
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--replace", action="store_true")
@@ -767,6 +781,11 @@ def expand_template(template_name: str, template_path_: Path, template: dict[str
         })
         if template_name == "selfplay" and "seed" in values:
             task_values["seed"] = int(values["seed"]) + index
+        if template_name == "sprt":
+            task_values["seed"] = int(values.get("book_seed", 1)) + index
+            task_values["book_offset"] = (
+                int(values.get("book_offset", 0)) + range_offset // 2
+            )
         task_values.update(shell_value_format_values(task_values))
         task: dict[str, Any] = {
             "id": task_name,
@@ -949,6 +968,22 @@ def cmd_template_run(args: argparse.Namespace) -> int:
     path = template_path(args.template)
     template = load_template(path)
     template_name = template_display_name(path, template)
+    if run_options.extend:
+        if template_name != "sprt":
+            raise SystemExit("--extend is currently supported only for the sprt template")
+        extension_parser = argparse.ArgumentParser(
+            prog="forge sprt --extend RUN",
+            allow_abbrev=False,
+        )
+        extension_parser.add_argument("--games", type=int, required=True)
+        extension = extension_parser.parse_args(template_args)
+        from .workers import cmd_extend
+
+        return cmd_extend(argparse.Namespace(
+            **vars(run_options),
+            run=run_options.extend,
+            games=extension.games,
+        ))
     workers_arg: str | None = None
     sprt_workers_payload: dict[str, Any] | None = None
     selfplay_workers_payload: dict[str, Any] | None = None
@@ -965,8 +1000,18 @@ def cmd_template_run(args: argparse.Namespace) -> int:
             sprt_workers_payload = sprt_worker_slots_payload(workers_arg)
         if not shards_supplied:
             params = dict(params)
+            chunking = template.get("chunking")
+            cold_units = (
+                max(1, int(chunking.get("initial_units", 1)))
+                if isinstance(chunking, dict)
+                else 1
+            )
             params["shards"] = auto_adaptive_shards(
-                template_name, template, params, sprt_workers_payload or {}, cold_units=25
+                template_name,
+                template,
+                params,
+                sprt_workers_payload or {},
+                cold_units=cold_units,
             )
     elif template_name == "selfplay":
         params = parse_selfplay_template_parameters(template_name, template, template_args)
