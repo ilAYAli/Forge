@@ -92,7 +92,7 @@
     "uci": {
       "repeatable": true,
       "default": [
-        "nnue_file=~/assets/nets/reference.net"
+        "nnue_file=~/assets/nets/nn-0ee0657fb25e.nnue"
       ],
       "arg": "--uci",
       "file_options": [
