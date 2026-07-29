@@ -137,6 +137,22 @@ class LabelingFinalizationTests(unittest.TestCase):
             self.assertEqual(summary, json.loads((Path(tmp) / "dataset-summary.json").read_text()))
             self.assertEqual([], list(Path(tmp).glob(".dataset.bullet.partial.*")))
 
+    def test_task_scoped_inputs_use_local_shard_index(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            manifest_path, manifest = self.make_run(Path(tmp))
+            for task in manifest["tasks"]:
+                task["inputs"] = [{"tree": "lc0-inventory", "path": f"/input/{task['index']}"}]
+                stats_path = Path(task["outputs"][1])
+                stats = json.loads(stats_path.read_text(encoding="utf-8"))
+                stats["shard_index"] = 0
+                stats["shard_count"] = 1
+                stats_path.write_text(json.dumps(stats), encoding="utf-8")
+
+            summary = finalize_labeling(manifest_path, manifest)
+
+            assert summary is not None
+            self.assertEqual(3, summary["shard_count"])
+
     def test_merges_adaptive_ranges_in_source_order(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             manifest_path, manifest = self.make_run(Path(tmp))

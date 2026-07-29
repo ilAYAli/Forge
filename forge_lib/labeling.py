@@ -279,6 +279,10 @@ def finalize_labeling(manifest_path: Path, manifest: dict[str, Any]) -> dict[str
         isinstance(task.get("adaptive_range"), dict)
         for task in manifest["tasks"]
     )
+    task_scoped_inputs = all(
+        isinstance(task.get("inputs"), list) and bool(task["inputs"])
+        for task in manifest["tasks"]
+    )
     tasks = sorted(
         manifest["tasks"],
         key=lambda task: int(
@@ -315,7 +319,11 @@ def finalize_labeling(manifest_path: Path, manifest: dict[str, Any]) -> dict[str
         written = int(stats.get("written", -1))
         if written != size // RECORD_BYTES:
             raise ValueError(f"{task['id']}: written count does not match bytes")
-        if not ranged and int(stats.get("shard_index", -1)) != expected_index:
+        if (
+            not ranged
+            and not task_scoped_inputs
+            and int(stats.get("shard_index", -1)) != expected_index
+        ):
             raise ValueError(f"{task['id']}: stats shard index mismatch")
         expected_bytes += size
         expected_positions += written
