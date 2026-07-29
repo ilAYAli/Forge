@@ -351,7 +351,10 @@ _HTML = r"""<!DOCTYPE html>
       }
       const key = String(field).split('=', 1)[0].toLowerCase();
       const semantic = ['ci', 'workers', 'speedup'].includes(key) ? ` field-${key}` : '';
-      return `<span class="field${semantic}">${esc(field)}</span>`;
+      const title = key === 'speedup'
+        ? ' title="Equivalent fastest workers: aggregate throughput divided by fastest calibrated active-process throughput."'
+        : '';
+      return `<span class="field${semantic}"${title}>${esc(field)}</span>`;
     }
 
     function mobileScoreStrip(fields, activeFields) {

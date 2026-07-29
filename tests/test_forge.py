@@ -664,6 +664,11 @@ except SystemExit as exc:
         self.assertIn("taskSort.col === 'task'", web._HTML)
         self.assertIn("av.localeCompare(bv, undefined", web._HTML)
         self.assertIn("numeric: true", web._HTML)
+        self.assertIn(
+            "Equivalent fastest workers: aggregate throughput divided by "
+            "fastest calibrated active-process throughput.",
+            web._HTML,
+        )
         self.assertIn("toggleSound()", web._HTML)
         self.assertIn("notifyStartedJobs(data)", web._HTML)
         self.assertIn("playDing()", web._HTML)
