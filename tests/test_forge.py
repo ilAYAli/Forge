@@ -12492,7 +12492,7 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
                 )
                 self.assertEqual(0, rc)
                 text = stdout.getvalue()
-                self.assertIn("tasks=1/4 speedup=1.4x", text)
+                self.assertIn("tasks=1/4 speedup=3.0x", text)
                 self.assertIn("active: 3 rows=177k/500k workers=2 output=68k min=worker-b:20k max=worker-a:48k", text)
                 self.assertNotIn("max=worker-a:48k speedup=", text)
                 self.assertNotIn("active workers:", text)
@@ -12525,7 +12525,7 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
                 )
                 self.assertIn("active: \033[33m3\033[0m", color_line)
                 self.assertIn("workers=2 output=68k min=worker-b:20k max=worker-a:48k", color_line)
-                self.assertIn(f"speedup=\033[{forge.STATUS_BLUE_SGR}m1.4x\033[0m", color_stdout.getvalue())
+                self.assertIn(f"speedup=\033[{forge.STATUS_BLUE_SGR}m3.0x\033[0m", color_stdout.getvalue())
                 self.assertNotIn("workers=\033[", color_line)
                 self.assertNotIn("output=\033[", color_line)
                 self.assertNotIn("min=\033[", color_line)
@@ -12820,6 +12820,31 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
         }
         self.assertEqual(2.5, forge.run_speedup_value(summary))
 
+    def test_status_speedup_prefers_calibrated_process_rates(self) -> None:
+        summary = {
+            "active": [
+                {
+                    "worker": "host-a",
+                    "progress_data": {
+                        "kind": "metadata",
+                        "rate": 10.0,
+                        "calibrated_rate": 0.5,
+                    },
+                },
+                {
+                    "worker": "host-b",
+                    "progress_data": {
+                        "kind": "metadata",
+                        "rate": 1.0,
+                        "calibrated_rate": 0.5,
+                    },
+                },
+            ],
+            "metadata": {},
+        }
+
+        self.assertEqual(2.0, forge.run_speedup_value(summary))
+
     def test_status_single_worker_summary_omits_redundant_fields(self) -> None:
         summary = {
             "active": [{"worker": "solo"}],
@@ -13045,6 +13070,7 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
             progress_data = summary["active"][0]["progress_data"]
             self.assertEqual("pwa-mbp#3", summary["active"][0]["worker_id"])
             self.assertAlmostEqual(0.04, progress_data["rate"])
+            self.assertAlmostEqual(0.705, progress_data["calibrated_rate"])
             self.assertAlmostEqual(303.61, progress_data["eta_s"], places=1)
             self.assertTrue(progress_data["eta_calibrated"])
             self.assertEqual("games=1/210, eta~=5m04s", summary["active"][0]["progress"])

@@ -1272,7 +1272,11 @@ def active_task_rates(summary: dict[str, Any]) -> list[float]:
         if row.get("state") == "stale":
             continue
         data = row.get("progress_data")
-        rate = data.get("rate") if isinstance(data, dict) and data.get("kind") == "metadata" else None
+        rate = (
+            data.get("calibrated_rate", data.get("rate"))
+            if isinstance(data, dict) and data.get("kind") == "metadata"
+            else None
+        )
         if isinstance(rate, (int, float)) and rate > 0:
             rates.append(float(rate))
     return rates
@@ -4094,10 +4098,20 @@ def status_summary(manifest: dict[str, Any], *, lease_seconds: int) -> dict[str,
                 progress_data = fallback_data
         if progress_data is not None and config_progress is not None and state in {"running", "claimed", "stale"}:
             unit, _task_total = config_progress
+            calibrated_rate = process_calibrated_rate(worker, worker_id, unit)
             progress_data = stabilize_progress_eta(
                 progress_data,
-                process_calibrated_rate(worker, worker_id, unit),
+                calibrated_rate,
             )
+            if (
+                isinstance(progress_data, dict)
+                and isinstance(calibrated_rate, (int, float))
+                and calibrated_rate > 0
+            ):
+                progress_data = {
+                    **progress_data,
+                    "calibrated_rate": float(calibrated_rate),
+                }
         if progress_data is not None and config_progress is not None and state in {"running", "claimed", "stale"}:
             unit, task_total = config_progress
             offset_unit, offset = progress_task_offsets.get(str(task["id"]), (unit, 0))
