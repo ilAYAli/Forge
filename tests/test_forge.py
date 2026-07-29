@@ -4698,6 +4698,18 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
 
         self.assertEqual(15, selfplay_chunks.selfplay_default_chunk_games({"chunk_time_seconds": 300}))
 
+    def test_label_calibration_versions_task_input_execution(self) -> None:
+        from forge_lib.calibration import adaptive_workload_signature
+
+        for name in ("label", "label-static"):
+            template = forge.load_template(forge.template_path(name))
+            signature = adaptive_workload_signature(template, {})
+
+            self.assertEqual(
+                {"__version": "task-input-v1"},
+                json.loads(signature),
+            )
+
     def test_adaptive_chunk_history_sizes_every_split_template(self) -> None:
         from forge_lib import chunking
 

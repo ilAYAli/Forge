@@ -116,13 +116,16 @@ def adaptive_workload_signature(
 ) -> str | None:
     chunking = template_data.get("chunking")
     keys = chunking.get("signature_parameters") if isinstance(chunking, dict) else None
-    if not isinstance(keys, list) or not keys:
+    version = chunking.get("signature_version") if isinstance(chunking, dict) else None
+    if (not isinstance(keys, list) or not keys) and not version:
         return None
     values = {
         str(key): params.get(str(key))
-        for key in keys
+        for key in (keys if isinstance(keys, list) else [])
         if isinstance(key, str) and key
     }
+    if version:
+        values["__version"] = str(version)
     return json.dumps(values, sort_keys=True, separators=(",", ":"))
 
 

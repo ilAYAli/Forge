@@ -12,7 +12,8 @@
   },
   "chunking": {
     "initial_units": 5000,
-    "min_chunks_per_slot": 1
+    "min_chunks_per_slot": 1,
+    "signature_version": "task-input-v1"
   },
   "parameters": {
     "chunk_time_seconds": {
