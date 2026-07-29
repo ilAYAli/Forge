@@ -12492,7 +12492,7 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
                 )
                 self.assertEqual(0, rc)
                 text = stdout.getvalue()
-                self.assertIn("tasks=1/4 speedup=1.1x", text)
+                self.assertIn("tasks=1/4 speedup=1.4x", text)
                 self.assertIn("active: 3 rows=177k/500k workers=2 output=68k min=worker-b:20k max=worker-a:48k", text)
                 self.assertNotIn("max=worker-a:48k speedup=", text)
                 self.assertNotIn("active workers:", text)
@@ -12525,7 +12525,7 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
                 )
                 self.assertIn("active: \033[33m3\033[0m", color_line)
                 self.assertIn("workers=2 output=68k min=worker-b:20k max=worker-a:48k", color_line)
-                self.assertIn(f"speedup=\033[{forge.STATUS_BLUE_SGR}m1.1x\033[0m", color_stdout.getvalue())
+                self.assertIn(f"speedup=\033[{forge.STATUS_BLUE_SGR}m1.4x\033[0m", color_stdout.getvalue())
                 self.assertNotIn("workers=\033[", color_line)
                 self.assertNotIn("output=\033[", color_line)
                 self.assertNotIn("min=\033[", color_line)
@@ -12781,16 +12781,16 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
             "workers=2 rate=4/s min=slow:1/s max=fast:3/s",
             forge.active_worker_summary(summary),
         )
-        self.assertEqual("speedup=1.3x", forge.run_speedup_field(summary))
+        self.assertEqual("speedup=2.0x", forge.run_speedup_field(summary))
         payload = forge.run_status_payload(summary)
-        self.assertEqual(1.333, payload["display"]["active_summary"]["speedup"])
-        self.assertEqual("1.3x", payload["display"]["active_summary"]["speedup_text"])
+        self.assertEqual(2.0, payload["display"]["active_summary"]["speedup"])
+        self.assertEqual("2.0x", payload["display"]["active_summary"]["speedup_text"])
         self.assertEqual("rate", payload["display"]["active_summary"]["rate_name"])
         self.assertEqual("4/s", payload["display"]["active_summary"]["rate_text"])
         self.assertNotIn("speedup=", payload["display"]["active_summary_text"])
-        self.assertIn("speedup=1.3x", payload["display"]["fields"])
+        self.assertIn("speedup=2.0x", payload["display"]["fields"])
 
-    def test_status_speedup_uses_fastest_host_baseline(self) -> None:
+    def test_status_speedup_uses_fastest_process_baseline(self) -> None:
         summary = {
             "active": [
                 {
@@ -12804,10 +12804,10 @@ console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.pa
             "metadata": {},
         }
 
-        self.assertEqual(44 / 9, forge.run_speedup_value(summary))
-        self.assertEqual("speedup=4.9x", forge.run_speedup_field(summary))
+        self.assertEqual(44.0, forge.run_speedup_value(summary))
+        self.assertEqual("speedup=44.0x", forge.run_speedup_field(summary))
 
-    def test_status_speedup_uses_fastest_host_rate(self) -> None:
+    def test_status_speedup_sums_process_rates(self) -> None:
         summary = {
             "active": [
                 {"worker": "host-a", "progress_data": {"kind": "metadata", "rate": 2.0}},

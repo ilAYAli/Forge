@@ -4,7 +4,7 @@ import math
 import shlex
 
 from .calibration import adaptive_blended_throughput, adaptive_rate_warmup_units
-from .config import default_notify_command, speedup_single_host_workers
+from .config import default_notify_command
 from .core import *
 from .manifest import *
 from .tasks import *
@@ -1283,17 +1283,7 @@ def run_speedup_value(summary: dict[str, Any]) -> float | None:
     rates = active_task_rates(summary)
     if not rates:
         return None
-    metrics = active_worker_metrics(summary)
-    host_rates = [
-        float(metric.get("progress_rate", 0.0))
-        for metric in metrics.values()
-        if bool(metric.get("progress_rate_seen")) and float(metric.get("progress_rate", 0.0)) > 0
-    ]
-    if host_rates:
-        total = sum(host_rates)
-        baseline = max(host_rates)
-        return total / baseline if baseline > 0 else None
-    baseline = speedup_single_host_workers() * max(rates)
+    baseline = max(rates)
     return sum(rates) / baseline if baseline > 0 else None
 
 def active_worker_summary(summary: dict[str, Any]) -> str:
