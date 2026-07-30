@@ -16,8 +16,8 @@
       "required": true,
       "local_default": true,
       "path_context": "shared_home",
-      "directory_executable": "build/enyo",
-      "help": "Enyo UCI engine executable or checkout directory available on all workers"
+      "executable": true,
+      "help": "Enyo UCI engine executable at a common home-relative worker path"
     },
     "games": {
       "type": "int",

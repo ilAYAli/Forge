@@ -26,9 +26,16 @@
     },
     "candidate": {
       "required": true,
+      "local_default": true,
       "path_context": "shared_home",
-      "directory_executable": "build/enyo",
-      "help": "Candidate UCI engine executable path or Enyo checkout directory available on all workers"
+      "executable": true,
+      "help": "Candidate UCI engine executable at a common home-relative worker path"
+    },
+    "candidate_net": {
+      "required": true,
+      "local_default": true,
+      "path_context": "shared_home",
+      "help": "Candidate NNUE net"
     },
     "games": {
       "type": "int",
@@ -39,24 +46,25 @@
       "required": true,
       "local_default": true,
       "path_context": "shared_home",
+      "executable": true,
       "help": "Reference UCI engine executable"
+    },
+    "reference_net": {
+      "required": true,
+      "local_default": true,
+      "path_context": "shared_home",
+      "help": "Reference NNUE net"
     },
     "candidate_uci": {
       "repeatable": true,
       "arg": "--candidate-uci",
       "quote": false,
-      "file_options": [
-        "nnue_file"
-      ],
       "help": "Extra candidate UCI option NAME=VALUE. Repeatable."
     },
     "reference_uci": {
       "repeatable": true,
       "arg": "--reference-uci",
       "quote": false,
-      "file_options": [
-        "nnue_file"
-      ],
       "help": "Extra reference UCI option NAME=VALUE. Repeatable."
     },
     "book": {
@@ -200,6 +208,14 @@
       {
         "name": "book",
         "path": "{book}"
+      },
+      {
+        "name": "candidate net",
+        "path": "{candidate_net}"
+      },
+      {
+        "name": "reference net",
+        "path": "{reference_net}"
       }
     ]
   },
@@ -215,7 +231,7 @@
     },
     "label": "sprt:{shard}",
     "output": "{output_dir}/{task_name}/logs/{task_name}.log",
-    "command": "~/.cache/forge/tools/sprt/a99f574a670e30f3e0699fae891c679de6db5560/sprt --candidate-uci Hash={hash} --reference-uci Hash={hash} {sprt_args} --games {shard} --srand {seed} --book-offset {book_offset} --fastchess ~/.cache/forge/tools/fastchess/3de44228aec904e688a4ad71c554eb9d461a5a2a/fastchess --log-dir {output_dir}/{task_name}/logs --name {task_name} --no-ntfy --no-eta",
+    "command": "~/.cache/forge/tools/sprt/a99f574a670e30f3e0699fae891c679de6db5560/sprt --candidate-uci Hash={hash} --candidate-uci nnue_file={candidate_net_shell} --reference-uci Hash={hash} --reference-uci nnue_file={reference_net_shell} {sprt_args} --games {shard} --srand {seed} --book-offset {book_offset} --fastchess ~/.cache/forge/tools/fastchess/3de44228aec904e688a4ad71c554eb9d461a5a2a/fastchess --log-dir {output_dir}/{task_name}/logs --name {task_name} --no-ntfy --no-eta",
     "progress": {
       "unit": "games",
       "log_regex": "\\[\\s*(?P<done>\\d+)\\/(?P<total>\\d+)\\].*?Elo\\s+(?P<elo>[-+]?(?:\\d+(?:\\.\\d+)?|inf|nan))\\s+\\+/-\\s+(?P<ci>[-+]?(?:\\d+(?:\\.\\d+)?|inf|nan))\\s+\\|\\s+LLR\\s+(?P<llr>[+-]?\\d+(?:\\.\\d+)?/[+-]?(?:\\d+(?:\\.\\d+)?|inf|nan)\\s+\\(\\s*[+-]?\\d+(?:\\.\\d+)?%\\))\\s+\\|\\s+LOS\\s+(?P<los>[-+]?(?:\\d+(?:\\.\\d+)?|inf|nan))%(?:\\s+\\|\\s+WDL\\s+(?P<wdl>\\d+/\\d+/\\d+)\\s+\\|\\s+Ptnml\\s+(?P<pentanomial>\\d+-\\d+-\\d+-\\d+-\\d+))?\\s+\\|\\s+draw\\s+(?P<draw>[-+]?(?:\\d+(?:\\.\\d+)?|inf|nan))%(?:.*?ETA\\s+(?P<eta>\\S+))?",

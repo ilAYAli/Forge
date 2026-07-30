@@ -241,9 +241,11 @@ def repeatable_arg_shell_values(template: dict[str, Any], values: dict[str, Any]
 SPRT_TEMPLATE_CONTROL_ARGS = {
     "book_offset",
     "book_seed",
+    "candidate_net",
     "chunk_time_seconds",
     "games",
     "hash",
+    "reference_net",
     "shards",
 }
 
@@ -379,6 +381,20 @@ def validate_parameter_path_context(
     )
 
 
+def validate_parameter_executable(
+    value: str,
+    *,
+    executable: bool,
+    template_name: str,
+    parameter_name: str,
+) -> None:
+    if executable and expand_path(value).is_dir():
+        raise SystemExit(
+            f"{template_name}: {template_arg_name(parameter_name)} must name an "
+            f"executable file, not a directory: {value}"
+        )
+
+
 def raw_template_argument_present(
     raw_args: list[str],
     names: list[str],
@@ -501,6 +517,12 @@ def parse_template_parameters_with_unknown(
                 template_name=template_name,
                 parameter_name=str(name),
             )
+            validate_parameter_executable(
+                values[str(name)],
+                executable=bool(spec.get("executable", False)),
+                template_name=template_name,
+                parameter_name=str(name),
+            )
         elif isinstance(value, list):
             values[str(name)] = [
                 worker_path_parameter(item, directory_executable=directory_executable)
@@ -572,6 +594,16 @@ def parse_selfplay_template_parameters(template_name: str, template: dict[str, A
 def validate_sprt_uci_options(values: dict[str, Any]) -> None:
     for key, flag in (("candidate_uci", "--candidate-uci"), ("reference_uci", "--reference-uci")):
         validate_template_uci_options(values.get(key), flag)
+        items = values.get(key) or []
+        if not isinstance(items, list):
+            items = [items]
+        for item in items:
+            name, separator, _value = str(item).partition("=")
+            if separator and name.lower() == "nnue_file":
+                net_flag = "--candidate-net" if key == "candidate_uci" else "--reference-net"
+                raise SystemExit(
+                    f"{flag} {item}: nnue_file is reserved; use {net_flag}"
+                )
 
 
 def validate_template_uci_options(items: Any, flag: str) -> None:

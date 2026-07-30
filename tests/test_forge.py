@@ -85,6 +85,8 @@ class ForgeTests(unittest.TestCase):
         local_defaults = {
             "sprt": {
                 "reference": "~/assets/engines/reference",
+                "candidate_net": self._test_net,
+                "reference_net": self._test_net,
                 "book": self._test_book,
             },
             "selfplay": {
@@ -3138,7 +3140,7 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
             "label-static": {"engine", "net"},
             "selfplay": {"engine", "book", "net"},
             "label-sf": {"sf_engine", "sf_net"},
-            "sprt": {"reference", "book"},
+            "sprt": {"candidate", "candidate_net", "reference", "reference_net", "book"},
             "spsa": {"engine", "params", "state", "settings", "book"},
             "label-tb": {"work_dir"},
             "training": {"config", "work_dir"},
@@ -3831,7 +3833,7 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
 
         self.assertEqual(str(workers_path), workers)
 
-    def test_sprt_template_uses_candidate_executable_path(self) -> None:
+    def test_sprt_template_rejects_candidate_directory(self) -> None:
         template_path = ROOT / "templates" / "sprt.template.json"
         template = forge.load_template(template_path)
         project = Path.home() / "code/cpp/chess/enyo"
@@ -3839,16 +3841,20 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
             mock.patch.dict(os.environ, {"PWD": str(project)}, clear=False),
             mock.patch("pathlib.Path.is_dir", lambda path: str(path) == str(project)),
         ):
-            params = forge.parse_template_parameters(
-                "sprt",
-                template,
-                ["--candidate", ".", "--reference", "~/assets/engines/reference", "--games", "50", "--shards", "1"],
-            )
-        manifest = forge.expand_template("sprt", template_path, template, params)
-
-        self.assertEqual("~/code/cpp/chess/enyo/build/enyo", manifest["template"]["parameters"]["candidate"])
-        self.assertEqual(["sprt", "fastchess"], [repo["name"] for repo in manifest["requirements"]["repos"]])
-        self.assertIn("--candidate ~/code/cpp/chess/enyo/build/enyo", manifest["tasks"][0]["command"])
+            with self.assertRaisesRegex(
+                SystemExit,
+                "--candidate must name an executable file, not a directory",
+            ):
+                forge.parse_template_parameters(
+                    "sprt",
+                    template,
+                    [
+                        "--candidate", ".",
+                        "--reference", "~/assets/engines/reference",
+                        "--games", "50",
+                        "--shards", "1",
+                    ],
+                )
 
     def test_sprt_template_resolves_candidate_symlink_for_run_name(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.home()) as tmp:
@@ -4143,11 +4149,11 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
             [
                 "--candidate", "~/assets/engines/enyo_9696dac",
                 "--reference", "~/assets/engines/reference",
+                "--candidate-net", "~/code/cpp/chess/enyo/net/candidate.nn",
+                "--reference-net", "~/code/cpp/chess/enyo/net/reference.nn",
                 "--games", "50",
                 "--shards", "1",
-                "--candidate-uci", "nnue_file=~/code/cpp/chess/enyo/net/candidate.nn",
                 "--candidate-uci", "Hash=256",
-                "--reference-uci", "nnue_file=~/code/cpp/chess/enyo/net/reference.nn",
             ],
         )
         manifest = forge.expand_template("sprt", template_path, template, params)
@@ -4200,11 +4206,11 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
         self.assertIn(repos["fastchess"]["path"] + "/fastchess", command)
         self.assertNotIn("~/.local/bin", command)
 
-    def test_sprt_template_rejects_empty_uci_option_values(self) -> None:
+    def test_sprt_template_reserves_nnue_file_for_explicit_net_parameters(self) -> None:
         template_path = ROOT / "templates" / "sprt.template.json"
         template = forge.load_template(template_path)
 
-        with self.assertRaisesRegex(SystemExit, "--reference-uci nnue_file="):
+        with self.assertRaisesRegex(SystemExit, "nnue_file is reserved; use --reference-net"):
             forge.parse_sprt_template_parameters(
                 "sprt",
                 template,
@@ -4212,7 +4218,7 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
                     "--candidate", "~/assets/engines/enyo_9696dac",
                     "--reference", "~/assets/engines/reference",
                     "--games", "50",
-                    "--reference-uci", "nnue_file=",
+                    "--reference-uci", "nnue_file=~/net.nn",
                 ],
             )
 
@@ -4234,10 +4240,10 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
                     "--candidate", str(paths["candidate"]),
                     "--reference", str(paths["reference"]),
                     "--book", str(paths["book.epd"]),
+                    "--candidate-net", str(paths["candidate.nn"]),
+                    "--reference-net", str(paths["reference.nn"]),
                     "--games", "50",
                     "--shards", "2",
-                    "--candidate-uci", f"nnue_file={paths['candidate.nn']}",
-                    "--reference-uci", f"nnue_file={paths['reference.nn']}",
                 ],
             )
             manifest = forge.expand_template("sprt", template_path, template, params)
@@ -4247,7 +4253,7 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
             inputs = manifest["requirements"]["inputs"]
             self.assertEqual(3, len(inputs))
             self.assertEqual(
-                {"book", "candidate_uci.nnue_file", "reference_uci.nnue_file"},
+                {"book", "candidate net", "reference net"},
                 {item["name"] for item in inputs},
             )
             self.assertEqual(

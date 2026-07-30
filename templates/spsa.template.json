@@ -16,8 +16,8 @@
       "required": true,
       "local_default": true,
       "path_context": "shared_home",
-      "directory_executable": "build/enyo",
-      "help": "UCI engine executable or Enyo checkout directory available on all workers"
+      "executable": true,
+      "help": "UCI engine executable at a common home-relative worker path"
     },
     "params": {
       "required": true,
