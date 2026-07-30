@@ -145,6 +145,13 @@ forge template show NAME
 forge run NAME --help
 ```
 
+`forge template show NAME` prints the complete template definition, including
+its parameters, task command, inputs, outputs, and scheduling policy. On the
+orchestrator, user-specific defaults and policy overrides live in
+`~/.config/forge/templates/NAME.defaults.json`; they are not read from
+workers. For example, `sprt.defaults.json` can provide the default engines,
+network files, game count, and chunking policy for that machine.
+
 `forge NAME ...` is shorthand for `forge run NAME ...` when `NAME` is an
 installed template. Command-line values override orchestrator-local defaults
 from `~/.config/forge/templates/NAME.defaults.json`. Defaults are resolved only
