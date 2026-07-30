@@ -14,7 +14,7 @@
     "work_dir": {
       "required": true,
       "local_default": true,
-      "path_context": "worker",
+      "path_context": "shared_home",
       "help": "NNUE repository directory"
     }
   },

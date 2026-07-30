@@ -54,12 +54,12 @@
     },
     "pgn_dir": {
       "required": true,
-      "path_context": "worker",
+      "path_context": "shared_home",
       "help": "Coordinator directory containing self-play PGN shards"
     },
     "output": {
       "required": true,
-      "path_context": "worker",
+      "path_context": "shared_home",
       "suffix": ".bullet",
       "help": "Final concatenated BulletFormat output"
     },

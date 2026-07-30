@@ -31,12 +31,12 @@
     },
     "source": {
       "required": true,
-      "path_context": "worker",
+      "path_context": "shared_home",
       "help": "Coordinator LC0 training.* corpus directory"
     },
     "output": {
       "required": true,
-      "path_context": "worker",
+      "path_context": "shared_home",
       "help": "Final merged BulletFormat output"
     },
     "engine": {

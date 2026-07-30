@@ -355,18 +355,36 @@ def worker_path_parameter(value: str, *, directory_executable: str = "") -> str:
 def parameter_uses_worker_path(spec: dict[str, Any], *, name: str) -> bool:
     context = spec.get("path_context")
     scope = spec.get("path_scope")
-    if context is not None and context != "worker":
+    if context is not None and context not in {"worker", "shared_home"}:
         raise SystemExit(
-            f"parameters.{name}.path_context must be 'worker', got {context!r}"
+            f"parameters.{name}.path_context must be 'worker' or 'shared_home', "
+            f"got {context!r}"
         )
     if scope is not None and scope != "worker":
         raise SystemExit(
             f"parameters.{name}.path_scope must be 'worker', got {scope!r}"
         )
     return (
-        context == "worker"
+        context in {"worker", "shared_home"}
         or scope == "worker"
         or bool(spec.get("worker_path", False))
+    )
+
+
+def validate_parameter_path_context(
+    value: str,
+    *,
+    context: str,
+    template_name: str,
+    parameter_name: str,
+) -> None:
+    if context != "shared_home":
+        return
+    if value == "~" or value.startswith("~/"):
+        return
+    raise SystemExit(
+        f"{template_name}: {template_arg_name(parameter_name)} must resolve beneath "
+        f"the orchestrator home directory so it can be represented as ~/...: {value}"
     )
 
 
@@ -486,12 +504,26 @@ def parse_template_parameters_with_unknown(
                 value,
                 directory_executable=directory_executable,
             )
+            validate_parameter_path_context(
+                values[str(name)],
+                context=str(spec.get("path_context") or ""),
+                template_name=template_name,
+                parameter_name=str(name),
+            )
         elif isinstance(value, list):
             values[str(name)] = [
                 worker_path_parameter(item, directory_executable=directory_executable)
                 if isinstance(item, str) else item
                 for item in value
             ]
+            for item in values[str(name)]:
+                if isinstance(item, str):
+                    validate_parameter_path_context(
+                        item,
+                        context=str(spec.get("path_context") or ""),
+                        template_name=template_name,
+                        parameter_name=str(name),
+                    )
     normalize_file_paths(params, values)
     for name, spec in params.items():
         if not isinstance(spec, dict):

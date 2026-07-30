@@ -9,15 +9,15 @@
     "work_dir": {
       "required": true,
       "local_default": true,
-      "path_context": "worker"
+      "path_context": "shared_home"
     },
     "pgn_dir": {
       "required": true,
-      "path_context": "worker"
+      "path_context": "shared_home"
     },
     "output": {
       "required": true,
-      "path_context": "worker"
+      "path_context": "shared_home"
     },
     "sf_engine": {
       "required": true,

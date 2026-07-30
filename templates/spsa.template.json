@@ -15,20 +15,20 @@
     "engine": {
       "required": true,
       "local_default": true,
-      "path_context": "worker",
+      "path_context": "shared_home",
       "directory_executable": "build/enyo",
       "help": "UCI engine executable or Enyo checkout directory available on all workers"
     },
     "params": {
       "required": true,
       "local_default": true,
-      "path_context": "worker",
+      "path_context": "shared_home",
       "help": "SPSA parameter definitions"
     },
     "state": {
       "required": true,
       "local_default": true,
-      "path_context": "worker",
+      "path_context": "shared_home",
       "help": "Resumable final-theta state written on the coordinator"
     },
     "settings": {
@@ -76,12 +76,12 @@
     "book": {
       "required": true,
       "local_default": true,
-      "path_context": "worker",
+      "path_context": "shared_home",
       "help": "EPD opening book"
     },
     "fastchess": {
       "default": "~/.cache/forge/tools/fastchess/3de44228aec904e688a4ad71c554eb9d461a5a2a/fastchess",
-      "path_context": "worker",
+      "path_context": "shared_home",
       "help": "Fastchess executable"
     },
     "uci": {

@@ -54,25 +54,25 @@
     },
     "pgn_dir": {
       "required": true,
-      "path_context": "worker",
+      "path_context": "shared_home",
       "help": "Coordinator directory containing self-play PGN shards"
     },
     "output": {
       "required": true,
-      "path_context": "worker",
+      "path_context": "shared_home",
       "suffix": ".bullet",
       "help": "Final concatenated BulletFormat output"
     },
     "sf_engine": {
       "required": true,
       "local_default": true,
-      "path_context": "worker",
+      "path_context": "shared_home",
       "help": "Worker-local Enyo evaluator supporting the UCI eval command"
     },
     "sf_net": {
       "required": true,
       "local_default": true,
-      "path_context": "worker",
+      "path_context": "shared_home",
       "help": "Coordinator Stockfish NNUE net synchronized to every worker"
     },
     "sf_hash": {

@@ -119,6 +119,12 @@ class ForgeTests(unittest.TestCase):
                     encoding="utf-8"
                 )
             )
+            # These isolated fixtures intentionally live under /tmp rather than
+            # a shared worker home. Keep exercising legacy worker-path behavior
+            # while dedicated tests cover the stricter shared_home contract.
+            for spec in template.get("parameters", {}).values():
+                if spec.get("path_context") == "shared_home":
+                    spec["path_context"] = "worker"
             for parameter, default in defaults.items():
                 spec = template["parameters"][parameter]
                 spec.pop("required", None)
@@ -3088,7 +3094,39 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
                     self.assertNotIn("worker_path", spec)
                     self.assertNotIn("path_scope", spec)
                     if "path_context" in spec:
-                        self.assertEqual("worker", spec["path_context"])
+                        self.assertEqual("shared_home", spec["path_context"])
+
+    def test_shared_home_path_context_normalizes_orchestrator_home(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.home()) as tmp:
+            template_path = self.write_test_template(Path(tmp))
+            template = forge.load_template(template_path)
+            template["parameters"]["item"].pop("worker_path")
+            template["parameters"]["item"]["path_context"] = "shared_home"
+
+            params = forge.parse_template_parameters(
+                "demo",
+                template,
+                ["--item", str(Path(tmp) / "input.dat"), "--total", "10"],
+            )
+
+        self.assertTrue(params["item"].startswith("~/"))
+
+    def test_shared_home_path_context_rejects_path_outside_orchestrator_home(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            template_path = self.write_test_template(Path(tmp))
+            template = forge.load_template(template_path)
+            template["parameters"]["item"].pop("worker_path")
+            template["parameters"]["item"]["path_context"] = "shared_home"
+
+            with self.assertRaisesRegex(
+                SystemExit,
+                "must resolve beneath the orchestrator home directory",
+            ):
+                forge.parse_template_parameters(
+                    "demo",
+                    template,
+                    ["--item", "/var/tmp/input.dat", "--total", "10"],
+                )
 
     def test_bundled_templates_identify_installation_local_defaults(self) -> None:
         expected = {
@@ -17483,7 +17521,7 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
     def test_claimed_conversion_task_fetches_only_its_pgn_file_set(self) -> None:
         from forge_lib.task_inputs import attach_pgn_task_inputs
 
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(dir=Path.home()) as tmp:
             root = Path(tmp)
             source = root / "pgns"
             source.mkdir()

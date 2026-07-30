@@ -31,24 +31,24 @@
     },
     "source": {
       "required": true,
-      "path_context": "worker",
+      "path_context": "shared_home",
       "help": "Coordinator LC0 training.* corpus directory"
     },
     "output": {
       "required": true,
-      "path_context": "worker",
+      "path_context": "shared_home",
       "help": "Final merged BulletFormat output"
     },
     "engine": {
       "required": true,
       "local_default": true,
-      "path_context": "worker",
+      "path_context": "shared_home",
       "help": "Enyo (or other UCI) executable, worker-mapped absolute path"
     },
     "net": {
       "required": true,
       "local_default": true,
-      "path_context": "worker",
+      "path_context": "shared_home",
       "help": "Net loaded via setoption nnue_file for static eval"
     },
     "threads": {

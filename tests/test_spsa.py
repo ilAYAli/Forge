@@ -249,7 +249,10 @@ class SpsaTemplateTests(unittest.TestCase):
         ])
 
     def test_template_creates_long_lived_exact_game_shards(self) -> None:
-        with tempfile.TemporaryDirectory(prefix="forge-spsa-template-") as tmp:
+        with tempfile.TemporaryDirectory(
+            prefix="forge-spsa-template-",
+            dir=Path.home(),
+        ) as tmp:
             root = Path(tmp)
             params_path = root / "params.txt"
             state_path = root / "state.json"
@@ -298,7 +301,10 @@ class SpsaTemplateTests(unittest.TestCase):
         )
 
     def test_full_local_run_advances_two_distributed_iterations(self) -> None:
-        with tempfile.TemporaryDirectory(prefix="forge-spsa-run-") as tmp:
+        with tempfile.TemporaryDirectory(
+            prefix="forge-spsa-run-",
+            dir=Path.home(),
+        ) as tmp:
             root = Path(tmp)
             params = root / "params.txt"
             state = root / "state.json"
