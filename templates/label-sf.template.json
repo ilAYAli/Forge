@@ -1,9 +1,9 @@
 {
   "schema": "forge.template.v1",
-  "name": "selfplay-to-sf-oracle",
-  "kind": "selfplay-to-sf-oracle",
+  "name": "label-sf",
+  "kind": "label-sf",
   "description": "Convert Enyo self-play PGNs into BulletFormat shards labeled by a Stockfish-net static-eval oracle",
-  "run_name": "selfplay-to-sf-oracle-{pgn_dir_stem}-{timestamp}",
+  "run_name": "label-sf-{pgn_dir_stem}-{timestamp}",
   "work_dir": "{nnue_repo}",
   "materialize_inputs": true,
   "chunking": {
@@ -165,7 +165,7 @@
       "unit": "pgns",
       "start": "pgn_start"
     },
-    "label": "selfplay-to-sf-oracle:{task_number}/{task_count}",
+    "label": "label-sf:{task_number}/{task_count}",
     "outputs": [
       "{output_dir}/{task_name}.bullet",
       "{output_dir}/{task_name}.stats.json"

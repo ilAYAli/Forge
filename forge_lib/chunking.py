@@ -750,13 +750,16 @@ def adaptive_rechunk_pending_tasks(
     replan_template_name = str(
         template_data.get("name") or manifest.get("kind") or "task"
     )
+    replan_template_kind = str(
+        template_data.get("kind") or manifest.get("kind") or ""
+    )
     replanned = expand_template(
         replan_template_name,
         template_path,
         template_data,
         replan_params,
     )
-    if replan_template_name in {"selfplay-to-bullet", "selfplay-to-sf-oracle"}:
+    if replan_template_kind in {"selfplay-to-bullet", "label-sf"}:
         from .task_inputs import attach_pgn_task_inputs
 
         attach_pgn_task_inputs(replanned)
@@ -783,7 +786,7 @@ def adaptive_rechunk_pending_tasks(
             template_data,
             remainder_params,
         )
-        if replan_template_name in {"selfplay-to-bullet", "selfplay-to-sf-oracle"}:
+        if replan_template_kind in {"selfplay-to-bullet", "label-sf"}:
             attach_pgn_task_inputs(remainder_manifest)
         remainder = remainder_manifest.get("tasks")
         if not isinstance(remainder, list) or not remainder:

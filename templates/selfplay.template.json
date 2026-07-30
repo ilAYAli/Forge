@@ -42,6 +42,12 @@
       "path_context": "shared_home",
       "help": "EPD opening book"
     },
+    "net": {
+      "required": true,
+      "local_default": true,
+      "path_context": "shared_home",
+      "help": "NNUE net loaded explicitly into both self-play engines"
+    },
     "book_order": {
       "default": "random",
       "help": "Fastchess opening order"
@@ -142,6 +148,10 @@
       {
         "name": "book",
         "path": "{book}"
+      },
+      {
+        "name": "net",
+        "path": "{net}"
       }
     ]
   },
@@ -154,7 +164,7 @@
     "prefix": "selfplay",
     "label": "selfplay:{shard}",
     "output": "{output_dir}/{task_name}.pgn",
-    "command": "{fastchess_shell} -engine cmd={engine_shell} name=enyo-a option.Hash={hash} option.Threads={threads} {uci_args} -engine cmd={engine_shell} name=enyo-b option.Hash={hash} option.Threads={threads} {uci_args} -each {limit_args} proto=uci restart={restart_shell} -rounds {shard_pairs} -games 2 -recover -openings file={book_shell} format=epd order={book_order_shell} -srand {seed} -concurrency {concurrency} -pgnout file=\"{output_dir}/{task_name}.pgn\" notation={pgn_notation_shell} -output format=fastchess",
+    "command": "{fastchess_shell} -engine cmd={engine_shell} name=enyo-a option.Hash={hash} option.Threads={threads} option.nnue_file={net_shell} {uci_args} -engine cmd={engine_shell} name=enyo-b option.Hash={hash} option.Threads={threads} option.nnue_file={net_shell} {uci_args} -each {limit_args} proto=uci restart={restart_shell} -rounds {shard_pairs} -games 2 -recover -openings file={book_shell} format=epd order={book_order_shell} -srand {seed} -concurrency {concurrency} -pgnout file=\"{output_dir}/{task_name}.pgn\" notation={pgn_notation_shell} -output format=fastchess",
     "progress": {
       "unit": "games",
       "log_regex": "Games:\\s+(?P<done>\\d+),\\s+Wins:\\s+(?P<wins>\\d+),\\s+Losses:\\s+(?P<losses>\\d+),\\s+Draws:\\s+(?P<draws>\\d+)",

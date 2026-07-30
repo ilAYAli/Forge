@@ -116,10 +116,10 @@ def apply_template_defaults(
             raise SystemExit(
                 f"{overlay_path}: unsupported defaults schema {overlay.get('schema')!r}"
             )
-        overlay_template = str(overlay.get("template") or "")
-        if overlay_template != name:
+        unknown_fields = sorted(set(overlay) - {"schema", "parameters"})
+        if unknown_fields:
             raise SystemExit(
-                f"{overlay_path}: defaults target {overlay_template!r} does not match {name!r}"
+                f"{overlay_path}: unknown defaults field(s): {', '.join(unknown_fields)}"
             )
         defaults = overlay.get("parameters")
         if not isinstance(defaults, dict):
@@ -354,21 +354,12 @@ def worker_path_parameter(value: str, *, directory_executable: str = "") -> str:
 
 def parameter_uses_worker_path(spec: dict[str, Any], *, name: str) -> bool:
     context = spec.get("path_context")
-    scope = spec.get("path_scope")
     if context is not None and context not in {"worker", "shared_home"}:
         raise SystemExit(
             f"parameters.{name}.path_context must be 'worker' or 'shared_home', "
             f"got {context!r}"
         )
-    if scope is not None and scope != "worker":
-        raise SystemExit(
-            f"parameters.{name}.path_scope must be 'worker', got {scope!r}"
-        )
-    return (
-        context in {"worker", "shared_home"}
-        or scope == "worker"
-        or bool(spec.get("worker_path", False))
-    )
+    return context in {"worker", "shared_home"}
 
 
 def validate_parameter_path_context(
@@ -1362,7 +1353,7 @@ def cmd_template_run(args: argparse.Namespace) -> int:
     manifest = expand_template(template_name, path, template, params, config)
     if inventory_info is not None:
         attach_label_task_inputs(manifest, inventory_info)
-    if template_name in {"selfplay-to-bullet", "selfplay-to-sf-oracle"}:
+    if str(template.get("kind") or "") in {"selfplay-to-bullet", "label-sf"}:
         attach_pgn_task_inputs(manifest)
     if bool(template.get("materialize_inputs", False)):
         materialize_template_inputs(template, manifest, params)

@@ -1,6 +1,6 @@
 {
   "schema": "forge.template.v1",
-  "name": "label",
+  "name": "label-search",
   "kind": "label",
   "description": "Stream LC0 V6 records through Stockfish into deterministic BulletFormat shards",
   "run_name": "label-{source_stem}-{depth}-{timestamp}",
@@ -42,7 +42,14 @@
     "engine": {
       "required": true,
       "local_default": true,
-      "help": "Stockfish executable name or explicit worker-mapped absolute path"
+      "path_context": "shared_home",
+      "help": "Common home-relative Stockfish executable path"
+    },
+    "net": {
+      "required": true,
+      "local_default": true,
+      "path_context": "shared_home",
+      "help": "Stockfish NNUE net loaded through the EvalFile UCI option"
     },
     "depth": {
       "type": "int",
@@ -109,6 +116,10 @@
         "path": "{source_cache}",
         "tree": "lc0-inventory",
         "digest": "{inventory_digest}"
+      },
+      {
+        "name": "net",
+        "path": "{net}"
       }
     ]
   },
@@ -123,7 +134,7 @@
       "{output_dir}/{task_name}.bullet",
       "{output_dir}/{task_name}.stats.json"
     ],
-    "command": ".venv/bin/python tools/score/label.py --input {task_input} --inventory {task_inventory} --output {output_dir}/{task_name}.bullet --stats {output_dir}/{task_name}.stats.json --engine {engine} --depth {depth} --threads {threads} --hash {hash} --max-records {task_records} --min-ply {min_ply} {quiet_only_arg} --shard-count 1 --shard-index 0",
+    "command": ".venv/bin/python tools/score/label.py --input {task_input} --inventory {task_inventory} --output {output_dir}/{task_name}.bullet --stats {output_dir}/{task_name}.stats.json --engine {engine} --net {net} --net-option EvalFile --depth {depth} --threads {threads} --hash {hash} --max-records {task_records} --min-ply {min_ply} {quiet_only_arg} --shard-count 1 --shard-index 0",
     "progress": {
       "unit": "records",
       "log_regex": "read=(?P<done>\\d+) selected=(?P<selected>\\d+) written=(?P<output>\\d+) rate=(?P<rate>[0-9.]+)/s",

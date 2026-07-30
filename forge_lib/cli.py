@@ -117,8 +117,8 @@ def expand_template_command_aliases(args: list[str]) -> list[str]:
         return ["run", "sprt", *args[1:]]
     if args and args[0] == "spsa":
         return ["run", "spsa", *args[1:]]
-    if args and args[0] == "label":
-        return ["run", "label", *args[1:]]
+    if args and args[0] == "label-search":
+        return ["run", "label-search", *args[1:]]
     return args
 
 

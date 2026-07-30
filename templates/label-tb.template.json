@@ -1,9 +1,9 @@
 {
   "schema": "forge.template.v1",
-  "name": "tb-sf-oracle-relabel",
-  "kind": "sf-oracle-relabel",
+  "name": "label-tb",
+  "kind": "label-tb",
   "description": "Convert Enyo self-play PGN shards to Bullet, applying Syzygy WDL only to <=6-piece positions and preserving all other input labels",
-  "run_name": "tb-sf-oracle-relabel-{timestamp}",
+  "run_name": "label-tb-{timestamp}",
   "work_dir": "{work_dir}",
   "parameters": {
     "work_dir": {
@@ -18,18 +18,6 @@
     "output": {
       "required": true,
       "path_context": "shared_home"
-    },
-    "sf_engine": {
-      "required": true,
-      "local_default": true
-    },
-    "sf_net": {
-      "required": true,
-      "local_default": true
-    },
-    "sf_hash": {
-      "type": "int",
-      "default": 64
     },
     "tb_pieces": {
       "type": "int",

@@ -25,10 +25,10 @@ from forge_lib.tasks import task_done_path
 
 class Lc0InventoryTests(unittest.TestCase):
     def test_template_uses_source_neutral_labeling_name(self) -> None:
-        template_path = Path(__file__).resolve().parents[1] / "templates" / "label.template.json"
+        template_path = Path(__file__).resolve().parents[1] / "templates" / "label-search.template.json"
         template = json.loads(template_path.read_text(encoding="utf-8"))
 
-        self.assertEqual("label", template["name"])
+        self.assertEqual("label-search", template["name"])
         self.assertEqual("label", template["kind"])
         self.assertTrue(template["run_name"].startswith("label-"))
         self.assertEqual("label:{shard}", template["task"]["label"])
@@ -36,7 +36,7 @@ class Lc0InventoryTests(unittest.TestCase):
         self.assertEqual("bullet-labels", template["finalize"]["type"])
 
     def test_template_cache_mapping_is_os_specific(self) -> None:
-        template_path = Path(__file__).resolve().parents[1] / "templates" / "label.template.json"
+        template_path = Path(__file__).resolve().parents[1] / "templates" / "label-search.template.json"
         template = json.loads(template_path.read_text(encoding="utf-8"))
 
         self.assertEqual(
@@ -255,7 +255,7 @@ class LabelingProgressTests(unittest.TestCase):
         self.addCleanup(patcher.stop)
 
     def test_template_graphs_counters_and_reports_speedup(self) -> None:
-        template_path = Path(__file__).resolve().parents[1] / "templates" / "label.template.json"
+        template_path = Path(__file__).resolve().parents[1] / "templates" / "label-search.template.json"
         progress = json.loads(template_path.read_text(encoding="utf-8"))["task"]["progress"]
         progress.pop("series")
         progress["log_regex"] = (

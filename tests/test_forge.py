@@ -90,7 +90,8 @@ class ForgeTests(unittest.TestCase):
             "selfplay": {
                 "engine": "~/assets/engines/reference",
                 "book": self._test_book,
-                "uci": [f"nnue_file={self._test_net}"],
+                "net": self._test_net,
+                "uci": [],
             },
             "spsa": {
                 "engine": "~/assets/engines/candidate",
@@ -99,14 +100,20 @@ class ForgeTests(unittest.TestCase):
                 "settings": "~/.config/engine/settings.json",
                 "book": self._test_book,
             },
-            "label": {"engine": "stockfish"},
+            "label-search": {
+                "engine": "~/.local/bin/stockfish",
+                "net": self._test_net,
+            },
             "label-static": {
                 "engine": "~/assets/engines/candidate",
                 "net": self._test_net,
             },
-            "selfplay-to-sf-oracle": {
+            "label-sf": {
                 "sf_engine": "~/assets/engines/oracle",
                 "sf_net": "~/assets/nets/oracle.nnue",
+            },
+            "label-tb": {
+                "work_dir": self._test_work_dir,
             },
             "training": {
                 "config": "build.json",
@@ -195,10 +202,10 @@ class ForgeTests(unittest.TestCase):
             env=process_env,
         )
 
-    def test_label_command_expands_to_label_template(self) -> None:
+    def test_label_search_command_expands_to_label_search_template(self) -> None:
         self.assertEqual(
-            ["run", "label", "--depth", "12"],
-            forge.expand_template_command_aliases(["label", "--depth", "12"]),
+            ["run", "label-search", "--depth", "12"],
+            forge.expand_template_command_aliases(["label-search", "--depth", "12"]),
         )
         self.assertEqual(
             ["unknown", "--depth", "12"],
@@ -621,7 +628,7 @@ class ForgeTests(unittest.TestCase):
                 "run_name": "demo-{item_stem}-{total}",
                 "work_dir": "{work_dir}",
                 "parameters": {
-                    "item": {"required": True, "worker_path": True},
+                    "item": {"required": True, "path_context": "worker"},
                     "total": {"type": "int", "required": True},
                     "shard": {"type": "int", "default": 3, "aliases": ["chunk"]},
                     "work_dir": {"default": "."},
@@ -3075,7 +3082,6 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
             root = Path(tmp)
             template_path = self.write_test_template(root)
             template = forge.load_template(template_path)
-            template["parameters"]["item"].pop("worker_path")
             template["parameters"]["item"]["path_context"] = "worker"
 
             params = forge.parse_template_parameters(
@@ -3100,7 +3106,6 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
         with tempfile.TemporaryDirectory(dir=Path.home()) as tmp:
             template_path = self.write_test_template(Path(tmp))
             template = forge.load_template(template_path)
-            template["parameters"]["item"].pop("worker_path")
             template["parameters"]["item"]["path_context"] = "shared_home"
 
             params = forge.parse_template_parameters(
@@ -3115,7 +3120,6 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
         with tempfile.TemporaryDirectory() as tmp:
             template_path = self.write_test_template(Path(tmp))
             template = forge.load_template(template_path)
-            template["parameters"]["item"].pop("worker_path")
             template["parameters"]["item"]["path_context"] = "shared_home"
 
             with self.assertRaisesRegex(
@@ -3130,13 +3134,13 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
 
     def test_bundled_templates_identify_installation_local_defaults(self) -> None:
         expected = {
-            "label": {"engine"},
+            "label-search": {"engine", "net"},
             "label-static": {"engine", "net"},
-            "selfplay": {"engine", "book"},
-            "selfplay-to-sf-oracle": {"sf_engine", "sf_net"},
+            "selfplay": {"engine", "book", "net"},
+            "label-sf": {"sf_engine", "sf_net"},
             "sprt": {"reference", "book"},
             "spsa": {"engine", "params", "state", "settings", "book"},
-            "tb-sf-oracle-relabel": {"work_dir", "sf_engine", "sf_net"},
+            "label-tb": {"work_dir"},
             "training": {"config", "work_dir"},
         }
         for template_name, names in expected.items():
@@ -3170,7 +3174,6 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
             (overlay_dir / "demo.defaults.json").write_text(
                 json.dumps({
                     "schema": "forge.template-defaults.v1",
-                    "template": "demo",
                     "parameters": {"item": "~/assets/input.dat"},
                 }),
                 encoding="utf-8",
@@ -3197,7 +3200,6 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
             overlay.write_text(
                 json.dumps({
                     "schema": "forge.template-defaults.v1",
-                    "template": "demo",
                     "parameters": {"typo": "value"},
                 }),
                 encoding="utf-8",
@@ -3233,9 +3235,9 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
             )
 
         message = str(raised.exception)
-        self.assertIn("missing local defaults: engine, book", message)
+        self.assertIn("missing local defaults: engine, book, net", message)
         self.assertIn("/tmp/local-templates/selfplay.defaults.json", message)
-        self.assertIn("provide --engine, --book explicitly", message)
+        self.assertIn("provide --engine, --book, --net explicitly", message)
 
     def test_explicit_arguments_do_not_require_local_defaults_overlay(self) -> None:
         from forge_lib import templates as template_lib
@@ -3248,7 +3250,7 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
         template_lib.require_local_defaults_or_arguments(
             "selfplay",
             template["parameters"],
-            ["--engine", "~/engine", "--book=~/book.epd"],
+            ["--engine", "~/engine", "--book=~/book.epd", "--net", "~/net.nn"],
         )
 
     def test_template_worker_path_parameters_expand_relative_paths(self) -> None:
@@ -3332,7 +3334,7 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
                     "name": "engine",
                     "run_name": "engine-{candidate_hash}",
                     "parameters": {
-                        "candidate": {"required": True, "worker_path": True},
+                        "candidate": {"required": True, "path_context": "worker"},
                     },
                     "requirements": {
                         "repos": [{
@@ -3521,7 +3523,7 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
                 "files": files,
                 "cache_home": root / "cache",
             }
-            for template_name in ("label", "label-static"):
+            for template_name in ("label-search", "label-static"):
                 with self.subTest(template=template_name):
                     stdout = io.StringIO()
                     template_args = [
@@ -3565,7 +3567,15 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
                         [
                             item["tree"]
                             for item in manifest["requirements"]["inputs"]
+                            if "tree" in item
                         ],
+                    )
+                    self.assertIn(
+                        "net",
+                        {
+                            item.get("name")
+                            for item in manifest["requirements"]["inputs"]
+                        },
                     )
                     task_input = manifest["tasks"][0]["inputs"][0]
                     self.assertEqual("lc0-inventory", task_input["tree"])
@@ -3577,6 +3587,13 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
                     command = manifest["tasks"][0]["command"]
                     self.assertIn("--max-records 10", command)
                     self.assertIn("--shard-count 1 --shard-index 0", command)
+                    self.assertIn("--net ", command)
+                    self.assertIn(
+                        "--net-option EvalFile"
+                        if template_name == "label-search"
+                        else "--net-option nnue_file",
+                        command,
+                    )
                     self.assertNotIn("{task_input}", command)
 
     def test_sprt_command_alias_accepts_dashdash_passthrough(self) -> None:
@@ -4035,7 +4052,7 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
                     "name": "legacy",
                     "run_name": "legacy-{candidate_stem}",
                     "parameters": {
-                        "candidate": {"required": True, "worker_path": True},
+                        "candidate": {"required": True, "path_context": "worker"},
                     },
                     "requirements": {
                         "repos": [{
@@ -4270,7 +4287,7 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
         self.assertIn("Games:", manifest["tasks"][0]["progress"]["log_regex"])
 
     def test_selfplay_conversion_templates_define_throughput_graph(self) -> None:
-        for name in ("selfplay-to-bullet", "selfplay-to-sf-oracle"):
+        for name in ("selfplay-to-bullet", "label-sf"):
             template = forge.load_template(ROOT / "templates" / f"{name}.template.json")
             series = template["task"]["progress"]["series"]
 
@@ -4282,11 +4299,11 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
 
     def test_selfplay_conversion_rejects_directory_looking_output(self) -> None:
         template = forge.load_template(
-            ROOT / "templates" / "selfplay-to-sf-oracle.template.json"
+            ROOT / "templates" / "label-sf.template.json"
         )
         with self.assertRaisesRegex(SystemExit, "--output must end with '.bullet'"):
             forge.parse_template_parameters(
-                "selfplay-to-sf-oracle",
+                "label-sf",
                 template,
                 ["--pgn-dir", "/tmp/pgns", "--output", "/tmp/gen4"],
             )
@@ -4300,10 +4317,10 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
             pgn_dir.mkdir()
             for index in range(10):
                 (pgn_dir / f"{index:02d}.pgn").touch()
-            template_path = ROOT / "templates" / "selfplay-to-sf-oracle.template.json"
+            template_path = ROOT / "templates" / "label-sf.template.json"
             template = forge.load_template(template_path)
             params = forge.parse_template_parameters(
-                "selfplay-to-sf-oracle",
+                "label-sf",
                 template,
                 [
                     "--pgn-dir", str(pgn_dir),
@@ -4313,13 +4330,13 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
             )
 
             manifest = forge.expand_template(
-                "selfplay-to-sf-oracle",
+                "label-sf",
                 template_path,
                 template,
                 params,
             )
             second_manifest = forge.expand_template(
-                "selfplay-to-sf-oracle",
+                "label-sf",
                 template_path,
                 template,
                 params,
@@ -4363,10 +4380,10 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
                 (pgn_dir / f"{index:02d}.pgn").touch()
             (root / "state").mkdir()
             (root / "claims").mkdir()
-            template_path = ROOT / "templates" / "selfplay-to-sf-oracle.template.json"
+            template_path = ROOT / "templates" / "label-sf.template.json"
             template = forge.load_template(template_path)
             params = forge.parse_template_parameters(
-                "selfplay-to-sf-oracle",
+                "label-sf",
                 template,
                 [
                     "--pgn-dir", str(pgn_dir),
@@ -4375,7 +4392,7 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
                 ],
             )
             manifest = forge.expand_template(
-                "selfplay-to-sf-oracle",
+                "label-sf",
                 template_path,
                 template,
                 params,
@@ -4420,10 +4437,10 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
                 (pgn_dir / f"{index:02d}.pgn").write_bytes(b"x" * size)
             (root / "state").mkdir()
             (root / "claims").mkdir()
-            template_path = ROOT / "templates" / "selfplay-to-sf-oracle.template.json"
+            template_path = ROOT / "templates" / "label-sf.template.json"
             template = forge.load_template(template_path)
             params = forge.parse_template_parameters(
-                "selfplay-to-sf-oracle",
+                "label-sf",
                 template,
                 [
                     "--pgn-dir", str(pgn_dir),
@@ -4432,7 +4449,7 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
                 ],
             )
             manifest = forge.expand_template(
-                "selfplay-to-sf-oracle",
+                "label-sf",
                 template_path,
                 template,
                 params,
@@ -4473,10 +4490,10 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
                 (pgn_dir / f"{index:02d}.pgn").write_bytes(b"x" * size)
             (root / "state").mkdir()
             (root / "claims").mkdir()
-            template_path = ROOT / "templates" / "selfplay-to-sf-oracle.template.json"
+            template_path = ROOT / "templates" / "label-sf.template.json"
             template = forge.load_template(template_path)
             params = forge.parse_template_parameters(
-                "selfplay-to-sf-oracle",
+                "label-sf",
                 template,
                 [
                     "--pgn-dir", str(pgn_dir),
@@ -4485,7 +4502,7 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
                 ],
             )
             manifest = forge.expand_template(
-                "selfplay-to-sf-oracle",
+                "label-sf",
                 template_path,
                 template,
                 params,
@@ -4526,10 +4543,10 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
                 (pgn_dir / f"{index:02d}.pgn").write_bytes(b"x" * size)
             (root / "state").mkdir()
             (root / "claims").mkdir()
-            template_path = ROOT / "templates" / "selfplay-to-sf-oracle.template.json"
+            template_path = ROOT / "templates" / "label-sf.template.json"
             template = forge.load_template(template_path)
             params = forge.parse_template_parameters(
-                "selfplay-to-sf-oracle",
+                "label-sf",
                 template,
                 [
                     "--pgn-dir", str(pgn_dir),
@@ -4538,7 +4555,7 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
                 ],
             )
             manifest = forge.expand_template(
-                "selfplay-to-sf-oracle",
+                "label-sf",
                 template_path,
                 template,
                 params,
@@ -4601,7 +4618,7 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
                 "read": 2,
                 "written": 1,
             })
-            template_path = ROOT / "templates" / "selfplay-to-sf-oracle.template.json"
+            template_path = ROOT / "templates" / "label-sf.template.json"
             task = {
                 "id": "chunk",
                 "outputs": [str(bullet), str(stats)],
@@ -4610,10 +4627,10 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
             }
             manifest = {
                 "schema": "forge.task.v1",
-                "kind": "selfplay-to-sf-oracle",
+                "kind": "label-sf",
                 "state_dir": str(state),
                 "template": {
-                    "name": "selfplay-to-sf-oracle",
+                    "name": "label-sf",
                     "path": str(template_path),
                     "parameters": {"pgn_dir": str(pgn_dir)},
                 },
@@ -4641,11 +4658,11 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             manifest = {
-                "kind": "selfplay-to-sf-oracle",
+                "kind": "label-sf",
                 "state_dir": str(root / "state"),
                 "template": {
-                    "name": "selfplay-to-sf-oracle",
-                    "path": str(ROOT / "templates" / "selfplay-to-sf-oracle.template.json"),
+                    "name": "label-sf",
+                    "path": str(ROOT / "templates" / "label-sf.template.json"),
                     "parameters": {},
                 },
             }
@@ -4653,7 +4670,7 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
             process_path.parent.mkdir(parents=True)
             forge.write_json(process_path, {
                 "schema": chunking.ADAPTIVE_PROCESS_RATE_SCHEMA,
-                "template": "selfplay-to-sf-oracle",
+                "template": "label-sf",
                 "worker": "worker",
                 "worker_id": "worker#1",
                 "rate": 0.1,
@@ -4677,11 +4694,11 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
                 path.mkdir()
             for index in range(6):
                 (pgn_dir / f"{index:02d}.pgn").touch()
-            template_path = ROOT / "templates" / "selfplay-to-sf-oracle.template.json"
+            template_path = ROOT / "templates" / "label-sf.template.json"
             template = forge.load_template(template_path)
             final_output = root / "dataset.bullet"
             params = forge.parse_template_parameters(
-                "selfplay-to-sf-oracle",
+                "label-sf",
                 template,
                 [
                     "--pgn-dir", str(pgn_dir),
@@ -4690,7 +4707,7 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
                 ],
             )
             manifest = forge.expand_template(
-                "selfplay-to-sf-oracle",
+                "label-sf",
                 template_path,
                 template,
                 params,
@@ -4783,7 +4800,7 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
             }
             manifest = {
                 "schema": "forge.task.v1",
-                "kind": "selfplay-to-sf-oracle",
+                "kind": "label-sf",
                 "state_dir": str(state),
                 "tasks": [task],
             }
@@ -4814,7 +4831,7 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
         manifest = {
             "schema": "forge.task.v1",
             "name": "conversion",
-            "kind": "selfplay-to-sf-oracle",
+            "kind": "label-sf",
             "tasks": [
                 {"id": "task_0", "index": 0, "command": "true", "outputs": [], "progress": progress},
                 {"id": "task_1", "index": 1, "command": "true", "outputs": [], "progress": progress},
@@ -5042,7 +5059,7 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
     def test_label_calibration_versions_task_input_execution(self) -> None:
         from forge_lib.calibration import adaptive_workload_signature
 
-        for name in ("label", "label-static"):
+        for name in ("label-search", "label-static"):
             template = forge.load_template(forge.template_path(name))
             signature = adaptive_workload_signature(template, {})
 
@@ -5058,7 +5075,7 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
             "selfplay": ("games", 600, 6),
             "sprt": ("games", 1000, 10),
             "spsa": ("games", 1200, 12),
-            "label": ("max_records", 900_000, 9000),
+            "label-search": ("max_records", 900_000, 9000),
         }
         with tempfile.TemporaryDirectory() as tmp:
             cache_path = Path(tmp) / "chunk-history.json"
@@ -5746,7 +5763,7 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
                 "claim_dir": str(root / "claims"),
                 "template": {
                     "name": "label",
-                    "path": str(forge.template_path("label")),
+                    "path": str(forge.template_path("label-search")),
                     "parameters": {},
                 },
                 "tasks": [task],
@@ -6000,10 +6017,8 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
 
         self.assertEqual(300000, params["games"])
         self.assertEqual(self._test_book, params["book"])
-        self.assertEqual(
-            [f"nnue_file={self._test_net}"],
-            params["uci"],
-        )
+        self.assertEqual(self._test_net, params["net"])
+        self.assertEqual([], params["uci"])
 
     def test_selfplay_template_rejects_empty_uci_option_values(self) -> None:
         template_path = ROOT / "templates" / "selfplay.template.json"
@@ -6037,9 +6052,9 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
                 [
                     "--engine", str(paths["engine"]),
                     "--book", str(paths["book.epd"]),
+                    "--net", str(paths["default.nn"]),
                     "--games", "16",
                     "--shards", "2",
-                    "--uci", f"nnue_file={paths['default.nn']}",
                 ],
             )
             manifest = forge.expand_template("selfplay", template_path, template, params)
@@ -6048,7 +6063,7 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
 
             inputs = manifest["requirements"]["inputs"]
             self.assertEqual(2, len(inputs))
-            self.assertEqual({"book", "uci.nnue_file"}, {item["name"] for item in inputs})
+            self.assertEqual({"book", "net"}, {item["name"] for item in inputs})
             self.assertEqual(
                 {paths["book.epd"], paths["default.nn"]},
                 {Path(item["path"]) for item in inputs},
@@ -6061,6 +6076,10 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
                 commands["engine"]["command"],
             )
             self.assertEqual(900, commands["engine"]["timeout_s"])
+            self.assertEqual(
+                2,
+                manifest["tasks"][0]["command"].count("option.nnue_file="),
+            )
 
     @unittest.skip("Enyo-specific build fallback belongs in local templates")
     def test_enyo_engine_fallback_uses_isolated_worktree(self) -> None:
