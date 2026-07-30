@@ -4,21 +4,25 @@
   "kind": "sf-oracle-relabel",
   "description": "Convert Enyo self-play PGN shards to Bullet, applying Syzygy WDL only to <=6-piece positions and preserving all other input labels",
   "run_name": "tb-sf-oracle-relabel-{timestamp}",
-  "work_dir": "~/code/cpp/chess/nnue",
+  "work_dir": "{work_dir}",
   "parameters": {
+    "work_dir": {
+      "required": true,
+      "path_context": "worker"
+    },
     "pgn_dir": {
       "required": true,
-      "worker_path": true
+      "path_context": "worker"
     },
     "output": {
       "required": true,
-      "worker_path": true
+      "path_context": "worker"
     },
     "sf_engine": {
-      "default": "~/assets/engines/candidate"
+      "required": true
     },
     "sf_net": {
-      "default": "~/assets/nets/nn-0ee0657fb25e.nnue"
+      "required": true
     },
     "sf_hash": {
       "type": "int",

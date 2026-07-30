@@ -301,6 +301,37 @@ def input_requirement_items(manifest: dict[str, Any]) -> list[dict[str, Any]]:
             items.append(item)
     return items
 
+
+def source_requirement_items(manifest: dict[str, Any]) -> list[dict[str, Any]]:
+    req = manifest.get("requirements", {})
+    if not isinstance(req, dict):
+        raise SystemExit("requirements must be an object")
+    sources = req.get("sources", [])
+    if sources in (None, ""):
+        return []
+    if not isinstance(sources, list):
+        raise SystemExit("requirements.sources must be a list")
+    active_profile = str(manifest.get("_active_profile") or "").strip() or None
+    items = []
+    for item in sources:
+        if not isinstance(item, dict):
+            raise SystemExit("requirements.sources entries must be objects")
+        if item_matches_profile(item, active_profile, field="requirements.sources"):
+            items.append(item)
+    return items
+
+
+def check_source_requirement(item: dict[str, Any], *, run_hooks: bool = True) -> None:
+    from .source_artifacts import source_artifact_matches
+
+    root = expand_path(str(item.get("path") or ""))
+    digest = str(item.get("digest") or "")
+    label = str(item.get("name") or root)
+    if not digest or not source_artifact_matches(root, digest=digest):
+        raise SystemExit(f"{label}: source artifact does not match {digest or '?'}")
+    if run_hooks:
+        run_repo_hook(item, "probe", repo=root)
+
 def check_requirements(manifest: dict[str, Any]) -> None:
     req = manifest.get("requirements", {})
     if not isinstance(req, dict):
@@ -321,6 +352,9 @@ def check_requirements(manifest: dict[str, Any]) -> None:
     if git_min:
         actual = command_output(["git", "--version"])
         require_min_version("git", actual, git_min)
+
+    for item in source_requirement_items(manifest):
+        check_source_requirement(item)
 
     for item in iter_git_requirements(manifest, req):
         if not item_matches_profile(item, active_profile, field="requirements.repos"):
@@ -641,14 +675,25 @@ def sync_git_requirement(item: dict[str, Any]) -> None:
     run_repo_hook(item, "probe", repo=repo)
     print(f"{label}: {git_output(repo, 'rev-parse', 'HEAD')}")
 
+
+def sync_source_requirement(item: dict[str, Any]) -> None:
+    root = expand_path(str(item.get("path") or ""))
+    check_source_requirement(item, run_hooks=False)
+    run_repo_hook(item, "build", repo=root)
+    run_repo_hook(item, "install", repo=root)
+    run_repo_hook(item, "probe", repo=root)
+
 def cmd_sync_repos(args: argparse.Namespace) -> int:
     manifest = apply_profile(load_manifest(expand_path(args.manifest)), args.profile)
     req = manifest.get("requirements", {})
     if not isinstance(req, dict):
         raise SystemExit("requirements must be an object")
     repos = iter_git_requirements(manifest, req)
-    if not repos:
-        raise SystemExit("no git repositories declared")
+    sources = source_requirement_items(manifest)
+    if not repos and not sources:
+        raise SystemExit("no repositories or sources declared")
+    for item in sources:
+        sync_source_requirement(item)
     for item in repos:
         sync_git_requirement(item)
     check_requirements(manifest)

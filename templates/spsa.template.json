@@ -13,23 +13,23 @@
       "help": "Target wall-clock seconds per adaptively sized chunk"
     },
     "engine": {
-      "default": "~/assets/engines/candidate",
-      "worker_path": true,
+      "required": true,
+      "path_context": "worker",
       "directory_executable": "build/enyo",
       "help": "UCI engine executable or Enyo checkout directory available on all workers"
     },
     "params": {
-      "default": "~/code/cpp/chess/enyo/spsa/params.txt",
-      "worker_path": true,
+      "required": true,
+      "path_context": "worker",
       "help": "SPSA parameter definitions"
     },
     "state": {
-      "default": "~/code/cpp/chess/enyo/spsa/state.json",
-      "worker_path": true,
+      "required": true,
+      "path_context": "worker",
       "help": "Resumable final-theta state written on the coordinator"
     },
     "settings": {
-      "default": "~/.config/enyo/settings.json",
+      "required": true,
       "help": "Enyo settings used to resolve reproducible NNUE and Syzygy defaults"
     },
     "iterations": {
@@ -70,13 +70,13 @@
       "help": "Engine restart mode"
     },
     "book": {
-      "default": "~/assets/books/UHO_XXL_2022_+120_+149.epd",
-      "worker_path": true,
+      "required": true,
+      "path_context": "worker",
       "help": "EPD opening book"
     },
     "fastchess": {
       "default": "~/.cache/forge/tools/fastchess/3de44228aec904e688a4ad71c554eb9d461a5a2a/fastchess",
-      "worker_path": true,
+      "path_context": "worker",
       "help": "Fastchess executable"
     },
     "uci": {
@@ -134,7 +134,7 @@
       {
         "name": "engine",
         "path": "{engine}",
-        "command": "engine={engine}; if probe=$(printf '%s\\n' uci quit | \"$engine\" 2>/dev/null) && printf '%s\\n' \"$probe\" | grep -q uciok; then printf '%s\\n' \"$probe\"; exit 0; fi; name=$(basename \"$engine\"); case \"$name\" in enyo_*) commit=$(printf '%s\\n' \"$name\" | sed 's/^enyo_//') ;; *) echo \"engine is unavailable and cannot be built automatically: $engine\" >&2; exit 1 ;; esac; repo=~/code/cpp/chess/enyo; git -C \"$repo\" fetch origin && if git -C \"$repo\" rev-parse --verify \"$commit^{{commit}}\" >/dev/null; then :; else echo \"engine $engine is missing and Enyo commit $commit is unavailable in $repo; push/fetch the commit or sync a prebuilt engine to $engine\" >&2; exit 1; fi; worktree=\"$HOME/.cache/forge/enyo-worktrees/$commit-$$\"; mkdir -p \"$(dirname \"$worktree\")\" && git -C \"$repo\" worktree add --detach \"$worktree\" \"$commit\" && trap 'git -C \"$repo\" worktree remove --force \"$worktree\" >/dev/null 2>&1 || true' 0 && cd \"$worktree\" && ./scripts/deploy.sh --candidate && if test -x \"$engine\"; then printf '%s\\n' uci quit | \"$engine\"; else echo \"engine build completed but did not create executable: $engine\" >&2; exit 1; fi",
+        "command": "printf '%s\\n' uci quit | {engine}",
         "contains": "uciok",
         "timeout_s": 900
       }

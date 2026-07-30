@@ -45,20 +45,21 @@
       }
     },
     "nnue_repo": {
-      "default": "~/code/cpp/chess/nnue",
-      "worker_path": true,
-      "git_checkout": true,
-      "checkout_output": "~/.cache/forge/repos/nnue/{full_commit}",
-      "help": "NNUE checkout containing the converter; its current commit is pinned for workers"
+      "type": "source",
+      "default": "nnue",
+      "include": ["tools/bullet/*.py", "tools/posgen/**", "tools/lib/**", "tools/tests/test_selfplay_to_bullet.py"],
+      "exclude": ["**/__pycache__/**", "**/.venv/**", "**/target/**"],
+      "output": "~/.cache/forge/sources/nnue-{digest12}",
+      "help": "Configured source alias or directory containing the converter"
     },
     "pgn_dir": {
       "required": true,
-      "worker_path": true,
+      "path_context": "worker",
       "help": "Coordinator directory containing self-play PGN shards"
     },
     "output": {
       "required": true,
-      "worker_path": true,
+      "path_context": "worker",
       "suffix": ".bullet",
       "help": "Final concatenated BulletFormat output"
     },
@@ -90,15 +91,11 @@
   },
   "requirements": {
     "python_min": "3.11",
-    "git_min": "2.38",
-    "repos": [
+    "sources": [
       {
         "name": "nnue",
-        "url": "git@github.com:ilAYAli/nnue.git",
         "path": "{nnue_repo}",
-        "remote": "origin",
-        "commit": "{nnue_repo_commit}",
-        "allow_untracked": true,
+        "digest": "{nnue_repo_digest}",
         "install_timeout_s": 300,
         "install": [
           "PYTHON=python3; test ! -x /opt/homebrew/bin/python3 || PYTHON=/opt/homebrew/bin/python3; test -x .venv/bin/python3 || \"$PYTHON\" -m venv .venv; .venv/bin/python3 -m pip install -q python-chess"
@@ -106,7 +103,9 @@
         "probe": [
           ".venv/bin/python3 -m unittest tools.tests.test_selfplay_to_bullet"
         ]
-      },
+      }
+    ],
+    "repos": [
       {
         "name": "bullet",
         "url": "https://github.com/jw1912/bullet.git",

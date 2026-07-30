@@ -53,6 +53,100 @@ class ForgeTests(unittest.TestCase):
         self._isolated_env_dir = tempfile.TemporaryDirectory()
         self.addCleanup(self._isolated_env_dir.cleanup)
         isolated_config = Path(self._isolated_env_dir.name) / "config.yml"
+        isolated_source = Path(self._isolated_env_dir.name) / "nnue"
+        for relative in (
+            "tools/score/placeholder.py",
+            "tools/lib/placeholder.py",
+            "tools/posgen/placeholder.py",
+            "tools/bullet/placeholder.py",
+            "tools/tests/test_streaming_labeling.py",
+            "tools/tests/test_selfplay_to_bullet.py",
+            "tools/tests/test_selfplay_to_bullet_sf_oracle.py",
+        ):
+            path = isolated_source / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("# test source\n", encoding="utf-8")
+        (isolated_source / "build.py").write_text("# test build\n", encoding="utf-8")
+        (isolated_source / "build.json").write_text("{}\n", encoding="utf-8")
+        isolated_assets = Path(self._isolated_env_dir.name) / "assets"
+        isolated_book = isolated_assets / "books" / "book.epd"
+        isolated_net = isolated_assets / "nets" / "default.nnue"
+        isolated_book.parent.mkdir(parents=True)
+        isolated_net.parent.mkdir(parents=True)
+        isolated_book.write_text("startpos\n", encoding="utf-8")
+        isolated_net.write_bytes(b"test net\n")
+        isolated_work_dir = Path(self._isolated_env_dir.name) / "work" / "nnue"
+        isolated_work_dir.mkdir(parents=True)
+        self._test_book = str(isolated_book)
+        self._test_net = str(isolated_net)
+        self._test_work_dir = str(isolated_work_dir)
+        local_templates = Path(self._isolated_env_dir.name) / "templates"
+        local_templates.mkdir()
+        local_defaults = {
+            "sprt": {
+                "reference": "~/assets/engines/reference",
+                "book": self._test_book,
+            },
+            "selfplay": {
+                "engine": "~/assets/engines/reference",
+                "book": self._test_book,
+                "uci": [f"nnue_file={self._test_net}"],
+            },
+            "spsa": {
+                "engine": "~/assets/engines/candidate",
+                "params": "~/work/spsa/params.txt",
+                "state": "~/work/spsa/state.json",
+                "settings": "~/.config/engine/settings.json",
+                "book": self._test_book,
+            },
+            "label": {"engine": "stockfish"},
+            "label-static": {
+                "engine": "~/assets/engines/candidate",
+                "net": self._test_net,
+            },
+            "selfplay-to-sf-oracle": {
+                "sf_engine": "~/assets/engines/oracle",
+                "sf_net": "~/assets/nets/oracle.nnue",
+            },
+            "training": {
+                "config": "build.json",
+                "work_dir": self._test_work_dir,
+            },
+        }
+        for template_name, defaults in local_defaults.items():
+            template = json.loads(
+                (ROOT / "templates" / f"{template_name}.template.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            for parameter, default in defaults.items():
+                spec = template["parameters"][parameter]
+                spec.pop("required", None)
+                spec["default"] = default
+            (local_templates / f"{template_name}.template.json").write_text(
+                json.dumps(template),
+                encoding="utf-8",
+            )
+        isolated_config.write_text(
+            f"sources:\n  nnue: {isolated_source}\n"
+            f"template_dirs:\n  - {local_templates}\n",
+            encoding="utf-8",
+        )
+        original_load_template = forge.load_template
+
+        def load_test_template(path: Path) -> dict[str, object]:
+            candidate = local_templates / Path(path).name
+            if Path(path).parent == ROOT / "templates" and candidate.is_file():
+                path = candidate
+            return original_load_template(path)
+
+        self._template_loader_patchers = [
+            mock.patch("forge.load_template", side_effect=load_test_template),
+            mock.patch("forge_lib.templates.load_template", side_effect=load_test_template),
+        ]
+        for patcher in self._template_loader_patchers:
+            patcher.start()
+            self.addCleanup(patcher.stop)
         old_coordinator_runs = os.environ.pop("FORGE_COORDINATOR_RUNS", None)
 
         def restore_coordinator_runs_env() -> None:
@@ -66,6 +160,7 @@ class ForgeTests(unittest.TestCase):
             os.environ,
             {
                 "FORGE_CONFIG": str(isolated_config),
+                "FORGE_CACHE_DIR": str(Path(self._isolated_env_dir.name) / "cache"),
                 "FORGE_NOTIFY_COMMAND": "",
                 "FORGE_COORDINATOR_HOST": "",
                 "FORGE_WORKERS": "",
@@ -2808,15 +2903,46 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
         self.assertIn("--json", command)
         self.assertNotIn("--all", command)
 
+    def test_stopped_completion_ignores_residual_attention_markers(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            run = Path(tmp)
+            manifest_path = run / "manifest.json"
+            manifest = {
+                "schema": "forge.task.v1",
+                "name": "stopped",
+                "state_dir": str(run / "state"),
+                "claim_dir": str(run / "claims"),
+                "tasks": [],
+            }
+            forge.write_json(manifest_path, manifest)
+            state = run / "state"
+            state.mkdir()
+            forge.write_json(forge.stop_request_path(manifest), {"reason": "stopped"})
+            forge.write_json(state / "old.running.json", {"task": "old"})
+            forge.write_json(run / "summary.json", {
+                "event": "run_stopped",
+                "state": "stopped",
+            })
+
+            self.assertFalse(forge.run_manifest_has_attention_state(manifest))
+
+            time.sleep(0.01)
+            forge.write_json(forge.launch_request_path(manifest), {"reason": "resume"})
+            self.assertTrue(forge.run_manifest_has_attention_state(manifest))
+
     def test_config_yml_supplies_default_workers_and_template_dirs(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
+            source = root / "source"
+            source.mkdir()
             config = root / "config.yml"
             config.write_text(
                 f'default_workers: "worker-a:2,worker-b:3"\n'
                 f'coordinator_host: "coordinator-a"\n'
                 f'notify_command: "notify-me"\n'
                 f'speedup.single_host_workers: 7\n'
+                f"sources:\n"
+                f"  example: \"{source}\"\n"
                 f"template_dirs:\n"
                 f"  - \"{root / 'templates'}\"\n",
                 encoding="utf-8",
@@ -2827,7 +2953,12 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
                 self.assertEqual("coordinator-a", forge.default_coordinator_host(payload))
                 self.assertEqual("notify-me", forge.default_notify_command(payload))
                 self.assertEqual(7, forge.speedup_single_host_workers(payload))
+                self.assertEqual(source, forge.configured_source("example", payload))
                 self.assertEqual(root / "templates", forge.config_template_dirs(payload)[0])
+
+    def test_local_worker_cache_honors_isolated_cache_directory(self) -> None:
+        expected = Path(os.environ["FORGE_CACHE_DIR"])
+        self.assertEqual(str(expected), forge.worker_cache_dir({"local": True}))
 
     def test_empty_coordinator_env_does_not_hide_file_default(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -2938,6 +3069,8 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
             root = Path(tmp)
             template_path = self.write_test_template(root)
             template = forge.load_template(template_path)
+            template["parameters"]["item"].pop("worker_path")
+            template["parameters"]["item"]["path_context"] = "worker"
 
             params = forge.parse_template_parameters(
                 "demo",
@@ -2946,6 +3079,16 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
             )
 
         self.assertEqual("~/input.dat", params["item"])
+
+    def test_bundled_templates_use_path_context_schema(self) -> None:
+        for template_path in sorted((ROOT / "templates").glob("*.template.json")):
+            template = json.loads(template_path.read_text(encoding="utf-8"))
+            for name, spec in template.get("parameters", {}).items():
+                with self.subTest(template=template_path.name, parameter=name):
+                    self.assertNotIn("worker_path", spec)
+                    self.assertNotIn("path_scope", spec)
+                    if "path_context" in spec:
+                        self.assertEqual("worker", spec["path_context"])
 
     def test_template_worker_path_parameters_expand_relative_paths(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -3062,7 +3205,7 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
         params = forge.parse_template_parameters("training", template, [])
         manifest = forge.expand_template("training", template_path, template, params)
 
-        self.assertEqual("~/code/cpp/chess/nnue", manifest["work_dir"])
+        self.assertEqual(self._test_work_dir, manifest["work_dir"])
         self.assertEqual(1, len(manifest["tasks"]))
         task = manifest["tasks"][0]
         self.assertEqual("training_0000", task["id"])
@@ -3233,8 +3376,16 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
                             return_value=inventory_info,
                         ),
                         mock.patch(
-                            "forge_lib.templates.git_output_or_empty",
-                            return_value="c" * 40,
+                            "forge_lib.config.configured_source",
+                            return_value=root,
+                        ),
+                        mock.patch(
+                            "forge_lib.source_artifacts.build_source_artifact",
+                            return_value={
+                                "path": str(root / "artifact"),
+                                "digest": "e" * 64,
+                                "source_id": "e" * 16,
+                            },
                         ),
                     ):
                         rc = forge.cmd_template_run(argparse.Namespace(
@@ -3245,11 +3396,20 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
                     self.assertEqual(0, rc)
                     manifest = json.loads(stdout.getvalue())
                     self.assertEqual(4, len(manifest["tasks"]))
-                    self.assertEqual([], manifest["requirements"]["inputs"])
+                    self.assertEqual(
+                        ["source-artifact"],
+                        [
+                            item["tree"]
+                            for item in manifest["requirements"]["inputs"]
+                        ],
+                    )
                     task_input = manifest["tasks"][0]["inputs"][0]
                     self.assertEqual("lc0-inventory", task_input["tree"])
                     self.assertEqual(1, task_input["files"])
-                    self.assertEqual("c" * 40, manifest["requirements"]["repos"][0]["commit"])
+                    self.assertEqual(
+                        "e" * 64,
+                        manifest["requirements"]["sources"][0]["digest"],
+                    )
                     command = manifest["tasks"][0]["command"]
                     self.assertIn("--max-records 10", command)
                     self.assertIn("--shard-count 1 --shard-index 0", command)
@@ -3291,12 +3451,12 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
 
         self.assertEqual(0, rc)
         self.assertEqual("quick smoke", manifest["comment"])
-        self.assertEqual(45, manifest["template"]["parameters"]["shards"])
-        self.assertEqual(45, len(manifest["tasks"]))
+        self.assertEqual(128, manifest["template"]["parameters"]["shards"])
+        self.assertEqual(128, len(manifest["tasks"]))
         totals = [task["progress"]["total"] for task in manifest["tasks"]]
         self.assertEqual(256, sum(totals))
-        self.assertEqual(4, min(totals))
-        self.assertEqual(6, max(totals))
+        self.assertEqual(2, min(totals))
+        self.assertEqual(2, max(totals))
 
     def test_sprt_command_rounds_fifty_target_shards_to_two_worker_waves(self) -> None:
         stdout = io.StringIO()
@@ -3317,12 +3477,11 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
         totals = [task["progress"]["total"] for task in manifest["tasks"]]
 
         self.assertEqual(0, rc)
-        self.assertEqual(220, manifest["template"]["parameters"]["shards"])
-        self.assertEqual(220, len(manifest["tasks"]))
-        self.assertEqual(0, len(manifest["tasks"]) % 44)
+        self.assertEqual(625, manifest["template"]["parameters"]["shards"])
+        self.assertEqual(625, len(manifest["tasks"]))
         self.assertEqual(1250, sum(totals))
-        self.assertEqual(4, min(totals))
-        self.assertEqual(6, max(totals))
+        self.assertEqual(2, min(totals))
+        self.assertEqual(2, max(totals))
 
     def test_sprt_command_preserves_explicit_shards(self) -> None:
         stdout = io.StringIO()
@@ -3362,11 +3521,11 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
         totals = [task["progress"]["total"] for task in manifest["tasks"]]
 
         self.assertEqual(0, rc)
-        self.assertEqual(80, manifest["template"]["parameters"]["shards"])
-        self.assertEqual(80, len(manifest["tasks"]))
+        self.assertEqual(200, manifest["template"]["parameters"]["shards"])
+        self.assertEqual(200, len(manifest["tasks"]))
         self.assertEqual(400, sum(totals))
-        self.assertEqual(4, min(totals))
-        self.assertEqual(6, max(totals))
+        self.assertEqual(2, min(totals))
+        self.assertEqual(2, max(totals))
 
     def test_sprt_command_auto_shards_large_runs_by_target_games(self) -> None:
         stdout = io.StringIO()
@@ -3387,11 +3546,11 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
         totals = [task["progress"]["total"] for task in manifest["tasks"]]
 
         self.assertEqual(0, rc)
-        self.assertEqual(1344, manifest["template"]["parameters"]["shards"])
-        self.assertEqual(1344, len(manifest["tasks"]))
+        self.assertEqual(4000, manifest["template"]["parameters"]["shards"])
+        self.assertEqual(4000, len(manifest["tasks"]))
         self.assertEqual(8000, sum(totals))
-        self.assertEqual(4, min(totals))
-        self.assertEqual(6, max(totals))
+        self.assertEqual(2, min(totals))
+        self.assertEqual(2, max(totals))
 
     def test_run_template_uses_default_workers(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -3650,7 +3809,7 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
 
         self.assertEqual(0, rc)
         self.assertEqual(22, extended["template"]["parameters"]["games"])
-        self.assertEqual(4, len(extended["tasks"]))
+        self.assertEqual(7, len(extended["tasks"]))
         self.assertEqual(["sprt_0000", "sprt_0001"], [
             task["id"] for task in extended["tasks"][:2]
         ])
@@ -5172,13 +5331,72 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
             totals = [task["progress"]["total"] for task in updated["tasks"]]
 
         self.assertIsNotNone(claimed)
-        self.assertEqual(6, len(updated["tasks"]))
-        self.assertEqual(10, next(
+        self.assertEqual(25, len(updated["tasks"]))
+        self.assertEqual(4, next(
             task["progress"]["total"]
             for task in updated["tasks"]
             if task["id"] == claimed["task"]
         ))
-        self.assertEqual(50, max(totals))
+        self.assertEqual(4, max(totals))
+
+    def test_short_sprt_preserves_parallel_waves(self) -> None:
+        from forge_lib import chunking
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "state").mkdir()
+            (root / "claims").mkdir()
+            template_path = forge.template_path("sprt")
+            template = forge.load_template(template_path)
+            params = forge.parse_sprt_template_parameters(
+                "sprt",
+                template,
+                [
+                    "--candidate", "~/assets/engines/candidate",
+                    "--games", "500",
+                    "--shards", "96",
+                ],
+            )
+            manifest = forge.expand_template("sprt", template_path, template, params)
+            manifest["state_dir"] = str(root / "state")
+            manifest["claim_dir"] = str(root / "claims")
+            manifest_path = root / "manifest.json"
+            forge.write_json(manifest_path, manifest)
+            forge.write_json(root / "workers.json", {
+                "schema": "forge.workers.v1",
+                "workers": [
+                    {"host": f"worker-{index}", "slots": 1}
+                    for index in range(48)
+                ],
+            })
+            cache_path = root / "chunk-history.json"
+            write_chunk_history(cache_path, ({
+                **chunking.adaptive_template_parameters(manifest),
+                "__forge_worker": "worker-0",
+            }, 10 / 300.0, 3))
+
+            with mock.patch(
+                "forge_lib.calibration.adaptive_chunk_cache_path",
+                return_value=cache_path,
+            ):
+                claimed = forge.claim_task(
+                    manifest,
+                    manifest_path=manifest_path,
+                    worker="worker-0",
+                    worker_id="worker-0#1",
+                    profile=None,
+                    lease_seconds=600,
+                    retry_failed=False,
+                )
+
+            updated = forge.load_manifest(manifest_path)
+            claimed_task = next(
+                task for task in updated["tasks"]
+                if task["id"] == claimed["task"]
+            )
+
+        self.assertLessEqual(claimed_task["progress"]["total"], 4)
+        self.assertGreaterEqual(len(updated["tasks"]), 96)
 
     def test_sprt_calibration_is_scoped_by_speed_parameters(self) -> None:
         from forge_lib import calibration
@@ -5220,7 +5438,7 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
 
         self.assertNotEqual(fast_signature, slow_signature)
         self.assertEqual(fast_signature, more_games_signature)
-        self.assertEqual(6, template["chunking"]["initial_units"])
+        self.assertEqual(2, template["chunking"]["initial_units"])
 
     def test_live_rechunk_assigns_each_process_its_calibrated_chunk_size(self) -> None:
         from forge_lib import chunking
@@ -5338,9 +5556,9 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
 
         self.assertEqual("fast#1", claimed["claim"]["worker_id"])
         self.assertEqual("fast", claimed_task["claim_worker"])
-        self.assertEqual(64, claimed_task["progress"]["total"])
+        self.assertEqual(26, claimed_task["progress"]["total"])
         self.assertGreaterEqual(len(fast_tasks), 1)
-        self.assertTrue(all(task["progress"]["total"] == 64 for task in fast_tasks))
+        self.assertTrue(all(task["progress"]["total"] in {26, 28} for task in fast_tasks))
         self.assertEqual(320, sum(task["progress"]["total"] for task in updated["tasks"]))
 
     def test_nonadaptive_template_can_still_steal_foreign_work(self) -> None:
@@ -5617,9 +5835,9 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
         params = forge.parse_selfplay_template_parameters("selfplay", template, [])
 
         self.assertEqual(300000, params["games"])
-        self.assertEqual("~/assets/books/UHO_XXL_2022_+120_+149.epd", params["book"])
+        self.assertEqual(self._test_book, params["book"])
         self.assertEqual(
-            ["nnue_file=~/assets/nets/nn-0ee0657fb25e.nnue"],
+            [f"nnue_file={self._test_net}"],
             params["uci"],
         )
 
@@ -5674,9 +5892,13 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
             self.assertTrue(all(item["bytes"] > 0 and len(item["sha256"]) == 64 for item in inputs))
 
             commands = {item["name"]: item for item in manifest["requirements"]["commands"]}
-            self.assertIn("./scripts/deploy.sh --candidate", commands["engine"]["command"])
+            self.assertEqual(
+                f"printf '%s\\n' uci quit | {paths['engine']}",
+                commands["engine"]["command"],
+            )
             self.assertEqual(900, commands["engine"]["timeout_s"])
 
+    @unittest.skip("Enyo-specific build fallback belongs in local templates")
     def test_enyo_engine_fallback_uses_isolated_worktree(self) -> None:
         for template_name in ("sprt", "selfplay", "spsa"):
             with self.subTest(template=template_name):
@@ -5702,6 +5924,7 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
                     )
                     self.assertEqual(0, syntax.returncode, syntax.stderr)
 
+    @unittest.skip("Enyo-specific build fallback belongs in local templates")
     def test_enyo_engine_fallback_does_not_switch_shared_checkout(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp)
@@ -16978,6 +17201,105 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
                 (target / "nested" / "b.pgn").read_text(encoding="utf-8"),
             )
             self.assertEqual(0, forge.sync_inputs_to_worker(worker, manifest))
+
+    def test_source_artifact_packages_files_without_git_metadata(self) -> None:
+        from forge_lib.source_artifacts import (
+            SOURCE_ARTIFACT_MARKER,
+            build_source_artifact,
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            repo.mkdir()
+            subprocess.run(["git", "-C", str(repo), "init"], check=True, capture_output=True)
+            script = repo / "tool.py"
+            script.write_text("print('coordinator source')\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(repo), "add", "tool.py"], check=True)
+            subprocess.run(
+                [
+                    "git", "-C", str(repo),
+                    "-c", "user.name=Forge Test",
+                    "-c", "user.email=forge@example.invalid",
+                    "commit", "-m", "local only",
+                ],
+                check=True,
+                capture_output=True,
+            )
+            artifact = build_source_artifact(
+                repo,
+                name="example",
+                cache_home=root / "cache",
+            )
+            artifact_path = Path(artifact["path"])
+
+            self.assertEqual(
+                "print('coordinator source')\n",
+                (artifact_path / "tool.py").read_text(encoding="utf-8"),
+            )
+            self.assertTrue((artifact_path / SOURCE_ARTIFACT_MARKER).is_file())
+            self.assertFalse((artifact_path / ".git").exists())
+
+    def test_source_artifact_includes_worktree_changes(self) -> None:
+        from forge_lib.source_artifacts import build_source_artifact
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            repo.mkdir()
+            subprocess.run(["git", "-C", str(repo), "init"], check=True, capture_output=True)
+            source = repo / "source.py"
+            source.write_text("old\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(repo), "add", "source.py"], check=True)
+            subprocess.run(
+                [
+                    "git", "-C", str(repo),
+                    "-c", "user.name=Forge Test",
+                    "-c", "user.email=forge@example.invalid",
+                    "commit", "-m", "initial",
+                ],
+                check=True,
+                capture_output=True,
+            )
+            source.write_text("dirty\n", encoding="utf-8")
+
+            artifact = build_source_artifact(
+                repo,
+                name="example",
+                cache_home=root / "cache",
+            )
+
+            self.assertEqual(
+                "dirty\n",
+                (Path(artifact["path"]) / "source.py").read_text(encoding="utf-8"),
+            )
+
+    def test_source_artifact_setup_runs_hooks_without_git(self) -> None:
+        from forge_lib.source_artifacts import (
+            SOURCE_ARTIFACT_MARKER,
+            SOURCE_ARTIFACT_SCHEMA,
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "artifact"
+            repo.mkdir()
+            forge.write_json(repo / SOURCE_ARTIFACT_MARKER, {
+                "schema": SOURCE_ARTIFACT_SCHEMA,
+                "digest": "b" * 40,
+            })
+            item = {
+                "name": "coordinator-source",
+                "path": str(repo),
+                "digest": "b" * 40,
+            }
+
+            with mock.patch("forge_lib.manifest.run_repo_hook") as hook:
+                forge.sync_source_requirement(item)
+
+            self.assertEqual(
+                ["build", "install", "probe"],
+                [call.args[1] for call in hook.call_args_list],
+            )
 
     def test_claimed_task_fetches_only_its_inventory_bundle(self) -> None:
         from forge_lib.labeling import build_inventory, build_inventory_subset

@@ -9,6 +9,7 @@ from .config import *
 from .manifest import *
 from .labeling import attach_label_task_inputs, build_inventory
 from .task_inputs import attach_pgn_task_inputs
+from .source_artifacts import attach_source_artifacts
 from .chunking import adaptive_autosized_shards
 from .spsa import (
     attach_spsa_manifest_config,
@@ -276,6 +277,24 @@ def worker_path_parameter(value: str, *, directory_executable: str = "") -> str:
     return value
 
 
+def parameter_uses_worker_path(spec: dict[str, Any], *, name: str) -> bool:
+    context = spec.get("path_context")
+    scope = spec.get("path_scope")
+    if context is not None and context != "worker":
+        raise SystemExit(
+            f"parameters.{name}.path_context must be 'worker', got {context!r}"
+        )
+    if scope is not None and scope != "worker":
+        raise SystemExit(
+            f"parameters.{name}.path_scope must be 'worker', got {scope!r}"
+        )
+    return (
+        context == "worker"
+        or scope == "worker"
+        or bool(spec.get("worker_path", False))
+    )
+
+
 def parse_template_parameters_with_unknown(
     template_name: str,
     template: dict[str, Any],
@@ -323,7 +342,7 @@ def parse_template_parameters_with_unknown(
         elif value_type == "bool":
             kwargs["action"] = argparse.BooleanOptionalAction
             kwargs.setdefault("default", False)
-        elif value_type != "str":
+        elif value_type not in {"str", "source"}:
             raise SystemExit(f"{template_name}: unsupported parameter type {value_type!r}")
         parser.add_argument(*template_arg_names(str(name), spec, template_name=template_name), **kwargs)
     if allow_unknown:
@@ -336,7 +355,10 @@ def parse_template_parameters_with_unknown(
         if not values.get(name):
             values[name] = list(default)
     for name, spec in params.items():
-        if not isinstance(spec, dict) or not bool(spec.get("worker_path", False)):
+        if not isinstance(spec, dict) or not parameter_uses_worker_path(
+            spec,
+            name=str(name),
+        ):
             continue
         value = values.get(str(name))
         directory_executable = str(spec.get("directory_executable") or "")
@@ -643,17 +665,83 @@ def run_name_values(template_name: str, params: dict[str, Any]) -> dict[str, Any
     return values
 
 
-def git_checkout_template_parameters(template: dict[str, Any], params: dict[str, Any]) -> dict[str, Any]:
+def source_template_parameters(
+    template: dict[str, Any],
+    params: dict[str, Any],
+    config: dict[str, Any],
+) -> dict[str, Any]:
     result = dict(params)
     specs = template.get("parameters", {})
     if not isinstance(specs, dict):
         return result
     for name, spec in specs.items():
         key = str(name)
-        if not isinstance(spec, dict):
+        if not isinstance(spec, dict) or str(spec.get("type") or "") != "source":
             continue
-        needs_checkout = bool(spec.get("git_checkout", False)) or template_references(template, f"{key}_commit")
-        if not needs_checkout:
+        if all(
+            isinstance(result.get(f"{key}_{suffix}"), str)
+            and bool(result.get(f"{key}_{suffix}"))
+            for suffix in ("artifact", "digest", "source")
+        ):
+            # Replanning an existing manifest already carries the immutable
+            # resolved source. Do not reinterpret its worker path as an alias.
+            continue
+        value = result.get(key)
+        if not isinstance(value, str) or not value.strip():
+            raise SystemExit(f"{key}: source alias or directory is required")
+        candidate = expand_path(value)
+        alias = value
+        if not candidate.is_dir():
+            from .config import configured_source
+
+            candidate = configured_source(value, config)
+        else:
+            alias = candidate.name
+        include = spec.get("include", [])
+        exclude = spec.get("exclude", [])
+        if not isinstance(include, list) or not all(isinstance(item, str) for item in include):
+            raise SystemExit(f"{key}: source include must be a list of patterns")
+        if not isinstance(exclude, list) or not all(isinstance(item, str) for item in exclude):
+            raise SystemExit(f"{key}: source exclude must be a list of patterns")
+        from .source_artifacts import build_source_artifact
+
+        artifact = build_source_artifact(
+            candidate,
+            name=alias,
+            include=include,
+            exclude=exclude,
+        )
+        output_template = str(
+            spec.get("output") or "~/.cache/forge/sources/{alias}-{digest12}"
+        )
+        output_values = {
+            "alias": re.sub(r"[^A-Za-z0-9._-]+", "-", alias).strip("-") or key,
+            "digest": artifact["digest"],
+            "digest12": artifact["digest"][:12],
+            "source_id": artifact["source_id"],
+            "source": str(candidate),
+        }
+        result[f"{key}_alias"] = alias
+        result[f"{key}_source"] = str(candidate)
+        result[f"{key}_artifact"] = artifact["path"]
+        result[f"{key}_digest"] = artifact["digest"]
+        result[f"{key}_source_id"] = artifact["source_id"]
+        result[key] = safe_format(output_template, output_values)
+    return result
+
+
+def git_lineage_template_parameters(
+    template: dict[str, Any],
+    params: dict[str, Any],
+) -> dict[str, Any]:
+    """Resolve legacy repository placeholders without packaging repository code."""
+    result = dict(params)
+    specs = template.get("parameters", {})
+    if not isinstance(specs, dict):
+        return result
+    for name in specs:
+        key = str(name)
+        if not template_references(template, f"{key}_commit"):
             continue
         value = result.get(key)
         if not isinstance(value, str):
@@ -664,18 +752,16 @@ def git_checkout_template_parameters(template: dict[str, Any], params: dict[str,
         commit = git_output_or_empty(checkout, "rev-parse", "HEAD")
         if not commit:
             continue
-        short = commit[:7]
-        output_template = str(spec.get("checkout_output") or "~/assets/engines/{repo}_{commit}")
-        output_values = {
-            "repo": re.sub(r"[^A-Za-z0-9._-]+", "-", checkout.name).strip("-") or key,
-            "commit": short,
-            "full_commit": commit,
-            "source": value,
-        }
         result[f"{key}_source"] = value
         result[f"{key}_commit"] = commit
         result[f"{key}_hash"] = commit
-        result[key] = safe_format(output_template, output_values)
+        result[key] = safe_format(
+            "~/assets/engines/{repo}_{commit}",
+            {
+                "repo": re.sub(r"[^A-Za-z0-9._-]+", "-", checkout.name).strip("-") or key,
+                "commit": commit[:7],
+            },
+        )
     return result
 
 
@@ -719,9 +805,16 @@ def derived_template_parameters(template: dict[str, Any], params: dict[str, Any]
     return result
 
 
-def expand_template(template_name: str, template_path_: Path, template: dict[str, Any], params: dict[str, Any]) -> dict[str, Any]:
+def expand_template(
+    template_name: str,
+    template_path_: Path,
+    template: dict[str, Any],
+    params: dict[str, Any],
+    config: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     params = derived_template_parameters(template, params)
-    params = git_checkout_template_parameters(template, params)
+    params = git_lineage_template_parameters(template, params)
+    params = source_template_parameters(template, params, config or load_config())
     values = run_name_values(template_name, params)
     values.update(shell_value_format_values(values))
     values.update(repeatable_arg_shell_values(template, values))
@@ -1007,12 +1100,16 @@ def cmd_template_run(args: argparse.Namespace) -> int:
                 if isinstance(chunking, dict)
                 else 1
             )
-            params["shards"] = auto_adaptive_shards(
-                template_name,
-                template,
-                params,
-                sprt_workers_payload or {},
-                cold_units=cold_units,
+            games = as_int(params.get("games"), label="sprt.games")
+            params["shards"] = min(
+                max(1, games // 2),
+                auto_adaptive_shards(
+                    template_name,
+                    template,
+                    params,
+                    sprt_workers_payload or {},
+                    cold_units=cold_units,
+                ),
             )
     elif template_name == "selfplay":
         params = parse_selfplay_template_parameters(template_name, template, template_args)
@@ -1111,13 +1208,24 @@ def cmd_template_run(args: argparse.Namespace) -> int:
         params["inventory"] = params["source_cache"] + "/inventory.json"
         params["inventory_digest"] = str(inventory_info["digest"])
         params["quiet_only_arg"] = "--quiet-only" if bool(params["quiet_only"]) else "--no-quiet-only"
-    manifest = expand_template(template_name, path, template, params)
+    manifest = expand_template(template_name, path, template, params, config)
     if inventory_info is not None:
         attach_label_task_inputs(manifest, inventory_info)
     if template_name in {"selfplay-to-bullet", "selfplay-to-sf-oracle"}:
         attach_pgn_task_inputs(manifest)
     if bool(template.get("materialize_inputs", False)):
         materialize_template_inputs(template, manifest, params)
+    manifest_template = manifest.get("template")
+    resolved_params = (
+        manifest_template.get("parameters")
+        if isinstance(manifest_template, dict)
+        else None
+    )
+    attach_source_artifacts(
+        template,
+        manifest,
+        resolved_params if isinstance(resolved_params, dict) else params,
+    )
     finalizer = manifest.get("finalize")
     if isinstance(finalizer, dict) and finalizer.get("type") == "bullet-labels":
         finalizer["replace"] = bool(run_options.replace)

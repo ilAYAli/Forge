@@ -7,11 +7,12 @@
   "work_dir": "{work_dir}",
   "parameters": {
     "config": {
-      "default": "build.json",
+      "required": true,
       "help": "NNUE build.py create config"
     },
     "work_dir": {
-      "default": "~/code/cpp/chess/nnue",
+      "required": true,
+      "path_context": "worker",
       "help": "NNUE repository directory"
     }
   },

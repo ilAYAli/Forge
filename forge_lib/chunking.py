@@ -275,6 +275,25 @@ def adaptive_worker_slot_count(manifest_path: Path, worker: str) -> int:
     return max(1, slots)
 
 
+def adaptive_total_slot_count(manifest_path: Path) -> int | None:
+    workers_path = manifest_path.parent / "workers.json"
+    try:
+        payload = read_json(workers_path)
+    except (OSError, SystemExit):
+        return None
+    records = payload.get("workers") if isinstance(payload, dict) else None
+    if not isinstance(records, list):
+        return None
+    slots = 0
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        value = _parse_int(record.get("slots", 1))
+        if value is not None and value > 0:
+            slots += value
+    return slots or None
+
+
 def adaptive_autosized_shards(
     template_name: str,
     template_data: dict[str, Any],
@@ -579,6 +598,18 @@ def adaptive_rechunk_pending_tasks(
         estimated_games = max(1, int(round(effective_rate * selfplay_chunk_target_seconds(params))))
     else:
         estimated_games = max(1, int(chunking.get("initial_units") or 1))
+    chunks_per_slot = max(1, int(chunking.get("rechunk_chunks_per_slot", 4)))
+    total_slots = adaptive_total_slot_count(manifest_path)
+    if total_slots is not None:
+        total_work = int(params.get(total_key) or 0)
+        if weighted_work:
+            weights = adaptive_file_weights(manifest, template_data)
+            if weights is not None:
+                total_work = sum(weights)
+        if total_work > 0:
+            denominator = total_slots * chunks_per_slot
+            parallel_target = max(1, (total_work + denominator - 1) // denominator)
+            estimated_games = min(estimated_games, parallel_target)
     if ranged_pending:
         pending.sort(key=lambda task: int(task["adaptive_range"]["start"]))
         contiguous = [pending[0]]
@@ -647,7 +678,6 @@ def adaptive_rechunk_pending_tasks(
     ):
         return None
 
-    chunks_per_slot = max(1, int(chunking.get("rechunk_chunks_per_slot", 2)))
     desired_chunks = (
         1
         if process_id

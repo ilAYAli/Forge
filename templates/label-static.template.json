@@ -4,7 +4,7 @@
   "kind": "label",
   "description": "Stream LC0 V6 records through a UCI engine's zero-search static eval into deterministic BulletFormat shards",
   "run_name": "label-static-{source_stem}-{timestamp}",
-  "work_dir": "~/.cache/forge/repos/nnue-labeler",
+  "work_dir": "{labeler}",
   "path_maps": {
     "macos": {
       "~/.cache/forge": "~/Library/Caches/forge"
@@ -22,29 +22,31 @@
       "help": "Target wall-clock seconds per adaptively sized chunk"
     },
     "labeler": {
-      "default": "~/code/cpp/chess/nnue",
-      "git_checkout": true,
-      "checkout_output": "~/.cache/forge/repos/nnue-labeler",
-      "help": "Coordinator NNUE checkout whose current HEAD supplies the labeling scripts"
+      "type": "source",
+      "default": "nnue",
+      "include": ["tools/score/**", "tools/lib/**", "tools/posgen/**", "tools/tests/test_streaming_labeling.py"],
+      "exclude": ["**/__pycache__/**", "**/.venv/**", "**/target/**"],
+      "output": "~/.cache/forge/sources/nnue-{digest12}",
+      "help": "Configured source alias or directory containing the labeling scripts"
     },
     "source": {
       "required": true,
-      "worker_path": true,
+      "path_context": "worker",
       "help": "Coordinator LC0 training.* corpus directory"
     },
     "output": {
       "required": true,
-      "worker_path": true,
+      "path_context": "worker",
       "help": "Final merged BulletFormat output"
     },
     "engine": {
-      "default": "~/assets/engines/enyo_11ca4d7",
-      "worker_path": true,
+      "required": true,
+      "path_context": "worker",
       "help": "Enyo (or other UCI) executable, worker-mapped absolute path"
     },
     "net": {
-      "default": "~/assets/nets/nn-0ee0657fb25e.nnue",
-      "worker_path": true,
+      "required": true,
+      "path_context": "worker",
       "help": "Net loaded via setoption nnue_file for static eval"
     },
     "threads": {
@@ -79,15 +81,11 @@
   },
   "requirements": {
     "python_min": "3.11",
-    "git_min": "2.38",
-    "repos": [
+    "sources": [
       {
         "name": "nnue-labeler",
-        "url": "git@github.com:ilAYAli/nnue.git",
-        "path": "~/.cache/forge/repos/nnue-labeler",
-        "remote": "origin",
-        "commit": "{labeler_commit}",
-        "allow_untracked": true,
+        "path": "{labeler}",
+        "digest": "{labeler_digest}",
         "install_timeout_s": 300,
         "install": [
           "PYTHON=python3; test ! -x /opt/homebrew/bin/python3 || PYTHON=/opt/homebrew/bin/python3; test -x .venv/bin/python || \"$PYTHON\" -m venv .venv; .venv/bin/python -m pip install -q python-chess"

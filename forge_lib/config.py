@@ -4,6 +4,7 @@ from .core import *
 
 
 CONFIG_ENV = "FORGE_CONFIG"
+CACHE_DIR_ENV = "FORGE_CACHE_DIR"
 WORKERS_ENV = "FORGE_WORKERS"
 COORDINATOR_HOST_ENV = "FORGE_COORDINATOR_HOST"
 NOTIFY_ENV = "FORGE_NOTIFY_COMMAND"
@@ -23,6 +24,11 @@ def config_dir() -> Path:
 
 def config_workers_path() -> Path:
     return config_dir() / CONFIG_WORKERS
+
+
+def cache_dir() -> Path:
+    value = os.environ.get(CACHE_DIR_ENV)
+    return expand_path(value) if value else expand_path("~/.cache/forge")
 
 
 def config_path() -> Path | None:
@@ -59,18 +65,32 @@ def parse_scalar(value: str) -> Any:
 
 def read_simple_yaml(path: Path) -> dict[str, Any]:
     data: dict[str, Any] = {}
-    current_list: str | None = None
+    current_container: str | None = None
     for raw_line in path.read_text(encoding="utf-8").splitlines():
         line = raw_line.split("#", 1)[0].rstrip()
         if not line.strip():
             continue
         if line.startswith((" ", "\t")):
-            if current_list is None:
+            if current_container is None:
                 raise SystemExit(f"{path}: unsupported nested config line {raw_line!r}")
             item = line.strip()
-            if not item.startswith("- "):
-                raise SystemExit(f"{path}: expected list item, got {raw_line!r}")
-            data[current_list].append(parse_scalar(item[2:]))
+            if item.startswith("- "):
+                container = data[current_container]
+                if container == {}:
+                    container = []
+                    data[current_container] = container
+                if not isinstance(container, list):
+                    raise SystemExit(f"{path}: mixed mapping and list under {current_container}")
+                container.append(parse_scalar(item[2:]))
+                continue
+            child_key, sep, child_value = item.partition(":")
+            container = data[current_container]
+            if (
+                not sep or not child_key.strip() or not child_value.strip()
+                or not isinstance(container, dict)
+            ):
+                raise SystemExit(f"{path}: invalid mapping entry {raw_line!r}")
+            container[child_key.strip()] = parse_scalar(child_value)
             continue
         key, sep, value = line.partition(":")
         if not sep or not key.strip():
@@ -79,10 +99,10 @@ def read_simple_yaml(path: Path) -> dict[str, Any]:
         value = value.strip()
         if value:
             data[key] = parse_scalar(value)
-            current_list = None
+            current_container = None
         else:
-            data[key] = []
-            current_list = key
+            data[key] = {}
+            current_container = key
     return data
 
 
@@ -108,6 +128,23 @@ def load_config() -> dict[str, Any]:
     if path.suffix == ".toml":
         return read_simple_toml(path)
     raise SystemExit(f"{path}: unsupported config file type")
+
+
+def configured_source(name: str, config: dict[str, Any] | None = None) -> Path:
+    config = config if config is not None else load_config()
+    sources = config.get("sources", {})
+    value = sources.get(name) if isinstance(sources, dict) else None
+    if value is None:
+        value = config.get(f"sources.{name}", config.get(f"source.{name}"))
+    if not isinstance(value, str) or not value.strip():
+        raise SystemExit(
+            f"source alias {name!r} is not configured; add "
+            f"'sources:\\n  {name}: /path/to/source' to Forge config"
+        )
+    path = expand_path(value)
+    if not path.is_dir():
+        raise SystemExit(f"configured source {name!r} is not a directory: {path}")
+    return path
 
 
 def config_template_dirs(config: dict[str, Any] | None = None) -> list[Path]:

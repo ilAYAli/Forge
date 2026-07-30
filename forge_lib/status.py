@@ -4,7 +4,7 @@ import math
 import shlex
 
 from .calibration import adaptive_blended_throughput, adaptive_rate_warmup_units
-from .config import default_notify_command
+from .config import default_notify_command, speedup_single_host_workers
 from .core import *
 from .manifest import *
 from .tasks import *
@@ -476,6 +476,24 @@ def run_manifest_has_attention_state(manifest: dict[str, Any]) -> bool:
     try:
         state = state_dir(manifest)
         if queue_request_path(manifest).exists() or launch_request_path(manifest).exists() or stop_request_path(manifest).exists():
+            manifest_path = state.parent / "manifest.json"
+            completion_path = run_summary_path(manifest_path)
+            completion = read_run_summary_payload(manifest_path)
+            if (
+                isinstance(completion, dict)
+                and completion.get("event") == "run_stopped"
+                and completion.get("state") == "stopped"
+            ):
+                completed_mtime = file_mtime_epoch(completion_path) or 0.0
+                newer_request = any(
+                    (file_mtime_epoch(path) or 0.0) > completed_mtime
+                    for path in (
+                        queue_request_path(manifest),
+                        launch_request_path(manifest),
+                    )
+                )
+                if not newer_request:
+                    return False
             return True
         if any(state.glob("*.fail.json")) or any(state.glob("*.running.json")):
             return True

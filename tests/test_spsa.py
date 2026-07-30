@@ -190,14 +190,13 @@ class SpsaCoordinatorTests(unittest.TestCase):
 
 
 class SpsaTemplateTests(unittest.TestCase):
-    def test_spsa_defaults_are_self_contained(self) -> None:
+    def test_spsa_shared_template_requires_installation_paths(self) -> None:
         template = forge.load_template(ROOT / "templates" / "spsa.template.json")
 
         self.assertEqual(1000, template["parameters"]["iterations"]["default"])
-        self.assertEqual(
-            "~/.config/enyo/settings.json",
-            template["parameters"]["settings"]["default"],
-        )
+        for name in ("engine", "params", "state", "settings", "book"):
+            self.assertTrue(template["parameters"][name]["required"])
+            self.assertNotIn("default", template["parameters"][name])
         self.assertNotIn("default", template["parameters"]["uci"])
 
     def test_uci_defaults_are_read_from_enyo_settings(self) -> None:

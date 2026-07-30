@@ -5,7 +5,7 @@ import fcntl
 
 from collections.abc import Callable
 
-from .config import config_workers_path, default_coordinator_host, default_notify_command
+from .config import cache_dir, config_workers_path, default_coordinator_host, default_notify_command
 from .core import *
 from .manifest import *
 from .tasks import *
@@ -509,7 +509,7 @@ def worker_cache_dir(worker: dict[str, Any]) -> str:
     if worker.get("cache_dir"):
         return str(worker["cache_dir"])
     if is_local_worker(worker):
-        return str(Path.home() / ".cache/forge")
+        return str(cache_dir())
     return "/tmp/forge-cache"
 
 def worker_cache_file(worker: dict[str, Any], name: str) -> str:
@@ -848,6 +848,35 @@ def local_input_matches(path: Path, item: dict[str, Any]) -> bool:
     expected_sha = str(item.get("sha256") or "").strip()
     return not expected_sha or sha256_file(path) == expected_sha
 
+def worker_source_artifact_matches(
+    worker: dict[str, Any],
+    path: str,
+    *,
+    digest: str,
+    timeout: float | None = None,
+    tracker: ProcessTracker | None = None,
+    retries: int = 0,
+) -> bool:
+    code = "\n".join([
+        "from pathlib import Path",
+        "import json, sys",
+        f"root = Path({json.dumps(path)}).expanduser()",
+        "try:",
+        "    marker = json.loads((root / '.forge-source.json').read_text(encoding='utf-8'))",
+        "except (OSError, ValueError):",
+        "    marker = {}",
+        f"ok = marker.get('schema') == 'forge.source-artifact.v1' and marker.get('digest') == {json.dumps(digest)}",
+        "sys.exit(0 if ok else 1)",
+    ])
+    result = run_worker_shell(
+        worker,
+        shell_join([worker_python(worker), "-c", code]),
+        timeout=timeout,
+        tracker=tracker,
+        retries=retries,
+    )
+    return result.returncode == 0
+
 def worker_input_matches(
     worker: dict[str, Any],
     path: str,
@@ -906,6 +935,49 @@ def sync_inputs_to_worker(
         dst = str(remote_item.get("path") or "")
         if not src.exists():
             raise RuntimeError(f"input does not exist: {src}")
+        if remote_item.get("tree") == "source-artifact":
+            from .source_artifacts import source_artifact_matches
+
+            digest = str(remote_item.get("digest") or "")
+            if not digest or not src.is_dir():
+                raise RuntimeError("source artifact is missing digest or directory")
+            key = (worker_host(worker), dst, digest)
+            with _INPUT_TREE_SYNC_LOCK:
+                if key in _SYNCED_INPUT_TREES:
+                    continue
+                if (
+                    is_local_worker(worker)
+                    and source_artifact_matches(
+                        expand_path(dst),
+                        digest=digest,
+                    )
+                ):
+                    _SYNCED_INPUT_TREES.add(key)
+                    continue
+                if (
+                    not is_local_worker(worker)
+                    and worker_source_artifact_matches(
+                        worker,
+                        dst,
+                        digest=digest,
+                        timeout=timeout,
+                        tracker=tracker,
+                        retries=retries,
+                    )
+                ):
+                    _SYNCED_INPUT_TREES.add(key)
+                    continue
+                copy_dir_to_worker(
+                    worker,
+                    src,
+                    dst,
+                    timeout=timeout,
+                    tracker=tracker,
+                    retries=retries,
+                )
+                _SYNCED_INPUT_TREES.add(key)
+            synced += 1
+            continue
         if remote_item.get("tree") == "directory":
             if not src.is_dir():
                 raise RuntimeError(f"directory input is not a directory: {src}")
@@ -1066,11 +1138,11 @@ def sync_lc0_inventory_tree(
         raise RuntimeError(verified.stderr.strip() or f"LC0 cache verification failed rc={verified.returncode}")
     return True
 
-def manifest_has_git_requirements(manifest: dict[str, Any]) -> bool:
+def manifest_has_setup_requirements(manifest: dict[str, Any]) -> bool:
     req = manifest.get("requirements", {})
     if not isinstance(req, dict):
         return False
-    return bool(iter_git_requirements(manifest, req))
+    return bool(iter_git_requirements(manifest, req) or source_requirement_items(manifest))
 
 def deploy_prereq_command(
     *,
@@ -1092,7 +1164,7 @@ def deploy_prereq_command(
             "--skip-requirements",
             "--coordinator", coordinator,
         ]))
-    if manifest_has_git_requirements(manifest):
+    if manifest_has_setup_requirements(manifest):
         commands.append(shell_join([python, runner, "sync-repos", "--manifest", manifest_path, *profile_args]))
     doctor_command = [python, runner, "doctor", "--manifest", manifest_path, *profile_args, "--role", "worker"]
     commands.append(shell_join(doctor_command))
