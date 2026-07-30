@@ -5,7 +5,13 @@ import fcntl
 
 from collections.abc import Callable
 
-from .config import cache_dir, config_workers_path, default_coordinator_host, default_notify_command
+from .config import (
+    cache_dir,
+    config_workers_path,
+    default_coordinator_host,
+    default_notify_command,
+    default_task_complete_command,
+)
 from .core import *
 from .manifest import *
 from .tasks import *
@@ -1477,8 +1483,9 @@ def queue_resume_command(args: argparse.Namespace, run_name: str) -> list[str]:
         command.append("--newline-between")
     if getattr(args, "notify_command", None):
         command.extend(["--notify-command", str(args.notify_command)])
-    if getattr(args, "task_complete_command", None):
-        command.extend(["--task-complete-command", str(args.task_complete_command)])
+    task_complete_command = getattr(args, "task_complete_command", None) or getattr(args, "notify_command", None) or default_task_complete_command()
+    if task_complete_command:
+        command.extend(["--task-complete-command", str(task_complete_command)])
     if bool(getattr(args, "task_complete_sync", False)):
         command.append("--task-complete-sync")
     if not bool(getattr(args, "fail_on_fail", True)):
@@ -2201,7 +2208,7 @@ def run_deploy(args: argparse.Namespace) -> int:
             ),
             retry_failed=bool(getattr(args, "retry_failed", False)),
             task_attempts=int(getattr(args, "task_attempts", 0)),
-            task_complete_command=getattr(args, "task_complete_command", None),
+            task_complete_command=getattr(args, "task_complete_command", None) or getattr(args, "notify_command", None) or default_task_complete_command(),
             task_complete_sync=bool(getattr(args, "task_complete_sync", False)),
         )
         result = run_worker_shell(worker, script, timeout=remote_timeout, tracker=tracker)
@@ -2228,7 +2235,7 @@ def run_deploy(args: argparse.Namespace) -> int:
             ),
             retry_failed=bool(getattr(args, "retry_failed", False)),
             task_attempts=int(getattr(args, "task_attempts", 0)),
-            task_complete_command=getattr(args, "task_complete_command", None),
+            task_complete_command=getattr(args, "task_complete_command", None) or getattr(args, "notify_command", None) or default_task_complete_command(),
             task_complete_sync=bool(getattr(args, "task_complete_sync", False)),
         )
         result = run_worker_shell(
@@ -2489,6 +2496,22 @@ def run_deploy(args: argparse.Namespace) -> int:
             index = int(item["index"])
             launch_futures.append(launch_executor.submit(launch_worker, index, workers[index]))
 
+    notify_command = getattr(args, "notify_command", None) or default_notify_command()
+    emit_phase_events = bool(notify_command) and has_tasks and not launch_only
+    if emit_phase_events:
+        run_notify_command(
+            notify_command,
+            {
+                "event": "phase_start",
+                "phase": "setup",
+                "state": "running",
+                "run": run_dir.name,
+                "run_dir": str(run_dir),
+                "kind": str(manifest.get("kind") or ""),
+                "groups": len(setup_groups),
+            },
+            wait=False,
+        )
     try:
         future_to_group = {
             executor.submit(setup_worker_group, group): group
@@ -2502,6 +2525,21 @@ def run_deploy(args: argparse.Namespace) -> int:
         )
         setup_failed = sum(1 for item in setup_results_list if not item["ok"])
         setup_failed_results = [item for item in setup_results_list if not item["ok"]]
+        if emit_phase_events:
+            run_notify_command(
+                notify_command,
+                {
+                    "event": "phase_done",
+                    "phase": "setup",
+                    "state": "failed" if setup_failed else "ok",
+                    "run": run_dir.name,
+                    "run_dir": str(run_dir),
+                    "kind": str(manifest.get("kind") or ""),
+                    "groups": len(setup_groups),
+                    "groups_failed": setup_failed,
+                },
+                wait=False,
+            )
         ready_worker_items = [
             (int(item["index"]), workers[int(item["index"])])
             for item in setup_results_list
@@ -2709,8 +2747,9 @@ def run_control_command_args(name: str, args: argparse.Namespace) -> list[str]:
         command.append("--newline-between")
     if getattr(args, "notify_command", None):
         command.extend(["--notify-command", str(args.notify_command)])
-    if getattr(args, "task_complete_command", None):
-        command.extend(["--task-complete-command", str(args.task_complete_command)])
+    task_complete_command = getattr(args, "task_complete_command", None) or getattr(args, "notify_command", None) or default_task_complete_command()
+    if task_complete_command:
+        command.extend(["--task-complete-command", str(task_complete_command)])
     if bool(getattr(args, "task_complete_sync", False)):
         command.append("--task-complete-sync")
     if bool(getattr(args, "no_color", False)):
@@ -2845,8 +2884,9 @@ def append_deploy_options(command: list[str], args: argparse.Namespace, *, coord
     command.extend(["--remote-timeout-seconds", str(args.remote_timeout_seconds)])
     if getattr(args, "notify_command", None):
         command.extend(["--notify-command", str(args.notify_command)])
-    if getattr(args, "task_complete_command", None):
-        command.extend(["--task-complete-command", str(args.task_complete_command)])
+    task_complete_command = getattr(args, "task_complete_command", None) or getattr(args, "notify_command", None) or default_task_complete_command()
+    if task_complete_command:
+        command.extend(["--task-complete-command", str(task_complete_command)])
 
 def append_start_options(command: list[str], args: argparse.Namespace, *, coordinator_host: str) -> None:
     append_deploy_options(command, args, coordinator_host=coordinator_host)
@@ -3001,8 +3041,9 @@ def worker_control_command_args(action: str, args: argparse.Namespace) -> list[s
             command.append("--newline-between")
         if getattr(args, "notify_command", None):
             command.extend(["--notify-command", str(args.notify_command)])
-        if getattr(args, "task_complete_command", None):
-            command.extend(["--task-complete-command", str(args.task_complete_command)])
+        task_complete_command = getattr(args, "task_complete_command", None) or getattr(args, "notify_command", None) or default_task_complete_command()
+        if task_complete_command:
+            command.extend(["--task-complete-command", str(task_complete_command)])
         if bool(getattr(args, "task_complete_sync", False)):
             command.append("--task-complete-sync")
         if bool(getattr(args, "no_color", False)):
@@ -3175,7 +3216,7 @@ def run_local_job(args: argparse.Namespace) -> int:
         retry_failed=args.retry_failed,
         task_attempts=getattr(args, "task_attempts", 2),
         notify_command=args.notify_command,
-        task_complete_command=getattr(args, "task_complete_command", None),
+        task_complete_command=getattr(args, "task_complete_command", None) or getattr(args, "notify_command", None) or default_task_complete_command(),
         task_complete_sync=bool(getattr(args, "task_complete_sync", False)),
         lease_seconds=args.lease_seconds,
         interval_seconds=args.interval_seconds,
@@ -3404,7 +3445,7 @@ def cmd_worker_set(args: argparse.Namespace) -> int:
                 merge_force=args.merge_force,
                 newline_between=args.newline_between,
                 notify_command=args.notify_command,
-                task_complete_command=getattr(args, "task_complete_command", None),
+                task_complete_command=getattr(args, "task_complete_command", None) or getattr(args, "notify_command", None) or default_task_complete_command(),
                 task_complete_sync=bool(getattr(args, "task_complete_sync", False)),
                 no_color=args.no_color,
                 verbose=args.verbose,
@@ -3481,7 +3522,7 @@ def cmd_resume(args: argparse.Namespace) -> int:
             merge_force=args.merge_force,
             newline_between=args.newline_between,
             notify_command=args.notify_command,
-            task_complete_command=getattr(args, "task_complete_command", None),
+            task_complete_command=getattr(args, "task_complete_command", None) or getattr(args, "notify_command", None) or default_task_complete_command(),
             task_complete_sync=bool(getattr(args, "task_complete_sync", False)),
             no_color=args.no_color,
             verbose=args.verbose,
@@ -3645,7 +3686,7 @@ def cmd_retry(args: argparse.Namespace) -> int:
             merge_force=args.merge_force,
             newline_between=args.newline_between,
             notify_command=args.notify_command,
-            task_complete_command=getattr(args, "task_complete_command", None),
+            task_complete_command=getattr(args, "task_complete_command", None) or getattr(args, "notify_command", None) or default_task_complete_command(),
             task_complete_sync=bool(getattr(args, "task_complete_sync", False)),
             no_color=args.no_color,
             verbose=args.verbose,

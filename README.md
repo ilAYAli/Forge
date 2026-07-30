@@ -401,14 +401,58 @@ same completion payload sent to notifications, including the final status line.
 Detached starts run a background wait monitor so completed runs still get that
 summary even when no notification command is configured.
 
+### Events
+
+Every payload has an `"event"` field. Three families exist, fired from
+different places and at different granularity:
+
+| Event | Fired by | When |
+| --- | --- | --- |
+| `run_done` | `wait` | The run reached a terminal state with no failed tasks. |
+| `run_fail` | `wait` | The run reached a terminal state with failed tasks. |
+| `run_stopped` | `wait` | The run was stopped (e.g. `forge stop`). |
+| `run_timeout` | `wait` | `--timeout-seconds` elapsed before the run finished. |
+| `run_finalize_fail` | `wait` | Tasks finished but the manifest's `finalize` step raised. |
+| `run_launch_failed` | `wait` | Workers never reached a running state. |
+| `deploy_done` / `deploy_fail` | `deploy` | The `deploy` invocation itself finished (setup + launch + tasks, when not deferred to a wait monitor). |
+| `phase_start` / `phase_done` | `deploy` | A coordinator-level sub-stage of `deploy` started/finished. Currently emitted once around the worker **setup** stage (source sync, dependency install/build), tagged `"phase": "setup"`, since that step can take real wall-clock time before any task runs. Suppressed when the run has no tasks, or when completion is deferred to a background wait monitor (`--launch-only` with `--start-wait-monitor`). |
+| `task_done` / `task_fail` | `work` (per worker) | One shard/task finished. See [Per-task hook](#per-task-hook). |
+
+The run- and deploy-level events fire once, from the coordinator process (or
+wherever `deploy`/`wait` itself runs — see the coordinator note below).
+`task_done`/`task_fail` fire once per task, from wherever that task actually
+ran, which on a remote worker is that worker's own environment, not the
+coordinator's.
+
+**If `coordinator_host` is configured**, `deploy`/`start` delegate to that
+host over SSH — even when it's the same machine you're already on. An SSH
+child does not inherit your shell's environment, so an env-var override like
+`FORGE_NOTIFY_COMMAND` set only in your local shell will not reach the
+delegated process; it falls back to reading `~/.config/forge/config.yml` on
+the coordinator host instead. Configure `notify_command` in that file (or
+pass `--notify-command` explicitly, which *is* forwarded to the delegated
+invocation) rather than relying on an env var alone if a coordinator is
+configured.
+
 ### Per-task hook
 
 `work` (and anything that deploys workers — `run`/`selfplay`/`start`/`resume`/
-`retry`/`worker set`) also supports `--task-complete-command`, which runs
-after *each* task/shard finishes, not just at the end of the whole run. It
-gets the same `FORGE_EVENT_JSON`/stdin payload convention as
-`--notify-command`, tagged with `"event": "task_done"` or `"task_fail"`, plus
-`progress_data` when available.
+`retry`/`worker set`) also supports `--task-complete-command`,
+`FORGE_TASK_COMPLETE_COMMAND`, or `task_complete_command` in
+`~/.config/forge/config.yml`, which runs after *each* task/shard finishes,
+not just at the end of the whole run. It gets the same
+`FORGE_EVENT_JSON`/stdin payload convention as `--notify-command`, tagged
+with `"event": "task_done"` or `"task_fail"`, plus `progress_data` when
+available.
+
+You don't need to configure this separately just to get task-level
+notifications: if `--task-complete-command`/`FORGE_TASK_COMPLETE_COMMAND`/
+`task_complete_command` isn't set, it falls back to whatever
+`--notify-command`/`FORGE_NOTIFY_COMMAND`/`notify_command` resolves to. Set
+`notify_command` once and it drives both run-level and per-task
+notifications through the same script, distinguished by the `"event"`
+field. Only set `--task-complete-command` separately if you actually want a
+*different* command (or none) for per-task events specifically.
 
 By default this fires fire-and-forget: the worker does not wait for the
 command to finish before claiming its next task, so shard throughput never
@@ -432,6 +476,33 @@ read-state → process → append → write-state sequence, and save state
 incrementally rather than only once at the end, so a killed process doesn't
 lose track of work it already appended. Use `--task-complete-sync` instead if
 you'd rather trade shard throughput for simplicity.
+
+**High task counts mean high event counts.** A run chunked into hundreds or
+thousands of shards fires `task_done`/`task_fail` that many times. Since
+`task_complete_command` now defaults to the same command as
+`notify_command`, wiring up one notification command means that volume
+applies by default — not just to the once-per-run events. If your hook
+always publishes somewhere, budget for that; don't assume it fires as
+infrequently as `run_done`/`deploy_done` do.
+
+### Reference hook script and filtering
+
+`scripts/forge_event_ntfy.sh` is a working example: it renders any of the
+event shapes above into a short message and publishes it over
+[ntfy](https://ntfy.sh). It always publishes every event it receives to one
+base channel — there's no built-in volume filtering on that channel, so the
+high-task-count caveat above applies directly.
+
+It separately supports an opt-in `HOOK_EVENTS` environment variable that
+gates a second, interruptive notification on top of the base one (e.g. to
+wake a human or an agent, rather than just log). `HOOK_EVENTS` is a
+comma-separated list matched against `"event"`; entries ending in `_done` or
+`_fail` also match a bare `done`/`fail` in the list (so `HOOK_EVENTS=fail`
+matches `run_fail`, `deploy_fail`, and `task_fail` alike). This mirrors the
+`NNUE_HOOK_EVENTS` convention in the sibling `nnue` pipeline
+(`tools/events/nnue_event_ntfy.sh`), which uses the same `phase_start`/
+`phase_done`/`done`/`fail` vocabulary for its own (unrelated) training
+pipeline stages.
 
 ## Updates
 

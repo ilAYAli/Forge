@@ -6,6 +6,7 @@ from contextlib import contextmanager
 
 from .core import *
 from .manifest import *
+from .config import default_task_complete_command
 
 
 @contextmanager
@@ -1661,7 +1662,7 @@ def cmd_work(args: argparse.Namespace) -> int:
                 local_manifest,
                 local_task,
                 rc=rc,
-                command_text=getattr(args, "task_complete_command", None),
+                command_text=getattr(args, "task_complete_command", None) or getattr(args, "notify_command", None) or default_task_complete_command(),
                 sync=bool(getattr(args, "task_complete_sync", False)),
             )
             sync_task_result(

@@ -8,6 +8,7 @@ CACHE_DIR_ENV = "FORGE_CACHE_DIR"
 WORKERS_ENV = "FORGE_WORKERS"
 COORDINATOR_HOST_ENV = "FORGE_COORDINATOR_HOST"
 NOTIFY_ENV = "FORGE_NOTIFY_COMMAND"
+TASK_COMPLETE_ENV = "FORGE_TASK_COMPLETE_COMMAND"
 SPEEDUP_SINGLE_HOST_WORKERS_ENV = "FORGE_SPEEDUP_SINGLE_HOST_WORKERS"
 CONFIG_DIR = Path("~/.config/forge")
 CONFIG_YML = "config.yml"
@@ -197,6 +198,16 @@ def default_notify_command(config: dict[str, Any] | None = None) -> str | None:
     config = config if config is not None else load_config()
     value = config.get("notify_command") or config.get("default_notify_command")
     return str(value).strip() if value else None
+
+
+def default_task_complete_command(config: dict[str, Any] | None = None) -> str | None:
+    if value := os.environ.get(TASK_COMPLETE_ENV):
+        return value.strip() or None
+    config = config if config is not None else load_config()
+    value = config.get("task_complete_command") or config.get("default_task_complete_command")
+    if value:
+        return str(value).strip() or None
+    return default_notify_command(config)
 
 
 def speedup_single_host_workers(config: dict[str, Any] | None = None) -> int:
