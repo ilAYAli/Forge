@@ -110,16 +110,13 @@ class ForgeTests(unittest.TestCase):
                 "engine": "~/assets/engines/candidate",
                 "net": self._test_net,
             },
-            "label-sf": {
-                "sf_engine": "~/assets/engines/oracle",
-                "sf_net": "~/assets/nets/oracle.nnue",
+            "to-bullet": {
+                "engine": "~/assets/engines/candidate",
+                "net": self._test_net,
             },
-            "label-tb": {
-                "work_dir": self._test_work_dir,
-            },
-            "training": {
-                "config": "build.json",
-                "work_dir": self._test_work_dir,
+            "label-pgn": {
+                "engine": "~/assets/engines/oracle",
+                "net": "~/assets/nets/oracle.nnue",
             },
         }
         for template_name, defaults in local_defaults.items():
@@ -3138,12 +3135,11 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
         expected = {
             "label-search": {"engine", "net"},
             "label-static": {"engine", "net"},
+            "to-bullet": {"engine", "net"},
             "selfplay": {"engine", "book", "net"},
-            "label-sf": {"sf_engine", "sf_net"},
+            "label-pgn": {"engine", "net"},
             "sprt": {"candidate", "candidate_net", "reference", "reference_net", "book"},
             "spsa": {"engine", "params", "state", "settings", "book"},
-            "label-tb": {"work_dir"},
-            "training": {"config", "work_dir"},
         }
         for template_name, names in expected.items():
             template = json.loads(
@@ -3189,6 +3185,143 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
         self.assertEqual("~/assets/input.dat", effective["parameters"]["item"]["default"])
         self.assertNotIn("required", effective["parameters"]["item"])
         self.assertTrue(effective["parameters"]["item"]["local_default"])
+
+    def test_template_defaults_overlay_accepts_cli_flag_spelling(self) -> None:
+        from forge_lib import templates as template_lib
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            template_path = self.write_test_template(root)
+            template = json.loads(template_path.read_text(encoding="utf-8"))
+            template["parameters"]["reference_net"] = {"local_default": True}
+            template_path.write_text(json.dumps(template), encoding="utf-8")
+            overlay_dir = root / "overlays"
+            overlay_dir.mkdir()
+            (overlay_dir / "demo.defaults.json").write_text(
+                json.dumps({
+                    "schema": "forge.template-defaults.v1",
+                    "parameters": {"reference-net": "~/assets/reference.nn"},
+                }),
+                encoding="utf-8",
+            )
+            with mock.patch(
+                "forge_lib.templates.config_template_dirs",
+                return_value=[overlay_dir, template_path.parent],
+            ):
+                effective = template_lib.load_template(template_path)
+
+        self.assertEqual(
+            "~/assets/reference.nn",
+            effective["parameters"]["reference_net"]["default"],
+        )
+
+    def test_template_list_shows_every_overlay_default(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.write_test_template(root)
+            overlay_dir = root / "overlays"
+            overlay_dir.mkdir()
+            (overlay_dir / "demo.defaults.json").write_text(
+                json.dumps({
+                    "schema": "forge.template-defaults.v1",
+                    "parameters": {"total": 1500},
+                }),
+                encoding="utf-8",
+            )
+            config = root / "config.yml"
+            config.write_text(
+                f"template_dirs:\n"
+                f"  - \"{overlay_dir}\"\n"
+                f"  - \"{root / 'templates'}\"\n",
+                encoding="utf-8",
+            )
+            listing = self.run_cli(
+                "template",
+                "list",
+                env={"FORGE_CONFIG": str(config)},
+            )
+
+        self.assertEqual(0, listing.returncode, listing.stderr)
+        self.assertIn("  local defaults:\n    --total 1500\n", listing.stdout)
+
+    def test_template_defaults_overlay_applies_and_lists_chunking(self) -> None:
+        from forge_lib import templates as template_lib
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            template_path = self.write_test_template(root)
+            template = json.loads(template_path.read_text(encoding="utf-8"))
+            template["chunking"] = {
+                "initial_units": 2,
+                "live_rechunk": False,
+            }
+            template_path.write_text(json.dumps(template), encoding="utf-8")
+            overlay_dir = root / "overlays"
+            overlay_dir.mkdir()
+            (overlay_dir / "demo.defaults.json").write_text(
+                json.dumps({
+                    "schema": "forge.template-defaults.v1",
+                    "chunking": {
+                        "initial_units": 15,
+                        "live_rechunk": True,
+                    },
+                }),
+                encoding="utf-8",
+            )
+            config = root / "config.yml"
+            config.write_text(
+                f"template_dirs:\n"
+                f"  - \"{overlay_dir}\"\n"
+                f"  - \"{root / 'templates'}\"\n",
+                encoding="utf-8",
+            )
+            with mock.patch(
+                "forge_lib.templates.config_template_dirs",
+                return_value=[overlay_dir, template_path.parent],
+            ):
+                effective = template_lib.load_template(template_path)
+            listing = self.run_cli(
+                "template",
+                "list",
+                env={"FORGE_CONFIG": str(config)},
+            )
+
+        self.assertEqual(15, effective["chunking"]["initial_units"])
+        self.assertIs(effective["chunking"]["live_rechunk"], True)
+        self.assertEqual(0, listing.returncode, listing.stderr)
+        self.assertIn(
+            "  local template overrides:\n"
+            '    chunking: {"initial_units": 15, "live_rechunk": true}\n',
+            listing.stdout,
+        )
+
+    def test_template_defaults_overlay_recursively_overrides_existing_template_fields(self) -> None:
+        from forge_lib import templates as template_lib
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            template_path = self.write_test_template(root)
+            overlay_dir = root / "overlays"
+            overlay_dir.mkdir()
+            (overlay_dir / "demo.defaults.json").write_text(
+                json.dumps({
+                    "schema": "forge.template-defaults.v1",
+                    "task": {
+                        "split": {"unit": "positions"},
+                        "progress": {"unit": "positions"},
+                    },
+                }),
+                encoding="utf-8",
+            )
+            with mock.patch(
+                "forge_lib.templates.config_template_dirs",
+                return_value=[overlay_dir, template_path.parent],
+            ):
+                effective = template_lib.load_template(template_path)
+
+        self.assertEqual("positions", effective["task"]["split"]["unit"])
+        self.assertEqual("positions", effective["task"]["progress"]["unit"])
+        self.assertIn("command", effective["task"])
 
     def test_template_defaults_overlay_rejects_unknown_parameter(self) -> None:
         from forge_lib import templates as template_lib
@@ -3364,23 +3497,6 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
         self.assertEqual("engine-9696dac", manifest["name"])
         self.assertEqual("9696dac", manifest["requirements"]["repos"][0]["commit"])
 
-    def test_training_template_wraps_nnue_build_create(self) -> None:
-        template_path = ROOT / "templates" / "training.template.json"
-        template = forge.load_template(template_path)
-        params = forge.parse_template_parameters("training", template, [])
-        manifest = forge.expand_template("training", template_path, template, params)
-
-        self.assertEqual(self._test_work_dir, manifest["work_dir"])
-        self.assertEqual(1, len(manifest["tasks"]))
-        task = manifest["tasks"][0]
-        self.assertEqual("training_0000", task["id"])
-        self.assertEqual("training", task["label"])
-        self.assertEqual("./build.py create -c build.json", task["command"])
-        self.assertNotIn("--shard", task["command"])
-        self.assertNotIn("--output-dir", task["command"])
-        self.assertEqual("steps", task["progress"]["unit"])
-        self.assertEqual(["loss", "lr"], [spec["name"] for spec in task["progress"]["series"]])
-
     def test_template_commands_list_and_show(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -3395,9 +3511,12 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
 
             listing = self.run_cli("template", "list", env=env)
             self.assertEqual(0, listing.returncode, listing.stderr)
-            self.assertIn(
-                "demo [required per run: item, total] - demo template",
+            self.assertRegex(listing.stdout, r"(?m)^demo$")
+            self.assertIn("  demo template\n", listing.stdout)
+            self.assertIn("  local defaults:\n    none\n", listing.stdout)
+            self.assertRegex(
                 listing.stdout,
+                r"(?m)^  required now:\n    --item ITEM\n    --total N$",
             )
 
             shown = self.run_cli("template", "show", "demo", env=env)
@@ -3407,6 +3526,126 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
             shown_by_path = self.run_cli("template", "show", str(root / "templates" / "demo.template.json"), env=env)
             self.assertEqual(0, shown_by_path.returncode, shown_by_path.stderr)
             self.assertEqual("demo", json.loads(shown_by_path.stdout)["name"])
+
+    def test_to_bullet_dispatches_all_label_modes(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.home()) as tmp:
+            root = Path(tmp)
+            pgn_dir = root / "pgns"
+            pgn_dir.mkdir()
+            (pgn_dir / "one.pgn").write_text("", encoding="utf-8")
+            expected_kinds = {
+                "existing": "selfplay-to-bullet",
+                "outcome": "selfplay-to-bullet",
+                "search": "label-pgn",
+                "static": "label-pgn",
+                "tb": "label-tb",
+            }
+            for mode, expected_kind in expected_kinds.items():
+                with self.subTest(mode=mode):
+                    stdout = io.StringIO()
+                    with contextlib.redirect_stdout(stdout):
+                        rc = forge.cmd_template_run(argparse.Namespace(
+                            template="to-bullet",
+                            template_args=[
+                                "--dry-run",
+                                "--input", str(pgn_dir),
+                                "--output", str(root / f"{mode}.bullet"),
+                                "--label", mode,
+                                "--shards", "1",
+                            ],
+                        ))
+                    self.assertEqual(0, rc)
+                    manifest = json.loads(stdout.getvalue())
+                    self.assertEqual("to-bullet", manifest["template"]["name"])
+                    self.assertEqual(expected_kind, manifest["kind"])
+
+    def test_to_bullet_rejects_pgn_only_mode_for_training_input(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.home()) as tmp:
+            root = Path(tmp)
+            training_dir = root / "training"
+            training_dir.mkdir()
+            (training_dir / "training.0").write_bytes(bytes(8356))
+            with self.assertRaisesRegex(SystemExit, "--label existing requires PGN input"):
+                forge.cmd_template_run(argparse.Namespace(
+                    template="to-bullet",
+                    template_args=[
+                        "--dry-run",
+                        "--input", str(training_dir),
+                        "--output", str(root / "output.bullet"),
+                    ],
+                ))
+
+    def test_to_bullet_dispatches_training_input_to_search_and_static_backends(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.home()) as tmp:
+            root = Path(tmp)
+            training_dir = root / "training"
+            training_dir.mkdir()
+            (training_dir / "training.0").write_bytes(bytes(8356))
+            for mode, expected_kind in (
+                ("search", "label"),
+                ("static", "label"),
+            ):
+                with self.subTest(mode=mode):
+                    stdout = io.StringIO()
+                    with contextlib.redirect_stdout(stdout):
+                        rc = forge.cmd_template_run(argparse.Namespace(
+                            template="to-bullet",
+                            template_args=[
+                                "--dry-run",
+                                "--input", str(training_dir),
+                                "--output", str(root / f"{mode}.bullet"),
+                                "--label", mode,
+                                "--shards", "1",
+                            ],
+                        ))
+                    self.assertEqual(0, rc)
+                    manifest = json.loads(stdout.getvalue())
+                    self.assertEqual("to-bullet", manifest["template"]["name"])
+                    self.assertEqual(expected_kind, manifest["kind"])
+
+    def test_to_bullet_composes_engine_labeling_with_tb_override(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.home()) as tmp:
+            root = Path(tmp)
+            pgn_dir = root / "pgns"
+            pgn_dir.mkdir()
+            (pgn_dir / "one.pgn").write_text("", encoding="utf-8")
+            for mode in ("search", "static"):
+                with self.subTest(mode=mode):
+                    stdout = io.StringIO()
+                    with contextlib.redirect_stdout(stdout):
+                        rc = forge.cmd_template_run(argparse.Namespace(
+                            template="to-bullet",
+                            template_args=[
+                                "--dry-run",
+                                "--input", str(pgn_dir),
+                                "--output", str(root / f"{mode}-tb.bullet"),
+                                "--label", mode,
+                                "--label", "tb",
+                                "--shards", "1",
+                            ],
+                        ))
+                    self.assertEqual(0, rc)
+                    manifest = json.loads(stdout.getvalue())
+                    self.assertEqual("label-pgn", manifest["kind"])
+                    self.assertIn("--tb-pieces 6", manifest["tasks"][0]["command"])
+
+    def test_to_bullet_rejects_incompatible_label_pipeline(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.home()) as tmp:
+            root = Path(tmp)
+            pgn_dir = root / "pgns"
+            pgn_dir.mkdir()
+            (pgn_dir / "one.pgn").write_text("", encoding="utf-8")
+            with self.assertRaisesRegex(SystemExit, "invalid label pipeline"):
+                forge.cmd_template_run(argparse.Namespace(
+                    template="to-bullet",
+                    template_args=[
+                        "--dry-run",
+                        "--input", str(pgn_dir),
+                        "--output", str(root / "output.bullet"),
+                        "--label", "existing",
+                        "--label", "static",
+                    ],
+                ))
 
     def test_run_template_accepts_explicit_template_path(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -3530,7 +3769,7 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
                     stdout = io.StringIO()
                     template_args = [
                         "--dry-run",
-                        "--source", str(source),
+                        "--input", str(source),
                         "--output", "/tmp/labels.bullet",
                         "--max-records", "40",
                         "--shards", "4",
@@ -4293,7 +4532,7 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
         self.assertIn("Games:", manifest["tasks"][0]["progress"]["log_regex"])
 
     def test_selfplay_conversion_templates_define_throughput_graph(self) -> None:
-        for name in ("selfplay-to-bullet", "label-sf"):
+        for name in ("selfplay-to-bullet", "label-pgn"):
             template = forge.load_template(ROOT / "templates" / f"{name}.template.json")
             series = template["task"]["progress"]["series"]
 
@@ -4305,11 +4544,11 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
 
     def test_selfplay_conversion_rejects_directory_looking_output(self) -> None:
         template = forge.load_template(
-            ROOT / "templates" / "label-sf.template.json"
+            ROOT / "templates" / "label-pgn.template.json"
         )
         with self.assertRaisesRegex(SystemExit, "--output must end with '.bullet'"):
             forge.parse_template_parameters(
-                "label-sf",
+                "label-pgn",
                 template,
                 ["--pgn-dir", "/tmp/pgns", "--output", "/tmp/gen4"],
             )
@@ -4323,10 +4562,10 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
             pgn_dir.mkdir()
             for index in range(10):
                 (pgn_dir / f"{index:02d}.pgn").touch()
-            template_path = ROOT / "templates" / "label-sf.template.json"
+            template_path = ROOT / "templates" / "label-pgn.template.json"
             template = forge.load_template(template_path)
             params = forge.parse_template_parameters(
-                "label-sf",
+                "label-pgn",
                 template,
                 [
                     "--pgn-dir", str(pgn_dir),
@@ -4336,13 +4575,13 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
             )
 
             manifest = forge.expand_template(
-                "label-sf",
+                "label-pgn",
                 template_path,
                 template,
                 params,
             )
             second_manifest = forge.expand_template(
-                "label-sf",
+                "label-pgn",
                 template_path,
                 template,
                 params,
@@ -4371,7 +4610,7 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
             )
             self.assertNotIn("{task_input}", manifest["tasks"][1]["command"])
             self.assertEqual(
-                ["Stockfish NNUE net"],
+                ["NNUE net"],
                 [item["name"] for item in manifest["requirements"]["inputs"]],
             )
 
@@ -4386,10 +4625,10 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
                 (pgn_dir / f"{index:02d}.pgn").touch()
             (root / "state").mkdir()
             (root / "claims").mkdir()
-            template_path = ROOT / "templates" / "label-sf.template.json"
+            template_path = ROOT / "templates" / "label-pgn.template.json"
             template = forge.load_template(template_path)
             params = forge.parse_template_parameters(
-                "label-sf",
+                "label-pgn",
                 template,
                 [
                     "--pgn-dir", str(pgn_dir),
@@ -4398,7 +4637,7 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
                 ],
             )
             manifest = forge.expand_template(
-                "label-sf",
+                "label-pgn",
                 template_path,
                 template,
                 params,
@@ -4443,10 +4682,10 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
                 (pgn_dir / f"{index:02d}.pgn").write_bytes(b"x" * size)
             (root / "state").mkdir()
             (root / "claims").mkdir()
-            template_path = ROOT / "templates" / "label-sf.template.json"
+            template_path = ROOT / "templates" / "label-pgn.template.json"
             template = forge.load_template(template_path)
             params = forge.parse_template_parameters(
-                "label-sf",
+                "label-pgn",
                 template,
                 [
                     "--pgn-dir", str(pgn_dir),
@@ -4455,7 +4694,7 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
                 ],
             )
             manifest = forge.expand_template(
-                "label-sf",
+                "label-pgn",
                 template_path,
                 template,
                 params,
@@ -4496,10 +4735,10 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
                 (pgn_dir / f"{index:02d}.pgn").write_bytes(b"x" * size)
             (root / "state").mkdir()
             (root / "claims").mkdir()
-            template_path = ROOT / "templates" / "label-sf.template.json"
+            template_path = ROOT / "templates" / "label-pgn.template.json"
             template = forge.load_template(template_path)
             params = forge.parse_template_parameters(
-                "label-sf",
+                "label-pgn",
                 template,
                 [
                     "--pgn-dir", str(pgn_dir),
@@ -4508,7 +4747,7 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
                 ],
             )
             manifest = forge.expand_template(
-                "label-sf",
+                "label-pgn",
                 template_path,
                 template,
                 params,
@@ -4549,10 +4788,10 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
                 (pgn_dir / f"{index:02d}.pgn").write_bytes(b"x" * size)
             (root / "state").mkdir()
             (root / "claims").mkdir()
-            template_path = ROOT / "templates" / "label-sf.template.json"
+            template_path = ROOT / "templates" / "label-pgn.template.json"
             template = forge.load_template(template_path)
             params = forge.parse_template_parameters(
-                "label-sf",
+                "label-pgn",
                 template,
                 [
                     "--pgn-dir", str(pgn_dir),
@@ -4561,7 +4800,7 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
                 ],
             )
             manifest = forge.expand_template(
-                "label-sf",
+                "label-pgn",
                 template_path,
                 template,
                 params,
@@ -4624,7 +4863,7 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
                 "read": 2,
                 "written": 1,
             })
-            template_path = ROOT / "templates" / "label-sf.template.json"
+            template_path = ROOT / "templates" / "label-pgn.template.json"
             task = {
                 "id": "chunk",
                 "outputs": [str(bullet), str(stats)],
@@ -4633,10 +4872,10 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
             }
             manifest = {
                 "schema": "forge.task.v1",
-                "kind": "label-sf",
+                "kind": "label-pgn",
                 "state_dir": str(state),
                 "template": {
-                    "name": "label-sf",
+                    "name": "label-pgn",
                     "path": str(template_path),
                     "parameters": {"pgn_dir": str(pgn_dir)},
                 },
@@ -4664,11 +4903,11 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             manifest = {
-                "kind": "label-sf",
+                "kind": "label-pgn",
                 "state_dir": str(root / "state"),
                 "template": {
-                    "name": "label-sf",
-                    "path": str(ROOT / "templates" / "label-sf.template.json"),
+                    "name": "label-pgn",
+                    "path": str(ROOT / "templates" / "label-pgn.template.json"),
                     "parameters": {},
                 },
             }
@@ -4676,7 +4915,7 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
             process_path.parent.mkdir(parents=True)
             forge.write_json(process_path, {
                 "schema": chunking.ADAPTIVE_PROCESS_RATE_SCHEMA,
-                "template": "label-sf",
+                "template": "label-pgn",
                 "worker": "worker",
                 "worker_id": "worker#1",
                 "rate": 0.1,
@@ -4700,11 +4939,11 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
                 path.mkdir()
             for index in range(6):
                 (pgn_dir / f"{index:02d}.pgn").touch()
-            template_path = ROOT / "templates" / "label-sf.template.json"
+            template_path = ROOT / "templates" / "label-pgn.template.json"
             template = forge.load_template(template_path)
             final_output = root / "dataset.bullet"
             params = forge.parse_template_parameters(
-                "label-sf",
+                "label-pgn",
                 template,
                 [
                     "--pgn-dir", str(pgn_dir),
@@ -4713,7 +4952,7 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
                 ],
             )
             manifest = forge.expand_template(
-                "label-sf",
+                "label-pgn",
                 template_path,
                 template,
                 params,
@@ -4806,7 +5045,7 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
             }
             manifest = {
                 "schema": "forge.task.v1",
-                "kind": "label-sf",
+                "kind": "label-pgn",
                 "state_dir": str(state),
                 "tasks": [task],
             }
@@ -4837,7 +5076,7 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
         manifest = {
             "schema": "forge.task.v1",
             "name": "conversion",
-            "kind": "label-sf",
+            "kind": "label-pgn",
             "tasks": [
                 {"id": "task_0", "index": 0, "command": "true", "outputs": [], "progress": progress},
                 {"id": "task_1", "index": 1, "command": "true", "outputs": [], "progress": progress},
@@ -10494,6 +10733,50 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
             self.assertEqual("task_0000", reclaimed["task"])
             payload = forge.read_json(forge.task_claim_path(manifest, task))
             self.assertEqual("worker-b", payload["worker"])
+
+    def test_task_state_marker_index_handles_large_shard_sets(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            output_dir = root / "outputs"
+            output_dir.mkdir()
+            tasks = [
+                {
+                    "id": f"task_{index:05d}",
+                    "index": index,
+                    "command": "true",
+                    "outputs": [str(output_dir / f"{index:05d}.pgn")],
+                }
+                for index in range(10_000)
+            ]
+            manifest = {
+                "schema": "forge.task.v1",
+                "state_dir": str(root / "state"),
+                "claim_dir": str(root / "claims"),
+                "tasks": tasks,
+            }
+            for index in range(3_000):
+                output = output_dir / f"{index:05d}.pgn"
+                output.touch()
+                forge.write_json(
+                    forge.task_done_path(manifest, tasks[index]),
+                    {"task": tasks[index]["id"]},
+                )
+            # A marker whose output vanished must remain reclaimable.
+            forge.write_json(
+                forge.task_done_path(manifest, tasks[3_000]),
+                {"task": tasks[3_000]["id"]},
+            )
+
+            markers = forge.task_state_marker_ids(manifest)
+
+            self.assertEqual(3_000, len(markers["done"]))
+            self.assertNotIn("task_03000", markers["done"])
+            self.assertTrue(forge.task_pending_from_marker_index(
+                manifest,
+                tasks[3_000],
+                markers,
+                lease_seconds=600,
+            ))
 
     def test_stale_reaper_returns_expired_task_to_pending(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

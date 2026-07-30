@@ -2,7 +2,7 @@
   "schema": "forge.template.v1",
   "name": "selfplay",
   "kind": "selfplay",
-  "description": "Generate distributed Enyo self-play PGNs",
+  "description": "Generate distributed UCI-engine self-play PGNs",
   "run_name": "selfplay-{engine_stem}-{games}-{timestamp}",
   "work_dir": "~",
   "materialize_inputs": true,
@@ -17,7 +17,7 @@
       "local_default": true,
       "path_context": "shared_home",
       "executable": true,
-      "help": "Enyo UCI engine executable at a common home-relative worker path"
+      "help": "UCI engine executable at a common home-relative worker path"
     },
     "games": {
       "type": "int",
@@ -164,7 +164,7 @@
     "prefix": "selfplay",
     "label": "selfplay:{shard}",
     "output": "{output_dir}/{task_name}.pgn",
-    "command": "{fastchess_shell} -engine cmd={engine_shell} name=enyo-a option.Hash={hash} option.Threads={threads} option.nnue_file={net_shell} {uci_args} -engine cmd={engine_shell} name=enyo-b option.Hash={hash} option.Threads={threads} option.nnue_file={net_shell} {uci_args} -each {limit_args} proto=uci restart={restart_shell} -rounds {shard_pairs} -games 2 -recover -openings file={book_shell} format=epd order={book_order_shell} -srand {seed} -concurrency {concurrency} -pgnout file=\"{output_dir}/{task_name}.pgn\" notation={pgn_notation_shell} -output format=fastchess",
+    "command": "{fastchess_shell} -engine cmd={engine_shell} name=engine-a option.Hash={hash} option.Threads={threads} option.nnue_file={net_shell} {uci_args} -engine cmd={engine_shell} name=engine-b option.Hash={hash} option.Threads={threads} option.nnue_file={net_shell} {uci_args} -each {limit_args} proto=uci restart={restart_shell} -rounds {shard_pairs} -games 2 -recover -openings file={book_shell} format=epd order={book_order_shell} -srand {seed} -concurrency {concurrency} -pgnout file=\"{output_dir}/{task_name}.pgn\" notation={pgn_notation_shell} -output format=fastchess",
     "progress": {
       "unit": "games",
       "log_regex": "Games:\\s+(?P<done>\\d+),\\s+Wins:\\s+(?P<wins>\\d+),\\s+Losses:\\s+(?P<losses>\\d+),\\s+Draws:\\s+(?P<draws>\\d+)",

@@ -135,222 +135,24 @@ or `--remote-timeout-seconds`; a faster host never cancels slower setup.
 
 ## Templates
 
-Templates expand to normal manifests and then start.
+Templates expand into ordinary manifests. Use the live template metadata for
+the current catalog, configured defaults, required arguments, and optional
+parameters:
 
 ```sh
 forge template list
-forge template show sprt
-
-forge sprt --candidate ~/assets/engines/enyo_9696dac --games 1000
-forge sprt --candidate ~/assets/engines/enyo_9696dac --games 1000 \
-  --comment "quick smoke"
-forge sprt --candidate ~/assets/engines/enyo_9696dac --games 1000 \
-  --workers worker1:8,worker3:5,worker2:4
-forge sprt --candidate ~/assets/engines/enyo_9696dac --games 1000 \
-  --workers worker1:8,worker3:5,worker2:4 --shards 136
-forge sprt --candidate ~/assets/engines/enyo_9696dac --games 1000 \
-  --candidate-uci nnue_file=~/code/cpp/chess/enyo/net/candidate.nn \
-  --reference-uci nnue_file=~/code/cpp/chess/enyo/net/reference.nn
+forge template show NAME
+forge run NAME --help
 ```
 
-Notes:
+`forge NAME ...` is shorthand for `forge run NAME ...` when `NAME` is an
+installed template. Command-line values override orchestrator-local defaults
+from `~/.config/forge/templates/NAME.defaults.json`. Defaults are resolved only
+on the coordinator; workers receive the resolved manifest and verified inputs.
 
-- `forge sprt ...` is shorthand for `forge run sprt ...`.
-- Forge consumes orchestration flags: `--workers`, `--jobs`, `--wait`,
-  `--notify-command`, `--comment`.
-- SPRT flags are passed through. Use `--` only if a flag name conflicts.
-- Missing SPRT flags come from template defaults.
-- The opening book and `nnue_file` UCI options are hashed, synchronized, and
-  verified on every selected worker. Engine executables are not copied between
-  platforms; `enyo_<commit>` engines are built and deployed locally when a
-  worker does not already have a compatible executable.
-- Pinned SPRT and fastchess revisions use commit-specific cache directories, so
-  updating a working checkout cannot alter or stop an active run.
-- `worker2:4` means 4 Forge worker slots on `worker2`.
-- `--concurrency` and `--threads` affect SPRT/engine work inside each shard.
-- Candidate and reference engines default to `--hash 128` MiB per process.
-  Override it with `--hash MIB` or an engine-specific `--candidate-uci Hash=MIB`
-  or `--reference-uci Hash=MIB` option.
-- Without `--shards`, Forge targets roughly 25 games per shard, then rounds
-  up to a whole multiple of the configured worker slots with at least two
-  complete worker waves. Very small runs are capped to preserve at least two
-  games per shard. Slow worker startup does not affect this calculation;
-  explicit `--shards` still overrides it.
-
-### Distributed Enyo self-play
-
-`selfplay` runs Enyo against itself with pinned fastchess and writes one PGN per
-Forge shard. The first declared output is the shard PGN, so `--merge` can
-concatenate the completed shards into one PGN.
-
-```sh
-forge selfplay --engine ~/assets/engines/enyo_9696dac --games 100000
-forge selfplay --engine ~/assets/engines/enyo_9696dac --games 100000 \
-  --uci nnue_file=~/code/cpp/chess/enyo/net/default.nn \
-  --merge ~/assets/pgn/enyo_9696dac-selfplay.pgn
-forge selfplay --engine ~/assets/engines/enyo_9696dac --games 100000 \
-  --workers worker1:8,worker3:5,worker2:4 --shards 200
-```
-
-Defaults are the WOMP `+140_+169` EPD book, `10+0.1`, `Hash=128`,
-`Threads=1`, `restart=on`, `-games 2` per opening round, random opening order,
-and UCI PGN notation. Odd `--games` values are rounded up to the next even
-value. Without `--shards`, Forge uses one shard per configured worker slot.
-
-The opening book and `nnue_file` UCI options are hashed, synchronized, and
-verified on every selected worker. Engine executables are not copied between
-platforms; `enyo_<commit>` engines are built and deployed locally when missing,
-using the same worker-local mechanism as SPRT.
-
-Convert a self-play PGN directory into distributed BulletFormat shards and
-concatenate them into one dataset:
-
-```sh
-forge run selfplay-to-bullet \
-  --pgn-dir ~/path/to/selfplay/outputs \
-  --output ~/assets/data/selfplay.bullet \
-  --shards 64
-```
-
-The template pins and synchronizes the NNUE and Bullet repositories, installs
-the Python dependency, and synchronizes the PGN directory once per worker host
-before tasks start.
-
-Use the Stockfish-net static-evaluation oracle instead of the original Enyo
-scores with:
-
-```sh
-forge run selfplay-to-sf-oracle \
-  --pgn-dir data/selfplay/gen2/.pgn-input \
-  --output data/selfplay/gen3
-```
-
-The SF net is synchronized to every worker. The Enyo evaluator executable is
-platform-specific, so the template validates the configured worker-local
-`~/assets/engines/candidate` rather than copying a binary between operating
-systems.
-
-### Distributed SPSA (“Simultaneous Perturbation Stochastic Approximation.”)
-
-`spsa` runs exact fixed-game matches rather than SPRTs. One long-lived Forge
-task owns each shard; all shards synchronize after every iteration, the
-coordinator aggregates W/L/D, updates theta, and atomically checkpoints the
-state. Interrupted or retried shards rejoin the active iteration without
-submitting a second gradient result.
-
-```sh
-forge spsa
-```
-
-This starts a detached 1,000-iteration batch from the theta in the default
-state file and reports progress in `forge web`. The default worker pool and an
-automatic run name are used. Pass `--wait` only when foreground waiting is
-useful. SPSA progress and ETA follow completed coordinator barriers rather than
-summing the synchronized shard counters.
-
-| SPSA option | Default | Purpose |
-| --- | --- | --- |
-| `--engine` | `~/assets/engines/candidate` | Engine used for both perturbations |
-| `--params` | `~/code/cpp/chess/enyo/spsa/params.txt` | Parameter ranges and schedules |
-| `--state` | `~/code/cpp/chess/enyo/spsa/state.json` | Input theta and atomic checkpoints |
-| `--settings` | `~/.config/enyo/settings.json` | Source of NNUE and Syzygy defaults |
-| `--iterations` | `1000` | New iterations added to the loaded state |
-| `--rounds` | `14` | Paired rounds per iteration; 28 games |
-| `--shards` | available slots, capped at `--rounds` | Distributed match shards |
-| `--concurrency` | `1` | Concurrent games inside each shard |
-| `--threads` | `1` | Engine threads per game |
-| `--hash` | `64` | Engine hash MiB per game |
-| `--tc` | `5+0.05` | Fastchess time control |
-| `--restart` | `on` | Restart engines between games |
-| `--book` | WOMP `+140_+169` EPD | Opening book |
-| `--fastchess` | Forge-pinned fastchess | Match executable |
-| `--uci` | values resolved from `--settings` | Common UCI options; repeat to override |
-| `--seed` | `1` | Perturbation and opening seed |
-| `--match-timeout` | `3600` | Per-shard match timeout in seconds |
-| `--poll-seconds` | `1.0` | Iteration-barrier polling interval |
-
-Forge reads `nnue_file`, `use_syzygy`, and an enabled `SyzygyPath` from the
-configured Enyo settings. If settings are absent, it uses `net/default.net` and
-disables Syzygy. The resolved NNUE is hashed and synchronized to every worker.
-The state file contains the last fully aggregated theta and is compatible with
-Enyo's `spsa/promote.py`. Each new `forge spsa` invocation adds another batch.
-To resume an interrupted materialized run without creating a new batch, use
-its run name:
-
-```sh
-forge spsa --run <run-name> --resume
-```
-
-Without `--shards`, Forge uses the available worker slots capped at `--rounds`,
-because each shard must own at least one color-swapped game pair. Remove or
-rename a completed state file before intentionally starting a fresh tuning run.
-
-### Distributed labeling
-
-`label` streams LC0 V6 gzip records directly through Stockfish into a
-merged BulletFormat dataset. The default run uses 152 shards across
-`worker1:20,worker2:8,worker3:10`.
-
-```sh
-forge label \
-  --source ~/code/cpp/chess/nnue/data/lc0/test91/training-run2-test91-20260128-1817 \
-  --output ~/code/cpp/chess/nnue/data/labeled/test91-depth12.bullet \
-  --workers worker1:20,worker2:8,worker3:10,worker4:8,worker5:8 \
-  --run test91-depth12 \
-  --comment "9M raw LC0 records, quiet positions from ply 16"
-```
-
-Add or restore worker slots on an incomplete run without relaunching it:
-
-```sh
-forge worker set worker5:8 test91-depth12 --remote-timeout-seconds 1800
-```
-
-The first setup on a host may appear idle while its corpus cache is transferred
-and verified. Add `--verbose` to show setup progress. Existing workers and
-completed shards remain untouched. The `worker5` profile stores this many-file
-cache on native WSL ext4 under `/home/petter/.cache/forge`; putting it under
-`/mnt/c` or `/mnt/d` makes verification prohibitively slow.
-
-The corpus is inventoried by relative path, size, and SHA-256 under
-`~/.cache/forge/inputs/`. Completed shards resume from their done markers;
-the detached wait monitor validates every shard and atomically merges them
-before publishing success. `--replace` is required to replace either the named
-run or final dataset.
-
-Default workers are stored in `~/.config/forge/workers.json`:
-
-```json
-{
-  "schema": "forge.workers.v1",
-  "workers": [
-    {"host": "worker1", "profile": "linux", "slots": 8},
-    {"host": "worker2", "profile": "mac", "python": "/opt/homebrew/bin/python3", "slots": 4}
-  ]
-}
-```
-
-Other defaults remain in `~/.config/forge/config.yml`:
-
-```yaml
-coordinator_host: "worker1"
-notify_command: "/path/to/notify-script"
-speedup.single_host_workers: 5
-template_dirs:
-  - "~/.config/forge/templates"
-```
-
-Forge reports distributed speedup against a configurable single-host
-baseline:
-
-```text
-single-host throughput = speedup.single_host_workers × fastest active task rate
-speedup = total active task rate ÷ single-host throughput
-```
-
-The default models one host as five workers. For example, 40 equally fast
-active workers report `8.0x`. Set `speedup.single_host_workers` to the worker
-count that should represent one host.
+Paths beneath the coordinator's home are mapped to the corresponding `~/` path
+on each worker. Declared file inputs are content-hashed, transferred on demand,
+and verified.
 
 ## Status
 

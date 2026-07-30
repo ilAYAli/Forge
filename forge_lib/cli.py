@@ -287,10 +287,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     selfplay = sub.add_parser(
         "selfplay",
-        help="Run the Enyo self-play template.",
+        help="Run the UCI-engine self-play template.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
         description=(
-            "Run the built-in Enyo self-play template. This is equivalent to "
+            "Run the built-in UCI-engine self-play template. This is equivalent to "
             "`forge run selfplay ...`."
         ),
     )

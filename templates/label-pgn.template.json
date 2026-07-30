@@ -1,9 +1,10 @@
 {
   "schema": "forge.template.v1",
-  "name": "label-sf",
-  "kind": "label-sf",
-  "description": "Convert Enyo self-play PGNs into BulletFormat shards labeled by a Stockfish-net static-eval oracle",
-  "run_name": "label-sf-{pgn_dir_stem}-{timestamp}",
+  "name": "label-pgn",
+  "kind": "label-pgn",
+  "hidden": true,
+  "description": "Internal PGN labeling backend",
+  "run_name": "label-{mode}-{pgn_dir_stem}-{timestamp}",
   "work_dir": "{nnue_repo}",
   "materialize_inputs": true,
   "chunking": {
@@ -63,21 +64,37 @@
       "suffix": ".bullet",
       "help": "Final concatenated BulletFormat output"
     },
-    "sf_engine": {
+    "engine": {
       "required": true,
       "local_default": true,
       "path_context": "shared_home",
       "help": "Worker-local Enyo evaluator supporting the UCI eval command"
     },
-    "sf_net": {
+    "net": {
       "required": true,
       "local_default": true,
       "path_context": "shared_home",
       "help": "Coordinator Stockfish NNUE net synchronized to every worker"
     },
-    "sf_hash": {
+    "hash": {
       "type": "int",
       "default": 64
+    },
+    "mode": {
+      "choices": ["search", "static"],
+      "default": "static"
+    },
+    "depth": {
+      "type": "int",
+      "default": 12
+    },
+    "tb_pieces": {
+      "type": "int",
+      "default": 0,
+      "help": "Apply Syzygy WDL through this piece count after engine labeling; 0 disables it"
+    },
+    "net_option": {
+      "default": "nnue_file"
     },
     "skip_plies": {
       "type": "int",
@@ -137,10 +154,10 @@
         "timeout_s": 20
       },
       {
-        "name": "Stockfish-net evaluator",
-        "path": "{sf_engine}",
-        "command": "engine={sf_engine_shell}; net=~/.cache/forge/inputs/sf-net/{sf_net_stem}; printf '%s\\n' uci \"setoption name nnue_file value $net\" isready 'position startpos' eval quit | \"$engine\"",
-        "contains": "eval ",
+        "name": "UCI evaluator",
+        "path": "{engine}",
+        "command": "engine={engine_shell}; net=~/.cache/forge/inputs/label-net/{net_stem}; printf '%s\\n' uci \"setoption name {net_option} value $net\" isready quit | \"$engine\"",
+        "contains": "readyok",
         "timeout_s": 30
       }
     ],
@@ -152,9 +169,9 @@
         "tree": "directory"
       },
       {
-        "name": "Stockfish NNUE net",
-        "source": "{sf_net}",
-        "path": "~/.cache/forge/inputs/sf-net/{sf_net_stem}"
+        "name": "NNUE net",
+        "source": "{net}",
+        "path": "~/.cache/forge/inputs/label-net/{net_stem}"
       }
     ]
   },
@@ -165,12 +182,12 @@
       "unit": "pgns",
       "start": "pgn_start"
     },
-    "label": "label-sf:{task_number}/{task_count}",
+    "label": "label-{mode}:{task_number}/{task_count}",
     "outputs": [
       "{output_dir}/{task_name}.bullet",
       "{output_dir}/{task_name}.stats.json"
     ],
-    "command": ".venv/bin/python3 tools/bullet/selfplay_to_bullet_sf_oracle.py --pgn-dir {task_input} --output {output_dir}/{task_name}.bullet --stats {output_dir}/{task_name}.stats.json --shard-range 0/{shard} --skip-plies {skip_plies} --min-depth {min_depth} --max-abs-cp {max_abs_cp} --sf-engine {sf_engine_shell} --sf-net ~/.cache/forge/inputs/sf-net/{sf_net_stem} --sf-hash {sf_hash} --bullet-manifest ~/.cache/forge/tools/bullet/d372d487aedfeb8bdc256b9f694dbcd41016bf82/Cargo.toml",
+    "command": ".venv/bin/python3 tools/bullet/selfplay_to_bullet_sf_oracle.py --pgn-dir {task_input} --output {output_dir}/{task_name}.bullet --stats {output_dir}/{task_name}.stats.json --shard-range 0/{shard} --skip-plies {skip_plies} --min-depth {min_depth} --max-abs-cp {max_abs_cp} --sf-engine {engine_shell} --sf-net ~/.cache/forge/inputs/label-net/{net_stem} --sf-hash {hash} --mode {mode} --depth {depth} --net-option {net_option} --tb-pieces {tb_pieces} --bullet-manifest ~/.cache/forge/tools/bullet/d372d487aedfeb8bdc256b9f694dbcd41016bf82/Cargo.toml",
     "progress": {
       "unit": "pgns",
       "log_regex": "\\[(?P<done>\\d+)/(?P<total>\\d+)\\].*?\\+(?P<output>\\d+) rows",

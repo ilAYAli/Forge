@@ -19,7 +19,7 @@ def adaptive_claim_lock(manifest_path: Path) -> Any:
         finally:
             fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
-ADAPTIVE_RECHUNK_MIN_INTERVAL_SECONDS = 5.0
+ADAPTIVE_RECHUNK_MIN_INTERVAL_SECONDS = 15.0
 
 def adaptive_rechunk_marker_path(manifest: dict[str, Any], worker: str) -> Path:
     digest = hashlib.sha256(worker.encode("utf-8")).hexdigest()[:16]
@@ -320,6 +320,87 @@ def task_state(manifest: dict[str, Any], task: dict[str, Any], *, lease_seconds:
         return "fail"
     return "pending"
 
+def task_state_marker_ids(manifest: dict[str, Any]) -> dict[str, set[str]]:
+    """Index task marker names with one directory scan per state directory."""
+    result = {
+        "done": set(),
+        "fail": set(),
+        "running": set(),
+        "claimed": set(),
+    }
+    state = state_dir(manifest)
+    try:
+        entries = list(state.iterdir())
+    except OSError:
+        entries = []
+    suffixes = {
+        ".done.json": "done",
+        ".fail.json": "fail",
+        ".running.json": "running",
+    }
+    for entry in entries:
+        name = entry.name
+        for suffix, kind in suffixes.items():
+            if name.endswith(suffix):
+                result[kind].add(name[:-len(suffix)])
+                break
+    claims = claim_dir(manifest)
+    try:
+        claim_entries = list(claims.iterdir())
+    except OSError:
+        claim_entries = []
+    for entry in claim_entries:
+        name = entry.name
+        if name.endswith(".claim") and not name.startswith("."):
+            result["claimed"].add(name[:-len(".claim")])
+
+    # A done marker is authoritative only while its declared outputs still
+    # exist. Cache directory listings so thousands of completed shards sharing
+    # one output directory cost one scan rather than one stat per task.
+    output_names: dict[Path, set[str]] = {}
+    tasks_by_id = {
+        str(task.get("id") or ""): task
+        for task in manifest.get("tasks") or []
+        if isinstance(task, dict)
+    }
+    for task_id in list(result["done"]):
+        task = tasks_by_id.get(task_id)
+        if task is None:
+            continue
+        outputs = task_outputs(task, manifest)
+        missing = False
+        for output in outputs:
+            parent = output.parent
+            if parent not in output_names:
+                try:
+                    output_names[parent] = {entry.name for entry in parent.iterdir()}
+                except OSError:
+                    output_names[parent] = set()
+            if output.name not in output_names[parent]:
+                missing = True
+                break
+        if not missing:
+            continue
+        payload = read_state_json(task_done_path(manifest, task))
+        if not isinstance(payload, dict) or not payload.get("soft_cancel"):
+            result["done"].discard(task_id)
+    return result
+
+def task_pending_from_marker_index(
+    manifest: dict[str, Any],
+    task: dict[str, Any],
+    markers: dict[str, set[str]],
+    *,
+    lease_seconds: int,
+) -> bool:
+    """Fast pending check, falling back to full state inspection only for live markers."""
+    task_id = str(task.get("id") or "")
+    if task_id in markers["done"] or task_id in markers["fail"]:
+        return False
+    if task_id in markers["running"] or task_id in markers["claimed"]:
+        return task_state(manifest, task, lease_seconds=lease_seconds) == "pending"
+    return True
+
 class TaskSignalInterrupt(Exception):
     def __init__(self, signum: int) -> None:
         super().__init__(signum)
@@ -549,6 +630,7 @@ def claim_task(
                     -index if preferred == worker else index,
                 )
 
+            markers = task_state_marker_ids(manifest)
             for claim_pass in range(2):
                 claim_dir(manifest).mkdir(parents=True, exist_ok=True)
                 digest = manifest_checksum(manifest)
@@ -556,12 +638,13 @@ def claim_task(
                     preferred = str(task.get("claim_worker") or "").strip()
                     if live_rechunk and preferred and preferred != worker:
                         continue
-                    if task_complete(manifest, task):
+                    task_id = str(task.get("id") or "")
+                    if task_id in markers["done"]:
                         continue
                     fail_path = task_fail_path(manifest, task)
                     fail_payload: dict[str, Any] | None = None
                     attempt = 1
-                    if fail_path.exists():
+                    if task_id in markers["fail"]:
                         if not retry_failed:
                             continue
                         fail_payload = read_state_json(fail_path)
@@ -619,6 +702,7 @@ def claim_task(
                     reassign_foreign=True,
                 ):
                     manifest = load_manifest(manifest_path)
+                    markers = task_state_marker_ids(manifest)
                     continue
                 break
             return None

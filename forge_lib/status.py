@@ -2977,7 +2977,7 @@ def run_progress_graph_from_rows(
     is_sprt = kind == "sprt"
     is_labeling = kind == "label"
     is_selfplay = kind == "selfplay"
-    is_conversion = kind in {"selfplay-to-bullet", "label-sf"}
+    is_conversion = kind in {"selfplay-to-bullet", "label-pgn", "label-tb"}
     label_x = 0.0
     label_worker_rates: dict[str, float] = {}
     conversion_rows: list[dict[str, float | str]] = []
@@ -3501,7 +3501,7 @@ def run_progress_history_graph(
     kind = str(manifest_metadata(manifest).get("kind") or manifest.get("kind") or "")
     if (
         current_graph is not None
-        and kind.lower() in {"selfplay-to-bullet", "label-sf"}
+        and kind.lower() in {"selfplay-to-bullet", "label-pgn", "label-tb"}
         and len(history) < 2
     ):
         return current_graph
@@ -4064,7 +4064,7 @@ def status_summary(manifest: dict[str, Any], *, lease_seconds: int) -> dict[str,
             progress_data = task_heartbeat_progress_data(manifest, task)
             if progress_data is None and state in {"running", "stale"}:
                 progress_data = task_log_progress_data(manifest, task)
-            elif manifest_kind in {"selfplay-to-bullet", "label-sf"}:
+            elif manifest_kind in {"selfplay-to-bullet", "label-pgn", "label-tb"}:
                 progress_data = task_log_progress_data(manifest, task) or progress_data
         running_payload = task_running_payload(manifest, task) if state in {"running", "claimed", "stale"} else None
         if isinstance(progress_config, dict):

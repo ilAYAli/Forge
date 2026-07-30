@@ -1,9 +1,10 @@
 {
   "schema": "forge.template.v1",
   "name": "label-search",
+  "hidden": true,
   "kind": "label",
-  "description": "Stream LC0 V6 records through Stockfish into deterministic BulletFormat shards",
-  "run_name": "label-{source_stem}-{depth}-{timestamp}",
+  "description": "Label positions from training.* records or PGNs using engine search",
+  "run_name": "label-search-{input_stem}-{depth}-{timestamp}",
   "work_dir": "{labeler}",
   "path_maps": {
     "macos": {
@@ -29,10 +30,10 @@
       "output": "~/.cache/forge/sources/nnue-{digest12}",
       "help": "Configured source alias or directory containing the labeling scripts"
     },
-    "source": {
+    "input": {
       "required": true,
       "path_context": "shared_home",
-      "help": "Coordinator LC0 training.* corpus directory"
+      "help": "Coordinator directory containing either training.* records or PGNs"
     },
     "output": {
       "required": true,

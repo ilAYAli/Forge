@@ -1,0 +1,87 @@
+{
+  "schema": "forge.template.v1",
+  "name": "to-bullet",
+  "kind": "to-bullet",
+  "description": "Convert PGNs or training.* records to BulletFormat with selectable labeling",
+  "parameters": {
+    "input": {
+      "required": true,
+      "path_context": "shared_home",
+      "help": "Directory containing PGNs or training.* records"
+    },
+    "output": {
+      "required": true,
+      "path_context": "shared_home",
+      "suffix": ".bullet",
+      "help": "Final BulletFormat output"
+    },
+    "label": {
+      "repeatable": true,
+      "default": [],
+      "choices": ["existing", "outcome", "search", "static", "tb"],
+      "help": "Ordered label stage; repeat to apply tb after search or static (default: existing)"
+    },
+    "engine": {
+      "local_default": true,
+      "path_context": "shared_home",
+      "help": "UCI engine used by search and static labeling"
+    },
+    "net": {
+      "local_default": true,
+      "path_context": "shared_home",
+      "help": "NNUE net used by search and static labeling"
+    },
+    "depth": {
+      "type": "int",
+      "default": 12,
+      "help": "Search depth for --label search"
+    },
+    "threads": {
+      "type": "int",
+      "default": 1
+    },
+    "hash": {
+      "type": "int",
+      "default": 64
+    },
+    "max_records": {
+      "type": "int",
+      "default": 9000000
+    },
+    "min_ply": {
+      "type": "int",
+      "default": 16
+    },
+    "quiet_only": {
+      "type": "bool",
+      "default": true
+    },
+    "tb_pieces": {
+      "type": "int",
+      "default": 6
+    },
+    "skip_plies": {
+      "type": "int",
+      "default": 8
+    },
+    "min_depth": {
+      "type": "int",
+      "default": 1
+    },
+    "max_abs_cp": {
+      "type": "int",
+      "default": 10000
+    },
+    "chunk_time_seconds": {
+      "type": "int",
+      "default": 300
+    },
+    "shards": {
+      "type": "int"
+    }
+  },
+  "task": {
+    "split": {"count": 1},
+    "command": "false"
+  }
+}

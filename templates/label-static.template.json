@@ -1,9 +1,10 @@
 {
   "schema": "forge.template.v1",
   "name": "label-static",
+  "hidden": true,
   "kind": "label",
-  "description": "Stream LC0 V6 records through a UCI engine's zero-search static eval into deterministic BulletFormat shards",
-  "run_name": "label-static-{source_stem}-{timestamp}",
+  "description": "Label positions from training.* records or PGNs using zero-search engine eval",
+  "run_name": "label-static-{input_stem}-{timestamp}",
   "work_dir": "{labeler}",
   "path_maps": {
     "macos": {
@@ -29,10 +30,10 @@
       "output": "~/.cache/forge/sources/nnue-{digest12}",
       "help": "Configured source alias or directory containing the labeling scripts"
     },
-    "source": {
+    "input": {
       "required": true,
       "path_context": "shared_home",
-      "help": "Coordinator LC0 training.* corpus directory"
+      "help": "Coordinator directory containing either training.* records or PGNs"
     },
     "output": {
       "required": true,
@@ -43,7 +44,7 @@
       "required": true,
       "local_default": true,
       "path_context": "shared_home",
-      "help": "Enyo (or other UCI) executable, worker-mapped absolute path"
+      "help": "UCI engine executable at a common home-relative worker path"
     },
     "net": {
       "required": true,

@@ -101,6 +101,64 @@ def template_defaults_files(name: str) -> list[Path]:
     ]
 
 
+def template_default_parameter_names(name: str) -> set[str]:
+    result: set[str] = set()
+    for overlay_path in template_defaults_files(name):
+        overlay = read_json(overlay_path)
+        defaults = overlay.get("parameters")
+        if isinstance(defaults, dict):
+            result.update(str(key).replace("-", "_") for key in defaults)
+    return result
+
+
+def template_structural_overrides(name: str) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for overlay_path in template_defaults_files(name):
+        overlay = read_json(overlay_path)
+        for key, value in overlay.items():
+            if key not in {"schema", "parameters"}:
+                result[str(key)] = value
+    return result
+
+
+def merge_template_override(
+    target: Any,
+    override: Any,
+    *,
+    overlay_path: Path,
+    field_path: str,
+) -> Any:
+    if isinstance(target, dict):
+        if not isinstance(override, dict):
+            raise SystemExit(f"{overlay_path}: {field_path} must be an object")
+        unknown = sorted(set(override) - set(target))
+        if unknown:
+            qualified = ", ".join(f"{field_path}.{key}" for key in unknown)
+            raise SystemExit(f"{overlay_path}: unknown template field(s): {qualified}")
+        result = copy.deepcopy(target)
+        for key, value in override.items():
+            result[key] = merge_template_override(
+                target[key],
+                value,
+                overlay_path=overlay_path,
+                field_path=f"{field_path}.{key}",
+            )
+        return result
+    if isinstance(target, bool):
+        valid_type = isinstance(override, bool)
+    elif isinstance(target, int):
+        valid_type = isinstance(override, int) and not isinstance(override, bool)
+    elif isinstance(target, float):
+        valid_type = isinstance(override, (int, float)) and not isinstance(override, bool)
+    else:
+        valid_type = isinstance(override, type(target))
+    if not valid_type:
+        raise SystemExit(
+            f"{overlay_path}: {field_path} must be {type(target).__name__}"
+        )
+    return copy.deepcopy(override)
+
+
 def apply_template_defaults(
     template: dict[str, Any],
     *,
@@ -116,25 +174,56 @@ def apply_template_defaults(
             raise SystemExit(
                 f"{overlay_path}: unsupported defaults schema {overlay.get('schema')!r}"
             )
-        unknown_fields = sorted(set(overlay) - {"schema", "parameters"})
+        immutable_fields = sorted(set(overlay) & {"name", "kind"})
+        if immutable_fields:
+            raise SystemExit(
+                f"{overlay_path}: immutable template field(s): "
+                f"{', '.join(immutable_fields)}"
+            )
+        unknown_fields = sorted(
+            set(overlay) - {"schema", "parameters"} - set(result)
+        )
         if unknown_fields:
             raise SystemExit(
                 f"{overlay_path}: unknown defaults field(s): {', '.join(unknown_fields)}"
             )
-        defaults = overlay.get("parameters")
+        defaults = overlay.get("parameters", {})
         if not isinstance(defaults, dict):
             raise SystemExit(f"{overlay_path}: parameters must be an object")
-        unknown = sorted(str(key) for key in defaults if str(key) not in parameters)
+        normalized_defaults: dict[str, Any] = {}
+        original_names: dict[str, str] = {}
+        for key, value in defaults.items():
+            original = str(key)
+            normalized = original.replace("-", "_")
+            if normalized in normalized_defaults:
+                raise SystemExit(
+                    f"{overlay_path}: duplicate template parameter spellings: "
+                    f"{original_names[normalized]}, {original}"
+                )
+            normalized_defaults[normalized] = value
+            original_names[normalized] = original
+        unknown = sorted(
+            original_names[key] for key in normalized_defaults if key not in parameters
+        )
         if unknown:
             raise SystemExit(
                 f"{overlay_path}: unknown template parameter(s): {', '.join(unknown)}"
             )
-        for parameter, value in defaults.items():
-            spec = parameters[str(parameter)]
+        for parameter, value in normalized_defaults.items():
+            spec = parameters[parameter]
             if not isinstance(spec, dict):
                 raise SystemExit(f"{name}: parameter {parameter!r} must be an object")
             spec["default"] = value
             spec.pop("required", None)
+        for field, value in overlay.items():
+            if field in {"schema", "parameters"}:
+                continue
+            result[field] = merge_template_override(
+                result[field],
+                value,
+                overlay_path=overlay_path,
+                field_path=str(field),
+            )
     return result
 
 
@@ -150,41 +239,90 @@ def template_display_name(path: Path, template: dict[str, Any] | None = None) ->
     template = template if template is not None else load_template(path)
     return str(template.get("name") or path.name.removesuffix(".template.json"))
 
+def template_parameter_placeholder(name: str, spec: dict[str, Any]) -> str:
+    explicit = str(spec.get("metavar") or "").strip()
+    if explicit:
+        return explicit
+    placeholders = {
+        "book": "EPD_BOOK",
+        "candidate": "EXECUTABLE",
+        "candidate_net": "NET",
+        "config": "CONFIG",
+        "engine": "EXECUTABLE",
+        "games": "GAMES",
+        "input": "INPUT_DIR",
+        "net": "NET",
+        "output": "OUTPUT.bullet",
+        "params": "PARAMS_FILE",
+        "pgn_dir": "PGN_DIR",
+        "reference": "EXECUTABLE",
+        "reference_net": "NET",
+        "settings": "SETTINGS_FILE",
+        "sf_engine": "EXECUTABLE",
+        "sf_net": "NET",
+        "state": "STATE_FILE",
+        "work_dir": "WORK_DIR",
+    }
+    if name in placeholders:
+        return placeholders[name]
+    parameter_type = str(spec.get("type") or "")
+    if parameter_type == "int":
+        return "N"
+    if parameter_type == "float":
+        return "VALUE"
+    return name.upper()
+
 
 def cmd_template(args: argparse.Namespace) -> int:
     if args.action == "list":
-        for path in template_files():
+        paths = template_files()
+        visible_index = 0
+        for path in paths:
             template = load_template(path)
-            desc = str(template.get("description") or "").strip()
-            suffix = f" - {desc}" if desc else ""
+            if bool(template.get("hidden", False)):
+                continue
             parameters = template.get("parameters", {})
-            local_missing = [
-                str(name)
-                for name, spec in parameters.items()
+            parameter_items = list(parameters.items()) if isinstance(parameters, dict) else []
+            display_name = template_display_name(path, template)
+            overlay_parameters = template_default_parameter_names(display_name)
+            structural_overrides = template_structural_overrides(display_name)
+            local_defaulted = [
+                (str(name), spec)
+                for name, spec in parameter_items
                 if (
                     isinstance(spec, dict)
-                    and bool(spec.get("required", False))
-                    and bool(spec.get("local_default", False))
+                    and str(name) in overlay_parameters
                 )
-            ] if isinstance(parameters, dict) else []
+            ]
             required = [
-                str(name)
-                for name, spec in parameters.items()
-                if (
-                    isinstance(spec, dict)
-                    and bool(spec.get("required", False))
-                    and not bool(spec.get("local_default", False))
-                )
-            ] if isinstance(parameters, dict) else []
-            contract_fields = []
-            if local_missing:
-                contract_fields.append(f"local defaults missing: {', '.join(local_missing)}")
+                (str(name), spec)
+                for name, spec in parameter_items
+                if isinstance(spec, dict) and bool(spec.get("required", False))
+            ]
+            if visible_index:
+                print()
+            print(display_name)
+            description = str(template.get("description") or "").strip()
+            if description:
+                print(f"  {description}")
+            print("  local defaults:")
+            if local_defaulted:
+                for name, spec in local_defaulted:
+                    print(f"    {template_arg_name(name)} {spec.get('default')}")
+            else:
+                print("    none")
+            if structural_overrides:
+                print("  local template overrides:")
+                for name, value in structural_overrides.items():
+                    print(f"    {name}: {json.dumps(value, sort_keys=True)}")
+            print("  required now:")
             if required:
-                contract_fields.append(f"required per run: {', '.join(required)}")
-            if not contract_fields:
-                contract_fields.append("defaults ready")
-            contract = f" [{'; '.join(contract_fields)}]"
-            print(f"{template_display_name(path, template)}{contract}{suffix}")
+                for name, spec in required:
+                    placeholder = template_parameter_placeholder(name, spec)
+                    print(f"    {template_arg_name(name)} {placeholder}")
+            else:
+                print("    none")
+            visible_index += 1
         return 0
     if args.action == "show":
         path = template_path(args.name)
@@ -1236,6 +1374,224 @@ def cmd_template_run(args: argparse.Namespace) -> int:
     path = template_path(args.template)
     template = load_template(path)
     template_name = template_display_name(path, template)
+    if template_name == "to-bullet":
+        public_template = template
+        if any(arg in {"-h", "--help"} for arg in template_args):
+            parse_template_parameters(template_name, template, template_args)
+            return 0
+
+        def option_value(name: str, default: str | None = None) -> str | None:
+            flag = template_arg_name(name)
+            for index, arg in enumerate(template_args):
+                if arg == flag and index + 1 < len(template_args):
+                    return template_args[index + 1]
+                if arg.startswith(flag + "="):
+                    return arg.split("=", 1)[1]
+            return default
+
+        def option_values(name: str) -> list[str]:
+            flag = template_arg_name(name)
+            result: list[str] = []
+            index = 0
+            while index < len(template_args):
+                arg = template_args[index]
+                if arg == flag and index + 1 < len(template_args):
+                    result.append(template_args[index + 1])
+                    index += 2
+                    continue
+                if arg.startswith(flag + "="):
+                    result.append(arg.split("=", 1)[1])
+                index += 1
+            return result
+
+        label_stages = option_values("label") or ["existing"]
+        valid_label_pipelines = {
+            ("existing",),
+            ("outcome",),
+            ("search",),
+            ("static",),
+            ("tb",),
+            ("search", "tb"),
+            ("static", "tb"),
+        }
+        if tuple(label_stages) not in valid_label_pipelines:
+            raise SystemExit(
+                "to-bullet: invalid label pipeline; use one of existing, outcome, "
+                "search, static, tb, 'search --label tb', or 'static --label tb'"
+            )
+        label_mode = label_stages[0]
+        apply_tb = len(label_stages) == 2
+        input_value = option_value("input")
+        if not input_value:
+            raise SystemExit("to-bullet: --input is required")
+        input_path = expand_path(input_value)
+        if not input_path.is_dir():
+            raise SystemExit(f"--input is not a directory: {input_path}")
+        has_pgn = any(item.is_file() for item in input_path.glob("*.pgn"))
+        has_training = any(item.is_file() for item in input_path.rglob("training.*"))
+        if has_pgn and has_training:
+            raise SystemExit(f"--input mixes PGN and training.* files: {input_path}")
+        if not has_pgn and not has_training:
+            raise SystemExit(
+                f"--input contains neither *.pgn nor training.* files: {input_path}"
+            )
+        if label_mode in {"existing", "outcome", "tb"} and not has_pgn:
+            raise SystemExit(f"--label {label_mode} requires PGN input")
+        if apply_tb and not has_pgn:
+            raise SystemExit("to-bullet: a tb override currently requires PGN input")
+
+        backend_name = {
+            "existing": "selfplay-to-bullet",
+            "outcome": "selfplay-to-bullet",
+            "search": "label-pgn" if has_pgn else "label-search",
+            "static": "label-pgn" if has_pgn else "label-static",
+            "tb": "label-tb",
+        }[label_mode]
+        path = template_path(backend_name)
+        template = load_template(path)
+        template["name"] = "to-bullet"
+        template["description"] = public_template.get("description")
+        parameters = template.get("parameters", {})
+        public_parameters = public_template.get("parameters", {})
+        if isinstance(parameters, dict) and isinstance(public_parameters, dict):
+            for name, backend_spec in parameters.items():
+                public_spec = public_parameters.get(name)
+                if (
+                    isinstance(public_spec, dict)
+                    and isinstance(backend_spec, dict)
+                    and "default" in public_spec
+                ):
+                    backend_spec["default"] = public_spec["default"]
+            for name in ("engine", "net"):
+                public_spec = public_parameters.get(name)
+                backend_spec = parameters.get(name)
+                if (
+                    isinstance(public_spec, dict)
+                    and isinstance(backend_spec, dict)
+                    and "default" in public_spec
+                ):
+                    backend_spec.pop("required", None)
+            if backend_name == "label-pgn":
+                mode_spec = parameters.get("mode")
+                if isinstance(mode_spec, dict):
+                    mode_spec["default"] = label_mode
+                net_option_spec = parameters.get("net_option")
+                if isinstance(net_option_spec, dict):
+                    net_option_spec["default"] = (
+                        "EvalFile" if label_mode == "search" else "nnue_file"
+                    )
+                tb_pieces_spec = parameters.get("tb_pieces")
+                if isinstance(tb_pieces_spec, dict):
+                    tb_pieces_spec["default"] = (
+                        int(public_parameters["tb_pieces"].get("default", 6))
+                        if apply_tb
+                        else 0
+                    )
+
+        allowed_by_mode = {
+            "existing": {"input", "output", "label", "chunk_time_seconds", "skip_plies", "min_depth", "max_abs_cp", "shards"},
+            "outcome": {"input", "output", "label", "chunk_time_seconds", "skip_plies", "min_depth", "max_abs_cp", "shards"},
+            "search": {"input", "output", "label", "engine", "net", "depth", "threads", "hash", "max_records", "min_ply", "quiet_only", "chunk_time_seconds", "shards", "skip_plies", "min_depth", "max_abs_cp"} | ({"tb_pieces"} if apply_tb else set()),
+            "static": {"input", "output", "label", "engine", "net", "threads", "hash", "max_records", "min_ply", "quiet_only", "chunk_time_seconds", "shards", "skip_plies", "min_depth", "max_abs_cp"} | ({"tb_pieces"} if apply_tb else set()),
+            "tb": {"input", "output", "label", "tb_pieces", "skip_plies", "min_depth", "max_abs_cp", "chunk_time_seconds", "shards"},
+        }[label_mode]
+        public_specs = public_template.get("parameters", {})
+        if isinstance(public_specs, dict):
+            for name, spec in public_specs.items():
+                if name in allowed_by_mode or not isinstance(spec, dict):
+                    continue
+                if template_parameter_supplied(public_template, template_args, {str(name)}):
+                    raise SystemExit(f"--{str(name).replace('_', '-')} is not valid with --label {label_mode}")
+
+        rewritten: list[str] = []
+        index = 0
+        while index < len(template_args):
+            arg = template_args[index]
+            if arg == "--label":
+                index += 2
+                continue
+            if arg.startswith("--label="):
+                index += 1
+                continue
+            if arg == "--input":
+                rewritten.extend([
+                    "--pgn-dir" if backend_name in {"selfplay-to-bullet", "label-pgn"} else "--input",
+                    template_args[index + 1],
+                ])
+                index += 2
+                continue
+            if arg.startswith("--input="):
+                flag = "--pgn-dir" if backend_name in {"selfplay-to-bullet", "label-pgn"} else "--input"
+                rewritten.append(flag + "=" + arg.split("=", 1)[1])
+                index += 1
+                continue
+            rewritten.append(arg)
+            index += 1
+        if backend_name == "selfplay-to-bullet":
+            rewritten.extend([
+                "--label-mode",
+                "outcome-only" if label_mode == "outcome" else "self-distillation",
+            ])
+        template_args = rewritten
+        template_name = "to-bullet"
+
+    label_input: Path | None = None
+    if template_name in {"label-search", "label-static"}:
+        for index, arg in enumerate(template_args):
+            if arg == "--input" and index + 1 < len(template_args):
+                label_input = expand_path(template_args[index + 1])
+                break
+            if arg.startswith("--input="):
+                label_input = expand_path(arg.split("=", 1)[1])
+                break
+    label_input_is_pgn = False
+    if label_input is not None and label_input.is_dir():
+        has_pgn = any(path.is_file() for path in label_input.glob("*.pgn"))
+        has_training = any(path.is_file() for path in label_input.rglob("training.*"))
+        if has_pgn and has_training:
+            raise SystemExit(f"--input mixes PGN and training.* files: {label_input}")
+        if not has_pgn and not has_training:
+            raise SystemExit(f"--input contains neither *.pgn nor training.* files: {label_input}")
+        label_input_is_pgn = has_pgn
+    if template_name in {"label-search", "label-static"} and label_input_is_pgn:
+        public_template = template
+        path = template_path("label-pgn")
+        template = load_template(path)
+        template["name"] = template_name
+        template["description"] = public_template.get("description")
+        parameters = template.get("parameters", {})
+        public_parameters = public_template.get("parameters", {})
+        if isinstance(parameters, dict) and isinstance(public_parameters, dict):
+            for name in ("engine", "net"):
+                public_spec = public_parameters.get(name)
+                backend_spec = parameters.get(name)
+                if (
+                    isinstance(public_spec, dict)
+                    and isinstance(backend_spec, dict)
+                    and "default" in public_spec
+                ):
+                    backend_spec["default"] = public_spec["default"]
+                    backend_spec.pop("required", None)
+            mode_spec = parameters.get("mode")
+            if isinstance(mode_spec, dict):
+                mode_spec["default"] = "search" if template_name == "label-search" else "static"
+                mode_spec.pop("required", None)
+            net_option_spec = parameters.get("net_option")
+            if isinstance(net_option_spec, dict):
+                net_option_spec["default"] = "EvalFile" if template_name == "label-search" else "nnue_file"
+            if template_name == "label-search":
+                depth_spec = public_parameters.get("depth")
+                if isinstance(depth_spec, dict) and isinstance(parameters.get("depth"), dict):
+                    parameters["depth"]["default"] = depth_spec.get("default", 12)
+        rewritten_args: list[str] = []
+        for arg in template_args:
+            if arg == "--input":
+                rewritten_args.append("--pgn-dir")
+            elif arg.startswith("--input="):
+                rewritten_args.append("--pgn-dir=" + arg.split("=", 1)[1])
+            else:
+                rewritten_args.append(arg)
+        template_args = rewritten_args
     if run_options.extend:
         if template_name != "sprt":
             raise SystemExit("--extend is currently supported only for the sprt template")
@@ -1372,7 +1728,7 @@ def cmd_template_run(args: argparse.Namespace) -> int:
     run_options = apply_template_run_defaults(template_name, run_options, template)
     inventory_info: dict[str, Any] | None = None
     if str(template.get("kind") or "").strip() == "label":
-        inventory_info = build_inventory(str(params["source"]))
+        inventory_info = build_inventory(str(params["input"]))
         params = dict(params)
         params["shards"] = min(
             as_int(params.get("shards"), label=f"{template_name}.shards"),
@@ -1385,7 +1741,7 @@ def cmd_template_run(args: argparse.Namespace) -> int:
     manifest = expand_template(template_name, path, template, params, config)
     if inventory_info is not None:
         attach_label_task_inputs(manifest, inventory_info)
-    if str(template.get("kind") or "") in {"selfplay-to-bullet", "label-sf"}:
+    if str(template.get("kind") or "") in {"selfplay-to-bullet", "label-pgn", "label-tb"}:
         attach_pgn_task_inputs(manifest)
     if bool(template.get("materialize_inputs", False)):
         materialize_template_inputs(template, manifest, params)

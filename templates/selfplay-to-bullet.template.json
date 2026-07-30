@@ -1,8 +1,9 @@
 {
   "schema": "forge.template.v1",
   "name": "selfplay-to-bullet",
+  "hidden": true,
   "kind": "selfplay-to-bullet",
-  "description": "Convert Enyo self-play PGN shards into distributed BulletFormat shards",
+  "description": "Convert self-play PGNs with existing labels into BulletFormat",
   "run_name": "selfplay-to-bullet-{pgn_dir_stem}-{timestamp}",
   "work_dir": "{nnue_repo}",
   "materialize_inputs": true,

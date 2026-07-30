@@ -485,6 +485,7 @@ def adaptive_rechunk_pending_tasks(
     reassign_foreign: bool = False,
     cache_path: Path | None = None,
 ) -> dict[str, Any] | None:
+    from .tasks import task_pending_from_marker_index, task_state_marker_ids
     from .templates import expand_template, load_template
 
     template = manifest.get("template")
@@ -520,11 +521,17 @@ def adaptive_rechunk_pending_tasks(
             return bool(preferred and preferred != worker_name)
         return not preferred or preferred == worker_name
 
+    markers = task_state_marker_ids(manifest)
     pending = [
         task
         for task in manifest.get("tasks") or []
         if isinstance(task, dict)
-        and task_state(manifest, task, lease_seconds=lease_seconds) == "pending"
+        and task_pending_from_marker_index(
+            manifest,
+            task,
+            markers,
+            lease_seconds=lease_seconds,
+        )
         and route_matches(task)
     ]
     if not pending:
@@ -759,7 +766,7 @@ def adaptive_rechunk_pending_tasks(
         template_data,
         replan_params,
     )
-    if replan_template_kind in {"selfplay-to-bullet", "label-sf"}:
+    if replan_template_kind in {"selfplay-to-bullet", "label-pgn", "label-tb"}:
         from .task_inputs import attach_pgn_task_inputs
 
         attach_pgn_task_inputs(replanned)
@@ -786,7 +793,7 @@ def adaptive_rechunk_pending_tasks(
             template_data,
             remainder_params,
         )
-        if replan_template_kind in {"selfplay-to-bullet", "label-sf"}:
+        if replan_template_kind in {"selfplay-to-bullet", "label-pgn", "label-tb"}:
             attach_pgn_task_inputs(remainder_manifest)
         remainder = remainder_manifest.get("tasks")
         if not isinstance(remainder, list) or not remainder:

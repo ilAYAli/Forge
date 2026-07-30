@@ -46,9 +46,9 @@ def attach_pgn_task_inputs(manifest: dict[str, Any]) -> None:
     tasks = manifest.get("tasks")
     if not isinstance(params, dict) or not isinstance(tasks, list):
         raise ValueError("PGN conversion manifest is missing parameters or tasks")
-    source_value = params.get("pgn_dir")
+    source_value = params.get("pgn_dir") or params.get("input")
     if not isinstance(source_value, str) or not source_value:
-        raise ValueError("PGN conversion manifest is missing pgn_dir")
+        raise ValueError("PGN conversion manifest is missing input")
     source = expand_path(source_value).resolve()
     try:
         entries = list(_pgn_entries(str(source), source.stat().st_mtime_ns))
@@ -96,7 +96,7 @@ def attach_pgn_task_inputs(manifest: dict[str, Any]) -> None:
             if not (
                 isinstance(item, dict)
                 and item.get("tree") == "directory"
-                and str(item.get("name") or "") == "self-play PGN directory"
+                and str(item.get("name") or "") in {"self-play PGN directory", "PGN directory"}
             )
         ]
 

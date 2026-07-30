@@ -1,23 +1,76 @@
 {
   "schema": "forge.template.v1",
   "name": "label-tb",
+  "hidden": true,
   "kind": "label-tb",
-  "description": "Convert Enyo self-play PGN shards to Bullet, applying Syzygy WDL only to <=6-piece positions and preserving all other input labels",
-  "run_name": "label-tb-{timestamp}",
-  "work_dir": "{work_dir}",
+  "description": "Convert self-play PGNs to BulletFormat, applying Syzygy WDL to <=6-piece positions",
+  "run_name": "label-tb-{input_stem}-{timestamp}",
+  "work_dir": "{nnue_repo}",
+  "materialize_inputs": true,
+  "chunking": {
+    "live_rechunk": true,
+    "initial_units": 1,
+    "rechunk_chunks_per_slot": 2,
+    "min_chunks_per_slot": 2,
+    "work": {
+      "type": "glob-bytes",
+      "from": "input",
+      "pattern": "*.pgn",
+      "signature": "pgn-bytes-v1"
+    }
+  },
   "parameters": {
-    "work_dir": {
-      "required": true,
-      "local_default": true,
-      "path_context": "shared_home"
+    "chunk_time_seconds": {
+      "type": "int",
+      "default": 300,
+      "help": "Target wall-clock seconds per adaptively sized chunk"
     },
-    "pgn_dir": {
+    "pgns": {
+      "type": "int",
+      "default": 1,
+      "derive": {
+        "type": "glob-count",
+        "from": "input",
+        "pattern": "*.pgn"
+      }
+    },
+    "pgn_start": {
+      "type": "int",
+      "default": 0
+    },
+    "pgn_cache_key": {
+      "default": "selfplay",
+      "derive": {
+        "type": "path-key",
+        "from": "input"
+      }
+    },
+    "nnue_repo": {
+      "type": "source",
+      "default": "nnue",
+      "include": [
+        "tools/bullet/*.py",
+        "tools/posgen/**",
+        "tools/lib/**"
+      ],
+      "exclude": [
+        "**/__pycache__/**",
+        "**/.venv/**",
+        "**/target/**"
+      ],
+      "output": "~/.cache/forge/sources/nnue-{digest12}",
+      "help": "Configured source alias or directory containing the converter"
+    },
+    "input": {
       "required": true,
-      "path_context": "shared_home"
+      "path_context": "shared_home",
+      "help": "Coordinator directory containing PGN shards"
     },
     "output": {
       "required": true,
-      "path_context": "shared_home"
+      "path_context": "shared_home",
+      "suffix": ".bullet",
+      "help": "Final concatenated BulletFormat output"
     },
     "tb_pieces": {
       "type": "int",
@@ -36,30 +89,84 @@
       "default": 10000
     },
     "shards": {
-      "aliases": [
-        "shard_count"
-      ],
-      "type": "int"
+      "type": "int",
+      "default": 64,
+      "help": "Number of deterministic PGN slices"
     }
+  },
+  "requirements": {
+    "python_min": "3.11",
+    "sources": [
+      {
+        "name": "nnue",
+        "path": "{nnue_repo}",
+        "digest": "{nnue_repo_digest}",
+        "install_timeout_s": 300,
+        "install": [
+          "PYTHON=python3; test ! -x /opt/homebrew/bin/python3 || PYTHON=/opt/homebrew/bin/python3; test -x .venv/bin/python3 || \"$PYTHON\" -m venv .venv; .venv/bin/python3 -m pip install -q python-chess"
+        ],
+        "probe": [
+          ".venv/bin/python3 tools/bullet/selfplay_to_bullet_tb.py --help >/dev/null"
+        ]
+      }
+    ],
+    "repos": [
+      {
+        "name": "bullet",
+        "url": "https://github.com/jw1912/bullet.git",
+        "path": "~/.cache/forge/tools/bullet/d372d487aedfeb8bdc256b9f694dbcd41016bf82",
+        "remote": "origin",
+        "commit": "d372d487aedfeb8bdc256b9f694dbcd41016bf82",
+        "allow_untracked": true,
+        "build_timeout_s": 900,
+        "build": [
+          "cargo build -q -p bullet-utils --manifest-path Cargo.toml"
+        ],
+        "probe": [
+          "cargo run -q -p bullet-utils --manifest-path Cargo.toml -- --help >/dev/null"
+        ]
+      }
+    ],
+    "commands": [
+      {
+        "name": "cargo",
+        "path": "cargo",
+        "timeout_s": 20
+      }
+    ],
+    "inputs": [
+      {
+        "name": "PGN directory",
+        "source": "{input}",
+        "path": "~/.cache/forge/inputs/selfplay/{pgn_cache_key}",
+        "tree": "directory"
+      }
+    ]
   },
   "task": {
     "split": {
-      "count": "shards"
+      "total": "pgns",
+      "count": "shards",
+      "unit": "pgns",
+      "start": "pgn_start"
     },
-    "label": "tb-sf-oracle:{shard}",
+    "label": "label-tb:{task_number}/{task_count}",
     "outputs": [
       "{output_dir}/{task_name}.bullet"
     ],
-    "command": ".venv/bin/python3 tools/bullet/selfplay_to_bullet_tb.py --pgn-dir {pgn_dir} --output {output_dir}/{task_name}.bullet --shard-slice {task_index}/{task_count} --tb-pieces {tb_pieces} --skip-plies {skip_plies} --min-depth {min_depth} --max-abs-cp {max_abs_cp}",
+    "command": ".venv/bin/python3 tools/bullet/selfplay_to_bullet_tb.py --pgn-dir {task_input} --output {output_dir}/{task_name}.bullet --shard-slice 0/1 --tb-pieces {tb_pieces} --skip-plies {skip_plies} --min-depth {min_depth} --max-abs-cp {max_abs_cp} --bullet-manifest ~/.cache/forge/tools/bullet/d372d487aedfeb8bdc256b9f694dbcd41016bf82/Cargo.toml",
     "progress": {
-      "unit": "positions",
-      "log_regex": "read=(?P<done>\\d+) selected=(?P<selected>\\d+) written=(?P<output>\\d+) rate=(?P<rate>[0-9.]+)/s",
+      "unit": "pgns",
+      "log_regex": "\\[(?P<done>\\d+)/(?P<total>\\d+)\\].*?\\+(?P<output>\\d+) rows",
+      "output_unit": "positions",
+      "output_mode": "sum",
       "series": [
         {
-          "name": "labels/s",
+          "name": "positions/s",
           "field": "rate",
-          "x": "done",
-          "scale": "linear"
+          "x": "output",
+          "scale": "linear",
+          "smooth": true
         }
       ]
     }
