@@ -41,6 +41,7 @@
     },
     "engine": {
       "required": true,
+      "local_default": true,
       "help": "Stockfish executable name or explicit worker-mapped absolute path"
     },
     "depth": {

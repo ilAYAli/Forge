@@ -21,6 +21,7 @@ from .spsa import (
 
 
 TEMPLATE_SCHEMA = "forge.template.v1"
+TEMPLATE_DEFAULTS_SCHEMA = "forge.template-defaults.v1"
 SPRT_AUTO_TARGET_GAMES_PER_SHARD = 25
 
 
@@ -91,11 +92,58 @@ def template_path(name: str) -> Path:
     raise SystemExit(f"template not found: {name} (searched: {searched})")
 
 
+def template_defaults_files(name: str) -> list[Path]:
+    """Return defaults overlays from lowest to highest precedence."""
+    return [
+        path
+        for directory in reversed(config_template_dirs())
+        if (path := directory / f"{name}.defaults.json").is_file()
+    ]
+
+
+def apply_template_defaults(
+    template: dict[str, Any],
+    *,
+    name: str,
+) -> dict[str, Any]:
+    result = copy.deepcopy(template)
+    parameters = result.get("parameters", {})
+    if not isinstance(parameters, dict):
+        raise SystemExit(f"{name}: template parameters must be an object")
+    for overlay_path in template_defaults_files(name):
+        overlay = read_json(overlay_path)
+        if overlay.get("schema") != TEMPLATE_DEFAULTS_SCHEMA:
+            raise SystemExit(
+                f"{overlay_path}: unsupported defaults schema {overlay.get('schema')!r}"
+            )
+        overlay_template = str(overlay.get("template") or "")
+        if overlay_template != name:
+            raise SystemExit(
+                f"{overlay_path}: defaults target {overlay_template!r} does not match {name!r}"
+            )
+        defaults = overlay.get("parameters")
+        if not isinstance(defaults, dict):
+            raise SystemExit(f"{overlay_path}: parameters must be an object")
+        unknown = sorted(str(key) for key in defaults if str(key) not in parameters)
+        if unknown:
+            raise SystemExit(
+                f"{overlay_path}: unknown template parameter(s): {', '.join(unknown)}"
+            )
+        for parameter, value in defaults.items():
+            spec = parameters[str(parameter)]
+            if not isinstance(spec, dict):
+                raise SystemExit(f"{name}: parameter {parameter!r} must be an object")
+            spec["default"] = value
+            spec.pop("required", None)
+    return result
+
+
 def load_template(path: Path) -> dict[str, Any]:
     payload = read_json(path)
     if not schema_matches(payload.get("schema"), "template"):
         raise SystemExit(f"{path}: unsupported template schema {payload.get('schema')!r}")
-    return payload
+    name = path.name.removesuffix(".template.json")
+    return apply_template_defaults(payload, name=name)
 
 
 def template_display_name(path: Path, template: dict[str, Any] | None = None) -> str:
@@ -109,7 +157,34 @@ def cmd_template(args: argparse.Namespace) -> int:
             template = load_template(path)
             desc = str(template.get("description") or "").strip()
             suffix = f" - {desc}" if desc else ""
-            print(f"{template_display_name(path, template)}{suffix}")
+            parameters = template.get("parameters", {})
+            local_missing = [
+                str(name)
+                for name, spec in parameters.items()
+                if (
+                    isinstance(spec, dict)
+                    and bool(spec.get("required", False))
+                    and bool(spec.get("local_default", False))
+                )
+            ] if isinstance(parameters, dict) else []
+            required = [
+                str(name)
+                for name, spec in parameters.items()
+                if (
+                    isinstance(spec, dict)
+                    and bool(spec.get("required", False))
+                    and not bool(spec.get("local_default", False))
+                )
+            ] if isinstance(parameters, dict) else []
+            contract_fields = []
+            if local_missing:
+                contract_fields.append(f"local defaults missing: {', '.join(local_missing)}")
+            if required:
+                contract_fields.append(f"required per run: {', '.join(required)}")
+            if not contract_fields:
+                contract_fields.append("defaults ready")
+            contract = f" [{'; '.join(contract_fields)}]"
+            print(f"{template_display_name(path, template)}{contract}{suffix}")
         return 0
     if args.action == "show":
         path = template_path(args.name)
@@ -295,6 +370,49 @@ def parameter_uses_worker_path(spec: dict[str, Any], *, name: str) -> bool:
     )
 
 
+def raw_template_argument_present(
+    raw_args: list[str],
+    names: list[str],
+) -> bool:
+    return any(
+        argument == name or argument.startswith(name + "=")
+        for argument in raw_args
+        for name in names
+    )
+
+
+def require_local_defaults_or_arguments(
+    template_name: str,
+    params: dict[str, Any],
+    raw_args: list[str],
+) -> None:
+    if "-h" in raw_args or "--help" in raw_args:
+        return
+    missing = []
+    for name, spec in params.items():
+        if not isinstance(spec, dict):
+            continue
+        if not bool(spec.get("required", False)) or not bool(spec.get("local_default", False)):
+            continue
+        if "default" in spec:
+            continue
+        argument_names = template_arg_names(str(name), spec, template_name=template_name)
+        if not raw_template_argument_present(raw_args, argument_names):
+            missing.append(str(name))
+    if not missing:
+        return
+    searched = ", ".join(
+        str(directory / f"{template_name}.defaults.json")
+        for directory in config_template_dirs()
+    )
+    arguments = ", ".join(template_arg_name(name) for name in missing)
+    raise SystemExit(
+        f"{template_name}: missing local defaults: {', '.join(missing)}\n"
+        f"searched: {searched}\n"
+        f"provide {arguments} explicitly or create the defaults overlay"
+    )
+
+
 def parse_template_parameters_with_unknown(
     template_name: str,
     template: dict[str, Any],
@@ -310,6 +428,7 @@ def parse_template_parameters_with_unknown(
     params = template.get("parameters", {})
     if not isinstance(params, dict):
         raise SystemExit(f"{template_name}: parameters must be an object")
+    require_local_defaults_or_arguments(template_name, params, raw_args)
     repeatable_defaults: dict[str, list[Any]] = {}
     for name, spec in params.items():
         if not isinstance(spec, dict):

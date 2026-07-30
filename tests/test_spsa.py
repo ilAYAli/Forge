@@ -191,11 +191,14 @@ class SpsaCoordinatorTests(unittest.TestCase):
 
 class SpsaTemplateTests(unittest.TestCase):
     def test_spsa_shared_template_requires_installation_paths(self) -> None:
-        template = forge.load_template(ROOT / "templates" / "spsa.template.json")
+        template = json.loads(
+            (ROOT / "templates" / "spsa.template.json").read_text(encoding="utf-8")
+        )
 
         self.assertEqual(1000, template["parameters"]["iterations"]["default"])
         for name in ("engine", "params", "state", "settings", "book"):
             self.assertTrue(template["parameters"][name]["required"])
+            self.assertTrue(template["parameters"][name]["local_default"])
             self.assertNotIn("default", template["parameters"][name])
         self.assertNotIn("default", template["parameters"]["uci"])
 

@@ -3090,6 +3090,129 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
                     if "path_context" in spec:
                         self.assertEqual("worker", spec["path_context"])
 
+    def test_bundled_templates_identify_installation_local_defaults(self) -> None:
+        expected = {
+            "label": {"engine"},
+            "label-static": {"engine", "net"},
+            "selfplay": {"engine", "book"},
+            "selfplay-to-sf-oracle": {"sf_engine", "sf_net"},
+            "sprt": {"reference", "book"},
+            "spsa": {"engine", "params", "state", "settings", "book"},
+            "tb-sf-oracle-relabel": {"work_dir", "sf_engine", "sf_net"},
+            "training": {"config", "work_dir"},
+        }
+        for template_name, names in expected.items():
+            template = json.loads(
+                (ROOT / "templates" / f"{template_name}.template.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            marked = {
+                name
+                for name, spec in template["parameters"].items()
+                if spec.get("local_default") is True
+            }
+            self.assertEqual(names, marked, template_name)
+
+    def test_template_defaults_overlay_supplies_local_parameter(self) -> None:
+        from forge_lib import templates as template_lib
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            template_path = self.write_test_template(root)
+            template = json.loads(template_path.read_text(encoding="utf-8"))
+            template["parameters"]["item"] = {
+                "required": True,
+                "local_default": True,
+                "path_context": "worker",
+            }
+            template_path.write_text(json.dumps(template), encoding="utf-8")
+            overlay_dir = root / "overlays"
+            overlay_dir.mkdir()
+            (overlay_dir / "demo.defaults.json").write_text(
+                json.dumps({
+                    "schema": "forge.template-defaults.v1",
+                    "template": "demo",
+                    "parameters": {"item": "~/assets/input.dat"},
+                }),
+                encoding="utf-8",
+            )
+            with mock.patch(
+                "forge_lib.templates.config_template_dirs",
+                return_value=[overlay_dir, template_path.parent],
+            ):
+                effective = template_lib.load_template(template_path)
+
+        self.assertEqual("~/assets/input.dat", effective["parameters"]["item"]["default"])
+        self.assertNotIn("required", effective["parameters"]["item"])
+        self.assertTrue(effective["parameters"]["item"]["local_default"])
+
+    def test_template_defaults_overlay_rejects_unknown_parameter(self) -> None:
+        from forge_lib import templates as template_lib
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            template_path = self.write_test_template(root)
+            overlay_dir = root / "overlays"
+            overlay_dir.mkdir()
+            overlay = overlay_dir / "demo.defaults.json"
+            overlay.write_text(
+                json.dumps({
+                    "schema": "forge.template-defaults.v1",
+                    "template": "demo",
+                    "parameters": {"typo": "value"},
+                }),
+                encoding="utf-8",
+            )
+            with (
+                mock.patch(
+                    "forge_lib.templates.config_template_dirs",
+                    return_value=[overlay_dir, template_path.parent],
+                ),
+                self.assertRaisesRegex(SystemExit, "unknown template parameter.*typo"),
+            ):
+                template_lib.load_template(template_path)
+
+    def test_missing_local_defaults_error_explains_overlay_and_arguments(self) -> None:
+        from forge_lib import templates as template_lib
+
+        template = json.loads(
+            (ROOT / "templates" / "selfplay.template.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        with (
+            mock.patch(
+                "forge_lib.templates.config_template_dirs",
+                return_value=[Path("/tmp/local-templates"), ROOT / "templates"],
+            ),
+            self.assertRaises(SystemExit) as raised,
+        ):
+            template_lib.require_local_defaults_or_arguments(
+                "selfplay",
+                template["parameters"],
+                [],
+            )
+
+        message = str(raised.exception)
+        self.assertIn("missing local defaults: engine, book", message)
+        self.assertIn("/tmp/local-templates/selfplay.defaults.json", message)
+        self.assertIn("provide --engine, --book explicitly", message)
+
+    def test_explicit_arguments_do_not_require_local_defaults_overlay(self) -> None:
+        from forge_lib import templates as template_lib
+
+        template = json.loads(
+            (ROOT / "templates" / "selfplay.template.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        template_lib.require_local_defaults_or_arguments(
+            "selfplay",
+            template["parameters"],
+            ["--engine", "~/engine", "--book=~/book.epd"],
+        )
+
     def test_template_worker_path_parameters_expand_relative_paths(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -3230,7 +3353,10 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
 
             listing = self.run_cli("template", "list", env=env)
             self.assertEqual(0, listing.returncode, listing.stderr)
-            self.assertIn("demo - demo template", listing.stdout)
+            self.assertIn(
+                "demo [required per run: item, total] - demo template",
+                listing.stdout,
+            )
 
             shown = self.run_cli("template", "show", "demo", env=env)
             self.assertEqual(0, shown.returncode, shown.stderr)

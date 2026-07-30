@@ -8,10 +8,12 @@
   "parameters": {
     "config": {
       "required": true,
+      "local_default": true,
       "help": "NNUE build.py create config"
     },
     "work_dir": {
       "required": true,
+      "local_default": true,
       "path_context": "worker",
       "help": "NNUE repository directory"
     }

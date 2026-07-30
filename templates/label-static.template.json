@@ -41,11 +41,13 @@
     },
     "engine": {
       "required": true,
+      "local_default": true,
       "path_context": "worker",
       "help": "Enyo (or other UCI) executable, worker-mapped absolute path"
     },
     "net": {
       "required": true,
+      "local_default": true,
       "path_context": "worker",
       "help": "Net loaded via setoption nnue_file for static eval"
     },

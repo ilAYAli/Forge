@@ -14,6 +14,7 @@
   "parameters": {
     "engine": {
       "required": true,
+      "local_default": true,
       "path_context": "worker",
       "directory_executable": "build/enyo",
       "help": "Enyo UCI engine executable or checkout directory available on all workers"
@@ -37,6 +38,7 @@
     },
     "book": {
       "required": true,
+      "local_default": true,
       "path_context": "worker",
       "help": "EPD opening book"
     },

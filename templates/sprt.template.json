@@ -37,6 +37,7 @@
     },
     "reference": {
       "required": true,
+      "local_default": true,
       "path_context": "worker",
       "help": "Reference UCI engine executable"
     },
@@ -60,6 +61,7 @@
     },
     "book": {
       "required": true,
+      "local_default": true,
       "path_context": "worker",
       "help": "Opening book"
     },

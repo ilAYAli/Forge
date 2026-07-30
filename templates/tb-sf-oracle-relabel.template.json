@@ -8,6 +8,7 @@
   "parameters": {
     "work_dir": {
       "required": true,
+      "local_default": true,
       "path_context": "worker"
     },
     "pgn_dir": {
@@ -19,10 +20,12 @@
       "path_context": "worker"
     },
     "sf_engine": {
-      "required": true
+      "required": true,
+      "local_default": true
     },
     "sf_net": {
-      "required": true
+      "required": true,
+      "local_default": true
     },
     "sf_hash": {
       "type": "int",

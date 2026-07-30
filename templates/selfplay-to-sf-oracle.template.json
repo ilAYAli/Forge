@@ -65,11 +65,13 @@
     },
     "sf_engine": {
       "required": true,
+      "local_default": true,
       "path_context": "worker",
       "help": "Worker-local Enyo evaluator supporting the UCI eval command"
     },
     "sf_net": {
       "required": true,
+      "local_default": true,
       "path_context": "worker",
       "help": "Coordinator Stockfish NNUE net synchronized to every worker"
     },

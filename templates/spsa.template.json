@@ -14,22 +14,26 @@
     },
     "engine": {
       "required": true,
+      "local_default": true,
       "path_context": "worker",
       "directory_executable": "build/enyo",
       "help": "UCI engine executable or Enyo checkout directory available on all workers"
     },
     "params": {
       "required": true,
+      "local_default": true,
       "path_context": "worker",
       "help": "SPSA parameter definitions"
     },
     "state": {
       "required": true,
+      "local_default": true,
       "path_context": "worker",
       "help": "Resumable final-theta state written on the coordinator"
     },
     "settings": {
       "required": true,
+      "local_default": true,
       "help": "Enyo settings used to resolve reproducible NNUE and Syzygy defaults"
     },
     "iterations": {
@@ -71,6 +75,7 @@
     },
     "book": {
       "required": true,
+      "local_default": true,
       "path_context": "worker",
       "help": "EPD opening book"
     },
