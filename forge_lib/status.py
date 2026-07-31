@@ -3484,6 +3484,11 @@ def recent_progress_rate(
         return None
     latest = history[-1]
     latest_epoch = float(latest["epoch"])
+    # A series that stopped being written -- the run changed which unit it
+    # graphs, or stalled outright -- would otherwise keep serving the rate
+    # from its final window forever, long after it stopped being true.
+    if epoch() - latest_epoch > max(window_seconds, 120.0):
+        return None
     baseline = next(
         (entry for entry in history if latest_epoch - float(entry["epoch"]) <= window_seconds),
         latest,

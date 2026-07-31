@@ -15860,6 +15860,38 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
             self.assertIn(relative, selected)
         self.assertNotIn("tools/score/__pycache__/label_with_uci.pyc", selected)
 
+    def test_recent_progress_rate_ignores_a_series_that_stopped_updating(self) -> None:
+        # A run that switches which unit it graphs leaves the old series frozen.
+        # Serving its final window forever produced a 112x overestimate and an
+        # ETA far below the slowest in-flight task.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            state = root / "state"
+            state.mkdir()
+            manifest = {
+                "schema": "forge.task.v1",
+                "name": "conversion",
+                "kind": "label-pgn",
+                "state_dir": str(state),
+                "tasks": [],
+            }
+            path = forge.progress_history_path(manifest)
+            path.write_text(
+                "\n".join(
+                    json.dumps({"epoch": e, "x": x, "x_unit": "pgns", "series": {"pgns/s": 10.0}})
+                    for e, x in ((1000.0, 100.0), (1030.0, 400.0))
+                ) + "\n",
+                encoding="utf-8",
+            )
+
+            # 20s after the last sample: still live, 300 pgns over 30s.
+            with mock.patch("forge_lib.status.epoch", return_value=1050.0):
+                self.assertAlmostEqual(10.0, forge.recent_progress_rate(manifest, unit="pgns"))
+
+            # An hour later the series is frozen; it must stop driving the ETA.
+            with mock.patch("forge_lib.status.epoch", return_value=1030.0 + 3600.0):
+                self.assertIsNone(forge.recent_progress_rate(manifest, unit="pgns"))
+
     def test_sprt_finished_progress_cache_replays_and_reparses_on_rerun(self) -> None:
         template = forge.load_template(ROOT / "templates" / "sprt.template.json")
         progress = template["task"]["progress"]
