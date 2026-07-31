@@ -21,7 +21,7 @@
   "parameters": {
     "chunk_time_seconds": {
       "type": "int",
-      "default": 120,
+      "default": 90,
       "help": "Target wall-clock seconds per adaptively sized chunk"
     },
     "candidate": {

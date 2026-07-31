@@ -5757,8 +5757,8 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
             totals = [task["progress"]["total"] for task in updated["tasks"]]
 
         self.assertIsNotNone(claimed)
-        self.assertEqual(25, len(updated["tasks"]))
-        self.assertEqual(4, next(
+        self.assertEqual(33, len(updated["tasks"]))
+        self.assertEqual(2, next(
             task["progress"]["total"]
             for task in updated["tasks"]
             if task["id"] == claimed["task"]
@@ -5878,7 +5878,7 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
             params = forge.parse_selfplay_template_parameters(
                 "selfplay",
                 template,
-                ["--engine", "~/assets/engines/enyo_9696dac", "--games", "640", "--shards", "40"],
+                ["--engine", "~/assets/engines/enyo_9696dac", "--games", "640", "--shards", "40", "--chunk-time-seconds", "300"],
             )
             manifest = forge.expand_template("selfplay", template_path, template, params)
             manifest["state_dir"] = str(root / "state")
@@ -5940,7 +5940,7 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
             params = forge.parse_selfplay_template_parameters(
                 "selfplay",
                 template,
-                ["--engine", "~/assets/engines/enyo_9696dac", "--games", "320", "--shards", "160"],
+                ["--engine", "~/assets/engines/enyo_9696dac", "--games", "320", "--shards", "160", "--chunk-time-seconds", "300"],
             )
             manifest = forge.expand_template("selfplay", template_path, template, params)
             manifest["state_dir"] = str(root / "state")
@@ -6042,7 +6042,7 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
             params = forge.parse_selfplay_template_parameters(
                 "selfplay",
                 template,
-                ["--engine", "~/assets/engines/enyo_9696dac", "--games", "64", "--shards", "4"],
+                ["--engine", "~/assets/engines/enyo_9696dac", "--games", "64", "--shards", "4", "--chunk-time-seconds", "300"],
             )
             manifest = forge.expand_template("selfplay", template_path, template, params)
             manifest["state_dir"] = str(root / "state")
