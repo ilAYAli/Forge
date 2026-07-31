@@ -187,8 +187,17 @@
     ],
     "command": "_s=$(( {shard_start} + 1 )); _e=$(( {shard_start} + {shard} )); _files=$(find ~/.cache/forge/inputs/replay-logs/{logs_cache_key} -maxdepth 1 -name '*.log' | LC_ALL=C sort | sed -n \"$_s,$_e\"p); if [ -z \"$_files\" ]; then echo 'no log files in this shard'; exit 0; fi; {replay_shell} --candidate {candidate_shell} --candidate-uci nnue_file={candidate_net_shell} --candidate-uci Hash={hash} --reference {reference_shell} --reference-uci nnue_file={reference_net_shell} --reference-uci Hash={hash} --oracle {oracle_shell} --oracle-nodes {oracle_nodes} --fixed-nodes {fixed_nodes} --threads {threads} --count {games} --jobs {jobs} --jsonl $_files > \"{output_dir}/{task_name}.jsonl\"",
     "progress": {
-      "unit": "logs",
-      "log_regex": "\\[(?P<done>\\d+)/(?P<total>\\d+)\\]"
+      "unit": "positions",
+      "log_regex": "\\[\\s*(?P<done>\\d+)/(?P<total>\\d+)\\].*?diff:\\s*(?P<diff_cp>[+-]?\\d+)cp",
+      "series": [
+        {
+          "name": "diff_cp",
+          "field": "diff_cp",
+          "x": "done",
+          "scale": "symmetric",
+          "smooth": true
+        }
+      ]
     }
   }
 }
