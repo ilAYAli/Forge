@@ -2554,6 +2554,12 @@ def status_worker_id(manifest: dict[str, Any], task: dict[str, Any], state: str)
             return str(worker_id)
     return status_worker(manifest, task, state)
 
+def worker_process_sort_key(worker_id: str) -> tuple[str, int, str]:
+    host, sep, suffix = worker_id.rpartition("#")
+    if sep and suffix.isdigit():
+        return (host, int(suffix), "")
+    return (worker_id, -1, "")
+
 def worker_process_status_rows(
     manifest: dict[str, Any],
     *,
@@ -2593,6 +2599,7 @@ def worker_process_status_rows(
             "state_age_s": round(state_age, 1),
             "heartbeat_age_s": round(heartbeat_age, 1),
         })
+    rows.sort(key=lambda row: worker_process_sort_key(str(row["worker_id"])))
     return rows
 
 def log_tail(path: Path, *, max_bytes: int = 8192) -> str:
