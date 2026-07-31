@@ -2990,10 +2990,12 @@ def run_progress_graph_from_rows(
     points_by_name: dict[str, list[dict[str, float]]] = {}
     options_by_name: dict[str, dict[str, Any]] = {}
     sprt_rows: list[dict[str, Any]] = []
+    replay_rows: list[dict[str, Any]] = []
     sprt_series_names: dict[str, str] = {}
     sprt_llr_bound: float | None = None
     kind = str(manifest_metadata(manifest).get("kind") or "").lower()
     is_sprt = kind == "sprt"
+    is_replay = kind == "replay"
     is_labeling = kind == "label"
     is_selfplay = kind == "selfplay"
     is_conversion = kind in {"selfplay-to-bullet", "label-pgn", "label-tb"}
@@ -3087,6 +3089,11 @@ def run_progress_graph_from_rows(
                         sprt_llr_bound = max(sprt_llr_bound or 0.0, abs(bound))
                 sprt_x = x if sprt_x is None else sprt_x
                 continue
+            if is_replay and field_name == "diff_cp":
+                n = progress_numeric_value("n", graph_data, fields)
+                if n is not None and n > 0:
+                    replay_rows.append({"n": n, "diff_cp": y})
+                continue
             points_by_name.setdefault(spec["name"], []).append({"x": x, "y": y})
         done = graph_data.get("done")
         if sprt_x is not None and isinstance(done, int) and done > 0:
@@ -3155,6 +3162,11 @@ def run_progress_graph_from_rows(
             }]
         if "games/s" in points_by_name:
             options_by_name["games/s"] = {"scale": "linear", "smooth": True}
+
+    if is_replay and replay_rows:
+        replay_points = replay_aggregate_graph_points(replay_rows)
+        if replay_points:
+            points_by_name["diff_cp"] = replay_points
 
     x_total = progress_unit_totals.get(x_unit) if x_unit else None
     for name, points in sprt_aggregate_graph_points(
@@ -3261,6 +3273,40 @@ def sprt_aggregate_graph_points(
             elif field_name == "ci" and ci_weight_total > 0:
                 points[name].append({"x": x, "y": math.sqrt(weighted_ci_squares) / ci_weight_total})
     return {name: values for name, values in points.items() if values}
+
+def replay_aggregate_graph_points(rows: list[dict[str, Any]]) -> list[dict[str, float]]:
+    """Combine per-shard running-average diff_cp into one weighted-average
+    trend line, the same way sprt_aggregate_graph_points combines per-shard
+    Elo/LLR. Each row is one currently-active replay task's own cumulative
+    average (diff_cp) and position count (n); n is directly comparable and
+    weightable across shards, unlike "done" (fullmoves within whichever log
+    file that shard currently happens to be on)."""
+    if not rows:
+        return []
+
+    def row_n(row: dict[str, Any]) -> float:
+        try:
+            return float(row["n"])
+        except (KeyError, TypeError, ValueError):
+            return math.inf
+
+    points: list[dict[str, float]] = []
+    weighted_sum = 0.0
+    weight_total = 0.0
+    cumulative_n = 0.0
+    for row in sorted(rows, key=row_n):
+        n = row_n(row)
+        if not math.isfinite(n) or n <= 0:
+            continue
+        avg = row.get("diff_cp")
+        if not isinstance(avg, (int, float)):
+            continue
+        cumulative_n += n
+        weighted_sum += float(avg) * n
+        weight_total += n
+        if weight_total > 0:
+            points.append({"x": cumulative_n, "y": weighted_sum / weight_total})
+    return points
 
 def progress_history_path(manifest: dict[str, Any]) -> Path:
     return state_dir(manifest) / PROGRESS_HISTORY_NAME

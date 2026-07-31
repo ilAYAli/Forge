@@ -53,9 +53,8 @@
     "oracle": {
       "required": true,
       "local_default": true,
-      "path_context": "shared_home",
       "executable": true,
-      "help": "Oracle engine used to judge candidate/reference/logged moves"
+      "help": "Oracle engine used to judge candidate/reference/logged moves (no path_context: per-host symlinks like ~/.local/bin/stockfish often resolve to genuinely different real paths per OS/host, so the literal ~-relative string is passed through for each worker's own shell to expand, rather than resolved once on the coordinator)"
     },
     "oracle_nodes": {
       "type": "int",
@@ -185,10 +184,10 @@
     "outputs": [
       "{output_dir}/{task_name}.jsonl"
     ],
-    "command": "_s=$(( {shard_start} + 1 )); _e=$(( {shard_start} + {shard} )); _files=$(find ~/.cache/forge/inputs/replay-logs/{logs_cache_key} -maxdepth 1 -name '*.log' | LC_ALL=C sort | sed -n \"$_s,$_e\"p); if [ -z \"$_files\" ]; then echo 'no log files in this shard'; exit 0; fi; {replay_shell} --candidate {candidate_shell} --candidate-uci nnue_file={candidate_net_shell} --candidate-uci Hash={hash} --reference {reference_shell} --reference-uci nnue_file={reference_net_shell} --reference-uci Hash={hash} --oracle {oracle_shell} --oracle-nodes {oracle_nodes} --fixed-nodes {fixed_nodes} --threads {threads} --count {games} --jobs {jobs} --jsonl $_files > \"{output_dir}/{task_name}.jsonl\"",
+    "command": "_s=$(( {shard_start} + 1 )); _e=$(( {shard_start} + {shard} )); _files=$(find ~/.cache/forge/inputs/replay-logs/{logs_cache_key} -maxdepth 1 -name '*.log' | LC_ALL=C sort | sed -n \"$_s,$_e\"p); if [ -z \"$_files\" ]; then echo 'no log files in this shard'; exit 0; fi; {replay_shell} --candidate {candidate_shell} --candidate-uci nnue_file={candidate_net_shell} --candidate-uci Hash={hash} --reference {reference_shell} --reference-uci nnue_file={reference_net_shell} --reference-uci Hash={hash} --oracle {oracle_shell} --oracle-nodes {oracle_nodes} --fixed-nodes {fixed_nodes} --threads {threads} --count {games} --jobs {jobs} --jsonl --include-history-sensitive $_files > \"{output_dir}/{task_name}.jsonl\"",
     "progress": {
       "unit": "positions",
-      "log_regex": "\\[\\s*(?P<done>\\d+)/(?P<total>\\d+)\\].*?diff:\\s*(?P<diff_cp>[+-]?\\d+)cp",
+      "log_regex": "\\[\\s*(?P<done>\\d+)/(?P<total>\\d+)\\]\\s*avg_diff_cp:\\s*(?P<diff_cp>[+-]?\\d+\\.?\\d*)\\s*n=(?P<n>\\d+)",
       "series": [
         {
           "name": "diff_cp",
