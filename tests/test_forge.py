@@ -8513,7 +8513,7 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
 
             with (
                 self.patch_runs_dir(runs),
-                mock.patch("forge_lib.workers.run_active_worker_task_count", return_value=4),
+                mock.patch("forge_lib.workers.run_active_worker_process_count", return_value=4),
                 mock.patch("forge_lib.workers.cmd_run_job", return_value=0) as run_job,
             ):
                 rc = forge.cmd_worker_set(self.worker_set_args(run="active", worker="pwa-mbp:6"))
@@ -8676,7 +8676,7 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
 
             with (
                 self.patch_runs_dir(runs),
-                mock.patch("forge_lib.workers.run_active_worker_task_count", return_value=6),
+                mock.patch("forge_lib.workers.run_active_worker_process_count", return_value=6),
                 mock.patch("forge_lib.workers.cmd_run_job") as run_job,
             ):
                 stdout = io.StringIO()
@@ -8703,7 +8703,7 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
 
             with (
                 self.patch_runs_dir(runs),
-                mock.patch("forge_lib.workers.run_active_worker_task_count", return_value=6),
+                mock.patch("forge_lib.workers.run_active_worker_process_count", return_value=6),
                 mock.patch("forge_lib.workers.cmd_run_job") as run_job,
             ):
                 stdout = io.StringIO()
@@ -8786,7 +8786,7 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
 
             with (
                 self.patch_runs_dir(runs),
-                mock.patch("forge_lib.workers.run_active_worker_task_count", return_value=4),
+                mock.patch("forge_lib.workers.run_active_worker_process_count", return_value=4),
                 mock.patch("forge_lib.workers.cmd_run_job", return_value=0) as run_job,
             ):
                 args = forge.build_parser().parse_args(["worker", "set", "worker-b:6", "paused"])

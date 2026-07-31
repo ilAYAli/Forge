@@ -3375,6 +3375,18 @@ def run_pending_task_count(manifest: dict[str, Any], *, lease_seconds: int) -> i
         for task in manifest.get("tasks") or []
     )
 
+def run_active_worker_process_count(manifest: dict[str, Any], worker: str, *, pending: int) -> int:
+    """Count live worker processes for a host (running/idle/starved/claimed),
+    not just tasks currently claimed. A worker between claims still holds its
+    slot, so counting claims alone undercounts and causes worker set to pile
+    duplicate processes on top of already-running ones."""
+    rows = worker_process_status_rows(manifest, pending=pending)
+    return sum(
+        1
+        for row in rows
+        if str(row.get("worker") or "") == worker and str(row.get("state") or "") != "stale"
+    )
+
 def clear_worker_drains(
     manifest: dict[str, Any],
     hosts: list[str],
@@ -3410,12 +3422,12 @@ def cmd_worker_set(args: argparse.Namespace) -> int:
         next_payload = set_worker_payload_slots(current_payload, set_worker)
         delta = desired_slots - current_slots
         manifest = load_manifest(manifest_path)
-        active_slots = run_active_worker_task_count(
+        pending_tasks = run_pending_task_count(manifest, lease_seconds=int(args.lease_seconds))
+        active_slots = run_active_worker_process_count(
             manifest,
             host,
-            lease_seconds=int(args.lease_seconds),
+            pending=pending_tasks,
         )
-        pending_tasks = run_pending_task_count(manifest, lease_seconds=int(args.lease_seconds))
         launch_slots = max(0, desired_slots - active_slots) if pending_tasks else 0
 
         if launch_slots > 0:
