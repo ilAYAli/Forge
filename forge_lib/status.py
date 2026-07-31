@@ -12,6 +12,7 @@ from .tasks import *
 
 QUEUE_MONITOR_NAME = "queue-monitor.json"
 PROGRESS_HISTORY_NAME = "progress-history.jsonl"
+FINISHED_PROGRESS_CACHE_NAME = "finished-progress.jsonl"
 PROGRESS_GRAPH_VERSION = 7
 SIGNED_PROGRESS_SERIES = {"balance", "elo", "llr"}
 PROGRESS_GRAPH_SERIES_OPTION_KEYS = {
@@ -3335,6 +3336,76 @@ def sprt_aggregate_graph_points(
 def progress_history_path(manifest: dict[str, Any]) -> Path:
     return state_dir(manifest) / PROGRESS_HISTORY_NAME
 
+def finished_progress_cache_path(manifest: dict[str, Any]) -> Path:
+    return state_dir(manifest) / FINISHED_PROGRESS_CACHE_NAME
+
+def needs_finished_progress_rollup(manifest_kind: str) -> bool:
+    """Whether the headline pools per-task stats across finished tasks.
+
+    SPRT reports one elo/LLR estimate for the whole run, so every finished
+    shard has to keep contributing after it stops being an active row.
+    """
+    return manifest_kind == "sprt"
+
+def finished_progress_stamp(manifest: dict[str, Any], task: dict[str, Any]) -> str:
+    """Cheap identity for a task's log, so a re-run invalidates its entry.
+
+    A stat is ~1000x cheaper than tailing and regexing the log, which keeps
+    the fast path fast while `forge retry` still gets fresh numbers.
+    """
+    try:
+        stat = task_log_path(manifest, task).stat()
+    except OSError:
+        return ""
+    return f"{stat.st_mtime_ns}:{stat.st_size}"
+
+def load_finished_progress_cache(manifest: dict[str, Any]) -> dict[str, tuple[str, dict[str, Any]]]:
+    """Final progress of finished tasks, keyed by task id.
+
+    A finished task's log never changes again, so parsing it once and
+    replaying the result keeps `status --json` off the per-task read path
+    it exists to avoid. Later lines win, so a re-run task self-corrects.
+    """
+    try:
+        lines = finished_progress_cache_path(manifest).read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return {}
+    cached: dict[str, tuple[str, dict[str, Any]]] = {}
+    for line in lines:
+        if not line.strip():
+            continue
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        task_id = str(entry.get("task") or "") if isinstance(entry, dict) else ""
+        data = normalize_progress_data(entry.get("data")) if task_id else None
+        if task_id and data is not None:
+            cached[task_id] = (str(entry.get("stamp") or ""), data)
+    return cached
+
+def append_finished_progress_cache(
+    manifest: dict[str, Any],
+    entries: list[tuple[str, str, dict[str, Any]]],
+) -> None:
+    if not entries:
+        return
+    path = finished_progress_cache_path(manifest)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as file:
+            for task_id, stamp, data in entries:
+                file.write(
+                    json.dumps(
+                        {"task": task_id, "stamp": stamp, "data": data},
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    )
+                    + "\n"
+                )
+    except OSError:
+        return
+
 def progress_history_entry(raw: Any) -> dict[str, Any] | None:
     if not isinstance(raw, dict):
         return None
@@ -4102,11 +4173,15 @@ def status_summary(
 ) -> dict[str, Any]:
     clear_state_diagnostics()
     manifest_kind = str(manifest_metadata(manifest).get("kind") or "").lower()
-    # SPRT headline stats pool elo/LLR/WDL across every finished shard. Dropping
-    # completed progress leaves only the shards still in flight, so a 2-game
-    # shard alone would set the headline (or, with none parsed yet, blank it).
-    if manifest_kind == "sprt":
-        include_completed_progress = True
+    # SPRT headline stats pool elo/LLR/WDL across every finished shard, so
+    # skipping completed progress would leave only the shards still in flight:
+    # one 2-game shard would set the headline, or blank it before any parse.
+    # Replay those finished shards from cache instead of re-reading each log.
+    rollup_finished_progress = (
+        not include_completed_progress and needs_finished_progress_rollup(manifest_kind)
+    )
+    finished_progress = load_finished_progress_cache(manifest) if rollup_finished_progress else {}
+    new_finished_progress: list[tuple[str, str, dict[str, Any]]] = []
     queue_payload = read_state_json(queue_request_path(manifest))
     launch_payload = read_state_json(launch_request_path(manifest))
     stop_payload = read_state_json(stop_request_path(manifest))
@@ -4259,6 +4334,16 @@ def status_summary(
             if include_completed_progress and state in {"done", "fail", "pending"}
             else None
         )
+        if rollup_finished_progress and state in {"done", "fail"}:
+            task_id = str(task["id"])
+            stamp = finished_progress_stamp(manifest, task)
+            cached_stamp, cached_data = finished_progress.get(task_id, ("", None))
+            if cached_data is not None and cached_stamp == stamp:
+                progress_data = cached_data
+            else:
+                progress_data = task_log_progress_data(manifest, task)
+                if progress_data is not None:
+                    new_finished_progress.append((task_id, stamp, progress_data))
         if state in {"running", "claimed", "stale"}:
             progress_data = task_heartbeat_progress_data(manifest, task)
             if progress_data is None and state in {"running", "stale"}:
@@ -4405,6 +4490,7 @@ def status_summary(
             pending.append(index)
             pending_groups.setdefault(row["label"], []).append(index)
 
+    append_finished_progress_cache(manifest, new_finished_progress)
     current_progress_graph = None
     if include_completed_progress:
         current_progress_graph = run_progress_graph_from_rows(

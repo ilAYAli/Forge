@@ -15769,6 +15769,56 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
                 stats["weighted_score"] / stats["weight_total"]
             ), places=6)
 
+    def test_sprt_finished_progress_cache_replays_and_reparses_on_rerun(self) -> None:
+        template = forge.load_template(ROOT / "templates" / "sprt.template.json")
+        progress = template["task"]["progress"]
+        losing = ("[2/2] Elo -190.8 +/-  -nan | LLR -0.02/2.20 (  1%) "
+                  "| LOS  7.9% | WDL 0/1/1 | Ptnml 0-1-0-0-0 | draw  50.0%")
+        winning = ("[2/2] Elo  190.8 +/-  -nan | LLR  0.02/2.20 (  1%) "
+                   "| LOS 92.1% | WDL 1/1/0 | Ptnml 0-0-0-1-0 | draw  50.0%")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            state = root / "state"
+            logs = root / "logs"
+            state.mkdir()
+            logs.mkdir()
+            manifest = {
+                "schema": "forge.task.v1",
+                "name": "sprt",
+                "kind": "sprt",
+                "work_dir": str(root),
+                "state_dir": str(state),
+                "log_dir": str(logs),
+                "tasks": [{"id": "sprt_0000", "index": 0, "label": "sprt:2",
+                           "command": "true", "outputs": [], "progress": dict(progress)}],
+            }
+            (state / "sprt_0000.done.json").write_text(json.dumps({"task": "sprt_0000"}), encoding="utf-8")
+            log = logs / "sprt_0000.log"
+            log.write_text(losing + "\n", encoding="utf-8")
+
+            def wdl() -> list[int]:
+                summary = forge.status_summary(
+                    manifest, lease_seconds=600, include_completed_progress=False
+                )
+                return forge.sprt_aggregate_stats(summary)["wdl"]
+
+            self.assertEqual([0, 1, 1], wdl())
+            cache = forge.finished_progress_cache_path(manifest)
+            self.assertTrue(cache.is_file())
+
+            # Rewrite the log but restore its (mtime, size) stamp. A cached read
+            # keeps the old numbers; a re-parse would pick up the new line.
+            self.assertEqual(len(losing), len(winning))
+            stat = log.stat()
+            log.write_text(winning + "\n", encoding="utf-8")
+            os.utime(log, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+            self.assertEqual((stat.st_mtime_ns, stat.st_size), (log.stat().st_mtime_ns, log.stat().st_size))
+            self.assertEqual([0, 1, 1], wdl())
+
+            # A retry writes the log afresh, so the stamp moves and it re-parses.
+            os.utime(log, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1000))
+            self.assertEqual([1, 1, 0], wdl())
+
     def test_worker_process_status_orders_slots_numerically_per_host(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
