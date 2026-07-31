@@ -1,0 +1,194 @@
+{
+  "schema": "forge.template.v1",
+  "name": "replay",
+  "kind": "replay",
+  "description": "Run distributed candidate vs reference replay comparison over logged games",
+  "run_name": "replay-{candidate_net_stem}-vs-{reference_net_stem}-{games}-{timestamp}",
+  "work_dir": "~",
+  "materialize_inputs": true,
+  "chunking": {
+    "live_rechunk": true,
+    "initial_units": 2,
+    "rechunk_chunks_per_slot": 4,
+    "min_chunks_per_slot": 2,
+    "signature_parameters": [
+      "oracle_nodes",
+      "fixed_nodes",
+      "threads",
+      "games"
+    ]
+  },
+  "parameters": {
+    "chunk_time_seconds": {
+      "type": "int",
+      "default": 90,
+      "help": "Target wall-clock seconds per adaptively sized chunk"
+    },
+    "candidate": {
+      "required": true,
+      "local_default": true,
+      "path_context": "shared_home",
+      "executable": true,
+      "help": "Candidate UCI engine executable"
+    },
+    "candidate_net": {
+      "required": true,
+      "local_default": true,
+      "path_context": "shared_home",
+      "help": "Candidate NNUE net"
+    },
+    "reference": {
+      "required": true,
+      "local_default": true,
+      "path_context": "shared_home",
+      "executable": true,
+      "help": "Reference UCI engine executable"
+    },
+    "reference_net": {
+      "required": true,
+      "local_default": true,
+      "path_context": "shared_home",
+      "help": "Reference NNUE net"
+    },
+    "oracle": {
+      "required": true,
+      "local_default": true,
+      "path_context": "shared_home",
+      "executable": true,
+      "help": "Oracle engine used to judge candidate/reference/logged moves"
+    },
+    "oracle_nodes": {
+      "type": "int",
+      "default": 200000,
+      "help": "Oracle analysis node budget per position"
+    },
+    "fixed_nodes": {
+      "type": "int",
+      "default": 100000,
+      "help": "Candidate/reference replay node budget per position"
+    },
+    "threads": {
+      "type": "int",
+      "default": 1,
+      "help": "Engine threads"
+    },
+    "hash": {
+      "type": "int",
+      "default": 128,
+      "help": "Hash size in MiB for candidate and reference engines"
+    },
+    "jobs": {
+      "type": "int",
+      "default": 1,
+      "help": "Log files replayed in parallel within one shard (replay --jobs)"
+    },
+    "games": {
+      "type": "int",
+      "default": 1500,
+      "help": "Positions replayed per log file, forwarded as replay's --count"
+    },
+    "shards": {
+      "type": "int",
+      "default": 8,
+      "help": "Initial number of shards; adaptively resized after the first few complete"
+    },
+    "logs": {
+      "required": true,
+      "local_default": true,
+      "path_context": "shared_home",
+      "help": "Directory of .log files to replay"
+    },
+    "logs_count": {
+      "type": "int",
+      "default": 1,
+      "derive": {
+        "type": "glob-count",
+        "from": "logs",
+        "pattern": "*.log"
+      }
+    },
+    "logs_start": {
+      "type": "int",
+      "default": 0
+    },
+    "logs_cache_key": {
+      "default": "replay-logs",
+      "derive": {
+        "type": "path-key",
+        "from": "logs"
+      }
+    },
+    "replay": {
+      "required": true,
+      "local_default": true,
+      "path_context": "shared_home",
+      "executable": true,
+      "help": "replay tool executable"
+    }
+  },
+  "requirements": {
+    "commands": [
+      {
+        "name": "candidate",
+        "path": "{candidate}",
+        "command": "printf '%s\\n' uci quit | {candidate}",
+        "contains": "uciok",
+        "timeout_s": 900
+      },
+      {
+        "name": "reference",
+        "path": "{reference}",
+        "command": "printf '%s\\n' uci quit | {reference}",
+        "contains": "uciok",
+        "timeout_s": 900
+      },
+      {
+        "name": "oracle",
+        "path": "{oracle}",
+        "command": "printf '%s\\n' uci quit | {oracle}",
+        "contains": "uciok",
+        "timeout_s": 900
+      },
+      {
+        "name": "replay",
+        "path": "{replay}",
+        "command": "{replay} --help",
+        "contains": "--jsonl",
+        "timeout_s": 20
+      }
+    ],
+    "inputs": [
+      {
+        "name": "candidate net",
+        "path": "{candidate_net}"
+      },
+      {
+        "name": "reference net",
+        "path": "{reference_net}"
+      },
+      {
+        "name": "logged games",
+        "source": "{logs}",
+        "path": "~/.cache/forge/inputs/replay-logs/{logs_cache_key}",
+        "tree": "directory"
+      }
+    ]
+  },
+  "task": {
+    "split": {
+      "total": "logs_count",
+      "count": "shards",
+      "unit": "logs",
+      "start": "logs_start"
+    },
+    "label": "replay:{shard}",
+    "outputs": [
+      "{output_dir}/{task_name}.jsonl"
+    ],
+    "command": "_s=$(( {shard_start} + 1 )); _e=$(( {shard_start} + {shard} )); _files=$(find ~/.cache/forge/inputs/replay-logs/{logs_cache_key} -maxdepth 1 -name '*.log' | LC_ALL=C sort | sed -n \"$_s,$_e\"p); if [ -z \"$_files\" ]; then echo 'no log files in this shard'; exit 0; fi; {replay_shell} --candidate {candidate_shell} --candidate-uci nnue_file={candidate_net_shell} --candidate-uci Hash={hash} --reference {reference_shell} --reference-uci nnue_file={reference_net_shell} --reference-uci Hash={hash} --oracle {oracle_shell} --oracle-nodes {oracle_nodes} --fixed-nodes {fixed_nodes} --threads {threads} --count {games} --jobs {jobs} --jsonl $_files > \"{output_dir}/{task_name}.jsonl\"",
+    "progress": {
+      "unit": "logs",
+      "log_regex": "\\[(?P<done>\\d+)/(?P<total>\\d+)\\]"
+    }
+  }
+}
