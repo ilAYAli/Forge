@@ -8728,7 +8728,48 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
                 },
                 forge.read_json(run / "workers.json"),
             )
-            self.assertIn("worker set: active pwa-mbp slots=6->4 released=0", stdout.getvalue())
+            self.assertIn("worker set: active pwa-mbp slots=6->4", stdout.getvalue())
+
+    def test_worker_set_kills_excess_worker_processes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runs = Path(tmp) / "runs"
+            run = self.write_retry_run(runs, "active", failed=None)
+            forge.write_json(run / "workers.json", {
+                "schema": "forge.workers.v1",
+                "workers": [{
+                    "host": "pwa-mbp",
+                    "profile": "mac",
+                    "local": True,
+                    "slots": 6,
+                }],
+            })
+            manifest = forge.load_manifest(run / "manifest.json")
+            for slot in range(1, 7):
+                forge.update_worker_process_heartbeat(
+                    manifest,
+                    worker="pwa-mbp",
+                    worker_id=f"pwa-mbp#{slot}",
+                    process_state="running",
+                )
+
+            with (
+                self.patch_runs_dir(runs),
+                mock.patch("forge_lib.workers.kill_worker_id_processes", return_value=2) as kill_mock,
+                mock.patch("forge_lib.workers.cmd_run_job") as run_job,
+            ):
+                stdout = io.StringIO()
+                with contextlib.redirect_stdout(stdout):
+                    rc = forge.cmd_worker_set(self.worker_set_args(run="active", worker="pwa-mbp:4"))
+
+            self.assertEqual(0, rc)
+            run_job.assert_not_called()
+            # Only the two highest-numbered (excess) slots should be targeted,
+            # not the ones we're keeping.
+            self.assertEqual(1, kill_mock.call_count)
+            _, run_name, worker_ids = kill_mock.call_args.args
+            self.assertEqual("active", run_name)
+            self.assertEqual(["pwa-mbp#6", "pwa-mbp#5"], worker_ids)
+            self.assertIn("worker set: active pwa-mbp slots=6->4 killed=2", stdout.getvalue())
 
     def test_worker_path_map_applies_to_worker_manifest_without_coordinator_profile(self) -> None:
         manifest = {

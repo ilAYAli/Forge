@@ -1250,38 +1250,94 @@ def detached_shell_command(worker: dict[str, Any], script: str, *, pid_file: str
     )
     return shell_join([worker_python(worker), "-c", launcher, script, pid_file, log_file])
 
-def cleanup_run_pid_files_command(cache_dir: str, run_name: str) -> str:
+def pid_files_kill_script(cache_dir: str, patterns: list[str]) -> str:
+    """Shell script that TERM-then-KILLs every PID file matching any of
+    ``patterns`` under ``cache_dir``, printing each matched path.
+
+    Each pattern is a raw (unquoted) shell glob fragment, e.g. ``"run-*.pid"``
+    or ``"run-*-worker_3.pid"`` -- callers are responsible for quoting any
+    data segments themselves (see worker_pid_glob_pattern / the run-wide glob
+    below) so the ``*`` wildcards stay live.
+    """
     quoted_cache = shlex.quote(cache_dir)
-    quoted_run = shlex.quote(run_name)
+    pattern_list = " ".join(patterns)
     return (
         f"cache_dir={quoted_cache}; found=0; "
-        f"for pid_file in \"$cache_dir\"/{quoted_run}-*.pid; do "
+        f"for pattern in {pattern_list}; do "
+        "for pid_file in \"$cache_dir\"/$pattern; do "
         "test -e \"$pid_file\" || continue; "
         "pid=$(sed -n '1p' \"$pid_file\" 2>/dev/null || true); "
         "case \"$pid\" in ''|*[!0-9]*) rm -f \"$pid_file\"; continue;; esac; "
         "found=1; "
-        "printf '%s\\n' \"$pid_file\"; "
+        "printf '%s\n' \"$pid_file\"; "
         "kill -TERM -\"$pid\" 2>/dev/null || kill -TERM \"$pid\" 2>/dev/null || true; "
-        "done; "
+        "done; done; "
         "remaining=200; while test \"$found\" -ne 0 && test \"$remaining\" -gt 0; do "
         "alive=0; "
-        f"for pid_file in \"$cache_dir\"/{quoted_run}-*.pid; do "
+        f"for pattern in {pattern_list}; do "
+        "for pid_file in \"$cache_dir\"/$pattern; do "
         "test -e \"$pid_file\" || continue; "
         "pid=$(sed -n '1p' \"$pid_file\" 2>/dev/null || true); "
         "case \"$pid\" in ''|*[!0-9]*) continue;; esac; "
         "if kill -0 -\"$pid\" 2>/dev/null || kill -0 \"$pid\" 2>/dev/null; then alive=1; fi; "
-        "done; "
+        "done; done; "
         "test \"$alive\" -ne 0 || break; "
         "remaining=$((remaining - 1)); sleep 0.1; "
         "done; "
-        f"for pid_file in \"$cache_dir\"/{quoted_run}-*.pid; do "
+        f"for pattern in {pattern_list}; do "
+        "for pid_file in \"$cache_dir\"/$pattern; do "
         "test -e \"$pid_file\" || continue; "
         "pid=$(sed -n '1p' \"$pid_file\" 2>/dev/null || true); "
         "case \"$pid\" in ''|*[!0-9]*) rm -f \"$pid_file\"; continue;; esac; "
         "kill -KILL -\"$pid\" 2>/dev/null || kill -KILL \"$pid\" 2>/dev/null || true; "
         "rm -f \"$pid_file\"; "
-        "done"
+        "done; done"
     )
+
+
+def cleanup_run_pid_files_command(cache_dir: str, run_name: str) -> str:
+    return pid_files_kill_script(cache_dir, [f"{shlex.quote(run_name)}-*.pid"])
+
+
+def worker_pid_glob_suffix(worker_id: str) -> str:
+    return re.sub(r"[^A-Za-z0-9_.-]+", "_", worker_id)
+
+
+def worker_id_pid_glob_pattern(run_name: str, worker_id: str) -> str:
+    return f"{shlex.quote(run_name)}-*-{shlex.quote(worker_pid_glob_suffix(worker_id))}.pid"
+
+
+def kill_worker_id_processes(
+    worker: dict[str, Any],
+    run_name: str,
+    worker_ids: list[str],
+    *,
+    timeout: float = 30.0,
+) -> int:
+    """Kill only the specific worker_id processes named, not the whole run.
+
+    Used to scale a host down to a smaller slot count: kill_run_workers()
+    (used by ``forge stop``) tears down every worker for a run, which is too
+    blunt for "keep 8 of pwa-llm's 12 workers, stop the other 4."
+    """
+    if not worker_ids:
+        return 0
+    cache_dir = worker_cache_dir(worker)
+    patterns = [worker_id_pid_glob_pattern(run_name, worker_id) for worker_id in worker_ids]
+    script = pid_files_kill_script(cache_dir, patterns)
+    local = is_local_worker(worker)
+    command = (
+        ["sh", "-lc", script]
+        if local
+        else ["ssh", *SSH_OPTS, str(worker["host"]), managed_remote_script(script)]
+    )
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, timeout=timeout)
+        if result.returncode == 0:
+            return len([line for line in result.stdout.splitlines() if line.strip()])
+    except (subprocess.TimeoutExpired, OSError):
+        pass
+    return 0
 
 def kill_run_workers(run_dir: Path, *, timeout: float = 30.0) -> int:
     workers_path = run_dir / RUN_WORKERS_NAME
@@ -3404,6 +3460,29 @@ def clear_worker_drains(
         print(f"{label}: cleared drain for {run_name} {host}")
     return cleared
 
+def release_worker_id_claims(
+    manifest: dict[str, Any],
+    *,
+    worker_ids: set[str],
+    lease_seconds: int,
+) -> list[str]:
+    """Like release_worker_claims, but scoped to specific worker_ids rather
+    than a whole host -- used when scaling a host down to fewer slots."""
+    from .tasks import release_claim, task_state
+
+    released: list[str] = []
+    if not worker_ids:
+        return released
+    for task in sorted(manifest["tasks"], key=lambda item: int(item.get("index", 0))):
+        state = task_state(manifest, task, lease_seconds=lease_seconds)
+        if state not in {"claimed", "running", "stale"}:
+            continue
+        if status_worker_id(manifest, task, state) not in worker_ids:
+            continue
+        release_claim(manifest, task)
+        released.append(str(task["id"]))
+    return released
+
 def cmd_worker_set(args: argparse.Namespace) -> int:
     coordinator_runs = configured_coordinator_runs()
     if coordinator_runs and status_can_delegate(args.run):
@@ -3480,13 +3559,7 @@ def cmd_worker_set(args: argparse.Namespace) -> int:
             print(f"worker set: {run_name} {host} slots={desired_slots} unchanged")
             continue
 
-        release_count = 0 if desired_slots <= 0 else max(0, active_slots - desired_slots)
-        released = release_worker_claims(
-            manifest,
-            worker=host,
-            count=release_count,
-            lease_seconds=args.lease_seconds,
-        )
+        release_count = max(0, active_slots - desired_slots)
         if desired_slots <= 0:
             drain_dir(manifest).mkdir(parents=True, exist_ok=True)
             write_json(worker_drain_path(manifest, host), {
@@ -3497,7 +3570,37 @@ def cmd_worker_set(args: argparse.Namespace) -> int:
                 "requested_epoch": epoch(),
                 "host": socket.gethostname(),
             })
-        print(f"worker set: {run_name} {host} slots={current_slots}->{desired_slots} released={len(released)}")
+        # Killing claims (release_worker_claims) only ever unclaims tasks
+        # that haven't started running yet, and does nothing to the worker
+        # processes themselves -- they just loop around and claim something
+        # else. Actually shrinking the worker count means killing the excess
+        # processes directly, the same way `forge stop` does for a whole run.
+        excess_worker_ids = []
+        if release_count > 0:
+            rows = worker_process_status_rows(manifest, pending=pending_tasks)
+            host_worker_ids = sorted(
+                {
+                    str(row["worker_id"])
+                    for row in rows
+                    if str(row.get("worker") or "") == host
+                    and str(row.get("state") or "") != "stale"
+                },
+                key=worker_process_sort_key,
+                reverse=True,
+            )
+            excess_worker_ids = host_worker_ids[:release_count]
+        killed = kill_worker_id_processes(set_worker, run_name, excess_worker_ids)
+        released = release_worker_id_claims(
+            manifest,
+            worker_ids=set(excess_worker_ids),
+            lease_seconds=args.lease_seconds,
+        )
+        message = f"worker set: {run_name} {host} slots={current_slots}->{desired_slots}"
+        if released:
+            message += f" released={len(released)}"
+        if killed:
+            message += f" killed={killed}"
+        print(message)
     return 1 if failed else 0
 
 def cmd_resume(args: argparse.Namespace) -> int:
