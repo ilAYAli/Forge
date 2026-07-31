@@ -1211,7 +1211,20 @@ def summary_progress(summary: dict[str, Any]) -> str:
             manifest = summary.get("manifest_payload")
             if isinstance(manifest, dict):
                 recent_rate = recent_progress_rate(manifest, unit=unit)
-            eta_rate = recent_rate or bucket["rate"] or cumulative_rate
+            # Prefer a trailing-window rate over the run's lifetime average,
+            # which stays skewed for a long time by any past downtime
+            # (crashes, stalls, idle periods) even after the run has fully
+            # recovered. Fall back to the lifetime average (not the raw
+            # active-worker rate) so a single noisy fresh shard can't
+            # dominate the ETA.
+            if isinstance(recent_rate, (int, float)) and recent_rate > 0:
+                eta_rate = recent_rate
+            elif cumulative_rate is not None:
+                eta_rate = cumulative_rate
+            else:
+                eta_rate = bucket["rate"]
+            if not isinstance(eta_rate, (int, float)):
+                eta_rate = 0.0
             if eta_rate > 0:
                 append_aggregate_eta(done, total_work, eta_rate, bucket["etas"])
             elif waiting_count == 0 and bucket["etas"]:
@@ -3067,7 +3080,7 @@ def run_progress_graph_from_rows(
     is_sprt = kind == "sprt"
     is_labeling = kind == "label"
     is_selfplay = kind == "selfplay"
-    is_conversion = kind in {"selfplay-to-bullet", "label-sf"}
+    is_conversion = kind in {"selfplay-to-bullet", "label-pgn", "label-tb"}
     label_x = 0.0
     label_worker_rates: dict[str, float] = {}
     conversion_rows: list[dict[str, float | str]] = []
@@ -3693,7 +3706,7 @@ def run_progress_history_graph(
     kind = str(manifest_metadata(manifest).get("kind") or manifest.get("kind") or "")
     if (
         current_graph is not None
-        and kind.lower() in {"selfplay-to-bullet", "label-sf"}
+        and kind.lower() in {"selfplay-to-bullet", "label-pgn", "label-tb"}
         and len(history) < 2
     ):
         return current_graph
@@ -4317,7 +4330,10 @@ def status_summary(
             else task_state(manifest, task, lease_seconds=lease_seconds)
         )
         counts[state] += 1
-        if fast_states is not None and state in {"pending", "done", "fail"}:
+        # Skipping the per-task marker read is what makes the fast path fast,
+        # but failures are rare and their host is the whole point of the fail
+        # grouping, so resolve those; done is the bulk this is avoiding.
+        if fast_states is not None and state in {"pending", "done"}:
             worker = ""
             worker_id = ""
         else:
@@ -4348,7 +4364,7 @@ def status_summary(
             progress_data = task_heartbeat_progress_data(manifest, task)
             if progress_data is None and state in {"running", "stale"}:
                 progress_data = task_log_progress_data(manifest, task)
-            elif manifest_kind in {"selfplay-to-bullet", "label-sf"}:
+            elif manifest_kind in {"selfplay-to-bullet", "label-pgn", "label-tb"}:
                 progress_data = task_log_progress_data(manifest, task) or progress_data
         running_payload = task_running_payload(manifest, task) if state in {"running", "claimed", "stale"} else None
         if isinstance(progress_config, dict):
@@ -4413,19 +4429,14 @@ def status_summary(
                 and isinstance(calibrated_rate, (int, float))
                 and calibrated_rate > 0
             ):
+                # Only record the rate here: stabilize_progress_eta has already
+                # blended it with the observed rate by warmup confidence, and
+                # recomputing eta from the calibrated rate alone would discard
+                # what the shard is actually doing.
                 progress_data = {
                     **progress_data,
                     "calibrated_rate": float(calibrated_rate),
                 }
-                done = progress_data.get("done")
-                total = progress_data.get("total")
-                if isinstance(done, int) and isinstance(total, int) and 0 <= done < total:
-                    eta_s = progress_eta_seconds(done, total, calibrated_rate)
-                    if eta_s is not None:
-                        progress_data["eta_s"] = eta_s
-                        progress_data["eta_estimate"] = True
-                        progress_data["eta_calibrated"] = True
-                        progress_data["text"] = progress_text(progress_data)
         if progress_data is not None and config_progress is not None and state in {"running", "claimed", "stale"}:
             unit, task_total = config_progress
             offset_unit, offset = progress_task_offsets.get(str(task["id"]), (unit, 0))
