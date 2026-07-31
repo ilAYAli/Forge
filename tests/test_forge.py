@@ -3590,6 +3590,36 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
                     self.assertEqual("to-bullet", manifest["template"]["name"])
                     self.assertEqual(expected_kind, manifest["kind"])
 
+    def test_to_bullet_forwards_label_stage_as_pgn_backend_mode(self) -> None:
+        # label-pgn serves both --label search and --label static and defaults
+        # to static, so the stage has to be forwarded or search labels silently
+        # come out static.
+        with tempfile.TemporaryDirectory(dir=Path.home()) as tmp:
+            root = Path(tmp)
+            pgn_dir = root / "pgns"
+            pgn_dir.mkdir()
+            (pgn_dir / "one.pgn").write_text("", encoding="utf-8")
+            for stage in ("search", "static"):
+                with self.subTest(stage=stage):
+                    stdout = io.StringIO()
+                    with contextlib.redirect_stdout(stdout):
+                        rc = forge.cmd_template_run(argparse.Namespace(
+                            template="to-bullet",
+                            template_args=[
+                                "--dry-run",
+                                "--input", str(pgn_dir),
+                                "--output", str(root / f"{stage}.bullet"),
+                                "--label", stage,
+                                "--shards", "1",
+                            ],
+                        ))
+                    self.assertEqual(0, rc)
+                    manifest = json.loads(stdout.getvalue())
+                    command = manifest["tasks"][0]["command"]
+                    self.assertIn(f"--mode {stage}", command)
+                    # Engine labeling must not silently apply TB correction.
+                    self.assertIn("--tb-pieces 0", command)
+
     def test_to_bullet_rejects_pgn_only_mode_for_training_input(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.home()) as tmp:
             root = Path(tmp)
@@ -15768,6 +15798,36 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
             self.assertAlmostEqual(0.0, forge.score_rate_elo(
                 stats["weighted_score"] / stats["weight_total"]
             ), places=6)
+
+    def test_to_bullet_applies_tb_correction_only_for_the_tb_stage(self) -> None:
+        # The generic default merge would stamp the public tb_pieces=6 onto
+        # label-pgn, whose own default is 0; the label-pgn branch has to win so
+        # engine labeling stays TB-free unless tb is chained explicitly.
+        with tempfile.TemporaryDirectory(dir=Path.home()) as tmp:
+            root = Path(tmp)
+            pgn_dir = root / "pgns"
+            pgn_dir.mkdir()
+            (pgn_dir / "one.pgn").write_text("", encoding="utf-8")
+            for label_args, expected in (
+                (["--label", "static"], "--tb-pieces 0"),
+                (["--label", "static", "--label", "tb"], "--tb-pieces 6"),
+            ):
+                with self.subTest(label=label_args):
+                    stdout = io.StringIO()
+                    with contextlib.redirect_stdout(stdout):
+                        rc = forge.cmd_template_run(argparse.Namespace(
+                            template="to-bullet",
+                            template_args=[
+                                "--dry-run",
+                                "--input", str(pgn_dir),
+                                "--output", str(root / "out.bullet"),
+                                *label_args,
+                                "--shards", "1",
+                            ],
+                        ))
+                    self.assertEqual(0, rc)
+                    manifest = json.loads(stdout.getvalue())
+                    self.assertIn(expected, manifest["tasks"][0]["command"])
 
     def test_label_pgn_source_includes_score_package_for_relabel_import(self) -> None:
         from forge_lib.source_artifacts import _source_files
