@@ -3527,6 +3527,37 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
             self.assertEqual(0, shown_by_path.returncode, shown_by_path.stderr)
             self.assertEqual("demo", json.loads(shown_by_path.stdout)["name"])
 
+    def test_template_list_shows_choice_parameters(self) -> None:
+        listing = self.run_cli("template", "list")
+        self.assertEqual(0, listing.returncode, listing.stderr)
+
+        # --label is neither locally defaulted nor required, so it only shows
+        # up if choices parameters get a section of their own.
+        self.assertIn(
+            "  choices:\n"
+            "    --label existing|outcome|search|static|tb (repeatable)\n"
+            "      Ordered label stage; repeat to apply tb after search or static"
+            " (default: existing)\n",
+            listing.stdout,
+        )
+        self.assertIn("    --book-order random|sequential (default: random)\n", listing.stdout)
+
+    def test_template_choice_summary_omits_useless_empty_default(self) -> None:
+        self.assertEqual(
+            "existing|outcome (repeatable)",
+            forge.template_choice_summary(
+                {"choices": ["existing", "outcome"], "repeatable": True, "default": []}
+            ),
+        )
+        self.assertEqual(
+            "search|static (default: static)",
+            forge.template_choice_summary({"choices": ["search", "static"], "default": "static"}),
+        )
+        self.assertEqual(
+            "a|b",
+            forge.template_choice_summary({"choices": ["a", "b"]}),
+        )
+
     def test_to_bullet_dispatches_all_label_modes(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.home()) as tmp:
             root = Path(tmp)
@@ -15690,6 +15721,86 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
             self.assertEqual("starved", states["worker-a#1"])
             self.assertEqual("running", states["worker-a#2"])
             self.assertEqual("stale", states["worker-a#3"])
+
+    def test_sprt_headline_pools_completed_shards_even_without_completed_progress(self) -> None:
+        template = forge.load_template(ROOT / "templates" / "sprt.template.json")
+        progress = template["task"]["progress"]
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            state = root / "state"
+            logs = root / "logs"
+            state.mkdir()
+            logs.mkdir()
+            manifest = {
+                "schema": "forge.task.v1",
+                "name": "sprt",
+                "kind": "sprt",
+                "work_dir": str(root),
+                "state_dir": str(state),
+                "log_dir": str(logs),
+                "tasks": [
+                    {"id": "sprt_0000", "index": 0, "label": "sprt:2", "command": "true",
+                     "outputs": [], "progress": dict(progress)},
+                    {"id": "sprt_0001", "index": 1, "label": "sprt:2", "command": "true",
+                     "outputs": [], "progress": dict(progress)},
+                ],
+            }
+            # Two finished 2-game shards that cancel out: pooled elo must be 0,
+            # not whichever single shard happens to still be in flight.
+            for task_id, line in (
+                ("sprt_0000", "[2/2] Elo  190.8 +/-  -nan | LLR  0.02/2.20 (  1%) "
+                              "| LOS 92.1% | WDL 1/1/0 | Ptnml 0-0-0-1-0 | draw  50.0%"),
+                ("sprt_0001", "[2/2] Elo -190.8 +/-  -nan | LLR -0.02/2.20 (  1%) "
+                              "| LOS  7.9% | WDL 0/1/1 | Ptnml 0-1-0-0-0 | draw  50.0%"),
+            ):
+                (state / f"{task_id}.done.json").write_text(json.dumps({"task": task_id}), encoding="utf-8")
+                (logs / f"{task_id}.log").write_text(line + "\n", encoding="utf-8")
+
+            summary = forge.status_summary(
+                manifest,
+                lease_seconds=600,
+                include_completed_progress=False,
+            )
+            stats = forge.sprt_aggregate_stats(summary)
+
+            self.assertEqual(4, stats["weight_total"])
+            self.assertEqual([1, 2, 1], stats["wdl"])
+            self.assertAlmostEqual(0.0, forge.score_rate_elo(
+                stats["weighted_score"] / stats["weight_total"]
+            ), places=6)
+
+    def test_worker_process_status_orders_slots_numerically_per_host(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest = {
+                "schema": "forge.task.v1",
+                "name": "process-order",
+                "state_dir": str(root / "state"),
+                "tasks": [],
+            }
+            process_dir = forge.worker_process_dir(manifest)
+            process_dir.mkdir(parents=True)
+            # File names are opaque hashes, so on-disk order says nothing about the worker.
+            for name, worker_id in (
+                ("f0", "pwa-llm#10"),
+                ("a1", "pwa-5090#11"),
+                ("c2", "pwa-llm#1"),
+                ("b3", "pwa-5090#2"),
+                ("d4", "pwa-llm#7"),
+            ):
+                forge.write_json(process_dir / f"{name}.json", {
+                    "worker": forge.worker_group_name(worker_id),
+                    "worker_id": worker_id,
+                    "state": "running",
+                    "state_since_epoch": 99.0,
+                    "heartbeat_epoch": 99.0,
+                })
+            expected = ["pwa-5090#2", "pwa-5090#11", "pwa-llm#1", "pwa-llm#7", "pwa-llm#10"]
+
+            with mock.patch("forge_lib.status.epoch", return_value=100.0):
+                rows = forge.worker_process_status_rows(manifest, pending=0)
+
+            self.assertEqual(expected, [row["worker_id"] for row in rows])
 
     def test_adaptive_rechunk_checks_are_throttled_per_worker(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

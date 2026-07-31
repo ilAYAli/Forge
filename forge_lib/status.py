@@ -34,11 +34,13 @@ def cmd_status(args: argparse.Namespace) -> int:
         raise SystemExit("choose only one of --all, --done, or --failed")
     filter_name = selected[0] if selected else None
     coordinator_runs = configured_coordinator_runs()
+    include_completed_progress = not bool(args.json) or bool(getattr(args, "verbose", False))
     if coordinator_runs and status_can_delegate(args.run):
         if args.run is None and filter_name == "failed":
             summaries = load_run_summaries(
                 lease_seconds=args.lease_seconds,
                 attention_only=True,
+                include_completed_progress=include_completed_progress,
             )
             if any(run_failed(summary) for summary in summaries):
                 return print_run_status(
@@ -56,6 +58,7 @@ def cmd_status(args: argparse.Namespace) -> int:
             summaries = load_run_summaries(
                 lease_seconds=args.lease_seconds,
                 attention_only=bool(not getattr(args, "verbose", False)),
+                include_completed_progress=include_completed_progress,
             )
             if any(run_current(summary) for summary in summaries):
                 return print_run_status(
@@ -74,6 +77,7 @@ def cmd_status(args: argparse.Namespace) -> int:
         summaries = load_run_summaries(
             lease_seconds=args.lease_seconds,
             attention_only=bool(filter_name is None and not getattr(args, "verbose", False)),
+            include_completed_progress=include_completed_progress,
         )
         return print_run_status(
             summaries,
@@ -366,7 +370,13 @@ def queue_monitor_state(manifest_path: Path) -> tuple[str | None, dict[str, Any]
         return "invalid", payload
     return ("running" if process_is_alive(pid) else "dead"), payload
 
-def load_run_summary_from_manifest(path: Path, *, lease_seconds: int, attention_only: bool) -> dict[str, Any] | None:
+def load_run_summary_from_manifest(
+    path: Path,
+    *,
+    lease_seconds: int,
+    attention_only: bool,
+    include_completed_progress: bool = True,
+) -> dict[str, Any] | None:
     try:
         manifest = load_manifest(path)
     except OSError:
@@ -375,7 +385,14 @@ def load_run_summary_from_manifest(path: Path, *, lease_seconds: int, attention_
         return None
     if attention_only and not run_manifest_has_attention_state(manifest):
         return None
-    summary = status_summary(manifest, lease_seconds=lease_seconds)
+    if include_completed_progress:
+        summary = status_summary(manifest, lease_seconds=lease_seconds)
+    else:
+        summary = status_summary(
+            manifest,
+            lease_seconds=lease_seconds,
+            include_completed_progress=False,
+        )
     summary["manifest"] = str(path)
     summary["run"] = path.parent.name
     summary["metadata"] = manifest_metadata(manifest)
@@ -504,13 +521,19 @@ def run_manifest_has_attention_state(manifest: dict[str, Any]) -> bool:
         return True
     return False
 
-def load_run_summaries(*, lease_seconds: int, attention_only: bool = False) -> list[dict[str, Any]]:
+def load_run_summaries(
+    *,
+    lease_seconds: int,
+    attention_only: bool = False,
+    include_completed_progress: bool = True,
+) -> list[dict[str, Any]]:
     summaries = []
     for path in run_manifest_paths():
         summary = load_run_summary_from_manifest(
             path,
             lease_seconds=lease_seconds,
             attention_only=attention_only,
+            include_completed_progress=include_completed_progress,
         )
         if summary is not None:
             summaries.append(summary)
@@ -1134,7 +1157,7 @@ def summary_progress(summary: dict[str, Any]) -> str:
                     bucket["total"] += total
                 else:
                     bucket["all_total"] = False
-                rate = data.get("rate")
+                rate = data.get("calibrated_rate", data.get("rate"))
                 if isinstance(rate, (int, float)) and rate > 0:
                     bucket["rate"] += float(rate)
                 else:
@@ -1183,19 +1206,11 @@ def summary_progress(summary: dict[str, Any]) -> str:
             done = min(total_work, int(done_work) + active_done)
             text = f"{unit}={compact_count(done)}/{compact_count(total_work)}"
             cumulative_rate = run_cumulative_rate(summary, float(done))
-            # Prefer a trailing-window rate over the run's lifetime average,
-            # which stays skewed for a long time by any past downtime
-            # (crashes, stalls, idle periods) even after the run has fully
-            # recovered. Fall back to the lifetime average (not the raw
-            # active-worker rate) so a single noisy fresh shard can't
-            # dominate the ETA.
-            recent_rate = summary.get("recent_rate")
-            if isinstance(recent_rate, (int, float)) and recent_rate > 0:
-                eta_rate = recent_rate
-            elif cumulative_rate is not None:
-                eta_rate = cumulative_rate
-            else:
-                eta_rate = bucket["rate"]
+            recent_rate = None
+            manifest = summary.get("manifest_payload")
+            if isinstance(manifest, dict):
+                recent_rate = recent_progress_rate(manifest, unit=unit)
+            eta_rate = recent_rate or bucket["rate"] or cumulative_rate
             if eta_rate > 0:
                 append_aggregate_eta(done, total_work, eta_rate, bucket["etas"])
             elif waiting_count == 0 and bucket["etas"]:
@@ -1252,6 +1267,11 @@ def worker_group_name(worker: str) -> str:
         if match:
             return match.group(1)
     return name
+
+def worker_id_sort_key(worker_id: str) -> tuple[str, int, str]:
+    name = str(worker_id or "").strip()
+    slot = re.search(r"(?:#|-slot|-extra-|-reclaim-)(\d+)$", name)
+    return (worker_group_name(name), int(slot.group(1)) if slot else 0, name)
 
 def active_worker_metrics(summary: dict[str, Any]) -> dict[str, dict[str, Any]]:
     workers: dict[str, dict[str, Any]] = {}
@@ -2512,6 +2532,62 @@ def task_counts(manifest: dict[str, Any], *, lease_seconds: int) -> dict[str, in
         counts[task_state(manifest, task, lease_seconds=lease_seconds)] += 1
     return counts
 
+
+def fast_task_states(
+    manifest: dict[str, Any],
+    *,
+    lease_seconds: int,
+) -> dict[str, str]:
+    """Build status from state markers without reopening every task output."""
+    state_root = state_dir(manifest)
+    done: set[str] = set()
+    failed: set[str] = set()
+    running: set[str] = set()
+    try:
+        for path in state_root.iterdir():
+            name = path.name
+            if name.endswith(".done.json"):
+                done.add(name[:-10])
+            elif name.endswith(".fail.json"):
+                failed.add(name[:-10])
+            elif name.endswith(".running.json"):
+                running.add(name[:-13])
+    except OSError:
+        pass
+
+    claimed: set[str] = set()
+    try:
+        claimed = {
+            path.name[:-6]
+            for path in claim_dir(manifest).iterdir()
+            if path.is_dir() and path.name.endswith(".claim")
+        }
+    except OSError:
+        pass
+
+    states: dict[str, str] = {}
+    for task in manifest["tasks"]:
+        task_id = str(task["id"])
+        if task_id in done:
+            states[task_id] = "done"
+            continue
+        if task_id in failed and task_id not in running:
+            states[task_id] = "fail"
+            continue
+        if task_id in running:
+            if task_id in failed and fail_supersedes_running(manifest, task):
+                states[task_id] = "fail"
+                continue
+            state = task_running_state(manifest, task, lease_seconds=lease_seconds)
+            states[task_id] = state or "running"
+            continue
+        if task_id in claimed:
+            state = task_claim_state(manifest, task, lease_seconds=lease_seconds)
+            states[task_id] = state or "claimed"
+            continue
+        states[task_id] = "fail" if task_id in failed else "pending"
+    return states
+
 def task_display_index(task: dict[str, Any]) -> int | str:
     index = task.get("index")
     if isinstance(index, int):
@@ -2566,12 +2642,6 @@ def status_worker_id(manifest: dict[str, Any], task: dict[str, Any], state: str)
             return str(worker_id)
     return status_worker(manifest, task, state)
 
-def worker_process_sort_key(worker_id: str) -> tuple[str, int, str]:
-    host, sep, suffix = worker_id.rpartition("#")
-    if sep and suffix.isdigit():
-        return (host, int(suffix), "")
-    return (worker_id, -1, "")
-
 def worker_process_status_rows(
     manifest: dict[str, Any],
     *,
@@ -2611,7 +2681,7 @@ def worker_process_status_rows(
             "state_age_s": round(state_age, 1),
             "heartbeat_age_s": round(heartbeat_age, 1),
         })
-    rows.sort(key=lambda row: worker_process_sort_key(str(row["worker_id"])))
+    rows.sort(key=lambda row: worker_id_sort_key(str(row["worker_id"])))
     return rows
 
 def log_tail(path: Path, *, max_bytes: int = 8192) -> str:
@@ -2990,15 +3060,13 @@ def run_progress_graph_from_rows(
     points_by_name: dict[str, list[dict[str, float]]] = {}
     options_by_name: dict[str, dict[str, Any]] = {}
     sprt_rows: list[dict[str, Any]] = []
-    replay_rows: list[dict[str, Any]] = []
     sprt_series_names: dict[str, str] = {}
     sprt_llr_bound: float | None = None
     kind = str(manifest_metadata(manifest).get("kind") or "").lower()
     is_sprt = kind == "sprt"
-    is_replay = kind == "replay"
     is_labeling = kind == "label"
     is_selfplay = kind == "selfplay"
-    is_conversion = kind in {"selfplay-to-bullet", "label-pgn", "label-tb"}
+    is_conversion = kind in {"selfplay-to-bullet", "label-sf"}
     label_x = 0.0
     label_worker_rates: dict[str, float] = {}
     conversion_rows: list[dict[str, float | str]] = []
@@ -3089,11 +3157,6 @@ def run_progress_graph_from_rows(
                         sprt_llr_bound = max(sprt_llr_bound or 0.0, abs(bound))
                 sprt_x = x if sprt_x is None else sprt_x
                 continue
-            if is_replay and field_name == "diff_cp":
-                n = progress_numeric_value("n", graph_data, fields)
-                if n is not None and n > 0:
-                    replay_rows.append({"n": n, "diff_cp": y})
-                continue
             points_by_name.setdefault(spec["name"], []).append({"x": x, "y": y})
         done = graph_data.get("done")
         if sprt_x is not None and isinstance(done, int) and done > 0:
@@ -3162,11 +3225,6 @@ def run_progress_graph_from_rows(
             }]
         if "games/s" in points_by_name:
             options_by_name["games/s"] = {"scale": "linear", "smooth": True}
-
-    if is_replay and replay_rows:
-        replay_points = replay_aggregate_graph_points(replay_rows)
-        if replay_points:
-            points_by_name["diff_cp"] = replay_points
 
     x_total = progress_unit_totals.get(x_unit) if x_unit else None
     for name, points in sprt_aggregate_graph_points(
@@ -3274,40 +3332,6 @@ def sprt_aggregate_graph_points(
                 points[name].append({"x": x, "y": math.sqrt(weighted_ci_squares) / ci_weight_total})
     return {name: values for name, values in points.items() if values}
 
-def replay_aggregate_graph_points(rows: list[dict[str, Any]]) -> list[dict[str, float]]:
-    """Combine per-shard running-average diff_cp into one weighted-average
-    trend line, the same way sprt_aggregate_graph_points combines per-shard
-    Elo/LLR. Each row is one currently-active replay task's own cumulative
-    average (diff_cp) and position count (n); n is directly comparable and
-    weightable across shards, unlike "done" (fullmoves within whichever log
-    file that shard currently happens to be on)."""
-    if not rows:
-        return []
-
-    def row_n(row: dict[str, Any]) -> float:
-        try:
-            return float(row["n"])
-        except (KeyError, TypeError, ValueError):
-            return math.inf
-
-    points: list[dict[str, float]] = []
-    weighted_sum = 0.0
-    weight_total = 0.0
-    cumulative_n = 0.0
-    for row in sorted(rows, key=row_n):
-        n = row_n(row)
-        if not math.isfinite(n) or n <= 0:
-            continue
-        avg = row.get("diff_cp")
-        if not isinstance(avg, (int, float)):
-            continue
-        cumulative_n += n
-        weighted_sum += float(avg) * n
-        weight_total += n
-        if weight_total > 0:
-            points.append({"x": cumulative_n, "y": weighted_sum / weight_total})
-    return points
-
 def progress_history_path(manifest: dict[str, Any]) -> Path:
     return state_dir(manifest) / PROGRESS_HISTORY_NAME
 
@@ -3361,33 +3385,28 @@ def load_progress_history(manifest: dict[str, Any]) -> list[dict[str, Any]]:
     entries.sort(key=lambda entry: (float(entry["x"]), float(entry.get("epoch") or 0.0)))
     return entries
 
-def run_recent_rate(manifest: dict[str, Any], *, window_seconds: float = 60.0) -> float | None:
-    """Throughput over the trailing window, not the run's full lifetime.
 
-    A run's cumulative average stays skewed by past downtime (crashes,
-    stalls, idle periods) long after it has recovered; this instead looks
-    at recent progress-history samples so the ETA reflects current pace.
-    """
-    history = load_progress_history(manifest)
+def recent_progress_rate(
+    manifest: dict[str, Any],
+    *,
+    unit: str,
+    window_seconds: float = 60.0,
+) -> float | None:
+    history = [
+        entry for entry in load_progress_history(manifest)
+        if str(entry.get("x_unit") or "") == unit and float(entry.get("epoch") or 0.0) > 0
+    ]
     if len(history) < 2:
         return None
     latest = history[-1]
-    latest_epoch = float(latest.get("epoch") or 0.0)
-    if latest_epoch <= 0:
-        return None
-    cutoff = latest_epoch - window_seconds
-    baseline = history[0]
-    for entry in history:
-        entry_epoch = float(entry.get("epoch") or 0.0)
-        if entry_epoch <= cutoff:
-            baseline = entry
-        else:
-            break
-    elapsed = latest_epoch - float(baseline.get("epoch") or 0.0)
-    if elapsed <= 0:
-        return None
+    latest_epoch = float(latest["epoch"])
+    baseline = next(
+        (entry for entry in history if latest_epoch - float(entry["epoch"]) <= window_seconds),
+        latest,
+    )
+    elapsed = latest_epoch - float(baseline["epoch"])
     delta = float(latest["x"]) - float(baseline["x"])
-    if delta < 0:
+    if elapsed < 10 or delta <= 0:
         return None
     return delta / elapsed
 
@@ -3458,41 +3477,6 @@ def append_progress_history(
     history.append(entry)
     return history
 
-def selfplay_windowed_rate_series(
-    history: list[dict[str, Any]], *, window_seconds: float = 60.0
-) -> list[float | None]:
-    """Trailing-window games/s for each history entry, aligned by index.
-
-    Point-to-point deltas between adjacent snapshots are noisy: if two polls
-    land close together, a couple of finished games swing the instantaneous
-    rate wildly (0 one moment, a spike the next). Averaging over a trailing
-    window instead smooths that out while still tracking recent pace.
-    """
-    rates: list[float | None] = [None] * len(history)
-    baseline_idx = 0
-    for i, entry in enumerate(history):
-        epoch_i = parse_float(entry.get("epoch"))
-        x_i = parse_float(entry.get("x"))
-        if epoch_i is None or x_i is None:
-            continue
-        cutoff = epoch_i - window_seconds
-        while baseline_idx + 1 <= i:
-            next_epoch = parse_float(history[baseline_idx + 1].get("epoch"))
-            if next_epoch is not None and next_epoch <= cutoff:
-                baseline_idx += 1
-            else:
-                break
-        baseline = history[baseline_idx]
-        baseline_epoch = parse_float(baseline.get("epoch"))
-        baseline_x = parse_float(baseline.get("x"))
-        if baseline_epoch is None or baseline_x is None:
-            continue
-        elapsed = epoch_i - baseline_epoch
-        if elapsed > 0 and x_i > baseline_x:
-            rates[i] = (x_i - baseline_x) / elapsed
-    return rates
-
-
 def progress_graph_from_history(
     history: list[dict[str, Any]],
     fallback_graph: dict[str, Any] | None,
@@ -3518,7 +3502,7 @@ def progress_graph_from_history(
         isinstance(fallback_graph, dict) and isinstance(fallback_graph.get("selfplay"), dict)
     )
     current_max_x: float | None = None
-    windowed_rates = selfplay_windowed_rate_series(history) if is_selfplay else []
+    selfplay_samples: list[tuple[float, float]] = []
     if isinstance(fallback_graph, dict):
         raw_fallback_series = fallback_graph.get("series")
         if isinstance(raw_fallback_series, list):
@@ -3544,7 +3528,7 @@ def progress_graph_from_history(
                 name = str(item.get("name") or "").strip()
                 if name:
                     options_by_name[name] = progress_series_options(item)
-    for history_index, entry in enumerate(history):
+    for entry in history:
         x = parse_float(entry.get("x"))
         if x is None:
             continue
@@ -3559,7 +3543,22 @@ def progress_graph_from_history(
         if is_selfplay and current_max_x is not None and x > current_max_x:
             continue
         if is_selfplay and selfplay_rate_graph:
-            measured_rate = windowed_rates[history_index]
+            epoch = parse_float(entry.get("epoch"))
+            measured_rate: float | None = None
+            if epoch is not None:
+                baseline = next(
+                    (
+                        sample for sample in selfplay_samples
+                        if epoch - sample[1] <= 60.0
+                    ),
+                    None,
+                )
+                if baseline is not None:
+                    baseline_x, baseline_epoch = baseline
+                    elapsed = epoch - baseline_epoch
+                    if elapsed >= 10.0 and x > baseline_x:
+                        measured_rate = (x - baseline_x) / elapsed
+                selfplay_samples.append((x, epoch))
             series = {"games/s": measured_rate} if measured_rate is not None else {}
         elif is_selfplay and "games/s" in series:
             series = {"games/s": series["games/s"]}
@@ -3623,7 +3622,7 @@ def run_progress_history_graph(
     kind = str(manifest_metadata(manifest).get("kind") or manifest.get("kind") or "")
     if (
         current_graph is not None
-        and kind.lower() in {"selfplay-to-bullet", "label-pgn", "label-tb"}
+        and kind.lower() in {"selfplay-to-bullet", "label-sf"}
         and len(history) < 2
     ):
         return current_graph
@@ -4095,9 +4094,19 @@ def task_heartbeat_progress_data(manifest: dict[str, Any], task: dict[str, Any])
             pass
     return normalize_progress_data(progress_data)
 
-def status_summary(manifest: dict[str, Any], *, lease_seconds: int) -> dict[str, Any]:
+def status_summary(
+    manifest: dict[str, Any],
+    *,
+    lease_seconds: int,
+    include_completed_progress: bool = True,
+) -> dict[str, Any]:
     clear_state_diagnostics()
     manifest_kind = str(manifest_metadata(manifest).get("kind") or "").lower()
+    # SPRT headline stats pool elo/LLR/WDL across every finished shard. Dropping
+    # completed progress leaves only the shards still in flight, so a 2-game
+    # shard alone would set the headline (or, with none parsed yet, blank it).
+    if manifest_kind == "sprt":
+        include_completed_progress = True
     queue_payload = read_state_json(queue_request_path(manifest))
     launch_payload = read_state_json(launch_request_path(manifest))
     stop_payload = read_state_json(stop_request_path(manifest))
@@ -4120,11 +4129,46 @@ def status_summary(manifest: dict[str, Any], *, lease_seconds: int) -> dict[str,
     worker_outputs: dict[str, dict[str, Any]] = {}
     worker_rates: dict[str, float] = {}
     completed_worker_task_rates: dict[str, list[float]] = {}
+    recent_worker_task_rates: dict[str, list[float]] = {}
     completed_units: dict[str, int] = {}
     completed_elapsed: dict[str, float] = {}
     progress_task_offsets: dict[str, tuple[str, int]] = {}
     progress_unit_totals: dict[str, int] = {}
     failure_reasons: dict[str, dict[str, Any]] = {}
+    now_epoch = epoch()
+
+    def record_completed_rate(
+        task: dict[str, Any],
+        payload: dict[str, Any] | None,
+        total: int,
+    ) -> None:
+        if not isinstance(payload, dict):
+            return
+        elapsed = payload.get("elapsed_s")
+        if not isinstance(elapsed, (int, float)) or elapsed <= 0:
+            return
+        worker = payload.get("worker")
+        worker_id = payload.get("worker_id")
+        if isinstance(worker, dict):
+            worker_id = worker_id or worker.get("process_id") or worker.get("worker_id") or worker.get("name")
+            worker = worker.get("name") or worker.get("host")
+        worker = worker or payload.get("host")
+        if not worker:
+            return
+        worker_name = worker_group_name(str(worker))
+        process_name = str(worker_id or worker_name)
+        rate = total / float(elapsed)
+        completed_worker_task_rates.setdefault(worker_name, []).append(rate)
+        completed_worker_task_rates.setdefault(process_name, []).append(rate)
+        completed_epoch = path_epoch(task_done_path(manifest, task))
+        if completed_epoch and 0 <= now_epoch - completed_epoch <= 60.0:
+            recent_worker_task_rates.setdefault(worker_name, []).append(rate)
+            recent_worker_task_rates.setdefault(process_name, []).append(rate)
+    fast_states = (
+        fast_task_states(manifest, lease_seconds=lease_seconds)
+        if not include_completed_progress
+        else None
+    )
 
     for task in manifest["tasks"]:
         config_progress = progress_config_unit_total(task)
@@ -4135,18 +4179,33 @@ def status_summary(manifest: dict[str, Any], *, lease_seconds: int) -> dict[str,
         progress_task_offsets[str(task["id"])] = (unit, offset)
         progress_unit_totals[unit] = offset + total
 
-    for task in manifest["tasks"]:
-        config_progress = progress_config_unit_total(task)
-        if config_progress is None or not task_complete(manifest, task):
-            continue
-        unit, total = config_progress
-        payload = task_done_payload(manifest, task)
-        elapsed = payload.get("elapsed_s") if isinstance(payload, dict) else None
-        if isinstance(elapsed, (int, float)) and elapsed > 0:
+    if include_completed_progress:
+        for task in manifest["tasks"]:
+            config_progress = progress_config_unit_total(task)
+            if config_progress is None or not task_complete(manifest, task):
+                continue
+            unit, total = config_progress
+            payload = task_done_payload(manifest, task)
+            elapsed = payload.get("elapsed_s") if isinstance(payload, dict) else None
+            if isinstance(elapsed, (int, float)) and elapsed > 0:
+                completed_units[unit] = completed_units.get(unit, 0) + total
+                completed_elapsed[unit] = completed_elapsed.get(unit, 0.0) + float(elapsed)
+                record_completed_rate(task, payload, total)
+    elif fast_states is not None:
+        for task in manifest["tasks"]:
+            if fast_states.get(str(task["id"])) != "done":
+                continue
+            payload = task_done_payload(manifest, task)
+            elapsed = payload.get("elapsed_s") if isinstance(payload, dict) else None
+            if not isinstance(elapsed, (int, float)) or elapsed <= 0:
+                continue
+            config_progress = progress_config_unit_total(task)
+            if config_progress is None:
+                continue
+            unit, total = config_progress
             completed_units[unit] = completed_units.get(unit, 0) + total
             completed_elapsed[unit] = completed_elapsed.get(unit, 0.0) + float(elapsed)
-            worker = status_worker(manifest, task, "done") or "unknown"
-            completed_worker_task_rates.setdefault(worker, []).append(total / float(elapsed))
+            record_completed_rate(task, payload, total)
     fallback_rates = {
         unit: completed_units[unit] / completed_elapsed[unit]
         for unit in completed_units
@@ -4162,6 +4221,12 @@ def status_summary(manifest: dict[str, Any], *, lease_seconds: int) -> dict[str,
     def process_calibrated_rate(worker: str | None, worker_id: str | None, unit: str) -> float | None:
         key = worker_id or worker or "unknown"
         if key not in calibrated_process_rates:
+            recent_rates = recent_worker_task_rates.get(key, [])
+            if not recent_rates:
+                recent_rates = recent_worker_task_rates.get(worker or "", [])
+            if recent_rates:
+                calibrated_process_rates[key] = sum(recent_rates) / len(recent_rates)
+                return calibrated_process_rates[key]
             calibrated_process_rates[key] = calibrated_progress_rate(
                 manifest,
                 worker,
@@ -4171,22 +4236,34 @@ def status_summary(manifest: dict[str, Any], *, lease_seconds: int) -> dict[str,
         return calibrated_process_rates[key]
 
     for task in manifest["tasks"]:
-        state = task_state(manifest, task, lease_seconds=lease_seconds)
+        state = (
+            fast_states.get(str(task["id"]), "pending")
+            if fast_states is not None
+            else task_state(manifest, task, lease_seconds=lease_seconds)
+        )
         counts[state] += 1
-        worker = status_worker(manifest, task, state)
-        worker_id = status_worker_id(manifest, task, state)
+        if fast_states is not None and state in {"pending", "done", "fail"}:
+            worker = ""
+            worker_id = ""
+        else:
+            worker = status_worker(manifest, task, state)
+            worker_id = status_worker_id(manifest, task, state)
         index = task_display_index(task)
         config_progress = progress_config_unit_total(task)
         progress_config = task.get("progress")
         if config_progress is not None:
             unit, total = config_progress
             progress_totals[unit] = progress_totals.get(unit, 0) + total
-        progress_data = task_log_progress_data(manifest, task) if state in {"done", "fail", "pending"} else None
+        progress_data = (
+            task_log_progress_data(manifest, task)
+            if include_completed_progress and state in {"done", "fail", "pending"}
+            else None
+        )
         if state in {"running", "claimed", "stale"}:
             progress_data = task_heartbeat_progress_data(manifest, task)
             if progress_data is None and state in {"running", "stale"}:
                 progress_data = task_log_progress_data(manifest, task)
-            elif manifest_kind in {"selfplay-to-bullet", "label-pgn", "label-tb"}:
+            elif manifest_kind in {"selfplay-to-bullet", "label-sf"}:
                 progress_data = task_log_progress_data(manifest, task) or progress_data
         running_payload = task_running_payload(manifest, task) if state in {"running", "claimed", "stale"} else None
         if isinstance(progress_config, dict):
@@ -4196,13 +4273,16 @@ def status_summary(manifest: dict[str, Any], *, lease_seconds: int) -> dict[str,
             progress_data = {**progress_data, "output_rate": output_rate}
         if config_progress is not None and state == "done":
             unit, task_total = config_progress
-            done_payload = task_done_payload(manifest, task)
-            soft_cancelled = isinstance(done_payload, dict) and bool(
-                done_payload.get("soft_cancel") or done_payload.get("skipped")
-            )
-            observed = progress_data.get("done") if isinstance(progress_data, dict) else None
-            if soft_cancelled:
-                completed = min(observed, task_total) if isinstance(observed, int) else 0
+            if include_completed_progress:
+                done_payload = task_done_payload(manifest, task)
+                soft_cancelled = isinstance(done_payload, dict) and bool(
+                    done_payload.get("soft_cancel") or done_payload.get("skipped")
+                )
+                observed = progress_data.get("done") if isinstance(progress_data, dict) else None
+                if soft_cancelled:
+                    completed = min(observed, task_total) if isinstance(observed, int) else 0
+                else:
+                    completed = task_total
             else:
                 completed = task_total
             progress_done[unit] = progress_done.get(unit, 0) + completed
@@ -4252,6 +4332,15 @@ def status_summary(manifest: dict[str, Any], *, lease_seconds: int) -> dict[str,
                     **progress_data,
                     "calibrated_rate": float(calibrated_rate),
                 }
+                done = progress_data.get("done")
+                total = progress_data.get("total")
+                if isinstance(done, int) and isinstance(total, int) and 0 <= done < total:
+                    eta_s = progress_eta_seconds(done, total, calibrated_rate)
+                    if eta_s is not None:
+                        progress_data["eta_s"] = eta_s
+                        progress_data["eta_estimate"] = True
+                        progress_data["eta_calibrated"] = True
+                        progress_data["text"] = progress_text(progress_data)
         if progress_data is not None and config_progress is not None and state in {"running", "claimed", "stale"}:
             unit, task_total = config_progress
             offset_unit, offset = progress_task_offsets.get(str(task["id"]), (unit, 0))
@@ -4316,14 +4405,15 @@ def status_summary(manifest: dict[str, Any], *, lease_seconds: int) -> dict[str,
             pending.append(index)
             pending_groups.setdefault(row["label"], []).append(index)
 
-    current_progress_graph = run_progress_graph_from_rows(
-        manifest,
-        rows,
-        progress_task_offsets,
-        progress_unit_totals,
-    )
+    current_progress_graph = None
+    if include_completed_progress:
+        current_progress_graph = run_progress_graph_from_rows(
+            manifest,
+            rows,
+            progress_task_offsets,
+            progress_unit_totals,
+        )
     progress_graph = run_progress_history_graph(manifest, current_progress_graph)
-    recent_rate = run_recent_rate(manifest)
     worker_processes = worker_process_status_rows(
         manifest,
         pending=counts["pending"],
@@ -4331,7 +4421,6 @@ def status_summary(manifest: dict[str, Any], *, lease_seconds: int) -> dict[str,
 
     return {
         "tasks": len(manifest["tasks"]),
-        "recent_rate": recent_rate,
         "counts": counts,
         "active_count": counts["running"] + counts["claimed"] + counts["stale"],
         "groups": groups,

@@ -5,13 +5,7 @@ import fcntl
 
 from collections.abc import Callable
 
-from .config import (
-    cache_dir,
-    config_workers_path,
-    default_coordinator_host,
-    default_notify_command,
-    default_task_complete_command,
-)
+from .config import cache_dir, config_workers_path, default_coordinator_host, default_notify_command
 from .core import *
 from .manifest import *
 from .tasks import *
@@ -1250,94 +1244,38 @@ def detached_shell_command(worker: dict[str, Any], script: str, *, pid_file: str
     )
     return shell_join([worker_python(worker), "-c", launcher, script, pid_file, log_file])
 
-def pid_files_kill_script(cache_dir: str, patterns: list[str]) -> str:
-    """Shell script that TERM-then-KILLs every PID file matching any of
-    ``patterns`` under ``cache_dir``, printing each matched path.
-
-    Each pattern is a raw (unquoted) shell glob fragment, e.g. ``"run-*.pid"``
-    or ``"run-*-worker_3.pid"`` -- callers are responsible for quoting any
-    data segments themselves (see worker_pid_glob_pattern / the run-wide glob
-    below) so the ``*`` wildcards stay live.
-    """
+def cleanup_run_pid_files_command(cache_dir: str, run_name: str) -> str:
     quoted_cache = shlex.quote(cache_dir)
-    pattern_list = " ".join(patterns)
+    quoted_run = shlex.quote(run_name)
     return (
         f"cache_dir={quoted_cache}; found=0; "
-        f"for pattern in {pattern_list}; do "
-        "for pid_file in \"$cache_dir\"/$pattern; do "
+        f"for pid_file in \"$cache_dir\"/{quoted_run}-*.pid; do "
         "test -e \"$pid_file\" || continue; "
         "pid=$(sed -n '1p' \"$pid_file\" 2>/dev/null || true); "
         "case \"$pid\" in ''|*[!0-9]*) rm -f \"$pid_file\"; continue;; esac; "
         "found=1; "
-        "printf '%s\n' \"$pid_file\"; "
+        "printf '%s\\n' \"$pid_file\"; "
         "kill -TERM -\"$pid\" 2>/dev/null || kill -TERM \"$pid\" 2>/dev/null || true; "
-        "done; done; "
+        "done; "
         "remaining=200; while test \"$found\" -ne 0 && test \"$remaining\" -gt 0; do "
         "alive=0; "
-        f"for pattern in {pattern_list}; do "
-        "for pid_file in \"$cache_dir\"/$pattern; do "
+        f"for pid_file in \"$cache_dir\"/{quoted_run}-*.pid; do "
         "test -e \"$pid_file\" || continue; "
         "pid=$(sed -n '1p' \"$pid_file\" 2>/dev/null || true); "
         "case \"$pid\" in ''|*[!0-9]*) continue;; esac; "
         "if kill -0 -\"$pid\" 2>/dev/null || kill -0 \"$pid\" 2>/dev/null; then alive=1; fi; "
-        "done; done; "
+        "done; "
         "test \"$alive\" -ne 0 || break; "
         "remaining=$((remaining - 1)); sleep 0.1; "
         "done; "
-        f"for pattern in {pattern_list}; do "
-        "for pid_file in \"$cache_dir\"/$pattern; do "
+        f"for pid_file in \"$cache_dir\"/{quoted_run}-*.pid; do "
         "test -e \"$pid_file\" || continue; "
         "pid=$(sed -n '1p' \"$pid_file\" 2>/dev/null || true); "
         "case \"$pid\" in ''|*[!0-9]*) rm -f \"$pid_file\"; continue;; esac; "
         "kill -KILL -\"$pid\" 2>/dev/null || kill -KILL \"$pid\" 2>/dev/null || true; "
         "rm -f \"$pid_file\"; "
-        "done; done"
+        "done"
     )
-
-
-def cleanup_run_pid_files_command(cache_dir: str, run_name: str) -> str:
-    return pid_files_kill_script(cache_dir, [f"{shlex.quote(run_name)}-*.pid"])
-
-
-def worker_pid_glob_suffix(worker_id: str) -> str:
-    return re.sub(r"[^A-Za-z0-9_.-]+", "_", worker_id)
-
-
-def worker_id_pid_glob_pattern(run_name: str, worker_id: str) -> str:
-    return f"{shlex.quote(run_name)}-*-{shlex.quote(worker_pid_glob_suffix(worker_id))}.pid"
-
-
-def kill_worker_id_processes(
-    worker: dict[str, Any],
-    run_name: str,
-    worker_ids: list[str],
-    *,
-    timeout: float = 30.0,
-) -> int:
-    """Kill only the specific worker_id processes named, not the whole run.
-
-    Used to scale a host down to a smaller slot count: kill_run_workers()
-    (used by ``forge stop``) tears down every worker for a run, which is too
-    blunt for "keep 8 of pwa-llm's 12 workers, stop the other 4."
-    """
-    if not worker_ids:
-        return 0
-    cache_dir = worker_cache_dir(worker)
-    patterns = [worker_id_pid_glob_pattern(run_name, worker_id) for worker_id in worker_ids]
-    script = pid_files_kill_script(cache_dir, patterns)
-    local = is_local_worker(worker)
-    command = (
-        ["sh", "-lc", script]
-        if local
-        else ["ssh", *SSH_OPTS, str(worker["host"]), managed_remote_script(script)]
-    )
-    try:
-        result = subprocess.run(command, capture_output=True, text=True, timeout=timeout)
-        if result.returncode == 0:
-            return len([line for line in result.stdout.splitlines() if line.strip()])
-    except (subprocess.TimeoutExpired, OSError):
-        pass
-    return 0
 
 def kill_run_workers(run_dir: Path, *, timeout: float = 30.0) -> int:
     workers_path = run_dir / RUN_WORKERS_NAME
@@ -1539,9 +1477,8 @@ def queue_resume_command(args: argparse.Namespace, run_name: str) -> list[str]:
         command.append("--newline-between")
     if getattr(args, "notify_command", None):
         command.extend(["--notify-command", str(args.notify_command)])
-    task_complete_command = getattr(args, "task_complete_command", None) or getattr(args, "notify_command", None) or default_task_complete_command()
-    if task_complete_command:
-        command.extend(["--task-complete-command", str(task_complete_command)])
+    if getattr(args, "task_complete_command", None):
+        command.extend(["--task-complete-command", str(args.task_complete_command)])
     if bool(getattr(args, "task_complete_sync", False)):
         command.append("--task-complete-sync")
     if not bool(getattr(args, "fail_on_fail", True)):
@@ -2264,7 +2201,7 @@ def run_deploy(args: argparse.Namespace) -> int:
             ),
             retry_failed=bool(getattr(args, "retry_failed", False)),
             task_attempts=int(getattr(args, "task_attempts", 0)),
-            task_complete_command=getattr(args, "task_complete_command", None) or getattr(args, "notify_command", None) or default_task_complete_command(),
+            task_complete_command=getattr(args, "task_complete_command", None),
             task_complete_sync=bool(getattr(args, "task_complete_sync", False)),
         )
         result = run_worker_shell(worker, script, timeout=remote_timeout, tracker=tracker)
@@ -2291,7 +2228,7 @@ def run_deploy(args: argparse.Namespace) -> int:
             ),
             retry_failed=bool(getattr(args, "retry_failed", False)),
             task_attempts=int(getattr(args, "task_attempts", 0)),
-            task_complete_command=getattr(args, "task_complete_command", None) or getattr(args, "notify_command", None) or default_task_complete_command(),
+            task_complete_command=getattr(args, "task_complete_command", None),
             task_complete_sync=bool(getattr(args, "task_complete_sync", False)),
         )
         result = run_worker_shell(
@@ -2552,22 +2489,6 @@ def run_deploy(args: argparse.Namespace) -> int:
             index = int(item["index"])
             launch_futures.append(launch_executor.submit(launch_worker, index, workers[index]))
 
-    notify_command = getattr(args, "notify_command", None) or default_notify_command()
-    emit_phase_events = bool(notify_command) and has_tasks and not launch_only
-    if emit_phase_events:
-        run_notify_command(
-            notify_command,
-            {
-                "event": "phase_start",
-                "phase": "setup",
-                "state": "running",
-                "run": run_dir.name,
-                "run_dir": str(run_dir),
-                "kind": str(manifest.get("kind") or ""),
-                "groups": len(setup_groups),
-            },
-            wait=False,
-        )
     try:
         future_to_group = {
             executor.submit(setup_worker_group, group): group
@@ -2581,21 +2502,6 @@ def run_deploy(args: argparse.Namespace) -> int:
         )
         setup_failed = sum(1 for item in setup_results_list if not item["ok"])
         setup_failed_results = [item for item in setup_results_list if not item["ok"]]
-        if emit_phase_events:
-            run_notify_command(
-                notify_command,
-                {
-                    "event": "phase_done",
-                    "phase": "setup",
-                    "state": "failed" if setup_failed else "ok",
-                    "run": run_dir.name,
-                    "run_dir": str(run_dir),
-                    "kind": str(manifest.get("kind") or ""),
-                    "groups": len(setup_groups),
-                    "groups_failed": setup_failed,
-                },
-                wait=False,
-            )
         ready_worker_items = [
             (int(item["index"]), workers[int(item["index"])])
             for item in setup_results_list
@@ -2803,9 +2709,8 @@ def run_control_command_args(name: str, args: argparse.Namespace) -> list[str]:
         command.append("--newline-between")
     if getattr(args, "notify_command", None):
         command.extend(["--notify-command", str(args.notify_command)])
-    task_complete_command = getattr(args, "task_complete_command", None) or getattr(args, "notify_command", None) or default_task_complete_command()
-    if task_complete_command:
-        command.extend(["--task-complete-command", str(task_complete_command)])
+    if getattr(args, "task_complete_command", None):
+        command.extend(["--task-complete-command", str(args.task_complete_command)])
     if bool(getattr(args, "task_complete_sync", False)):
         command.append("--task-complete-sync")
     if bool(getattr(args, "no_color", False)):
@@ -2830,15 +2735,9 @@ def interruptible_coordinator_command(
         "signal.signal(signal.SIGINT, signal.SIG_DFL); "
         "os.execvp(sys.argv[1], sys.argv[1:])"
     )
-    env_assignments = [
-        f"{shlex.quote(COORDINATOR_RUNS_ENV)}=",
-        f"{shlex.quote(RUNS_DIR_ENV)}={shlex.quote(runs_path)}",
-    ]
-    hook_events = os.environ.get("HOOK_EVENTS", "")
-    if hook_events:
-        env_assignments.append(f"HOOK_EVENTS={shlex.quote(hook_events)}")
     child = (
-        f"exec env {' '.join(env_assignments)} "
+        f"exec env {shlex.quote(COORDINATOR_RUNS_ENV)}= "
+        f"{shlex.quote(RUNS_DIR_ENV)}={shlex.quote(runs_path)} "
         f"python3 -c {shlex.quote(reset_sigint_exec)} forge {shell_join(command)}"
     )
     remote = (
@@ -2946,9 +2845,8 @@ def append_deploy_options(command: list[str], args: argparse.Namespace, *, coord
     command.extend(["--remote-timeout-seconds", str(args.remote_timeout_seconds)])
     if getattr(args, "notify_command", None):
         command.extend(["--notify-command", str(args.notify_command)])
-    task_complete_command = getattr(args, "task_complete_command", None) or getattr(args, "notify_command", None) or default_task_complete_command()
-    if task_complete_command:
-        command.extend(["--task-complete-command", str(task_complete_command)])
+    if getattr(args, "task_complete_command", None):
+        command.extend(["--task-complete-command", str(args.task_complete_command)])
 
 def append_start_options(command: list[str], args: argparse.Namespace, *, coordinator_host: str) -> None:
     append_deploy_options(command, args, coordinator_host=coordinator_host)
@@ -3103,9 +3001,8 @@ def worker_control_command_args(action: str, args: argparse.Namespace) -> list[s
             command.append("--newline-between")
         if getattr(args, "notify_command", None):
             command.extend(["--notify-command", str(args.notify_command)])
-        task_complete_command = getattr(args, "task_complete_command", None) or getattr(args, "notify_command", None) or default_task_complete_command()
-        if task_complete_command:
-            command.extend(["--task-complete-command", str(task_complete_command)])
+        if getattr(args, "task_complete_command", None):
+            command.extend(["--task-complete-command", str(args.task_complete_command)])
         if bool(getattr(args, "task_complete_sync", False)):
             command.append("--task-complete-sync")
         if bool(getattr(args, "no_color", False)):
@@ -3278,7 +3175,7 @@ def run_local_job(args: argparse.Namespace) -> int:
         retry_failed=args.retry_failed,
         task_attempts=getattr(args, "task_attempts", 2),
         notify_command=args.notify_command,
-        task_complete_command=getattr(args, "task_complete_command", None) or getattr(args, "notify_command", None) or default_task_complete_command(),
+        task_complete_command=getattr(args, "task_complete_command", None),
         task_complete_sync=bool(getattr(args, "task_complete_sync", False)),
         lease_seconds=args.lease_seconds,
         interval_seconds=args.interval_seconds,
@@ -3416,9 +3313,10 @@ def run_active_task_count(manifest: dict[str, Any], *, lease_seconds: int) -> in
         return 0
 
 def run_active_worker_task_count(manifest: dict[str, Any], worker: str, *, lease_seconds: int) -> int:
+    states = fast_task_states(manifest, lease_seconds=lease_seconds)
     count = 0
     for task in manifest.get("tasks") or []:
-        state = task_state(manifest, task, lease_seconds=lease_seconds)
+        state = states.get(str(task["id"]), "pending")
         if state not in {"claimed", "running", "stale"}:
             continue
         if status_worker(manifest, task, state) == worker:
@@ -3426,22 +3324,8 @@ def run_active_worker_task_count(manifest: dict[str, Any], worker: str, *, lease
     return count
 
 def run_pending_task_count(manifest: dict[str, Any], *, lease_seconds: int) -> int:
-    return sum(
-        task_state(manifest, task, lease_seconds=lease_seconds) == "pending"
-        for task in manifest.get("tasks") or []
-    )
-
-def run_active_worker_process_count(manifest: dict[str, Any], worker: str, *, pending: int) -> int:
-    """Count live worker processes for a host (running/idle/starved/claimed),
-    not just tasks currently claimed. A worker between claims still holds its
-    slot, so counting claims alone undercounts and causes worker set to pile
-    duplicate processes on top of already-running ones."""
-    rows = worker_process_status_rows(manifest, pending=pending)
-    return sum(
-        1
-        for row in rows
-        if str(row.get("worker") or "") == worker and str(row.get("state") or "") != "stale"
-    )
+    states = fast_task_states(manifest, lease_seconds=lease_seconds)
+    return sum(states.get(str(task["id"]), "pending") == "pending" for task in manifest.get("tasks") or [])
 
 def clear_worker_drains(
     manifest: dict[str, Any],
@@ -3459,29 +3343,6 @@ def clear_worker_drains(
         cleared += 1
         print(f"{label}: cleared drain for {run_name} {host}")
     return cleared
-
-def release_worker_id_claims(
-    manifest: dict[str, Any],
-    *,
-    worker_ids: set[str],
-    lease_seconds: int,
-) -> list[str]:
-    """Like release_worker_claims, but scoped to specific worker_ids rather
-    than a whole host -- used when scaling a host down to fewer slots."""
-    from .tasks import release_claim, task_state
-
-    released: list[str] = []
-    if not worker_ids:
-        return released
-    for task in sorted(manifest["tasks"], key=lambda item: int(item.get("index", 0))):
-        state = task_state(manifest, task, lease_seconds=lease_seconds)
-        if state not in {"claimed", "running", "stale"}:
-            continue
-        if status_worker_id(manifest, task, state) not in worker_ids:
-            continue
-        release_claim(manifest, task)
-        released.append(str(task["id"]))
-    return released
 
 def cmd_worker_set(args: argparse.Namespace) -> int:
     coordinator_runs = configured_coordinator_runs()
@@ -3501,12 +3362,12 @@ def cmd_worker_set(args: argparse.Namespace) -> int:
         next_payload = set_worker_payload_slots(current_payload, set_worker)
         delta = desired_slots - current_slots
         manifest = load_manifest(manifest_path)
-        pending_tasks = run_pending_task_count(manifest, lease_seconds=int(args.lease_seconds))
-        active_slots = run_active_worker_process_count(
+        active_slots = run_active_worker_task_count(
             manifest,
             host,
-            pending=pending_tasks,
+            lease_seconds=int(args.lease_seconds),
         )
+        pending_tasks = run_pending_task_count(manifest, lease_seconds=int(args.lease_seconds))
         launch_slots = max(0, desired_slots - active_slots) if pending_tasks else 0
 
         if launch_slots > 0:
@@ -3542,7 +3403,7 @@ def cmd_worker_set(args: argparse.Namespace) -> int:
                 merge_force=args.merge_force,
                 newline_between=args.newline_between,
                 notify_command=args.notify_command,
-                task_complete_command=getattr(args, "task_complete_command", None) or getattr(args, "notify_command", None) or default_task_complete_command(),
+                task_complete_command=getattr(args, "task_complete_command", None),
                 task_complete_sync=bool(getattr(args, "task_complete_sync", False)),
                 no_color=args.no_color,
                 verbose=args.verbose,
@@ -3559,7 +3420,13 @@ def cmd_worker_set(args: argparse.Namespace) -> int:
             print(f"worker set: {run_name} {host} slots={desired_slots} unchanged")
             continue
 
-        release_count = max(0, active_slots - desired_slots)
+        release_count = 0 if desired_slots <= 0 else max(0, active_slots - desired_slots)
+        released = release_worker_claims(
+            manifest,
+            worker=host,
+            count=release_count,
+            lease_seconds=args.lease_seconds,
+        )
         if desired_slots <= 0:
             drain_dir(manifest).mkdir(parents=True, exist_ok=True)
             write_json(worker_drain_path(manifest, host), {
@@ -3570,37 +3437,7 @@ def cmd_worker_set(args: argparse.Namespace) -> int:
                 "requested_epoch": epoch(),
                 "host": socket.gethostname(),
             })
-        # Killing claims (release_worker_claims) only ever unclaims tasks
-        # that haven't started running yet, and does nothing to the worker
-        # processes themselves -- they just loop around and claim something
-        # else. Actually shrinking the worker count means killing the excess
-        # processes directly, the same way `forge stop` does for a whole run.
-        excess_worker_ids = []
-        if release_count > 0:
-            rows = worker_process_status_rows(manifest, pending=pending_tasks)
-            host_worker_ids = sorted(
-                {
-                    str(row["worker_id"])
-                    for row in rows
-                    if str(row.get("worker") or "") == host
-                    and str(row.get("state") or "") != "stale"
-                },
-                key=worker_process_sort_key,
-                reverse=True,
-            )
-            excess_worker_ids = host_worker_ids[:release_count]
-        killed = kill_worker_id_processes(set_worker, run_name, excess_worker_ids)
-        released = release_worker_id_claims(
-            manifest,
-            worker_ids=set(excess_worker_ids),
-            lease_seconds=args.lease_seconds,
-        )
-        message = f"worker set: {run_name} {host} slots={current_slots}->{desired_slots}"
-        if released:
-            message += f" released={len(released)}"
-        if killed:
-            message += f" killed={killed}"
-        print(message)
+        print(f"worker set: {run_name} {host} slots={current_slots}->{desired_slots} released={len(released)}")
     return 1 if failed else 0
 
 def cmd_resume(args: argparse.Namespace) -> int:
@@ -3643,7 +3480,7 @@ def cmd_resume(args: argparse.Namespace) -> int:
             merge_force=args.merge_force,
             newline_between=args.newline_between,
             notify_command=args.notify_command,
-            task_complete_command=getattr(args, "task_complete_command", None) or getattr(args, "notify_command", None) or default_task_complete_command(),
+            task_complete_command=getattr(args, "task_complete_command", None),
             task_complete_sync=bool(getattr(args, "task_complete_sync", False)),
             no_color=args.no_color,
             verbose=args.verbose,
@@ -3807,7 +3644,7 @@ def cmd_retry(args: argparse.Namespace) -> int:
             merge_force=args.merge_force,
             newline_between=args.newline_between,
             notify_command=args.notify_command,
-            task_complete_command=getattr(args, "task_complete_command", None) or getattr(args, "notify_command", None) or default_task_complete_command(),
+            task_complete_command=getattr(args, "task_complete_command", None),
             task_complete_sync=bool(getattr(args, "task_complete_sync", False)),
             no_color=args.no_color,
             verbose=args.verbose,

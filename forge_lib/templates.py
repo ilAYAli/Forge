@@ -273,6 +273,22 @@ def template_parameter_placeholder(name: str, spec: dict[str, Any]) -> str:
     return name.upper()
 
 
+def template_choice_summary(spec: dict[str, Any]) -> str:
+    """Render a choices parameter as `a|b|c` plus how it is supplied.
+
+    A repeatable stage list defaults to `[]`, which says nothing useful, so
+    only scalar defaults are shown; the help line carries the rest.
+    """
+    summary = "|".join(str(choice) for choice in spec.get("choices", []))
+    notes = []
+    if bool(spec.get("repeatable")):
+        notes.append("repeatable")
+    default = spec.get("default")
+    if default not in (None, "", [], {}):
+        notes.append(f"default: {default}")
+    return f"{summary} ({', '.join(notes)})" if notes else summary
+
+
 def cmd_template(args: argparse.Namespace) -> int:
     if args.action == "list":
         paths = template_files()
@@ -299,6 +315,11 @@ def cmd_template(args: argparse.Namespace) -> int:
                 for name, spec in parameter_items
                 if isinstance(spec, dict) and bool(spec.get("required", False))
             ]
+            constrained = [
+                (str(name), spec)
+                for name, spec in parameter_items
+                if isinstance(spec, dict) and isinstance(spec.get("choices"), list) and spec["choices"]
+            ]
             if visible_index:
                 print()
             print(display_name)
@@ -322,6 +343,13 @@ def cmd_template(args: argparse.Namespace) -> int:
                     print(f"    {template_arg_name(name)} {placeholder}")
             else:
                 print("    none")
+            if constrained:
+                print("  choices:")
+                for name, spec in constrained:
+                    print(f"    {template_arg_name(name)} {template_choice_summary(spec)}")
+                    help_text = str(spec.get("help") or "").strip()
+                    if help_text:
+                        print(f"      {help_text}")
             visible_index += 1
         return 0
     if args.action == "show":
