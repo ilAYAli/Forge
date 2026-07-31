@@ -15769,6 +15769,37 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
                 stats["weighted_score"] / stats["weight_total"]
             ), places=6)
 
+    def test_label_pgn_source_includes_score_package_for_relabel_import(self) -> None:
+        from forge_lib.source_artifacts import _source_files
+
+        template = forge.load_template(ROOT / "templates" / "label-pgn.template.json")
+        spec = template["parameters"]["nnue_repo"]
+        # tools/bullet/selfplay_to_bullet_sf_oracle.py spawns
+        # tools/posgen/relabel_with_stockfish.py, which imports label_with_uci
+        # out of tools/score. Only the included subset reaches the worker, so a
+        # gap anywhere in that chain is a ModuleNotFoundError per task.
+        chain = [
+            "tools/bullet/selfplay_to_bullet_sf_oracle.py",
+            "tools/posgen/relabel_with_stockfish.py",
+            "tools/score/label_with_uci.py",
+            "tools/lib/bullet_format.py",
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for relative in [*chain, "tools/score/__pycache__/label_with_uci.pyc"]:
+                path = root / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("", encoding="utf-8")
+
+            selected = {
+                path.relative_to(root).as_posix()
+                for path in _source_files(root, include=spec["include"], exclude=spec["exclude"])
+            }
+
+        for relative in chain:
+            self.assertIn(relative, selected)
+        self.assertNotIn("tools/score/__pycache__/label_with_uci.pyc", selected)
+
     def test_sprt_finished_progress_cache_replays_and_reparses_on_rerun(self) -> None:
         template = forge.load_template(ROOT / "templates" / "sprt.template.json")
         progress = template["task"]["progress"]

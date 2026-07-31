@@ -48,7 +48,7 @@
     "nnue_repo": {
       "type": "source",
       "default": "nnue",
-      "include": ["tools/bullet/*.py", "tools/posgen/**", "tools/lib/**", "tools/tests/test_selfplay_to_bullet.py", "tools/tests/test_selfplay_to_bullet_sf_oracle.py"],
+      "include": ["tools/bullet/*.py", "tools/posgen/**", "tools/score/**", "tools/lib/**", "tools/tests/test_selfplay_to_bullet.py", "tools/tests/test_selfplay_to_bullet_sf_oracle.py"],
       "exclude": ["**/__pycache__/**", "**/.venv/**", "**/target/**"],
       "output": "~/.cache/forge/sources/nnue-{digest12}",
       "help": "Configured source alias or directory containing the converter"
