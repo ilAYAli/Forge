@@ -1183,7 +1183,19 @@ def summary_progress(summary: dict[str, Any]) -> str:
             done = min(total_work, int(done_work) + active_done)
             text = f"{unit}={compact_count(done)}/{compact_count(total_work)}"
             cumulative_rate = run_cumulative_rate(summary, float(done))
-            eta_rate = cumulative_rate if cumulative_rate is not None else bucket["rate"]
+            # Prefer a trailing-window rate over the run's lifetime average,
+            # which stays skewed for a long time by any past downtime
+            # (crashes, stalls, idle periods) even after the run has fully
+            # recovered. Fall back to the lifetime average (not the raw
+            # active-worker rate) so a single noisy fresh shard can't
+            # dominate the ETA.
+            recent_rate = summary.get("recent_rate")
+            if isinstance(recent_rate, (int, float)) and recent_rate > 0:
+                eta_rate = recent_rate
+            elif cumulative_rate is not None:
+                eta_rate = cumulative_rate
+            else:
+                eta_rate = bucket["rate"]
             if eta_rate > 0:
                 append_aggregate_eta(done, total_work, eta_rate, bucket["etas"])
             elif waiting_count == 0 and bucket["etas"]:
@@ -3303,6 +3315,36 @@ def load_progress_history(manifest: dict[str, Any]) -> list[dict[str, Any]]:
     entries.sort(key=lambda entry: (float(entry["x"]), float(entry.get("epoch") or 0.0)))
     return entries
 
+def run_recent_rate(manifest: dict[str, Any], *, window_seconds: float = 60.0) -> float | None:
+    """Throughput over the trailing window, not the run's full lifetime.
+
+    A run's cumulative average stays skewed by past downtime (crashes,
+    stalls, idle periods) long after it has recovered; this instead looks
+    at recent progress-history samples so the ETA reflects current pace.
+    """
+    history = load_progress_history(manifest)
+    if len(history) < 2:
+        return None
+    latest = history[-1]
+    latest_epoch = float(latest.get("epoch") or 0.0)
+    if latest_epoch <= 0:
+        return None
+    cutoff = latest_epoch - window_seconds
+    baseline = history[0]
+    for entry in history:
+        entry_epoch = float(entry.get("epoch") or 0.0)
+        if entry_epoch <= cutoff:
+            baseline = entry
+        else:
+            break
+    elapsed = latest_epoch - float(baseline.get("epoch") or 0.0)
+    if elapsed <= 0:
+        return None
+    delta = float(latest["x"]) - float(baseline["x"])
+    if delta < 0:
+        return None
+    return delta / elapsed
+
 def progress_graph_snapshot(graph: dict[str, Any] | None) -> dict[str, Any] | None:
     if not isinstance(graph, dict):
         return None
@@ -3370,6 +3412,41 @@ def append_progress_history(
     history.append(entry)
     return history
 
+def selfplay_windowed_rate_series(
+    history: list[dict[str, Any]], *, window_seconds: float = 60.0
+) -> list[float | None]:
+    """Trailing-window games/s for each history entry, aligned by index.
+
+    Point-to-point deltas between adjacent snapshots are noisy: if two polls
+    land close together, a couple of finished games swing the instantaneous
+    rate wildly (0 one moment, a spike the next). Averaging over a trailing
+    window instead smooths that out while still tracking recent pace.
+    """
+    rates: list[float | None] = [None] * len(history)
+    baseline_idx = 0
+    for i, entry in enumerate(history):
+        epoch_i = parse_float(entry.get("epoch"))
+        x_i = parse_float(entry.get("x"))
+        if epoch_i is None or x_i is None:
+            continue
+        cutoff = epoch_i - window_seconds
+        while baseline_idx + 1 <= i:
+            next_epoch = parse_float(history[baseline_idx + 1].get("epoch"))
+            if next_epoch is not None and next_epoch <= cutoff:
+                baseline_idx += 1
+            else:
+                break
+        baseline = history[baseline_idx]
+        baseline_epoch = parse_float(baseline.get("epoch"))
+        baseline_x = parse_float(baseline.get("x"))
+        if baseline_epoch is None or baseline_x is None:
+            continue
+        elapsed = epoch_i - baseline_epoch
+        if elapsed > 0 and x_i > baseline_x:
+            rates[i] = (x_i - baseline_x) / elapsed
+    return rates
+
+
 def progress_graph_from_history(
     history: list[dict[str, Any]],
     fallback_graph: dict[str, Any] | None,
@@ -3395,7 +3472,7 @@ def progress_graph_from_history(
         isinstance(fallback_graph, dict) and isinstance(fallback_graph.get("selfplay"), dict)
     )
     current_max_x: float | None = None
-    previous_selfplay_sample: tuple[float, float] | None = None
+    windowed_rates = selfplay_windowed_rate_series(history) if is_selfplay else []
     if isinstance(fallback_graph, dict):
         raw_fallback_series = fallback_graph.get("series")
         if isinstance(raw_fallback_series, list):
@@ -3421,7 +3498,7 @@ def progress_graph_from_history(
                 name = str(item.get("name") or "").strip()
                 if name:
                     options_by_name[name] = progress_series_options(item)
-    for entry in history:
+    for history_index, entry in enumerate(history):
         x = parse_float(entry.get("x"))
         if x is None:
             continue
@@ -3436,15 +3513,7 @@ def progress_graph_from_history(
         if is_selfplay and current_max_x is not None and x > current_max_x:
             continue
         if is_selfplay and selfplay_rate_graph:
-            epoch = parse_float(entry.get("epoch"))
-            measured_rate: float | None = None
-            if epoch is not None and previous_selfplay_sample is not None:
-                previous_x, previous_epoch = previous_selfplay_sample
-                elapsed = epoch - previous_epoch
-                if elapsed > 0 and x > previous_x:
-                    measured_rate = (x - previous_x) / elapsed
-            if epoch is not None:
-                previous_selfplay_sample = (x, epoch)
+            measured_rate = windowed_rates[history_index]
             series = {"games/s": measured_rate} if measured_rate is not None else {}
         elif is_selfplay and "games/s" in series:
             series = {"games/s": series["games/s"]}
@@ -4208,6 +4277,7 @@ def status_summary(manifest: dict[str, Any], *, lease_seconds: int) -> dict[str,
         progress_unit_totals,
     )
     progress_graph = run_progress_history_graph(manifest, current_progress_graph)
+    recent_rate = run_recent_rate(manifest)
     worker_processes = worker_process_status_rows(
         manifest,
         pending=counts["pending"],
@@ -4215,6 +4285,7 @@ def status_summary(manifest: dict[str, Any], *, lease_seconds: int) -> dict[str,
 
     return {
         "tasks": len(manifest["tasks"]),
+        "recent_rate": recent_rate,
         "counts": counts,
         "active_count": counts["running"] + counts["claimed"] + counts["stale"],
         "groups": groups,

@@ -6182,9 +6182,13 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
 
         self.assertIsNotNone(graph)
         series = {item["name"]: item["points"] for item in graph["series"]}
+        # Rate is averaged over a trailing window (not point-to-point between
+        # adjacent samples), so both points are measured against the first
+        # sample here since neither later sample is 60s+ older than the one
+        # before it.
         self.assertEqual([
             {"x": 1376.0, "y": 240 / 31},
-            {"x": 1536.0, "y": 8.0},
+            {"x": 1536.0, "y": 400 / 51},
         ], series["games/s"])
 
     def test_selfplay_history_ignores_projected_endpoints(self) -> None:
