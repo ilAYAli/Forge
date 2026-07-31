@@ -33,7 +33,7 @@
     },
     "chunk_time_seconds": {
       "type": "int",
-      "default": 300,
+      "default": 60,
       "help": "Target wall-clock seconds per shard when auto-sizing selfplay chunks"
     },
     "book": {
