@@ -4531,6 +4531,37 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
         self.assertIn("-pgnout file=\"{output_dir}/selfplay_0000.pgn\" notation=uci", command)
         self.assertIn("Games:", manifest["tasks"][0]["progress"]["log_regex"])
 
+    def test_selfplay_split_never_emits_odd_or_empty_game_shards(self) -> None:
+        from forge_lib.templates import split_total_by_count
+
+        for total in range(2, 65, 2):
+            for count in range(1, 65):
+                shards = split_total_by_count(total, count, unit="games")
+                self.assertEqual(total, sum(shards), (total, count))
+                self.assertTrue(all(games >= 2 for games in shards), (total, count, shards))
+                self.assertTrue(all(games % 2 == 0 for games in shards), (total, count, shards))
+
+    def test_selfplay_template_rechunk_to_more_shards_than_pairs(self) -> None:
+        template_path = ROOT / "templates" / "selfplay.template.json"
+        template = forge.load_template(template_path)
+        params = forge.parse_selfplay_template_parameters(
+            "selfplay",
+            template,
+            [
+                "--engine", "~/assets/engines/enyo_9696dac",
+                "--book", "~/assets/books/openings.epd",
+                "--games", "6",
+                "--shards", "4",
+                "--uci", "nnue_file=~/code/chess/enyo/net/default.nn",
+            ],
+        )
+        manifest = forge.expand_template("selfplay", template_path, template, params)
+
+        self.assertEqual(3, len(manifest["tasks"]))
+        self.assertEqual([2, 2, 2], [task["progress"]["total"] for task in manifest["tasks"]])
+        for task in manifest["tasks"]:
+            self.assertIn("-rounds 1 -games 2", task["command"])
+
     def test_selfplay_conversion_templates_define_throughput_graph(self) -> None:
         for name in ("selfplay-to-bullet", "label-pgn"):
             template = forge.load_template(ROOT / "templates" / f"{name}.template.json")

@@ -911,17 +911,17 @@ def template_value(value: Any, values: dict[str, Any]) -> Any:
 def split_total_by_count(total: int, count: int, *, unit: str | None) -> list[int]:
     if count <= 0:
         raise SystemExit("task.split.count must be positive")
-    count = min(count, total)
-    if unit == "games" and total % 2 == 0 and count * 2 <= total:
-        base = (total // count) // 2 * 2
-        shards = [base for _ in range(count)]
-        remaining = total - base * count
-        index = 0
-        while remaining > 0:
-            shards[index] += 2
-            remaining -= 2
-            index = (index + 1) % count
+    if unit == "games" and total >= 2:
+        # Games are played in color-swapped pairs, so every shard must hold an
+        # even count: fastchess rejects the odd remainder as -rounds 0.
+        pairs = total // 2
+        count = min(count, pairs)
+        base, extra = divmod(pairs, count)
+        shards = [2 * (base + (1 if index < extra else 0)) for index in range(count)]
+        if total % 2:
+            shards[0] += 1
         return shards
+    count = min(count, total)
     base = total // count
     extra = total % count
     return [base + (1 if index < extra else 0) for index in range(count)]
