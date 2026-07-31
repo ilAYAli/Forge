@@ -811,7 +811,7 @@ except SystemExit as exc:
         self.assertIn("function hasTextSelection", web._HTML)
         self.assertIn("if (hasTextSelection()) return;", web._HTML)
         self.assertIn("function shouldDeferRefreshForSelection", web._HTML)
-        self.assertIn("return selectionGesture || hasTextSelection();", web._HTML)
+        self.assertIn("const deferring = selectionGesture || hasTextSelection();", web._HTML)
         self.assertIn("if (shouldDeferRefreshForSelection()) return;", web._HTML)
         self.assertIn("lastFetchTime == null || shouldDeferRefreshForSelection()", web._HTML)
         self.assertIn("event.target.closest('#runs')", web._HTML)
@@ -1955,7 +1955,7 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
 
     def test_notify_expands_tilde_executable(self) -> None:
         home = Path.home()
-        script = home / "code" / "cpp" / "chess" / "forge" / "scripts" / "forge_event_ntfy.sh"
+        script = home / "code" / "chess" / "forge" / "scripts" / "forge_event_ntfy.sh"
         with mock.patch("forge_lib.status.subprocess.run", return_value=subprocess.CompletedProcess([], 0, "", "")) as run:
             rc = forge.run_notify_command("~/code/chess/forge/scripts/forge_event_ntfy.sh", {"event": "done"})
 
