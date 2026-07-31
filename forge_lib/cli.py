@@ -352,7 +352,7 @@ def build_parser() -> argparse.ArgumentParser:
             "Examples:\n"
             "  forge \"pwd\"\n"
             "  forge sh \"cd ~/repo; git pull; cmake --build build\"\n"
-            "  forge sh --workers pwa-5090,pwa-mbp \"hostname && git --version\""
+            "  forge sh --workers pwa-llm,pwa-mbp \"hostname && git --version\""
         ),
     )
     shell.add_argument("command", nargs="+", help="Shell command and arguments run on each host.")
