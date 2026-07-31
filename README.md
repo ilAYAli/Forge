@@ -14,8 +14,8 @@ connect out through SSH/rsync; no daemon or database is required.
 ## Install
 
 ```sh
-git clone git@github.com:ilAYAli/Forge.git ~/code/cpp/chess/forge
-ln -s ~/code/cpp/chess/forge/forge.py ~/.local/bin/forge
+git clone git@github.com:ilAYAli/Forge.git ~/code/chess/forge
+ln -s ~/code/chess/forge/forge.py ~/.local/bin/forge
 ```
 
 
@@ -23,7 +23,7 @@ example config:
 ~/.config/forge/config.yml
 ```
 coordinator_host: "worker1"
-notify_command: "/home/petter/code/cpp/chess/forge/scripts/forge_event_ntfy.sh"
+notify_command: "/home/petter/code/chess/forge/scripts/forge_event_ntfy.sh"
 template_dirs:
   - "~/.config/forge/templates"
 ```
@@ -61,9 +61,9 @@ The name of the respective workers should likely be a hostname rather than worke
 ```sh
 forge --help
 forge "cd ~/repo; git pull; cmake --build build"
-forge sync ~/code/cpp/chess/enyo/net/default.net
+forge sync ~/code/chess/enyo/net/default.net
 forge sync /tmp/foo ~/bar
-forge sync "$PWD/.codex/agents" ~/code/cpp/chess/nnue/
+forge sync "$PWD/.codex/agents" ~/code/chess/nnue/
 forge start manifest.json --workers worker1,worker2:4
 forge stop my-run
 forge resume my-run
@@ -82,7 +82,7 @@ synchronizes them to each selected worker host. When `DESTINATION` is omitted,
 Forge uses the equivalent source path on each worker; paths beneath the
 coordinator's home use each worker's own `~/`. A trailing `/` on a directory
 destination places the source directory beneath it; the example above writes to
-`~/code/cpp/chess/nnue/agents/`. Files whose destination already has the matching
+`~/code/chess/nnue/agents/`. Files whose destination already has the matching
 size and SHA-256 are skipped. Extra destination files are not deleted.
 
 ## One-Shot Shell Commands

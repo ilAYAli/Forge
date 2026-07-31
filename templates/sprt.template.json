@@ -234,7 +234,7 @@
     "command": "~/.cache/forge/tools/sprt/a99f574a670e30f3e0699fae891c679de6db5560/sprt --candidate-uci Hash={hash} --candidate-uci nnue_file={candidate_net_shell} --reference-uci Hash={hash} --reference-uci nnue_file={reference_net_shell} {sprt_args} --games {shard} --srand {seed} --book-offset {book_offset} --fastchess ~/.cache/forge/tools/fastchess/3de44228aec904e688a4ad71c554eb9d461a5a2a/fastchess --log-dir {output_dir}/{task_name}/logs --name {task_name} --no-ntfy --no-eta",
     "progress": {
       "unit": "games",
-      "log_regex": "\\[\\s*(?P<done>\\d+)\\/(?P<total>\\d+)\\].*?Elo\\s+(?P<elo>[-+]?(?:\\d+(?:\\.\\d+)?|inf|nan))\\s+\\+/-\\s+(?P<ci>[-+]?(?:\\d+(?:\\.\\d+)?|inf|nan))\\s+\\|\\s+LLR\\s+(?P<llr>[+-]?\\d+(?:\\.\\d+)?/[+-]?(?:\\d+(?:\\.\\d+)?|inf|nan)\\s+\\(\\s*[+-]?\\d+(?:\\.\\d+)?%\\))\\s+\\|\\s+LOS\\s+(?P<los>[-+]?(?:\\d+(?:\\.\\d+)?|inf|nan))%(?:\\s+\\|\\s+WDL\\s+(?P<wdl>\\d+/\\d+/\\d+)\\s+\\|\\s+Ptnml\\s+(?P<pentanomial>\\d+-\\d+-\\d+-\\d+-\\d+))?\\s+\\|\\s+draw\\s+(?P<draw>[-+]?(?:\\d+(?:\\.\\d+)?|inf|nan))%(?:.*?ETA\\s+(?P<eta>\\S+))?",
+      "log_regex": "Finished game (?P<done>\\d+)",
       "series": [
         {
           "name": "llr",

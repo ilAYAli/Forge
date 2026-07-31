@@ -1957,7 +1957,7 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
         home = Path.home()
         script = home / "code" / "cpp" / "chess" / "forge" / "scripts" / "forge_event_ntfy.sh"
         with mock.patch("forge_lib.status.subprocess.run", return_value=subprocess.CompletedProcess([], 0, "", "")) as run:
-            rc = forge.run_notify_command("~/code/cpp/chess/forge/scripts/forge_event_ntfy.sh", {"event": "done"})
+            rc = forge.run_notify_command("~/code/chess/forge/scripts/forge_event_ntfy.sh", {"event": "done"})
 
         self.assertEqual(0, rc)
         self.assertEqual([str(script)], run.call_args.args[0])
@@ -2037,7 +2037,7 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
             }
 
             with self.patch_runs_dir(runs), mock.patch("forge_lib.web.runs_dir", return_value=runs):
-                web.remember_web_run_payload(payload, coordinator_runs="pwa-5090:/home/petter/code/cpp/chess/forge/runs")
+                web.remember_web_run_payload(payload, coordinator_runs="pwa-5090:/home/petter/code/chess/forge/runs")
                 state = web._read_web_state()
 
             self.assertEqual({}, state)
@@ -4075,7 +4075,7 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
     def test_sprt_template_rejects_candidate_directory(self) -> None:
         template_path = ROOT / "templates" / "sprt.template.json"
         template = forge.load_template(template_path)
-        project = Path.home() / "code/cpp/chess/enyo"
+        project = Path.home() / "code/chess/enyo"
         with (
             mock.patch.dict(os.environ, {"PWD": str(project)}, clear=False),
             mock.patch("pathlib.Path.is_dir", lambda path: str(path) == str(project)),
@@ -4388,8 +4388,8 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
             [
                 "--candidate", "~/assets/engines/enyo_9696dac",
                 "--reference", "~/assets/engines/reference",
-                "--candidate-net", "~/code/cpp/chess/enyo/net/candidate.nn",
-                "--reference-net", "~/code/cpp/chess/enyo/net/reference.nn",
+                "--candidate-net", "~/code/chess/enyo/net/candidate.nn",
+                "--reference-net", "~/code/chess/enyo/net/reference.nn",
                 "--games", "50",
                 "--shards", "1",
                 "--candidate-uci", "Hash=256",
@@ -4398,12 +4398,12 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
         manifest = forge.expand_template("sprt", template_path, template, params)
         command = manifest["tasks"][0]["command"]
 
-        self.assertIn("--candidate-uci nnue_file=~/code/cpp/chess/enyo/net/candidate.nn", command)
+        self.assertIn("--candidate-uci nnue_file=~/code/chess/enyo/net/candidate.nn", command)
         self.assertIn("--candidate-uci Hash=128", command)
         self.assertIn("--reference-uci Hash=128", command)
         self.assertIn("--candidate-uci Hash=256", command)
         self.assertLess(command.index("--candidate-uci Hash=128"), command.index("--candidate-uci Hash=256"))
-        self.assertIn("--reference-uci nnue_file=~/code/cpp/chess/enyo/net/reference.nn", command)
+        self.assertIn("--reference-uci nnue_file=~/code/chess/enyo/net/reference.nn", command)
 
     def test_sprt_template_hash_override_applies_to_both_engines(self) -> None:
         template_path = ROOT / "templates" / "sprt.template.json"
@@ -4511,7 +4511,7 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
                 "--book", "~/assets/books/openings.epd",
                 "--games", "64",
                 "--shards", "4",
-                "--uci", "nnue_file=~/code/cpp/chess/enyo/net/default.nn",
+                "--uci", "nnue_file=~/code/chess/enyo/net/default.nn",
                 "--hash", "64",
                 "--threads", "2",
                 "--tc", "5+0.05",
@@ -4527,7 +4527,7 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
         self.assertIn("-rounds 8 -games 2", command)
         self.assertIn("option.Hash=64", command)
         self.assertIn("option.Threads=2", command)
-        self.assertIn('option.nnue_file="$HOME/code/cpp/chess/enyo/net/default.nn"', command)
+        self.assertIn('option.nnue_file="$HOME/code/chess/enyo/net/default.nn"', command)
         self.assertIn("-pgnout file=\"{output_dir}/selfplay_0000.pgn\" notation=uci", command)
         self.assertIn("Games:", manifest["tasks"][0]["progress"]["log_regex"])
 
@@ -5239,7 +5239,7 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
                     "--workers", "pwa-mbp:4,pwa-mbp0:5,pwa-5090:6",
                     "--engine", "~/assets/engines/enyo_9696dac",
                     "--games", "64",
-                    "--uci", "nnue_file=~/code/cpp/chess/enyo/net/default.nn",
+                    "--uci", "nnue_file=~/code/chess/enyo/net/default.nn",
                 ],
             ))
         manifest = json.loads(stdout.getvalue())
@@ -5264,7 +5264,7 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
                     "--engine", "~/assets/engines/enyo_9696dac",
                     "--games", "600",
                     "--chunk-time-seconds", "120",
-                    "--uci", "nnue_file=~/code/cpp/chess/enyo/net/default.nn",
+                    "--uci", "nnue_file=~/code/chess/enyo/net/default.nn",
                 ],
             )
             write_chunk_history(cache_path, ({
@@ -5284,7 +5284,7 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
                             "--engine", "~/assets/engines/enyo_9696dac",
                             "--games", "600",
                             "--chunk-time-seconds", "120",
-                            "--uci", "nnue_file=~/code/cpp/chess/enyo/net/default.nn",
+                            "--uci", "nnue_file=~/code/chess/enyo/net/default.nn",
                         ],
                     ))
             manifest = json.loads(stdout.getvalue())
@@ -6342,7 +6342,7 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
                     self.assertIn('git -C "$repo" worktree add --detach', command)
                     self.assertIn('git -C "$repo" worktree remove --force', command)
                     self.assertNotIn("checkout -f", command)
-                    self.assertNotIn("cd ~/code/cpp/chess/enyo", command)
+                    self.assertNotIn("cd ~/code/chess/enyo", command)
                     syntax = subprocess.run(
                         ["sh", "-n", "-c", command],
                         text=True,
@@ -6452,7 +6452,7 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
         ):
             shell = parser.parse_args(["pwd"])
             quoted_shell = parser.parse_args(["sprt foo bar"])
-            copied_path = str(Path.home() / "code/cpp/chess/enyo/net/berserk-9b84c340af7e.nn")
+            copied_path = str(Path.home() / "code/chess/enyo/net/berserk-9b84c340af7e.nn")
             copy_shell = parser.parse_args(["cp", copied_path])
             explicit_copy_shell = parser.parse_args(["sh", "cp", copied_path])
             builtin_template = parser.parse_args(["sprt", "--games", "10"])
@@ -6462,7 +6462,7 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
         self.assertEqual("pwd", shell.command)
         self.assertEqual("sh", quoted_shell.subcommand)
         self.assertEqual("sprt foo bar", quoted_shell.command)
-        self.assertEqual("cp ~/code/cpp/chess/enyo/net/berserk-9b84c340af7e.nn", copy_shell.command)
+        self.assertEqual("cp ~/code/chess/enyo/net/berserk-9b84c340af7e.nn", copy_shell.command)
         self.assertEqual(copy_shell.command, explicit_copy_shell.command)
         self.assertEqual("run", builtin_template.subcommand)
         self.assertEqual("sprt", builtin_template.template)
@@ -6503,7 +6503,7 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
                 mock.patch("forge_lib.shell.run_worker_shell", side_effect=fake_run_worker_shell),
             ):
                 rc = forge.cmd_sh(argparse.Namespace(
-                    command=f"rm {Path.home()}/code/cpp/chess/enyo/net/berserk-9b84c340af7e.nn",
+                    command=f"rm {Path.home()}/code/chess/enyo/net/berserk-9b84c340af7e.nn",
                     workers=None,
                     jobs=4,
                     run="sh-test",
@@ -6524,7 +6524,7 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
                 {"host": "worker-b", "local": False, "profile": "worker-b", "python": "/usr/bin/python3"},
             ], [worker for worker, _command in seen_sorted])
             self.assertEqual(
-                ["rm ~/code/cpp/chess/enyo/net/berserk-9b84c340af7e.nn"] * 2,
+                ["rm ~/code/chess/enyo/net/berserk-9b84c340af7e.nn"] * 2,
                 [command for _worker, command in seen_sorted],
             )
             self.assertFalse((runs / ".sh-tmp").exists())
@@ -8139,7 +8139,7 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
         )
         with mock.patch.dict(
             os.environ,
-            {"FORGE_COORDINATOR_RUNS": "pwa-5090:/home/petter/code/cpp/chess/forge/runs"},
+            {"FORGE_COORDINATOR_RUNS": "pwa-5090:/home/petter/code/chess/forge/runs"},
         ), mock.patch(
             "forge_lib.workers.run_interruptible_coordinator_process",
             return_value=remote_result,
@@ -8150,12 +8150,12 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
 
         self.assertEqual(0, rc)
         self.assertEqual(
-            "coordinator: pwa-5090:/home/petter/code/cpp/chess/forge/runs\nremote retry\n",
+            "coordinator: pwa-5090:/home/petter/code/chess/forge/runs\nremote retry\n",
             stdout.getvalue(),
         )
         host, remote, pid_file = run_mock.call_args.args
         self.assertEqual("pwa-5090", host)
-        self.assertIn("FORGE_RUNS_DIR=/home/petter/code/cpp/chess/forge/runs", remote)
+        self.assertIn("FORGE_RUNS_DIR=/home/petter/code/chess/forge/runs", remote)
         self.assertIn("FORGE_COORDINATOR_RUNS=", remote)
         self.assertIn("forge retry failed-a", remote)
         self.assertIn(pid_file, remote)
@@ -8459,7 +8459,7 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
         )
         with mock.patch.dict(
             os.environ,
-            {"FORGE_COORDINATOR_RUNS": "pwa-5090:/home/petter/code/cpp/chess/forge/runs"},
+            {"FORGE_COORDINATOR_RUNS": "pwa-5090:/home/petter/code/chess/forge/runs"},
         ), mock.patch(
             "forge_lib.workers.run_interruptible_coordinator_process",
             return_value=remote_result,
@@ -8470,12 +8470,12 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
 
         self.assertEqual(0, rc)
         self.assertEqual(
-            "coordinator: pwa-5090:/home/petter/code/cpp/chess/forge/runs\nremote resume\n",
+            "coordinator: pwa-5090:/home/petter/code/chess/forge/runs\nremote resume\n",
             stdout.getvalue(),
         )
         host, remote, pid_file = run_mock.call_args.args
         self.assertEqual("pwa-5090", host)
-        self.assertIn("FORGE_RUNS_DIR=/home/petter/code/cpp/chess/forge/runs", remote)
+        self.assertIn("FORGE_RUNS_DIR=/home/petter/code/chess/forge/runs", remote)
         self.assertIn("FORGE_COORDINATOR_RUNS=", remote)
         self.assertIn("forge resume paused", remote)
         self.assertIn(pid_file, remote)
@@ -8731,13 +8731,13 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
             "schema": forge.SCHEMA,
             "path_maps": {
                 "pwa-mbp0": {
-                    "/home/petter/code/cpp/chess": "/Users/petter/code/cpp/chess",
+                    "/home/petter/code/chess": "/Users/petter/code/chess",
                 },
             },
-            "work_dir": "/home/petter/code/cpp/chess/nnue",
+            "work_dir": "/home/petter/code/chess/nnue",
             "requirements": {
                 "inputs": [{
-                    "path": "/home/petter/code/cpp/chess/nnue/runs/source.jsonl",
+                    "path": "/home/petter/code/chess/nnue/runs/source.jsonl",
                 }],
             },
             "tasks": [],
@@ -8746,7 +8746,7 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
             "host": "pwa-mbp",
             "profile": "pwa-mbp",
             "path_map": {
-                "/home/petter/code/cpp/chess": "/Users/pwahlman/code/cpp/chess",
+                "/home/petter/code/chess": "/Users/pwahlman/code/chess",
             },
         }
 
@@ -8755,17 +8755,17 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
 
         self.assertNotIn("pwa-mbp", manifest["path_maps"])
         self.assertEqual(
-            "/Users/pwahlman/code/cpp/chess/nnue",
+            "/Users/pwahlman/code/chess/nnue",
             worker_manifest["work_dir"],
         )
         self.assertEqual(
-            "/Users/pwahlman/code/cpp/chess/nnue/runs/source.jsonl",
+            "/Users/pwahlman/code/chess/nnue/runs/source.jsonl",
             worker_manifest["requirements"]["inputs"][0]["path"],
         )
         self.assertEqual("pwa-mbp", local_manifest["_active_profile"])
         self.assertEqual(
-            "/Users/pwahlman/code/cpp/chess",
-            local_manifest["path_maps"]["pwa-mbp"]["/home/petter/code/cpp/chess"],
+            "/Users/pwahlman/code/chess",
+            local_manifest["path_maps"]["pwa-mbp"]["/home/petter/code/chess"],
         )
         self.assertEqual(["--profile", "pwa-mbp"], forge.worker_profile_args(manifest, worker))
 
@@ -8809,7 +8809,7 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
         )
         with mock.patch.dict(
             os.environ,
-            {"FORGE_COORDINATOR_RUNS": "pwa-5090:/home/petter/code/cpp/chess/forge/runs"},
+            {"FORGE_COORDINATOR_RUNS": "pwa-5090:/home/petter/code/chess/forge/runs"},
         ), mock.patch(
             "forge_lib.workers.status_can_delegate", return_value=True,
         ), mock.patch(
@@ -8822,12 +8822,12 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
 
         self.assertEqual(0, rc)
         self.assertEqual(
-            "coordinator: pwa-5090:/home/petter/code/cpp/chess/forge/runs\nremote worker set\n",
+            "coordinator: pwa-5090:/home/petter/code/chess/forge/runs\nremote worker set\n",
             stdout.getvalue(),
         )
         host, remote, pid_file = run_mock.call_args.args
         self.assertEqual("pwa-5090", host)
-        self.assertIn("FORGE_RUNS_DIR=/home/petter/code/cpp/chess/forge/runs", remote)
+        self.assertIn("FORGE_RUNS_DIR=/home/petter/code/chess/forge/runs", remote)
         self.assertIn("FORGE_COORDINATOR_RUNS=", remote)
         self.assertIn("forge worker set worker-b:6 paused", remote)
         self.assertIn("signal.SIG_DFL", remote)
@@ -8961,7 +8961,7 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
         )
         with mock.patch.dict(
             os.environ,
-            {"FORGE_COORDINATOR_RUNS": "pwa-5090:/home/petter/code/cpp/chess/forge/runs"},
+            {"FORGE_COORDINATOR_RUNS": "pwa-5090:/home/petter/code/chess/forge/runs"},
         ), mock.patch("forge.subprocess.run", return_value=status_result) as run_mock, mock.patch(
             "forge_lib.workers.run_interruptible_coordinator_process",
             return_value=del_result,
@@ -8972,7 +8972,7 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
 
         self.assertEqual(0, rc)
         self.assertEqual(
-            "coordinator: pwa-5090:/home/petter/code/cpp/chess/forge/runs\nremote worker del\n",
+            "coordinator: pwa-5090:/home/petter/code/chess/forge/runs\nremote worker del\n",
             stdout.getvalue(),
         )
         status_command = run_mock.call_args_list[0].args[0][-1]
@@ -9447,28 +9447,28 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
             manifest = {
                 "schema": "forge.task.v1",
                 "name": "worker-paths",
-                "work_dir": "/home/petter/code/cpp/chess/nnue",
-                "state_dir": "/home/petter/code/cpp/chess/forge/runs/job/state",
-                "log_dir": "/home/petter/code/cpp/chess/forge/runs/job/logs",
-                "claim_dir": "/home/petter/code/cpp/chess/forge/runs/job/claims",
+                "work_dir": "/home/petter/code/chess/nnue",
+                "state_dir": "/home/petter/code/chess/forge/runs/job/state",
+                "log_dir": "/home/petter/code/chess/forge/runs/job/logs",
+                "claim_dir": "/home/petter/code/chess/forge/runs/job/claims",
                 "path_maps": {
                     "mac": {
-                        "/home/petter/code/cpp/chess/nnue": "/Users/pwahlman/code/cpp/chess/nnue_worker",
+                        "/home/petter/code/chess/nnue": "/Users/pwahlman/code/chess/nnue_worker",
                     },
                 },
                 "tasks": [{
                     "id": "task_0000",
                     "index": 0,
                     "command": "printf x > {output}",
-                    "outputs": ["/home/petter/code/cpp/chess/nnue/runs/job/out.txt"],
+                    "outputs": ["/home/petter/code/chess/nnue/runs/job/out.txt"],
                 }],
             }
 
             local = forge.worker_execution_manifest(manifest, profile="mac", manifest_path=manifest_path)
 
-            self.assertEqual("/Users/pwahlman/code/cpp/chess/nnue_worker", local["work_dir"])
+            self.assertEqual("/Users/pwahlman/code/chess/nnue_worker", local["work_dir"])
             self.assertEqual(
-                "/Users/pwahlman/code/cpp/chess/nnue_worker/runs/job/out.txt",
+                "/Users/pwahlman/code/chess/nnue_worker/runs/job/out.txt",
                 local["tasks"][0]["outputs"][0],
             )
             worker_run = manifest_path.parent / "worker-state" / "worker-paths"
@@ -9481,7 +9481,7 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
             root = Path(tmp)
             manifest_path = root / "cache" / "manifest.json"
             manifest_path.parent.mkdir()
-            coordinator_run = Path("/Users/pwahlman/Cloud-Drive/code/cpp/chess/forge/runs/job")
+            coordinator_run = Path("/Users/pwahlman/Cloud-Drive/code/chess/forge/runs/job")
             coordinator_output = coordinator_run / "outputs" / "task_0000" / "out.txt"
             manifest = {
                 "schema": "forge.task.v1",
@@ -12351,7 +12351,7 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
         )
         with mock.patch.dict(
             os.environ,
-            {"FORGE_COORDINATOR_RUNS": "pwa-5090:/home/petter/code/cpp/chess/forge/runs"},
+            {"FORGE_COORDINATOR_RUNS": "pwa-5090:/home/petter/code/chess/forge/runs"},
         ), mock.patch("forge.subprocess.run", return_value=remote_result) as run_mock:
             stdout = io.StringIO()
             with contextlib.redirect_stdout(stdout):
@@ -12371,7 +12371,7 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
 
         self.assertEqual(0, rc)
         output = stdout.getvalue()
-        self.assertIn("coordinator: pwa-5090:/home/petter/code/cpp/chess/forge/runs\n", output)
+        self.assertIn("coordinator: pwa-5090:/home/petter/code/chess/forge/runs\n", output)
         self.assertIn("run=remote-run", output)
         self.assertIn("desc=Remote run", output)
         self.assertIn("remote-worker score:uci shard=0", output)
@@ -12380,7 +12380,7 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
         command = run_mock.call_args.args[0]
         self.assertEqual("ssh", command[0])
         self.assertIn("pwa-5090", command)
-        self.assertIn("FORGE_RUNS_DIR=/home/petter/code/cpp/chess/forge/runs", command[-1])
+        self.assertIn("FORGE_RUNS_DIR=/home/petter/code/chess/forge/runs", command[-1])
         self.assertIn("FORGE_COORDINATOR_RUNS=", command[-1])
         self.assertIn("FORGE_COLOR=never", command[-1])
         self.assertIn("--json", command[-1])
@@ -12393,7 +12393,7 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
                 self.patch_runs_dir(runs),
                 mock.patch.dict(
                     os.environ,
-                    {"FORGE_COORDINATOR_RUNS": "pwa-5090:/home/petter/code/cpp/chess/forge/runs"},
+                    {"FORGE_COORDINATOR_RUNS": "pwa-5090:/home/petter/code/chess/forge/runs"},
                 ),
                 mock.patch("forge.subprocess.run") as run_mock,
             ):
@@ -12433,7 +12433,7 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
                 self.patch_runs_dir(runs),
                 mock.patch.dict(
                     os.environ,
-                    {"FORGE_COORDINATOR_RUNS": "pwa-5090:/home/petter/code/cpp/chess/forge/runs"},
+                    {"FORGE_COORDINATOR_RUNS": "pwa-5090:/home/petter/code/chess/forge/runs"},
                 ),
                 mock.patch("forge.subprocess.run") as run_mock,
             ):
@@ -12465,7 +12465,7 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
                 self.patch_runs_dir(runs),
                 mock.patch.dict(
                     os.environ,
-                    {"FORGE_COORDINATOR_RUNS": "pwa-5090:/home/petter/code/cpp/chess/forge/runs"},
+                    {"FORGE_COORDINATOR_RUNS": "pwa-5090:/home/petter/code/chess/forge/runs"},
                 ),
                 mock.patch("forge.subprocess.run") as run_mock,
             ):
@@ -12500,7 +12500,7 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
             os.environ,
             {
                 "FORGE_COLOR": "always",
-                "FORGE_COORDINATOR_RUNS": "pwa-5090:/home/petter/code/cpp/chess/forge/runs",
+                "FORGE_COORDINATOR_RUNS": "pwa-5090:/home/petter/code/chess/forge/runs",
             },
         ), mock.patch("forge.subprocess.run", return_value=remote_result) as run_mock:
             stdout = io.StringIO()
@@ -12530,7 +12530,7 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
             runs = root / "runs"
             runs.mkdir()
             (runs / "coordinator").write_text(
-                "pwa-5090:/home/petter/code/cpp/chess/forge/runs\n",
+                "pwa-5090:/home/petter/code/chess/forge/runs\n",
                 encoding="utf-8",
             )
             remote_result = subprocess.CompletedProcess(
@@ -12561,7 +12561,7 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
 
             self.assertEqual(0, rc)
             output = stdout.getvalue()
-            self.assertIn("coordinator: pwa-5090:/home/petter/code/cpp/chess/forge/runs\n", output)
+            self.assertIn("coordinator: pwa-5090:/home/petter/code/chess/forge/runs\n", output)
             self.assertIn("run=remote-run", output)
             self.assertIn("remote-worker score:uci shard=0", output)
             self.assertNotIn('"remote-run"', output)
@@ -14361,7 +14361,7 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
         )
         with mock.patch.dict(
             os.environ,
-            {"FORGE_COORDINATOR_RUNS": "pwa-5090:/home/petter/code/cpp/chess/forge/runs"},
+            {"FORGE_COORDINATOR_RUNS": "pwa-5090:/home/petter/code/chess/forge/runs"},
         ), mock.patch("forge.subprocess.run", return_value=remote_result) as run_mock:
             stdout = io.StringIO()
             with contextlib.redirect_stdout(stdout):
@@ -14369,13 +14369,13 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
 
         self.assertEqual(0, rc)
         self.assertEqual(
-            "coordinator: pwa-5090:/home/petter/code/cpp/chess/forge/runs\nremote stop\n",
+            "coordinator: pwa-5090:/home/petter/code/chess/forge/runs\nremote stop\n",
             stdout.getvalue(),
         )
         command = run_mock.call_args.args[0]
         self.assertEqual("ssh", command[0])
         self.assertIn("pwa-5090", command)
-        self.assertIn("FORGE_RUNS_DIR=/home/petter/code/cpp/chess/forge/runs", command[-1])
+        self.assertIn("FORGE_RUNS_DIR=/home/petter/code/chess/forge/runs", command[-1])
         self.assertIn("FORGE_COORDINATOR_RUNS=", command[-1])
         self.assertIn("forge stop active", command[-1])
 
@@ -14640,7 +14640,7 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
             runs = Path(tmp) / "runs"
             with self.patch_runs_dir(runs), mock.patch.dict(
                 os.environ,
-                {"FORGE_COORDINATOR_RUNS": "pwa-5090:/home/petter/code/cpp/chess/forge/runs"},
+                {"FORGE_COORDINATOR_RUNS": "pwa-5090:/home/petter/code/chess/forge/runs"},
             ), mock.patch("forge.subprocess.run", return_value=remote_result) as run_mock:
                 forge.write_json(runs / ".web-state.json", {
                     "seen_runs": {"queued": {"source": "status"}},
@@ -14655,7 +14655,7 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
 
         self.assertEqual(0, rc)
         self.assertEqual(
-            "coordinator: pwa-5090:/home/petter/code/cpp/chess/forge/runs\nremote delete\n",
+            "coordinator: pwa-5090:/home/petter/code/chess/forge/runs\nremote delete\n",
             stdout.getvalue(),
         )
         self.assertEqual({}, state["seen_runs"])
@@ -14666,7 +14666,7 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
         command = run_mock.call_args.args[0]
         self.assertEqual("ssh", command[0])
         self.assertIn("pwa-5090", command)
-        self.assertIn("FORGE_RUNS_DIR=/home/petter/code/cpp/chess/forge/runs", command[-1])
+        self.assertIn("FORGE_RUNS_DIR=/home/petter/code/chess/forge/runs", command[-1])
         self.assertIn("FORGE_COORDINATOR_RUNS=", command[-1])
         self.assertIn("forge del queued --force", command[-1])
 
@@ -15262,7 +15262,7 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
                             "profile": "mac",
                             "python": "/opt/homebrew/bin/python3",
                             "path_map": {
-                                "/home/petter/code/cpp/chess": "/Users/pwahlman/code/cpp/chess",
+                                "/home/petter/code/chess": "/Users/pwahlman/code/chess",
                             },
                         },
                         {"host": "localhost", "local": True},
@@ -15284,7 +15284,7 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
                         "local": False,
                         "python": "/opt/homebrew/bin/python3",
                         "path_map": {
-                            "/home/petter/code/cpp/chess": "/Users/pwahlman/code/cpp/chess",
+                            "/home/petter/code/chess": "/Users/pwahlman/code/chess",
                         },
                     },
                     {"host": "localhost", "profile": "localhost", "local": True},
@@ -15789,7 +15789,7 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
             with (
                 mock.patch.dict(
                     os.environ,
-                    {"FORGE_COORDINATOR_RUNS": "pwa-5090:/home/petter/code/cpp/chess/forge/runs"},
+                    {"FORGE_COORDINATOR_RUNS": "pwa-5090:/home/petter/code/chess/forge/runs"},
                 ),
                 mock.patch("forge.subprocess.run", side_effect=ssh_results) as run_mock,
                 mock.patch(
@@ -15835,14 +15835,14 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
             self.assertEqual(0, rc)
             remember_web.assert_called_once_with(
                 "delegated-start",
-                coordinator_runs="pwa-5090:/home/petter/code/cpp/chess/forge/runs",
+                coordinator_runs="pwa-5090:/home/petter/code/chess/forge/runs",
             )
-            self.assertIn("coordinator: pwa-5090:/home/petter/code/cpp/chess/forge/runs", stdout.getvalue())
+            self.assertIn("coordinator: pwa-5090:/home/petter/code/chess/forge/runs", stdout.getvalue())
             self.assertEqual(2, rsync_mock.call_count)
             host, remote, pid_file = launch_mock.call_args.args
             self.assertEqual("pwa-5090", host)
             self.assertIn("FORGE_COORDINATOR_RUNS=", remote)
-            self.assertIn("FORGE_RUNS_DIR=/home/petter/code/cpp/chess/forge/runs", remote)
+            self.assertIn("FORGE_RUNS_DIR=/home/petter/code/chess/forge/runs", remote)
             self.assertIn("forge start /tmp/forge.manifest --workers /tmp/forge.workers", remote)
             self.assertIn("--coordinator-host pwa-5090", remote)
             self.assertIn("signal.SIG_DFL", remote)

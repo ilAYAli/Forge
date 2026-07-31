@@ -222,7 +222,7 @@ class SpsaTemplateTests(unittest.TestCase):
             "nnue_file=/tmp/custom.net",
             "use_syzygy=true",
         ], forge.normalize_common_uci([
-            "nnue_file=~/code/cpp/chess/enyo/net/default.net",
+            "nnue_file=~/code/chess/enyo/net/default.net",
             "use_syzygy=false",
             "nnue_file=/tmp/custom.net",
             "use_syzygy=true",

@@ -2774,9 +2774,15 @@ def interruptible_coordinator_command(
         "signal.signal(signal.SIGINT, signal.SIG_DFL); "
         "os.execvp(sys.argv[1], sys.argv[1:])"
     )
+    env_assignments = [
+        f"{shlex.quote(COORDINATOR_RUNS_ENV)}=",
+        f"{shlex.quote(RUNS_DIR_ENV)}={shlex.quote(runs_path)}",
+    ]
+    hook_events = os.environ.get("HOOK_EVENTS", "")
+    if hook_events:
+        env_assignments.append(f"HOOK_EVENTS={shlex.quote(hook_events)}")
     child = (
-        f"exec env {shlex.quote(COORDINATOR_RUNS_ENV)}= "
-        f"{shlex.quote(RUNS_DIR_ENV)}={shlex.quote(runs_path)} "
+        f"exec env {' '.join(env_assignments)} "
         f"python3 -c {shlex.quote(reset_sigint_exec)} forge {shell_join(command)}"
     )
     remote = (

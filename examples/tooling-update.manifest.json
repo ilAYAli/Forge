@@ -1,7 +1,7 @@
 {
   "schema": "forge.task.v1",
   "name": "tooling-update",
-  "work_dir": "~/code/cpp/chess",
+  "work_dir": "~/code/chess",
   "requirements": {
     "python_min": "3.11",
     "git_min": "2.38",
@@ -9,7 +9,7 @@
       {
         "name": "forge",
         "url": "git@github.com:ilAYAli/Forge.git",
-        "path": "~/code/cpp/chess/forge",
+        "path": "~/code/chess/forge",
         "remote": "origin",
         "commit": "REPLACE_WITH_FORGE_COMMIT_SHA",
         "allow_dirty": false,
@@ -24,7 +24,7 @@
       {
         "name": "nnue",
         "url": "git@github.com:ilAYAli/nnue.git",
-        "path": "~/code/cpp/chess/nnue",
+        "path": "~/code/chess/nnue",
         "remote": "origin",
         "commit": "REPLACE_WITH_NNUE_COMMIT_SHA",
         "allow_dirty": false,
@@ -37,7 +37,7 @@
       {
         "name": "enyo",
         "url": "git@github.com:ilAYAli/enyo_private.git",
-        "path": "~/code/cpp/chess/enyo",
+        "path": "~/code/chess/enyo",
         "remote": "origin",
         "commit": "REPLACE_WITH_ENYO_COMMIT_SHA",
         "allow_dirty": false,

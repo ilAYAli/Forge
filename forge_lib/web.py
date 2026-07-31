@@ -727,8 +727,17 @@ _HTML = r"""<!DOCTYPE html>
       return !!(selection && !selection.isCollapsed && String(selection).trim());
     }
     let selectionGesture = false;
+    let selectionDeferredSince = null;
     function shouldDeferRefreshForSelection() {
-      return selectionGesture || hasTextSelection();
+      const deferring = selectionGesture || hasTextSelection();
+      if (!deferring) {
+        selectionDeferredSince = null;
+        return false;
+      }
+      if (selectionDeferredSince == null) selectionDeferredSince = Date.now();
+      // Don't clobber a user's in-progress selection, but don't let a
+      // forgotten/stale selection freeze the live view indefinitely either.
+      return (Date.now() - selectionDeferredSince) < 15000;
     }
 
     function makeSection(run, section, titleHtml, titleCls, detailHtml, defaultOpen) {

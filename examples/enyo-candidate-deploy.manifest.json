@@ -1,7 +1,7 @@
 {
   "schema": "forge.task.v1",
   "name": "enyo-candidate-deploy",
-  "work_dir": "~/code/cpp/chess/enyo",
+  "work_dir": "~/code/chess/enyo",
   "path_maps": {},
   "requirements": {
     "python_min": "3.11",
@@ -10,7 +10,7 @@
       {
         "name": "enyo",
         "url": "git@github.com:ilAYAli/enyo_private.git",
-        "path": "~/code/cpp/chess/enyo",
+        "path": "~/code/chess/enyo",
         "remote": "origin",
         "commit": "8203c1999d689ac993cf86db84fcfd6159aabc24",
         "allow_dirty": false,

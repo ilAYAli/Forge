@@ -3,7 +3,7 @@
   "name": "nnue-sprt",
   "kind": "sprt",
   "description": "Distributed SPRT in fixed-size game shards",
-  "work_dir": "~/code/cpp/chess/nnue",
+  "work_dir": "~/code/chess/nnue",
   "requirements": {
     "python_min": "3.11",
     "git_min": "2.38",
@@ -11,7 +11,7 @@
       {
         "name": "sprt",
         "url": "git@github.com:ilAYAli/sprt.git",
-        "path": "~/code/cpp/chess/sprt",
+        "path": "~/code/chess/sprt",
         "remote": "origin",
         "commit": "REPLACE_WITH_SPRT_COMMIT_SHA",
         "install": [

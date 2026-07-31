@@ -26,7 +26,7 @@ ALPHA = 0.602
 GAMMA = 0.101
 STATE_SCHEMA = "forge.spsa-state.v1"
 CONFIG_SCHEMA = "forge.spsa-config.v1"
-DEFAULT_NNUE_FILE = "~/code/cpp/chess/enyo/net/default.net"
+DEFAULT_NNUE_FILE = "~/code/chess/enyo/net/default.net"
 SCORE_RE = re.compile(
     r"Games:\s*(\d+),\s*Wins:\s*(\d+),\s*Losses:\s*(\d+),\s*Draws:\s*(\d+)"
 )
