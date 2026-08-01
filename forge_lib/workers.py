@@ -3555,9 +3555,16 @@ def cmd_resume(args: argparse.Namespace) -> int:
             )
         if active_count > 0:
             clear_restart_requests(manifest, run_name, label="resume")
-            print(f"resume: {run_name} already active ({active_count} task(s)); no workers launched")
+            archived = archive_failed_tasks_for_retry(manifest, run_name)
+            if archived:
+                print(f"resume: {run_name} requeued={len(archived)} failed task(s)")
+            else:
+                print(f"resume: {run_name} already active ({active_count} task(s)); no workers launched")
             continue
         clear_resume_markers(manifest, run_name, label="resume", clear_stop=False)
+        archived = archive_failed_tasks_for_retry(manifest, run_name)
+        if archived:
+            print(f"resume: {run_name} requeued={len(archived)} failed task(s)")
         resume_args = argparse.Namespace(
             manifest=str(manifest_path),
             workers=str(args.workers) if args.workers else str(workers_path),
@@ -3565,7 +3572,7 @@ def cmd_resume(args: argparse.Namespace) -> int:
             run=run_name,
             resume=True,
             replace=False,
-            retry_failed=False,
+            retry_failed=True,
             task_attempts=getattr(args, "task_attempts", 2),
             coordinator_host=args.coordinator_host,
             remote_timeout_seconds=args.remote_timeout_seconds,
@@ -3680,77 +3687,6 @@ def cmd_extend(args: argparse.Namespace) -> int:
         flush=True,
     )
     return cmd_resume(args)
-
-def retry_run_paths(run: str | None, *, lease_seconds: int) -> list[tuple[str, Path, Path]]:
-    if run:
-        return [materialized_run_paths(run_dir_from_arg(run), label=run)]
-
-    failed = [
-        summary for summary in load_run_summaries(lease_seconds=lease_seconds)
-        if summary["counts"]["fail"] > 0 and not run_done(summary)
-    ]
-    if not failed:
-        raise SystemExit("no failed Forge run found")
-    return [
-        materialized_run_paths(run_dir_for_name(str(summary["run"])), label=str(summary["run"]))
-        for summary in sorted(failed, key=lambda item: str(item["run"]))
-    ]
-
-def cmd_retry(args: argparse.Namespace) -> int:
-    coordinator_runs = configured_coordinator_runs()
-    if coordinator_runs and status_can_delegate(args.run):
-        return run_control_on_coordinator("retry", args, coordinator_runs)
-    targets = retry_run_paths(args.run, lease_seconds=args.lease_seconds)
-    failed = 0
-    for index, (run_name, manifest_path, workers_path) in enumerate(targets):
-        if len(targets) > 1:
-            print(f"retry: {run_name} ({index + 1}/{len(targets)})")
-        manifest = load_manifest(manifest_path)
-        active_count = run_active_task_count(manifest, lease_seconds=int(args.lease_seconds))
-        if active_count > 0 and args.workers:
-            raise SystemExit(
-                f"retry: {run_name} already has {active_count} active/claimed/stale task(s); "
-                "retry without --workers to requeue failures, or use worker set HOST:N to change capacity"
-            )
-        if active_count == 0:
-            manifest = prepare_resume_manifest(manifest_path, manifest, label="retry")
-        if args.workers:
-            clear_resume_markers(manifest, run_name, label="retry")
-        else:
-            clear_restart_requests(manifest, run_name, label="retry")
-        archived = archive_failed_tasks_for_retry(manifest, run_name)
-        if not args.workers:
-            print(f"retry: {run_name} requeued={len(archived)}; no workers launched")
-            continue
-        retry_args = argparse.Namespace(
-            manifest=str(manifest_path),
-            workers=str(args.workers),
-            jobs=args.jobs,
-            run=run_name,
-            resume=True,
-            replace=False,
-            retry_failed=True,
-            task_attempts=getattr(args, "task_attempts", 2),
-            coordinator_host=args.coordinator_host,
-            remote_timeout_seconds=args.remote_timeout_seconds,
-            wait=args.wait,
-            lease_seconds=args.lease_seconds,
-            interval_seconds=args.interval_seconds,
-            timeout_seconds=args.timeout_seconds,
-            fail_on_fail=args.fail_on_fail,
-            verify=args.verify,
-            merge=args.merge,
-            merge_force=args.merge_force,
-            newline_between=args.newline_between,
-            notify_command=args.notify_command,
-            task_complete_command=getattr(args, "task_complete_command", None),
-            task_complete_sync=bool(getattr(args, "task_complete_sync", False)),
-            no_color=args.no_color,
-            verbose=args.verbose,
-            command_label="retry",
-        )
-        failed += 1 if cmd_run_job(retry_args) else 0
-    return 1 if failed else 0
 
 def cmd_worker_del(args: argparse.Namespace) -> int:
     coordinator_runs = configured_coordinator_runs()

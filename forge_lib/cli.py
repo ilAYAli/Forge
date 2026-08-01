@@ -29,10 +29,6 @@ WORKERS_ARG_HELP_WITH_DEFAULT = (
 WORKERS_ARG_HELP_RUN_DEFAULT = (
     WORKERS_ARG_HELP + " Defaults to the run's workers.json."
 )
-WORKERS_ARG_HELP_RETRY_DEFAULT = (
-    WORKERS_ARG_HELP + " If omitted, retry only requeues failed tasks and does not launch workers."
-)
-
 
 COMMON_COMMANDS = [
     "run",
@@ -45,7 +41,6 @@ COMMON_COMMANDS = [
     "del",
     "stop",
     "resume",
-    "retry",
     "worker",
     "status",
     "update",
@@ -250,7 +245,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = ForgeArgumentParser(
         description=(
             "Forge distributes manifest-defined work across workers. "
-            "Start with start, add, del, stop, resume, retry, status, and update."
+            "Start with start, add, del, stop, resume, status, and update."
         ),
         formatter_class=ForgeHelpFormatter,
         command_groups=COMMAND_GROUPS,
@@ -967,51 +962,6 @@ def build_parser() -> argparse.ArgumentParser:
     extend.add_argument("--no-color", action="store_true")
     extend.add_argument("--verbose", action="store_true")
     extend.set_defaults(func=cmd_extend)
-
-    retry = sub.add_parser(
-        "retry",
-        help="Retry failed tasks in a materialized run.",
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
-    )
-    retry.add_argument(
-        "run",
-        nargs="?",
-        help="Run name or run directory. Omit to retry all failed incomplete runs.",
-    )
-    retry.add_argument("--workers", help=WORKERS_ARG_HELP_RETRY_DEFAULT)
-    retry.add_argument("--jobs", type=int, default=4, help="Maximum workers to prepare concurrently.")
-    retry.add_argument("--task-attempts", type=int, default=2, help="Total attempts per task before final failure.")
-    retry.add_argument("--coordinator-host", help="Coordinator hostname workers should SSH back to.")
-    retry.add_argument("--remote-timeout-seconds", type=float, default=1800.0, help="Timeout for remote setup/work commands.")
-    retry.add_argument("--wait", action="store_true", help="Wait for completion after launching workers.")
-    retry.add_argument("--lease-seconds", type=int, default=600, help="Claim lease duration before stale.")
-    retry.add_argument("--interval-seconds", type=float, default=30.0, help="Polling interval for --wait.")
-    retry.add_argument("--timeout-seconds", type=float, default=0.0, help="Overall --wait timeout; 0 means no timeout.")
-    retry.add_argument("--fail-on-fail", action=argparse.BooleanOptionalAction, default=True, help="Return failure when --wait sees failed tasks.")
-    retry.add_argument("--verify", action=argparse.BooleanOptionalAction, default=None, help="Wait for completion and verify outputs.")
-    retry.add_argument("--merge", metavar="OUTPUT", help="Merge first task outputs into this file after verification.")
-    retry.add_argument("--merge-force", action="store_true", help="Overwrite an existing merged output.")
-    retry.add_argument("--newline-between", action="store_true", help="Insert a newline between task outputs.")
-    retry.add_argument(
-        "--notify-command",
-        help="Command run on deploy/wait completion with FORGE_EVENT_JSON and JSON on stdin.",
-    )
-    retry.add_argument(
-        "--task-complete-command",
-        help=(
-            "Command run after each task finishes, with FORGE_EVENT_JSON and JSON on "
-            "stdin. Fire-and-forget by default, so concurrent invocations are possible; "
-            "if it touches shared state, serialize it yourself (see README Notifications)."
-        ),
-    )
-    retry.add_argument(
-        "--task-complete-sync",
-        action="store_true",
-        help="Wait for --task-complete-command to finish before claiming the next task (default: fire-and-forget).",
-    )
-    retry.add_argument("--no-color", action="store_true", help="Disable ANSI color output.")
-    retry.add_argument("--verbose", action="store_true", help="Print setup and worker phase details.")
-    retry.set_defaults(func=cmd_retry)
 
     parser.command_help = {
         action.dest: str(action.help)
