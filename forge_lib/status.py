@@ -1185,6 +1185,7 @@ def summary_progress(summary: dict[str, Any]) -> str:
                 continue
 
     parts: list[str] = []
+    rates: list[str] = []
     if subtask_done or subtask_total:
         total = str(subtask_total) if subtask_known_total and subtask_total > 0 else "?"
         text = f"subtask={subtask_done}/{total}"
@@ -1227,6 +1228,7 @@ def summary_progress(summary: dict[str, Any]) -> str:
                 eta_rate = 0.0
             if eta_rate > 0:
                 append_aggregate_eta(done, total_work, eta_rate, bucket["etas"])
+                rates.append(f"rate={compact_rate_per_second(eta_rate)}")
             elif waiting_count == 0 and bucket["etas"]:
                 append_aggregate_eta(done, total_work, eta_rate, bucket["etas"])
             parts.append(text)
@@ -1266,6 +1268,7 @@ def summary_progress(summary: dict[str, Any]) -> str:
     for output_unit, value in sorted(outputs.items()):
         parts.append(f"{output_unit}={compact_count(value)}")
     parts.extend(sprt_aggregate_fields(summary))
+    parts.extend(rates)
     parts.extend(etas)
     return f"progress={', '.join(parts)}" if parts else ""
 
@@ -2107,9 +2110,10 @@ def prepare_run_resume(manifest_path: Path, manifest: dict[str, Any]) -> dict[st
 
     recorded = max(history_max, recorded_at_stop)
     if recoverable < recorded:
-        raise SystemExit(
-            f"resume: {manifest_path.parent.name} cannot safely resume: "
-            f"only {recoverable} of {recorded} recorded games are recoverable; restart refused"
+        print(
+            f"resume: {manifest_path.parent.name}: {recorded - recoverable} of {recorded} recorded game(s) "
+            f"unrecoverable (stale worker loss); continuing with {recoverable} recoverable games",
+            file=sys.stderr,
         )
     if not plans:
         return {"preserved": 0, "continued": 0}
@@ -4845,11 +4849,14 @@ def _cmd_wait(args: argparse.Namespace) -> int:
         if active == 0 and counts["pending"] > 0 and not stop_requested(manifest) and not run_launch_stale(summary):
             run_name = manifest_path.parent.name
             print(f"wait: no active workers with {counts['pending']} pending task(s); redeploying {run_name}", flush=True)
-            subprocess.run(
+            result = subprocess.run(
                 [sys.executable, str(script_path()), "resume", run_name],
                 stdin=subprocess.DEVNULL,
                 check=False,
             )
+            if result.returncode != 0:
+                print(f"wait: auto-redeploy failed for {run_name}", file=sys.stderr)
+                return finish("run_fail", "failed", 1, manifest)
         if stop_requested(manifest) and active == 0:
             return finish("run_stopped", "stopped", 130, manifest)
         if deadline is not None and time.monotonic() >= deadline:
