@@ -1204,7 +1204,37 @@ def summary_progress(summary: dict[str, Any]) -> str:
         active_total = int(bucket["total"])
         total_work = summary.get("progress_totals", {}).get(unit)
         done_work = summary.get("progress_done", {}).get(unit, 0)
-        if isinstance(total_work, int) and total_work > 0:
+        # Detect scale mismatch: task config uses total=1 per task as a
+        # placeholder, but active tasks report actual item counts (e.g.
+        # 40 PGN files per task). When active_done alone exceeds
+        # total_work, the totals are in different scales and can't be
+        # combined. Estimate from active task data scaled by task counts.
+        counts = summary.get("counts", {})
+        total_tasks = sum(
+            int(counts.get(s) or 0)
+            for s in ("done", "running", "claimed", "stale", "pending", "fail")
+        )
+        done_tasks = int(counts.get("done") or 0)
+        active_count = max(1, int(bucket["count"]))
+        scale_mismatch = (
+            isinstance(total_work, int)
+            and total_work > 0
+            and bucket["all_total"]
+            and active_total > 0
+            and active_done > total_work
+        )
+        if scale_mismatch and total_tasks > 0:
+            avg_per_task = active_total / active_count
+            est_total = int(total_tasks * avg_per_task)
+            est_done = int(done_tasks * avg_per_task) + active_done
+            done = min(est_total, est_done)
+            text = f"{unit}={compact_count(done)}/{compact_count(est_total)}"
+            eta_rate = float(bucket["rate"]) if isinstance(bucket["rate"], (int, float)) and bucket["rate"] > 0 else 0.0
+            if eta_rate > 0:
+                append_aggregate_eta(done, est_total, eta_rate, bucket["etas"])
+                rates.append(f"rate={compact_rate_per_second(eta_rate)}")
+            parts.append(text)
+        elif isinstance(total_work, int) and total_work > 0:
             done = min(total_work, int(done_work) + active_done)
             text = f"{unit}={compact_count(done)}/{compact_count(total_work)}"
             cumulative_rate = run_cumulative_rate(summary, float(done))
@@ -1641,6 +1671,9 @@ def run_status_payload(summary: dict[str, Any]) -> dict[str, Any]:
             "active_fields": active_fields,
             "active_summary": active_worker_summary_payload(summary),
             "active_summary_text": active_summary,
+            **({
+                "progress_fraction": round(frac, 4)
+            } if (frac := run_progress_fraction(summary)) is not None else {}),
         },
         "sections": {
             "done": {
@@ -1800,21 +1833,52 @@ def color_status_fields(
 
 def run_progress_fields(summary: dict[str, Any]) -> list[str]:
     fields = summary_progress_fields(summary)
-    if summary_kind(summary) == "spsa":
+    kind = summary_kind(summary)
+    if kind == "spsa":
         return split_eta_last([
             field
             for field in fields
             if field.startswith("eta=") or field.startswith("iterations=")
         ])
-    return split_eta_last([
-        field
-        for field in fields
-        if (
-            field.startswith("eta=")
-            or field.startswith("games=")
-            or field.split("=", 1)[0] in SPRT_PROGRESS_FIELD_KEYS
-        )
-    ])
+    if kind == "sprt":
+        return split_eta_last([
+            field
+            for field in fields
+            if (
+                field.startswith("eta=")
+                or field.startswith("games=")
+                or field.split("=", 1)[0] in SPRT_PROGRESS_FIELD_KEYS
+            )
+        ])
+    return split_eta_last(fields)
+
+def run_progress_fraction(summary: dict[str, Any]) -> float | None:
+    """Fraction of work done (0–1) based on per-unit totals, or None if unavailable."""
+    progress_totals = summary.get("progress_totals")
+    progress_done = summary.get("progress_done")
+    if not isinstance(progress_totals, dict) or not progress_totals:
+        return None
+    active_by_unit: dict[str, int] = {}
+    for row in summary.get("active", []):
+        if row.get("state", "running") != "running":
+            continue
+        data = row.get("progress_data")
+        if isinstance(data, dict) and data.get("kind") == "metadata":
+            unit = str(data.get("unit") or "")
+            done = data.get("done")
+            if unit and isinstance(done, int):
+                active_by_unit[unit] = active_by_unit.get(unit, 0) + done
+    total_weight = 0
+    done_weight = 0.0
+    for unit, total in progress_totals.items():
+        if not isinstance(total, int) or total <= 0:
+            continue
+        done = int(progress_done.get(unit, 0)) if isinstance(progress_done, dict) else 0
+        done += active_by_unit.get(str(unit), 0)
+        done = min(total, done)
+        total_weight += total
+        done_weight += done
+    return done_weight / total_weight if total_weight > 0 else None
 
 def run_display_fields(summary: dict[str, Any]) -> list[str]:
     counts = summary["counts"]

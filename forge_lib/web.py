@@ -1816,7 +1816,9 @@ _HTML = r"""<!DOCTYPE html>
       const display = r.display || {};
       const isCurrent = state === 'current' || state === 'stopping';
 
-      const pct = r.tasks > 0 ? (r.done/r.tasks*100).toFixed(1) : 0;
+      const pct = display.progress_fraction != null
+        ? (display.progress_fraction * 100).toFixed(1)
+        : (r.tasks > 0 ? (r.done/r.tasks*100).toFixed(1) : 0);
       const eta = etaFromFields(display.fields);
       const countStr = (() => {
         const parts = (display.fields||[]).filter(f=>!f.startsWith('eta='));
