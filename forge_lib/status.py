@@ -4842,6 +4842,14 @@ def _cmd_wait(args: argparse.Namespace) -> int:
         if run_launch_stale(summary) and active == 0 and counts["pending"] > 0:
             print("launch failed: no active workers and launch request is stale", file=sys.stderr)
             return finish("run_launch_failed", "failed", 1, manifest)
+        if active == 0 and counts["pending"] > 0 and not stop_requested(manifest) and not run_launch_stale(summary):
+            run_name = manifest_path.parent.name
+            print(f"wait: no active workers with {counts['pending']} pending task(s); redeploying {run_name}", flush=True)
+            subprocess.run(
+                [sys.executable, str(script_path()), "resume", run_name],
+                stdin=subprocess.DEVNULL,
+                check=False,
+            )
         if stop_requested(manifest) and active == 0:
             return finish("run_stopped", "stopped", 130, manifest)
         if deadline is not None and time.monotonic() >= deadline:
@@ -4892,14 +4900,25 @@ def run_notify_command(command_text: str | None, payload: dict[str, Any], *, wai
     env = os.environ.copy()
     env["FORGE_EVENT_JSON"] = data
     if not wait:
-        proc = subprocess.Popen(
-            command,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            text=True,
-            env=env,
-        )
+        try:
+            proc = subprocess.Popen(
+                command,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                env=env,
+            )
+        except OSError:
+            env_small = os.environ.copy()
+            proc = subprocess.Popen(
+                command,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                env=env_small,
+            )
         if proc.stdin is not None:
             try:
                 proc.stdin.write(data + "\n")
@@ -4907,15 +4926,27 @@ def run_notify_command(command_text: str | None, payload: dict[str, Any], *, wai
             except (BrokenPipeError, OSError):
                 pass
         return 0
-    result = subprocess.run(
-        command,
-        input=data + "\n",
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        env=env,
-        check=False,
-    )
+    try:
+        result = subprocess.run(
+            command,
+            input=data + "\n",
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
+            check=False,
+        )
+    except OSError:
+        env_small = os.environ.copy()
+        result = subprocess.run(
+            command,
+            input=data + "\n",
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env_small,
+            check=False,
+        )
     if result.returncode != 0:
         detail = result.stderr.strip() or result.stdout.strip() or "notification command failed"
         print(f"notify failed rc={result.returncode}: {detail}", file=sys.stderr)
