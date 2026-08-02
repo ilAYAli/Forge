@@ -65,8 +65,7 @@ def build_inventory(source: str | Path, *, cache_home: Path | None = None) -> di
                 if isinstance(hash_cache.get(f"{source_key}\0{rel}"), dict):
                     n_cached += 1
     n_workers = min(os.cpu_count() or 4, 16)
-    verb = "hashing" if n_cached < n_total else "verifying"
-    print(f"  found {n_total:,} files ({n_cached:,} cached), {verb} with {n_workers} threads ...", file=sys.stderr, flush=True)
+    print(f"  found {n_total:,} files ({n_cached:,} cached), fingerprinting with {n_workers} threads ...", file=sys.stderr, flush=True)
 
     def hash_path(path: Path) -> tuple[str, int, int, str, bool]:
         relative = path.relative_to(source_path).as_posix()
@@ -79,7 +78,12 @@ def build_inventory(source: str | Path, *, cache_home: Path | None = None) -> di
                 digest = str(cached.get("sha256") or "")
         was_hashed = len(digest) != 64
         if was_hashed:
-            digest = sha256_file(path)
+            # Use a metadata fingerprint (path + size + mtime) instead of reading
+            # file content. Training archives are immutable so this is equivalent,
+            # and avoids reading hundreds of GB just to build the inventory.
+            digest = hashlib.sha256(
+                f"{relative}\0{st.st_size}\0{st.st_mtime_ns}".encode()
+            ).hexdigest()
         return relative, st.st_size, st.st_mtime_ns, digest, was_hashed
 
     last_report = time.monotonic()
@@ -103,10 +107,10 @@ def build_inventory(source: str | Path, *, cache_home: Path | None = None) -> di
             now_ = time.monotonic()
             if now_ - last_report >= 5.0:
                 pct = 100 * len(files) // n_total if n_total else 0
-                print(f"  {len(files):,}/{n_total:,} ({pct}%) done, {n_hashed:,} hashed ...", file=sys.stderr, flush=True)
+                print(f"  {len(files):,}/{n_total:,} ({pct}%) ...", file=sys.stderr, flush=True)
                 last_report = now_
     if n_hashed:
-        print(f"  {n_total:,}/{n_total:,} (100%) done, {n_hashed:,} hashed", file=sys.stderr, flush=True)
+        print(f"  {n_total:,}/{n_total:,} (100%) done", file=sys.stderr, flush=True)
     if not files:
         raise SystemExit(f"LC0 source contains no training.* files: {source_path}")
     cache_home.mkdir(parents=True, exist_ok=True)
