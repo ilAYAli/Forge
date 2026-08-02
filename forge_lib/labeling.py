@@ -5,6 +5,8 @@ import json
 import os
 import shutil
 import struct
+import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -50,7 +52,22 @@ def build_inventory(source: str | Path, *, cache_home: Path | None = None) -> di
     updated_cache: dict[str, Any] = dict(hash_cache)
     files: list[dict[str, Any]] = []
     source_key = str(source_path)
-    for path in sorted(item for item in source_path.rglob("training.*") if item.is_file()):
+    print(f"Scanning LC0 source: {source_path} ...", file=sys.stderr, flush=True)
+    all_paths: list[Path] = []
+    for dirpath, dirnames, filenames in os.walk(source_path):
+        dirnames.sort()
+        dp = Path(dirpath)
+        for name in sorted(fn for fn in filenames if fn.startswith("training.")):
+            all_paths.append(dp / name)
+    n_total = len(all_paths)
+    n_cached = sum(
+        1 for p in all_paths
+        if isinstance(hash_cache.get(f"{source_key}\0{p.relative_to(source_path).as_posix()}"), dict)
+    )
+    print(f"  found {n_total:,} files ({n_cached:,} cached)", file=sys.stderr, flush=True)
+    last_report = time.monotonic()
+    n_hashed = 0
+    for path in all_paths:
         relative = path.relative_to(source_path).as_posix()
         stat = path.stat()
         key = f"{source_key}\0{relative}"
@@ -61,12 +78,20 @@ def build_inventory(source: str | Path, *, cache_home: Path | None = None) -> di
                 digest = str(cached.get("sha256") or "")
         if len(digest) != 64:
             digest = sha256_file(path)
+            n_hashed += 1
+            now_ = time.monotonic()
+            if now_ - last_report >= 5.0:
+                pct = 100 * len(files) // n_total if n_total else 0
+                print(f"  hashed {n_hashed:,} new files ({pct}% done) ...", file=sys.stderr, flush=True)
+                last_report = now_
         updated_cache[key] = {
             "size": stat.st_size,
             "mtime_ns": stat.st_mtime_ns,
             "sha256": digest,
         }
         files.append({"path": relative, "size": stat.st_size, "sha256": digest})
+    if n_hashed:
+        print(f"  hashed {n_hashed:,} new files (done)", file=sys.stderr, flush=True)
     if not files:
         raise SystemExit(f"LC0 source contains no training.* files: {source_path}")
     cache_home.mkdir(parents=True, exist_ok=True)
