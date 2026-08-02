@@ -23,6 +23,7 @@ HASH_CACHE_NAME = "lc0-inventory-hashes.json"
 HASH_CACHE_DB_NAME = "lc0-inventory-cache.db"
 VERIFIED_MARKER_NAME = ".verified.json"
 LC0_V6_RECORD_BYTES = 8356
+SQL_IN_CHUNK_SIZE = 900
 
 
 def canonical_inventory_bytes(files: list[dict[str, Any]]) -> bytes:
@@ -127,15 +128,19 @@ def build_inventory(source: str | Path, *, cache_home: Path | None = None) -> di
             ]
             keys = [f"{source_key}\0{r}" for r in relatives]
 
-            # Batch-fetch cached entries for this directory
-            placeholders = ",".join("?" * len(keys))
-            cached_rows = {
-                row[0]: row
+            # Batch-fetch cached entries for this directory. Chunk the IN
+            # clause: a single directory can hold far more files than
+            # SQLite's max bound-variable count (observed >32,766 entries
+            # in one directory here, which crashes an unchunked query).
+            cached_rows: dict[str, Any] = {}
+            for chunk_start in range(0, len(keys), SQL_IN_CHUNK_SIZE):
+                chunk = keys[chunk_start:chunk_start + SQL_IN_CHUNK_SIZE]
+                placeholders = ",".join("?" * len(chunk))
                 for row in db.execute(
                     f"SELECT key,sha256,size,mtime_ns,records FROM cache WHERE key IN ({placeholders})",
-                    keys,
-                )
-            }
+                    chunk,
+                ):
+                    cached_rows[row[0]] = row
 
             def process_one(args: tuple[str, str, str]) -> tuple[str, int, int, str, int, bool]:
                 name, relative, key = args
