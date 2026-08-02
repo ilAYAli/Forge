@@ -82,43 +82,29 @@ def build_inventory(source: str | Path, *, cache_home: Path | None = None) -> di
             digest = sha256_file(path)
         return relative, st.st_size, st.st_mtime_ns, digest, was_hashed
 
-    BATCH = 2000
     last_report = time.monotonic()
     n_hashed = 0
-    batch: list[Path] = []
-
-    def flush_batch(batch: list[Path]) -> None:
-        nonlocal n_hashed, last_report
-        with ThreadPoolExecutor(max_workers=n_workers) as pool:
-            futs = {pool.submit(hash_path, p): i for i, p in enumerate(batch)}
-            results: list[tuple[str, int, int, str, bool] | None] = [None] * len(batch)
-            for fut in as_completed(futs):
-                results[futs[fut]] = fut.result()
-        for relative, size, mtime_ns, digest, was_hashed in results:  # type: ignore[misc]
-            if was_hashed:
-                n_hashed += 1
-            updated_cache[f"{source_key}\0{relative}"] = {
-                "size": size,
-                "mtime_ns": mtime_ns,
-                "sha256": digest,
-            }
-            files.append({"path": relative, "size": size, "sha256": digest})
-        now_ = time.monotonic()
-        if now_ - last_report >= 5.0:
-            pct = 100 * len(files) // n_total if n_total else 0
-            print(f"  {len(files):,}/{n_total:,} ({pct}%) done, {n_hashed:,} hashed ...", file=sys.stderr, flush=True)
-            last_report = now_
-
-    for dirpath, dirnames, filenames in os.walk(source_path):
-        dirnames.sort()
-        dp = Path(dirpath)
-        for name in sorted(fn for fn in filenames if fn.startswith("training.")):
-            batch.append(dp / name)
-            if len(batch) >= BATCH:
-                flush_batch(batch)
-                batch = []
-    if batch:
-        flush_batch(batch)
+    with ThreadPoolExecutor(max_workers=n_workers) as pool:
+        for dirpath, dirnames, filenames in os.walk(source_path):
+            dirnames.sort()
+            dp = Path(dirpath)
+            paths = [dp / name for name in sorted(fn for fn in filenames if fn.startswith("training."))]
+            if not paths:
+                continue
+            for relative, size, mtime_ns, digest, was_hashed in pool.map(hash_path, paths):
+                if was_hashed:
+                    n_hashed += 1
+                updated_cache[f"{source_key}\0{relative}"] = {
+                    "size": size,
+                    "mtime_ns": mtime_ns,
+                    "sha256": digest,
+                }
+                files.append({"path": relative, "size": size, "sha256": digest})
+            now_ = time.monotonic()
+            if now_ - last_report >= 5.0:
+                pct = 100 * len(files) // n_total if n_total else 0
+                print(f"  {len(files):,}/{n_total:,} ({pct}%) done, {n_hashed:,} hashed ...", file=sys.stderr, flush=True)
+                last_report = now_
     if n_hashed:
         print(f"  {n_total:,}/{n_total:,} (100%) done, {n_hashed:,} hashed", file=sys.stderr, flush=True)
     if not files:
