@@ -127,7 +127,20 @@ def build_inventory(source: str | Path, *, cache_home: Path | None = None) -> di
         target.unlink(missing_ok=True)
         target.symlink_to(source_file)
     if not marker_matches(cache_root, digest):
-        marker = verify_inventory_tree(cache_root, digest)
+        if n_hashed > 0:
+            # We just computed and verified all hashes — write the marker directly
+            # rather than re-reading every file through the symlinks a second time.
+            total_bytes = sum(f["size"] for f in files)
+            marker = {
+                "schema": INVENTORY_SCHEMA,
+                "digest": digest,
+                "files": len(files),
+                "bytes": total_bytes,
+                "verified_at": now(),
+            }
+            write_json(cache_root / VERIFIED_MARKER_NAME, marker)
+        else:
+            marker = verify_inventory_tree(cache_root, digest)
     else:
         marker = json.loads((cache_root / VERIFIED_MARKER_NAME).read_text(encoding="utf-8"))
     return {
