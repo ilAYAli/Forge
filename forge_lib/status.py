@@ -3137,6 +3137,7 @@ def run_progress_graph_from_rows(
     rows: list[dict[str, Any]],
     progress_task_offsets: dict[str, tuple[str, int]],
     progress_unit_totals: dict[str, int],
+    progress_done: dict[str, int] | None = None,
 ) -> dict[str, Any] | None:
     tasks_by_id = {str(task["id"]): task for task in manifest["tasks"]}
     points_by_name: dict[str, list[dict[str, float]]] = {}
@@ -3250,10 +3251,18 @@ def run_progress_graph_from_rows(
                 "rate": selfplay_rate,
             })
 
-    if is_labeling and label_x > 0 and label_worker_rates:
-        points_by_name["total"] = [{"x": label_x, "y": sum(label_worker_rates.values())}]
-        for worker, rate in sorted(label_worker_rates.items()):
-            points_by_name[worker] = [{"x": label_x, "y": rate}]
+    if is_labeling and label_worker_rates:
+        # label_x only reflects rows with available progress_data (active tasks when
+        # include_completed_progress=False). Add the completed-task total from
+        # progress_done so the graph x position is always cumulative across all tasks.
+        if isinstance(progress_done, dict) and x_unit:
+            completed_x = progress_done.get(x_unit, 0)
+            if isinstance(completed_x, int) and completed_x > label_x:
+                label_x = float(completed_x)
+        if label_x > 0:
+            points_by_name["total"] = [{"x": label_x, "y": sum(label_worker_rates.values())}]
+            for worker, rate in sorted(label_worker_rates.items()):
+                points_by_name[worker] = [{"x": label_x, "y": rate}]
 
     conversion_total_estimate: int | None = None
     if is_conversion and conversion_rows:
@@ -3270,9 +3279,20 @@ def run_progress_graph_from_rows(
         aggregate_pgn_rate = sum(
             float(item["rate"]) for item in conversion_rows if item["state"] == "running"
         )
+        # When progress_done is available it has the completed-task PGN total even
+        # without include_completed_progress. Use it to place the x position
+        # correctly across all completed tasks, not just those with live progress_data.
+        if isinstance(progress_done, dict) and positions_per_pgn > 0 and x_unit:
+            completed_pgns = progress_done.get(x_unit, 0)
+            if isinstance(completed_pgns, int) and completed_pgns > 0:
+                estimated_x = positions_per_pgn * (completed_pgns + running_done)
+                if estimated_x > conversion_x:
+                    conversion_x = estimated_x
         known_totals = [float(item["total"]) for item in conversion_rows if item["total"] > 0]
         average_total = sum(known_totals) / len(known_totals) if known_totals else 0.0
-        total_pgns = average_total * len(manifest["tasks"])
+        # Prefer the actual total from task configs over the active-task estimate.
+        total_pgns_actual = progress_unit_totals.get(x_unit, 0) if x_unit else 0
+        total_pgns = total_pgns_actual or (average_total * len(manifest["tasks"]))
         if positions_per_pgn > 0 and total_pgns > 0:
             conversion_total_estimate = max(
                 int(conversion_x),
@@ -4582,6 +4602,7 @@ def status_summary(
             rows,
             progress_task_offsets,
             progress_unit_totals,
+            progress_done,
         )
     progress_graph = run_progress_history_graph(manifest, current_progress_graph)
     worker_processes = worker_process_status_rows(
