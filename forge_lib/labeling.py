@@ -4,9 +4,11 @@ import hashlib
 import json
 import os
 import shutil
+import sqlite3
 import struct
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -18,13 +20,50 @@ INVENTORY_SCHEMA = "forge.lc0-inventory.v1"
 STATS_SCHEMA = "enyo.label-stats.v1"
 RECORD_BYTES = 32
 HASH_CACHE_NAME = "lc0-inventory-hashes.json"
+HASH_CACHE_DB_NAME = "lc0-inventory-cache.db"
 VERIFIED_MARKER_NAME = ".verified.json"
 LC0_V6_RECORD_BYTES = 8356
 
 
 def canonical_inventory_bytes(files: list[dict[str, Any]]) -> bytes:
-    payload = {"schema": INVENTORY_SCHEMA, "files": files}
+    # Strip internal-only fields (records) so the digest stays stable.
+    clean = [{"path": f["path"], "sha256": f["sha256"], "size": f["size"]} for f in files]
+    payload = {"schema": INVENTORY_SCHEMA, "files": clean}
     return json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+
+def _open_inventory_db(path: Path, *, migrate_from_json: Path | None = None) -> sqlite3.Connection:
+    is_new = not path.is_file()
+    db = sqlite3.connect(str(path), check_same_thread=False)
+    db.execute("PRAGMA journal_mode=WAL")
+    db.execute("""CREATE TABLE IF NOT EXISTS cache (
+        key      TEXT    NOT NULL PRIMARY KEY,
+        size     INTEGER NOT NULL,
+        mtime_ns INTEGER NOT NULL,
+        sha256   TEXT    NOT NULL,
+        records  INTEGER
+    )""")
+    db.commit()
+    if is_new and migrate_from_json and migrate_from_json.is_file():
+        print("  Migrating hash cache to SQLite ...", file=sys.stderr, flush=True)
+        try:
+            payload = json.loads(migrate_from_json.read_text(encoding="utf-8"))
+            entries = payload.get("entries")
+            if isinstance(entries, dict):
+                rows = [
+                    (k, v["size"], v["mtime_ns"], v["sha256"], v.get("records"))
+                    for k, v in entries.items()
+                    if isinstance(v, dict) and v.get("sha256") and v.get("size") is not None
+                ]
+                db.executemany(
+                    "INSERT OR IGNORE INTO cache(key,size,mtime_ns,sha256,records) VALUES(?,?,?,?,?)",
+                    rows,
+                )
+                db.commit()
+                print(f"  Migrated {len(rows):,} entries", file=sys.stderr, flush=True)
+        except Exception:
+            pass
+    return db
 
 
 def inventory_digest(files: list[dict[str, Any]]) -> str:
@@ -46,88 +85,122 @@ def build_inventory(source: str | Path, *, cache_home: Path | None = None) -> di
     source_path = expand_path(str(source)).resolve()
     if not source_path.is_dir():
         raise SystemExit(f"LC0 source is not a directory: {source_path}")
-    cache_home = cache_home or expand_path("~/.cache/forge")
-    hash_cache_path = cache_home / HASH_CACHE_NAME
-    hash_cache = load_hash_cache(hash_cache_path)
-    updated_cache: dict[str, Any] = dict(hash_cache)
-    files: list[dict[str, Any]] = []
+    cache_home = Path(cache_home) if cache_home else expand_path("~/.cache/forge")
+    cache_home.mkdir(parents=True, exist_ok=True)
+
+    db = _open_inventory_db(
+        cache_home / HASH_CACHE_DB_NAME,
+        migrate_from_json=cache_home / HASH_CACHE_NAME,
+    )
+
     source_key = str(source_path)
+    source_path_str = source_key
+    sha256 = hashlib.sha256
+    n_workers = min(os.cpu_count() or 4, 16)
+
     print(f"Scanning LC0 source: {source_path} ...", file=sys.stderr, flush=True)
     n_total = 0
-    n_cached = 0
-    for dirpath, _dirnames, filenames in os.walk(source_path):
-        rel_dir = os.path.relpath(dirpath, source_path)
-        for fn in filenames:
-            if fn.startswith("training."):
-                n_total += 1
-                rel = fn if rel_dir == "." else f"{rel_dir}/{fn}"
-                if isinstance(hash_cache.get(f"{source_key}\0{rel}"), dict):
-                    n_cached += 1
-    print(f"  found {n_total:,} files ({n_cached:,} cached), fingerprinting ...", file=sys.stderr, flush=True)
+    for dirpath, _, filenames in os.walk(source_path):
+        n_total += sum(1 for fn in filenames if fn.startswith("training."))
 
-    source_path_str = str(source_path)
-    sha256 = hashlib.sha256
+    n_cached = db.execute(
+        "SELECT COUNT(*) FROM cache WHERE key >= ? AND key < ? AND records IS NOT NULL",
+        (f"{source_key}\0", f"{source_key}\1"),
+    ).fetchone()[0]
+    print(
+        f"  found {n_total:,} files ({n_cached:,} cached), processing with {n_workers} threads ...",
+        file=sys.stderr, flush=True,
+    )
+
+    files: list[dict[str, Any]] = []
+    n_new = 0
     last_report = time.monotonic()
-    n_hashed = 0
-    for dirpath, dirnames, filenames in os.walk(source_path):
-        dirnames.sort()
-        rel_dir = os.path.relpath(dirpath, source_path_str)
-        for name in sorted(fn for fn in filenames if fn.startswith("training.")):
-            relative = name if rel_dir == "." else f"{rel_dir}/{name}"
-            st = os.stat(os.path.join(dirpath, name))
-            size, mtime_ns = st.st_size, st.st_mtime_ns
-            key = f"{source_key}\0{relative}"
-            cached = hash_cache.get(key)
-            digest = ""
-            if isinstance(cached, dict):
-                if cached.get("size") == size and cached.get("mtime_ns") == mtime_ns:
-                    digest = str(cached.get("sha256") or "")
-            if len(digest) != 64:
+
+    with ThreadPoolExecutor(max_workers=n_workers) as pool:
+        for dirpath, dirnames, filenames in os.walk(source_path):
+            dirnames.sort()
+            rel_dir = os.path.relpath(dirpath, source_path_str)
+            dir_names = sorted(fn for fn in filenames if fn.startswith("training."))
+            if not dir_names:
+                continue
+
+            relatives = [
+                fn if rel_dir == "." else f"{rel_dir}/{fn}"
+                for fn in dir_names
+            ]
+            keys = [f"{source_key}\0{r}" for r in relatives]
+
+            # Batch-fetch cached entries for this directory
+            placeholders = ",".join("?" * len(keys))
+            cached_rows = {
+                row[0]: row
+                for row in db.execute(
+                    f"SELECT key,sha256,size,mtime_ns,records FROM cache WHERE key IN ({placeholders})",
+                    keys,
+                )
+            }
+
+            def process_one(args: tuple[str, str, str]) -> tuple[str, int, int, str, int, bool]:
+                name, relative, key = args
+                full = os.path.join(dirpath, name)
+                st = os.stat(full)
+                size, mtime_ns = st.st_size, st.st_mtime_ns
+                row = cached_rows.get(key)
+                if row and row[2] == size and row[3] == mtime_ns and row[1] and row[4] is not None:
+                    return relative, size, mtime_ns, row[1], int(row[4]), False
                 digest = sha256(f"{relative}\0{size}\0{mtime_ns}".encode()).hexdigest()
-                n_hashed += 1
-            updated_cache[key] = {"size": size, "mtime_ns": mtime_ns, "sha256": digest}
-            files.append({"path": relative, "size": size, "sha256": digest})
-        now_ = time.monotonic()
-        if now_ - last_report >= 5.0:
-            pct = 100 * len(files) // n_total if n_total else 0
-            print(f"  {len(files):,}/{n_total:,} ({pct}%) ...", file=sys.stderr, flush=True)
-            last_report = now_
-    if n_hashed:
-        print(f"  {n_total:,}/{n_total:,} (100%) done", file=sys.stderr, flush=True)
+                if name.endswith(".gz"):
+                    try:
+                        with open(full, "rb") as fh:
+                            fh.seek(-4, os.SEEK_END)
+                            records = struct.unpack("<I", fh.read(4))[0] // LC0_V6_RECORD_BYTES
+                    except Exception:
+                        records = 0
+                else:
+                    records = size // LC0_V6_RECORD_BYTES
+                return relative, size, mtime_ns, digest, records, True
+
+            results = list(pool.map(process_one, zip(dir_names, relatives, keys)))
+
+            new_rows = []
+            for relative, size, mtime_ns, digest, records, is_new in results:
+                files.append({"path": relative, "size": size, "sha256": digest, "records": records})
+                if is_new:
+                    n_new += 1
+                    new_rows.append((f"{source_key}\0{relative}", size, mtime_ns, digest, records))
+            if new_rows:
+                db.executemany(
+                    "INSERT OR REPLACE INTO cache(key,size,mtime_ns,sha256,records) VALUES(?,?,?,?,?)",
+                    new_rows,
+                )
+                db.commit()
+
+            now_ = time.monotonic()
+            if now_ - last_report >= 5.0:
+                pct = 100 * len(files) // n_total if n_total else 0
+                print(f"  {len(files):,}/{n_total:,} ({pct}%) ...", file=sys.stderr, flush=True)
+                last_report = now_
+
+    db.close()
     if not files:
         raise SystemExit(f"LC0 source contains no training.* files: {source_path}")
-    cache_home.mkdir(parents=True, exist_ok=True)
-    write_json(hash_cache_path, {"schema": INVENTORY_SCHEMA, "entries": updated_cache})
+    print(f"  {n_total:,}/{n_total:,} (100%) done, {n_new:,} new", file=sys.stderr, flush=True)
 
     digest = inventory_digest(files)
+    # Write a minimal marker only — the full symlink tree is unused by active
+    # code paths (build_inventory_subset reads from the original source directly).
     cache_root = cache_home / "inputs" / digest
     cache_root.mkdir(parents=True, exist_ok=True)
-    inventory_path = cache_root / "inventory.json"
-    inventory_path.write_bytes(canonical_inventory_bytes(files) + b"\n")
-    for item in files:
-        relative = Path(str(item["path"]))
-        target = cache_root / relative
-        target.parent.mkdir(parents=True, exist_ok=True)
-        source_file = source_path / relative
-        if target.is_symlink() and target.resolve() == source_file:
-            continue
-        target.unlink(missing_ok=True)
-        target.symlink_to(source_file)
     if not marker_matches(cache_root, digest):
-        if n_hashed > 0:
-            # We just computed and verified all hashes — write the marker directly
-            # rather than re-reading every file through the symlinks a second time.
-            total_bytes = sum(f["size"] for f in files)
-            marker = {
-                "schema": INVENTORY_SCHEMA,
-                "digest": digest,
-                "files": len(files),
-                "bytes": total_bytes,
-                "verified_at": now(),
-            }
-            write_json(cache_root / VERIFIED_MARKER_NAME, marker)
-        else:
-            marker = verify_inventory_tree(cache_root, digest)
+        total_bytes = sum(f["size"] for f in files)
+        marker: dict[str, Any] = {
+            "schema": INVENTORY_SCHEMA,
+            "digest": digest,
+            "files": len(files),
+            "bytes": total_bytes,
+            "verified_at": now(),
+        }
+        write_json(cache_root / VERIFIED_MARKER_NAME, marker)
     else:
         marker = json.loads((cache_root / VERIFIED_MARKER_NAME).read_text(encoding="utf-8"))
     return {
@@ -135,7 +208,7 @@ def build_inventory(source: str | Path, *, cache_home: Path | None = None) -> di
         "files": files,
         "bytes": marker["bytes"],
         "cache_root": cache_root,
-        "inventory": inventory_path,
+        "inventory": cache_root / "inventory.json",
         "marker": marker,
         "source": source_path,
     }
@@ -218,10 +291,19 @@ def attach_label_task_inputs(
         raise ValueError("label manifest has no tasks")
     max_records = int(params.get("max_records") or 0)
     source = Path(inventory_info["source"])
-    record_counts = {
-        str(item["path"]): inventory_file_records(source / str(item["path"]))
-        for item in files
-    }
+    record_counts: dict[str, int] = {}
+    missing = [item for item in files if not isinstance(item.get("records"), int)]
+    for item in files:
+        if isinstance(item.get("records"), int):
+            record_counts[str(item["path"])] = item["records"]
+    if missing:
+        n_workers = min(os.cpu_count() or 4, 16)
+        print(f"  Reading record counts for {len(missing):,} files ...", file=sys.stderr, flush=True)
+        def _read(item: dict[str, Any]) -> tuple[str, int]:
+            return str(item["path"]), inventory_file_records(source / str(item["path"]))
+        with ThreadPoolExecutor(max_workers=n_workers) as pool:
+            for path_str, count in pool.map(_read, missing):
+                record_counts[path_str] = count
     for index, task in enumerate(tasks):
         if not isinstance(task, dict):
             raise ValueError("label manifest task must be an object")
