@@ -88,10 +88,7 @@ def build_inventory(source: str | Path, *, cache_home: Path | None = None) -> di
     cache_home = Path(cache_home) if cache_home else expand_path("~/.cache/forge")
     cache_home.mkdir(parents=True, exist_ok=True)
 
-    db = _open_inventory_db(
-        cache_home / HASH_CACHE_DB_NAME,
-        migrate_from_json=cache_home / HASH_CACHE_NAME,
-    )
+    db = _open_inventory_db(cache_home / HASH_CACHE_DB_NAME)
 
     source_key = str(source_path)
     source_path_str = source_key
