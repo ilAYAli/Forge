@@ -4799,11 +4799,11 @@ def print_status_details(
         section_fields = active_section_fields(summary)
         section_fields = color_status_fields(section_fields, summary=summary, color_enabled=color_enabled)
         suffix = f" {' '.join(section_fields)}" if section_fields else ""
-        active_title = color_count_line("active", len(active_rows), "yellow", color_enabled=color_enabled)
+        active_title = color_count_line("active workers", len(active_rows), "yellow", color_enabled=color_enabled)
         print(f"{indent}{active_title}{suffix}")
         print_active_rows(active_rows)
     elif show_empty:
-        print(f"{indent}{color_count_line('active', 0, 'yellow', color_enabled=color_enabled)}")
+        print(f"{indent}{color_count_line('active workers', 0, 'yellow', color_enabled=color_enabled)}")
     if stale_rows:
         print(f"{indent}{color_count_line('stale', len(stale_rows), 'red', color_enabled=color_enabled)}")
         print_active_rows(stale_rows)

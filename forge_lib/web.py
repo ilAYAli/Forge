@@ -1899,7 +1899,7 @@ _HTML = r"""<!DOCTYPE html>
         const activeFieldText = activeFields.join(' ');
         const ws = display.active_summary_text ? renderChips(display.active_summary_text) : renderChips(activeFieldText);
         sections.push(makeSection(r.run, 'active',
-          `active: <b>${active.count}</b>`, 'yel',
+          `active workers: <b>${active.count}</b>`, 'yel',
           ws + renderTasks(active.tasks), false
         ));
       }
