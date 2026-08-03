@@ -249,15 +249,8 @@ def build_inventory_subset(
     cache_root.mkdir(parents=True, exist_ok=True)
     inventory_path = cache_root / "inventory.json"
     inventory_path.write_bytes(canonical_inventory_bytes(files) + b"\n")
-    for item in files:
-        relative = Path(str(item["path"]))
-        target = cache_root / relative
-        target.parent.mkdir(parents=True, exist_ok=True)
-        source_file = source / relative
-        if target.is_symlink() and target.resolve() == source_file:
-            continue
-        target.unlink(missing_ok=True)
-        target.symlink_to(source_file)
+    # Symlinks are created lazily at sync time (sync_task_inputs_from_coordinator)
+    # to avoid pre-creating millions of symlinks and exhausting disk space.
     marker = {
         "schema": INVENTORY_SCHEMA,
         "digest": digest,
@@ -302,7 +295,10 @@ def attach_label_task_inputs(
         n_workers = min(os.cpu_count() or 4, 16)
         print(f"  Reading record counts for {len(missing):,} files ...", file=sys.stderr, flush=True)
         def _read(item: dict[str, Any]) -> tuple[str, int]:
-            return str(item["path"]), inventory_file_records(source / str(item["path"]))
+            try:
+                return str(item["path"]), inventory_file_records(source / str(item["path"]))
+            except (OSError, ValueError):
+                return str(item["path"]), 0
         with ThreadPoolExecutor(max_workers=n_workers) as pool:
             for path_str, count in pool.map(_read, missing):
                 record_counts[path_str] = count
@@ -323,7 +319,8 @@ def attach_label_task_inputs(
         worker_root = f"~/.cache/forge/task-inputs/{subset['digest']}"
         task["inputs"] = [{
             "name": "LC0 task input",
-            "source": str(subset["cache_root"]),
+            "source": str(inventory_info["source"]),
+            "inventory_source": str(subset["cache_root"]),
             "path": worker_root,
             "tree": "lc0-inventory",
             "digest": subset["digest"],

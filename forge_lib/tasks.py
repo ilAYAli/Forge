@@ -1074,33 +1074,101 @@ def sync_task_inputs_from_coordinator(
             raise RuntimeError(f"{coordinator_task['id']}: unsupported task input tree {tree!r}")
         if not digest:
             raise RuntimeError(f"{coordinator_task['id']}: LC0 task input is missing digest")
-        from .labeling import marker_matches, verify_inventory_tree
+        from .labeling import (
+            marker_matches, VERIFIED_MARKER_NAME, INVENTORY_SCHEMA,
+        )
 
         if marker_matches(destination, digest):
             continue
-        destination.mkdir(parents=True, exist_ok=True)
-        if host:
-            remote_source = f"{host}:{source.rstrip('/')}/"
-            result = run_process_command_with_retries(
+
+        # inventory_source is the local coordinator cache dir containing inventory.json.
+        # source is the original LC0 data directory (no symlink tree needed).
+        inventory_source = str(source_item.get("inventory_source") or "")
+
+        # Fetch inventory.json to learn which files belong to this task.
+        if host and inventory_source:
+            # Remote coordinator: rsync inventory.json first, then use --files-from.
+            destination.mkdir(parents=True, exist_ok=True)
+            inv_result = run_process_command_with_retries(
                 [
-                    "rsync", "-aL", "--delete", "--exclude", ".verified.json",
-                    "-e", RSYNC_SSH, remote_source, str(destination) + "/",
+                    "rsync", "-a", "-e", RSYNC_SSH,
+                    f"{host}:{inventory_source.rstrip('/')}/inventory.json",
+                    str(destination) + "/",
                 ],
                 retries=SSH_TRANSIENT_RETRY_COUNT,
             )
+            if inv_result.returncode != 0:
+                raise RuntimeError(
+                    inv_result.stderr.strip()
+                    or f"{coordinator_task['id']}: failed to fetch LC0 inventory.json"
+                )
+        elif inventory_source:
+            # Local coordinator: inventory.json is already in destination (same machine).
+            inv_src = expand_path(inventory_source) / "inventory.json"
+            destination.mkdir(parents=True, exist_ok=True)
+            if not (destination / "inventory.json").is_file() and inv_src.is_file():
+                shutil.copy2(inv_src, destination / "inventory.json")
+        else:
+            destination.mkdir(parents=True, exist_ok=True)
+
+        inventory_json = destination / "inventory.json"
+        if not inventory_json.is_file():
+            raise RuntimeError(
+                f"{coordinator_task['id']}: LC0 inventory.json not found at {inventory_json}"
+            )
+        inventory_data = json.loads(inventory_json.read_text(encoding="utf-8"))
+        inv_files = inventory_data.get("files", [])
+        file_paths = [str(f["path"]) for f in inv_files]
+
+        if host:
+            # Transfer the actual training files using --files-from (no symlinks needed).
+            with tempfile.NamedTemporaryFile(
+                mode="w", encoding="utf-8", suffix=".txt", delete=False,
+            ) as tf:
+                tf.write("\n".join(file_paths))
+                file_list_path = tf.name
+            try:
+                result = run_process_command_with_retries(
+                    [
+                        "rsync", "-a", f"--files-from={file_list_path}",
+                        "-e", RSYNC_SSH, f"{host}:{source.rstrip('/')}/",
+                        str(destination) + "/",
+                    ],
+                    retries=SSH_TRANSIENT_RETRY_COUNT,
+                )
+            finally:
+                Path(file_list_path).unlink(missing_ok=True)
             if result.returncode != 0:
                 raise RuntimeError(
                     result.stderr.strip()
                     or result.stdout.strip()
-                    or f"{coordinator_task['id']}: task input transfer failed"
+                    or f"{coordinator_task['id']}: LC0 task input transfer failed"
                 )
         else:
+            # Local coordinator: create symlinks from original source.
             source_path = expand_path(source)
             if not source_path.is_dir():
-                raise RuntimeError(f"{coordinator_task['id']}: task input does not exist: {source_path}")
-            shutil.copytree(source_path, destination, symlinks=False, dirs_exist_ok=True)
-            (destination / ".verified.json").unlink(missing_ok=True)
-        verify_inventory_tree(destination, digest)
+                raise RuntimeError(
+                    f"{coordinator_task['id']}: LC0 source does not exist: {source_path}"
+                )
+            for relative in file_paths:
+                rel_path = Path(relative)
+                target = destination / rel_path
+                target.parent.mkdir(parents=True, exist_ok=True)
+                source_file = source_path / rel_path
+                if target.is_symlink() and target.resolve() == source_file.resolve():
+                    continue
+                target.unlink(missing_ok=True)
+                target.symlink_to(source_file)
+
+        total_bytes = sum(int(f.get("size", 0)) for f in inv_files)
+        write_json(destination / VERIFIED_MARKER_NAME, {
+            "schema": INVENTORY_SCHEMA,
+            "digest": digest,
+            "files": len(file_paths),
+            "bytes": total_bytes,
+            "verified_at": now(),
+        })
         synced += 1
     return synced
 
