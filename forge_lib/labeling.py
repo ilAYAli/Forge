@@ -249,23 +249,16 @@ def build_inventory_subset(
     cache_root.mkdir(parents=True, exist_ok=True)
     inventory_path = cache_root / "inventory.json"
     inventory_path.write_bytes(canonical_inventory_bytes(files) + b"\n")
-    # Symlinks are created lazily at sync time (sync_task_inputs_from_coordinator)
-    # to avoid pre-creating millions of symlinks and exhausting disk space.
-    marker = {
-        "schema": INVENTORY_SCHEMA,
-        "digest": digest,
-        "files": len(files),
-        "bytes": sum(int(item["size"]) for item in files),
-        "verified_at": now(),
-    }
-    write_json(cache_root / VERIFIED_MARKER_NAME, marker)
+    # Do NOT write .verified.json here. Symlinks (local) or rsync (remote)
+    # happen at task sync time in sync_task_inputs_from_coordinator, which
+    # writes the marker only after files are actually accessible.
+    total_bytes = sum(int(item["size"]) for item in files)
     return {
         "digest": digest,
         "files": files,
-        "bytes": marker["bytes"],
+        "bytes": total_bytes,
         "cache_root": cache_root,
         "inventory": inventory_path,
-        "marker": marker,
         "source": source,
     }
 
