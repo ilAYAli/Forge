@@ -512,8 +512,23 @@ def worker_cache_dir(worker: dict[str, Any]) -> str:
         return str(cache_dir())
     return "/tmp/forge-cache"
 
+def worker_cache_dir_shell_preamble(worker: dict[str, Any]) -> str | None:
+    """Return a shell assignment for _FORGE_CACHE if the cache dir needs tilde expansion, else None."""
+    raw = worker_cache_dir(worker)
+    if not is_local_worker(worker) and raw.startswith("~"):
+        expand_code = f"from pathlib import Path; print(Path({json.dumps(raw)}).expanduser())"
+        return "_FORGE_CACHE=$(" + shell_join([worker_python(worker), "-c", expand_code]) + ")"
+    return None
+
 def worker_cache_file(worker: dict[str, Any], name: str) -> str:
     return str(Path(worker_cache_dir(worker)) / name)
+
+def worker_cache_file_shell(worker: dict[str, Any], name: str) -> str:
+    """Return a shell-safe reference to a cache file, using $_FORGE_CACHE if tilde expansion is needed."""
+    raw = worker_cache_dir(worker)
+    if not is_local_worker(worker) and raw.startswith("~"):
+        return f"$_FORGE_CACHE/{name}"
+    return worker_cache_file(worker, name)
 
 def is_local_worker(worker: dict[str, Any]) -> bool:
     return bool(worker.get("local", False))
@@ -661,9 +676,13 @@ def bootstrap_worker_runner(
 ) -> None:
     if not is_local_worker(worker):
         cache = worker_cache_dir(worker)
+        mkdir_code = (
+            "from pathlib import Path; "
+            f"Path({json.dumps(cache)}).expanduser().mkdir(parents=True, exist_ok=True)"
+        )
         result = run_worker_shell(
             worker,
-            "mkdir -p " + shlex.quote(cache),
+            shell_join([worker_python(worker), "-c", mkdir_code]),
             timeout=timeout,
             tracker=tracker,
             retries=retries,
@@ -1144,30 +1163,40 @@ def manifest_has_setup_requirements(manifest: dict[str, Any]) -> bool:
         return False
     return bool(iter_git_requirements(manifest, req) or source_requirement_items(manifest))
 
+def _shell_quote_arg(arg: str) -> str:
+    """Quote a shell argument, but pass $VAR/path references through unquoted."""
+    if arg.startswith("$"):
+        return arg
+    return shlex.quote(arg)
+
+def _shell_cmd(python: str, runner: str, args: list[str]) -> str:
+    """Build a shell command where runner/args may contain $VAR references."""
+    quoted_args = " ".join(_shell_quote_arg(a) for a in args)
+    return f"{shlex.quote(python)} {runner} {quoted_args}"
+
 def deploy_prereq_command(
     *,
     worker: dict[str, Any],
     manifest: dict[str, Any],
     coordinator: str | None = None,
 ) -> str:
-    runner = worker_cache_file(worker, "forge.py")
-    manifest_path = worker_cache_file(worker, "manifest.json")
+    runner = worker_cache_file_shell(worker, "forge.py")
+    manifest_path = worker_cache_file_shell(worker, "manifest.json")
     profile_args = worker_profile_args(manifest, worker)
     python = worker_python(worker)
     commands = ["set -e"]
+    preamble = worker_cache_dir_shell_preamble(worker)
+    if preamble:
+        commands.append(preamble)
     if coordinator:
-        commands.append(shell_join([
-            python, runner, "doctor",
-            "--manifest", manifest_path,
-            *profile_args,
-            "--role", "worker",
-            "--skip-requirements",
+        commands.append(_shell_cmd(python, runner, [
+            "doctor", "--manifest", manifest_path,
+            *profile_args, "--role", "worker", "--skip-requirements",
             "--coordinator", coordinator,
         ]))
     if manifest_has_setup_requirements(manifest):
-        commands.append(shell_join([python, runner, "sync-repos", "--manifest", manifest_path, *profile_args]))
-    doctor_command = [python, runner, "doctor", "--manifest", manifest_path, *profile_args, "--role", "worker"]
-    commands.append(shell_join(doctor_command))
+        commands.append(_shell_cmd(python, runner, ["sync-repos", "--manifest", manifest_path, *profile_args]))
+    commands.append(_shell_cmd(python, runner, ["doctor", "--manifest", manifest_path, *profile_args, "--role", "worker"]))
     return "\n".join(commands)
 
 def deploy_work_command(
@@ -1180,12 +1209,11 @@ def deploy_work_command(
     task_complete_command: str | None = None,
     task_complete_sync: bool = False,
 ) -> str:
-    runner = worker_cache_file(worker, "forge.py")
-    manifest_path = worker_cache_file(worker, "manifest.json")
+    runner = worker_cache_file_shell(worker, "forge.py")
+    manifest_path = worker_cache_file_shell(worker, "manifest.json")
     profile_args = worker_profile_args(manifest, worker)
     python = worker_python(worker)
-    command = [
-        python, runner,
+    args = [
         "work",
         "--manifest", manifest_path,
         "--coordinator", coordinator,
@@ -1199,14 +1227,18 @@ def deploy_work_command(
         *profile_args,
     ]
     if retry_failed:
-        command.append("--retry-failed")
+        args.append("--retry-failed")
     if task_attempts > 0:
-        command.extend(["--task-attempts", str(task_attempts)])
+        args.extend(["--task-attempts", str(task_attempts)])
     if task_complete_command:
-        command.extend(["--task-complete-command", task_complete_command])
+        args.extend(["--task-complete-command", task_complete_command])
     if task_complete_sync:
-        command.append("--task-complete-sync")
-    return shell_join(command)
+        args.append("--task-complete-sync")
+    cmd = _shell_cmd(python, runner, args)
+    preamble = worker_cache_dir_shell_preamble(worker)
+    if preamble:
+        return preamble + "\n" + cmd
+    return cmd
 
 def launch_file_stem(run_name: str, index: int, worker: dict[str, Any]) -> str:
     label = worker_label(
