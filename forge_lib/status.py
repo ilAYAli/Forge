@@ -4809,12 +4809,14 @@ def print_status_details(
         print_active_rows(stale_rows)
     process_rows = summary.get("worker_processes")
     if isinstance(process_rows, list) and process_rows:
-        print(f"{indent}{color_count_line('worker processes', len(process_rows), 'cyan', color_enabled=color_enabled)}")
-        for process in process_rows:
-            worker_id = str(process.get("worker_id") or "unknown")
-            state_name = str(process.get("state") or "unknown")
-            age = compact_duration(float(process.get("state_age_s") or 0))
-            print(f"{indent}  {worker_id} [{state_name}] {age}")
+        inactive_rows = [p for p in process_rows if str(p.get("state") or "") != "running"]
+        if inactive_rows:
+            print(f"{indent}{color_count_line('inactive workers', len(inactive_rows), 'cyan', color_enabled=color_enabled)}")
+            for process in inactive_rows:
+                worker_id = str(process.get("worker_id") or "unknown")
+                state_name = str(process.get("state") or "unknown")
+                age = compact_duration(float(process.get("state_age_s") or 0))
+                print(f"{indent}  {worker_id} [{state_name}] {age}")
     print_pending_status(summary, color_enabled=color_enabled, show_empty=show_empty, indent=indent)
     print_status_group("fail", summary["groups"]["fail"], color_enabled=color_enabled, show_empty=show_empty, indent=indent)
     for item in summary.get("failure_reasons", []):
