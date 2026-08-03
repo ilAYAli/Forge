@@ -91,8 +91,24 @@ def validate_manifest_payload(manifest: dict[str, Any], *, label: str) -> None:
             seen_outputs[output_key] = task_id
 
 def load_manifest(path: Path) -> dict[str, Any]:
+    import pickle
+    cache_path = path.with_suffix(".cache.pkl")
+    try:
+        manifest_mtime = path.stat().st_mtime_ns
+        if cache_path.stat().st_mtime_ns >= manifest_mtime:
+            with open(cache_path, "rb") as _f:
+                return pickle.load(_f)
+    except (OSError, pickle.UnpicklingError, EOFError, AttributeError):
+        pass
     manifest = read_json(path)
     validate_manifest_payload(manifest, label=str(path))
+    try:
+        _tmp = cache_path.with_name(f".{cache_path.name}.{os.getpid()}.tmp")
+        with open(_tmp, "wb") as _f:
+            pickle.dump(manifest, _f, protocol=pickle.HIGHEST_PROTOCOL)
+        os.replace(_tmp, cache_path)
+    except OSError:
+        pass
     return manifest
 
 def task_template_values(manifest: dict[str, Any], task: dict[str, Any]) -> dict[str, Any]:

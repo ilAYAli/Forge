@@ -1576,7 +1576,7 @@ _HTML = r"""<!DOCTYPE html>
     }
 
     function graphCombinedRowHtml(series, graph, xTotal, options = {}) {
-      const h = 72;
+      const h = GRAPH_H;
       const orderedSeries = combinedGraphSeriesOrder(series);
       const primary = graphSeriesByName(orderedSeries, 'total') || orderedSeries[0];
       const plotted = options.plotAll ? orderedSeries : [primary];
@@ -1595,7 +1595,7 @@ _HTML = r"""<!DOCTYPE html>
       }).join(' · ');
       const clipId = `graph-clip-${Math.random().toString(36).slice(2)}`;
       return combinedGraphLegendHtml(orderedSeries, valueSuffix)
-        + `<div class="graph-row combined">`
+        + `<div class="graph-row">`
         + `<span class="graph-axis">${graphAxisHtml(primary.name, primary.points, allY)}</span>`
         + `<span class="graph-plot">`
         + `<svg class="graph-live-hover" viewBox="0 0 ${GRAPH_W} ${h}" preserveAspectRatio="none" aria-label="${esc(valueText)} at ${esc(fmtGraphNumber(latestX))} records">`
@@ -2129,7 +2129,7 @@ _STATUS_CACHE: dict[str, Any] | None = None
 _STATUS_CACHE_EPOCH = 0.0
 _STATUS_CACHE_ERROR: str | None = None
 _STATUS_REFRESHING = False
-_WEB_STATUS_TIMEOUT_SECONDS = 10.0
+_WEB_STATUS_TIMEOUT_SECONDS = 30.0
 _WEB_SSH_OPTS = [
     "-o", "BatchMode=yes",
     "-o", "ConnectTimeout=5",

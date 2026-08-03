@@ -140,11 +140,20 @@ def script_repo(path: Path | None = None) -> Path:
         raise SystemExit(exc.output.strip() or f"{path}: not inside a git checkout") from exc
     return Path(root)
 
+_expand_path_cache: dict[tuple[str, str], Path] = {}
+
 def expand_path(value: str | Path) -> Path:
-    path = Path(os.path.expandvars(str(value))).expanduser()
-    if path.is_absolute():
-        return path
-    return Path.cwd() / path
+    raw = str(value)
+    cwd = os.getcwd()
+    key = (raw, cwd)
+    cached = _expand_path_cache.get(key)
+    if cached is not None:
+        return cached
+    path = Path(os.path.expandvars(raw)).expanduser()
+    if not path.is_absolute():
+        path = Path(cwd) / path
+    _expand_path_cache[key] = path
+    return path
 
 def runs_dir() -> Path:
     override = os.environ.get(RUNS_DIR_ENV)

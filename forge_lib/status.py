@@ -371,6 +371,35 @@ def queue_monitor_state(manifest_path: Path) -> tuple[str | None, dict[str, Any]
         return "invalid", payload
     return ("running" if process_is_alive(pid) else "dead"), payload
 
+def run_dir_has_attention_state(run_dir: Path) -> bool:
+    """Fast attention-state check from directory structure, no manifest load needed."""
+    state = run_dir / "state"
+    claims = run_dir / "claims"
+    try:
+        if (state / "queue.json").exists() or (state / "launch.json").exists() or (state / "stop.json").exists():
+            return True
+        # Single pass over state dir to check both fail and running markers.
+        try:
+            for entry in os.scandir(state):
+                name = entry.name
+                if name.endswith(".fail.json") or name.endswith(".running.json"):
+                    return True
+        except OSError:
+            return True
+        # Claims dir is usually tiny — check it last.
+        try:
+            for entry in os.scandir(claims):
+                if entry.name.endswith(".claim") and Path(entry.path, "claim.json").exists():
+                    return True
+        except FileNotFoundError:
+            pass
+        except OSError:
+            return True
+    except OSError:
+        return True
+    return False
+
+
 def load_run_summary_from_manifest(
     path: Path,
     *,
@@ -378,6 +407,8 @@ def load_run_summary_from_manifest(
     attention_only: bool,
     include_completed_progress: bool = True,
 ) -> dict[str, Any] | None:
+    if attention_only and not run_dir_has_attention_state(path.parent):
+        return None
     try:
         manifest = load_manifest(path)
     except OSError:
@@ -4438,11 +4469,14 @@ def status_summary(
         if config_progress is not None:
             unit, total = config_progress
             progress_totals[unit] = progress_totals.get(unit, 0) + total
-        progress_data = (
-            task_log_progress_data(manifest, task)
-            if include_completed_progress and state in {"done", "fail", "pending"}
-            else None
-        )
+        if include_completed_progress and state in {"done", "fail", "pending"}:
+            # For pending tasks, skip the expensive multi-path scan if the log doesn't exist.
+            if state == "pending" and not task_log_path(manifest, task).exists():
+                progress_data = None
+            else:
+                progress_data = task_log_progress_data(manifest, task)
+        else:
+            progress_data = None
         if rollup_finished_progress and state in {"done", "fail"}:
             task_id = str(task["id"])
             stamp = finished_progress_stamp(manifest, task)
