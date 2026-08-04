@@ -235,7 +235,7 @@ _HTML = r"""<!DOCTYPE html>
       .mobile-score + .run-summary { display: none; }
       .run-summary .field-elo, .run-summary .field-ci, .run-summary .field-llr,
       .run-summary .field-games, .run-summary .field-workers,
-      .run-summary .field-speedup, .run-summary .run-eta { display: none; }
+      .run-summary .field-speedup { display: none; }
       .run-tree { margin-left: 12px; padding-right: 6px; }
       .section-detail { margin-left: 6px; padding-left: 6px; }
       .task-graph { padding: 9px 7px 7px; }
