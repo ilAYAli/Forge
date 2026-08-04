@@ -766,7 +766,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     self_update.add_argument("--remote", default="origin", help="Git remote to pull from.")
     self_update.add_argument("--branch", help="Branch to update; defaults to current branch.")
-    self_update.add_argument("--require-clean", action=argparse.BooleanOptionalAction, default=True, help="Require clean worktree before updating.")
+    self_update.add_argument("--require-clean", action=argparse.BooleanOptionalAction, default=False, help="Require clean worktree before updating.")
     self_update.add_argument("--json", action="store_true", help="Print version payload as JSON after updating.")
     self_update.set_defaults(func=cmd_self_update)
 
@@ -792,7 +792,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     update.add_argument("--remote", default="origin", help="Git remote to pull from.")
     update.add_argument("--branch", default="main", help="Branch to update.")
-    update.add_argument("--require-clean", action=argparse.BooleanOptionalAction, default=True, help="Require clean worktrees before updating.")
+    update.add_argument("--require-clean", action=argparse.BooleanOptionalAction, default=False, help="Require clean worktrees before updating.")
     update.add_argument("--timeout-seconds", type=float, default=300.0, help="Timeout per worker update.")
     update.set_defaults(func=cmd_update)
 
