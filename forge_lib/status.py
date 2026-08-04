@@ -4938,7 +4938,7 @@ def _cmd_wait(args: argparse.Namespace) -> int:
             print(line, flush=True)
             last_line = line
 
-        if counts["fail"] and args.fail_on_fail:
+        if counts["fail"] and args.fail_on_fail and manifest.get("kind") != "label":
             request_stop_for_run(manifest_path, manifest, lease_seconds=args.lease_seconds)
             return finish("run_fail", "failed", 1, manifest)
         decision = sprt_aggregate_decision(summary)
