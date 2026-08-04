@@ -3405,7 +3405,10 @@ def run_active_worker_process_count(manifest: dict[str, Any], worker: str, *, pe
 
 def run_pending_task_count(manifest: dict[str, Any], *, lease_seconds: int) -> int:
     states = fast_task_states(manifest, lease_seconds=lease_seconds)
-    return sum(states.get(str(task["id"]), "pending") == "pending" for task in manifest.get("tasks") or [])
+    return sum(
+        states.get(str(task["id"]), "pending") in ("pending", "stale")
+        for task in manifest.get("tasks") or []
+    )
 
 def release_worker_id_claims(
     manifest: dict[str, Any],
