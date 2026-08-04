@@ -12,12 +12,16 @@ if [ -z "$payload" ]; then
     payload=$(cat)
 fi
 
-rendered=$(
-    FORGE_EVENT_JSON="$payload" python3 - <<'PY'
-import json
-import os
+payload_file=$(mktemp)
+trap 'rm -f "$payload_file"' EXIT
+printf '%s' "$payload" > "$payload_file"
 
-event = json.loads(os.environ["FORGE_EVENT_JSON"])
+rendered=$(
+    python3 - "$payload_file" <<'PY'
+import json
+import sys
+
+event = json.loads(open(sys.argv[1]).read())
 event_name = str(event.get("event") or "")
 kind = event.get("kind")
 
@@ -98,14 +102,14 @@ else:
 PY
 )
 wake_message=$(
-    FORGE_EVENT_JSON="$payload" python3 - <<'PY'
+    python3 - "$payload_file" <<'PY'
 import json
 import math
-import os
+import sys
 import re
 from pathlib import Path
 
-event = json.loads(os.environ["FORGE_EVENT_JSON"])
+event = json.loads(open(sys.argv[1]).read())
 event_name = str(event.get("event") or "")
 
 if event_name in ("phase_start", "phase_done"):
@@ -218,10 +222,10 @@ rc=0
 send_ntfy "$AI_STDOUT_URL" "Forge" "$rendered" || rc=$?
 
 event_name=$(
-    FORGE_EVENT_JSON="$payload" python3 - <<'PY'
+    python3 - "$payload_file" <<'PY'
 import json
-import os
-print(json.loads(os.environ["FORGE_EVENT_JSON"]).get("event", ""))
+import sys
+print(json.loads(open(sys.argv[1]).read()).get("event", ""))
 PY
 )
 
