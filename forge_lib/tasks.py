@@ -1604,22 +1604,6 @@ def run_task_complete_command(
     payload = task_complete_event_payload(manifest, task, rc=rc)
     run_notify_command(command_text, payload, wait=sync)
 
-def cleanup_task_input_dirs(local_task: dict[str, Any]) -> None:
-    for inp in local_task.get("inputs") or []:
-        if not isinstance(inp, dict):
-            continue
-        if inp.get("tree") not in ("lc0-inventory", "file-set"):
-            continue
-        path_str = inp.get("path")
-        if not path_str:
-            continue
-        path = expand_path(path_str)
-        if path.is_dir():
-            try:
-                shutil.rmtree(path)
-            except OSError as exc:
-                print(f"cleanup task-inputs {path}: {exc}", file=sys.stderr)
-
 
 def cmd_work(args: argparse.Namespace) -> int:
     os.environ["FORGE_COORDINATOR"] = str(args.coordinator)
@@ -1776,7 +1760,6 @@ def cmd_work(args: argparse.Namespace) -> int:
         finally:
             stop_heartbeat.set()
             heartbeat.join(timeout=5)
-            cleanup_task_input_dirs(local_task)
             try:
                 release_on_coordinator(
                     args.coordinator,
