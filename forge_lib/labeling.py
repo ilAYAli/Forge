@@ -377,6 +377,18 @@ def cleanup_partials(manifest: dict[str, Any], finalizer: dict[str, Any]) -> Non
     for path in paths:
         for partial in path.parent.glob(f".{path.name}.partial.*"):
             partial.unlink(missing_ok=True)
+    for task in manifest.get("tasks") or []:
+        for inp in task.get("inputs") or []:
+            if not isinstance(inp, dict):
+                continue
+            if inp.get("tree") not in ("lc0-inventory", "file-set"):
+                continue
+            path_str = inp.get("path")
+            if not path_str:
+                continue
+            path = expand_path(path_str)
+            if path.is_dir():
+                shutil.rmtree(path, ignore_errors=True)
 
 
 def finalize_labeling(manifest_path: Path, manifest: dict[str, Any]) -> dict[str, Any] | None:
