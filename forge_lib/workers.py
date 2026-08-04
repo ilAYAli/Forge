@@ -702,14 +702,22 @@ def bootstrap_worker_runner(
         tracker=tracker,
         retries=retries,
     )
-    copy_to_worker(
-        worker,
-        manifest_path,
-        worker_cache_file(worker, "manifest.json"),
-        timeout=timeout,
-        tracker=tracker,
-        retries=retries,
-    )
+    # Workers receive exact task payloads from the coordinator when claiming.
+    # Do not make every slot retain a full copy of a potentially huge task
+    # catalog merely to obtain the shared requirements and path mappings.
+    worker_manifest = read_json(manifest_path)
+    worker_manifest = {**worker_manifest, "tasks": []}
+    with tempfile.TemporaryDirectory(prefix="forge-worker-manifest-") as tmp:
+        worker_manifest_path = Path(tmp) / "manifest.json"
+        write_json(worker_manifest_path, worker_manifest)
+        copy_to_worker(
+            worker,
+            worker_manifest_path,
+            worker_cache_file(worker, "manifest.json"),
+            timeout=timeout,
+            tracker=tracker,
+            retries=retries,
+        )
 
 def active_worker_profile(manifest: dict[str, Any], worker: dict[str, Any]) -> str | None:
     profile = str(worker.get("profile") or "").strip()

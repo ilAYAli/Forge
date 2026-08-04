@@ -18186,6 +18186,42 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
                 ),
             )
 
+    def test_cleanup_task_input_removes_remote_lc0_bundle_only(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            bundle = Path(tmp) / "task-inputs" / "digest"
+            bundle.mkdir(parents=True)
+            (bundle / "inventory.json").write_text("{}\n", encoding="utf-8")
+            task = {"inputs": [{
+                "tree": "lc0-inventory",
+                "path": str(bundle),
+                "inventory_source": str(bundle),
+            }]}
+
+            forge.cleanup_task_input_dirs(
+                task,
+                coordinator="remote-host:/runs/manifest.json",
+            )
+
+            self.assertFalse(bundle.exists())
+
+    def test_cleanup_task_input_preserves_coordinator_inventory(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            bundle = Path(tmp) / "task-inputs" / "digest"
+            bundle.mkdir(parents=True)
+            (bundle / "inventory.json").write_text("{}\n", encoding="utf-8")
+            task = {"inputs": [{
+                "tree": "lc0-inventory",
+                "path": str(bundle),
+                "inventory_source": str(bundle),
+            }]}
+
+            forge.cleanup_task_input_dirs(
+                task,
+                coordinator="localhost:/runs/manifest.json",
+            )
+
+            self.assertTrue(bundle.is_dir())
+
     def test_claimed_conversion_task_fetches_only_its_pgn_file_set(self) -> None:
         from forge_lib.task_inputs import attach_pgn_task_inputs
 

@@ -1904,7 +1904,7 @@ _HTML = r"""<!DOCTYPE html>
         ));
       }
 
-      const inactiveWorkers = (workers.processes || []).filter(p => String(p.state || '') !== 'running');
+      const inactiveWorkers = (workers.processes || []).filter(p => !p.active);
       if (inactiveWorkers.length > 0) {
         sections.push(makeSection(r.run, 'workers',
           `inactive workers: <b>${inactiveWorkers.length}</b>`, 'dim',

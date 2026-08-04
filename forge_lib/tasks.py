@@ -598,13 +598,18 @@ def claim_task(
     lease_seconds: int,
     retry_failed: bool,
     max_attempts: int = 0,
+    manifest_sha256: str | None = None,
 ) -> dict[str, Any] | None:
-    if manifest_path is not None and isinstance(manifest.get("template"), dict):
+    if manifest_path is not None:
         from .chunking import adaptive_live_rechunk_enabled, adaptive_rechunk_pending_tasks
 
+        live_rechunk = adaptive_live_rechunk_enabled(manifest)
+    else:
+        live_rechunk = False
+
+    if manifest_path is not None and live_rechunk:
         with adaptive_claim_lock(manifest_path):
             manifest = load_manifest(manifest_path)
-            live_rechunk = adaptive_live_rechunk_enabled(manifest)
             if stop_requested(manifest):
                 return None
             if worker_drained(manifest, worker):
@@ -634,7 +639,7 @@ def claim_task(
             markers = task_state_marker_ids(manifest)
             for claim_pass in range(2):
                 claim_dir(manifest).mkdir(parents=True, exist_ok=True)
-                digest = manifest_checksum(manifest)
+                digest = manifest_checksum_for_path(manifest_path, manifest)
                 for task in sorted(manifest["tasks"], key=claim_order):
                     preferred = str(task.get("claim_worker") or "").strip()
                     if live_rechunk and preferred and preferred != worker:
@@ -713,7 +718,11 @@ def claim_task(
     if worker_drained(manifest, worker):
         return None
     claim_dir(manifest).mkdir(parents=True, exist_ok=True)
-    digest = manifest_checksum(manifest)
+    digest = manifest_sha256 or (
+        manifest_checksum_for_path(manifest_path, manifest)
+        if manifest_path is not None
+        else manifest_checksum(manifest)
+    )
     max_attempts = max(0, int(max_attempts))
 
     def claim_order(item: dict[str, Any]) -> tuple[int, bool, int]:
@@ -1349,16 +1358,18 @@ def cmd_run(args: argparse.Namespace) -> int:
     return run_task(manifest, task, force=args.force)
 
 def cmd_claim(args: argparse.Namespace) -> int:
-    manifest = load_manifest(expand_path(args.manifest))
+    manifest_path = expand_path(args.manifest)
+    manifest = load_manifest(manifest_path)
     result = claim_task(
         manifest,
-        manifest_path=expand_path(args.manifest),
+        manifest_path=manifest_path,
         worker=args.worker,
         worker_id=getattr(args, "worker_id", None),
         profile=args.profile,
         lease_seconds=args.lease_seconds,
         retry_failed=args.retry_failed,
         max_attempts=getattr(args, "max_attempts", 0),
+        manifest_sha256=manifest_checksum_for_path(manifest_path, manifest),
     )
     if args.json:
         print(json.dumps(result or {"task": None}, sort_keys=True))
@@ -1605,13 +1616,69 @@ def run_task_complete_command(
     run_notify_command(command_text, payload, wait=sync)
 
 
+def task_input_cache_directory(task_input: dict[str, Any]) -> Path | None:
+    """Return a deletable content-addressed task-input directory.
+
+    Refuse anything that is not an immediate child of a task-inputs cache root;
+    input metadata can contain original source paths and must never make those
+    eligible for cleanup.
+    """
+    # LC0 labeling partitions the source files into disjoint content-addressed
+    # bundles, so one task owns one directory. Generic file-set bundles can be
+    # shared by concurrent tasks and need a separate reference-counted policy.
+    if task_input.get("tree") != "lc0-inventory":
+        return None
+    value = str(task_input.get("path") or "").strip()
+    if not value:
+        return None
+    path = expand_path(value)
+    if path.parent.name != "task-inputs" or not path.name:
+        return None
+    return path
+
+
+def cleanup_task_input_dirs(
+    local_task: dict[str, Any],
+    *,
+    coordinator: str | None = None,
+) -> None:
+    """Remove per-task staged inputs after their consumer has finished."""
+    coordinator_host, _manifest_path = parse_coordinator(coordinator or "")
+    local_names = {
+        socket.gethostname().split(".", 1)[0],
+        socket.getfqdn().split(".", 1)[0],
+        "localhost",
+        "127.0.0.1",
+        "::1",
+    }
+    coordinator_is_local = not coordinator_host or coordinator_host.split(".", 1)[0] in local_names
+    for task_input in task_input_items(local_task):
+        path = task_input_cache_directory(task_input)
+        if path is None:
+            continue
+        inventory_source = str(task_input.get("inventory_source") or "").strip()
+        if (
+            coordinator_is_local
+            and inventory_source
+            and expand_path(inventory_source) == path
+        ):
+            continue
+        try:
+            if path.is_symlink():
+                path.unlink(missing_ok=True)
+            elif path.is_dir():
+                shutil.rmtree(path)
+        except OSError as exc:
+            print(f"cleanup task input {path}: {exc}", file=sys.stderr)
+
+
 def cmd_work(args: argparse.Namespace) -> int:
     os.environ["FORGE_COORDINATOR"] = str(args.coordinator)
     os.environ["FORGE_RUNNER"] = str(script_path())
     os.environ["FORGE_PYTHON"] = sys.executable
     local_manifest_path = expand_path(args.manifest)
     local_manifest_base = load_manifest(local_manifest_path)
-    coordinator_manifest = copy.deepcopy(local_manifest_base)
+    coordinator_manifest = local_manifest_base
     local_manifest = worker_execution_manifest(
         local_manifest_base,
         profile=args.profile,
@@ -1661,12 +1728,10 @@ def cmd_work(args: argparse.Namespace) -> int:
         # entire, potentially very large coordinator manifest for every claim.
         claimed_task = claim.get("task_payload")
         if isinstance(claimed_task, dict):
-            coordinator_manifest["tasks"] = [
-                task
-                for task in coordinator_manifest["tasks"]
-                if str(task.get("id") or "") != task_id
-            ]
-            coordinator_manifest["tasks"].append(copy.deepcopy(claimed_task))
+            coordinator_manifest = {
+                **coordinator_manifest,
+                "tasks": [copy.deepcopy(claimed_task)],
+            }
         else:
             # Compatibility with an older coordinator during a rolling update.
             coordinator_manifest = load_coordinator_manifest(args.coordinator)
@@ -1760,6 +1825,7 @@ def cmd_work(args: argparse.Namespace) -> int:
         finally:
             stop_heartbeat.set()
             heartbeat.join(timeout=5)
+            cleanup_task_input_dirs(local_task, coordinator=args.coordinator)
             try:
                 release_on_coordinator(
                     args.coordinator,

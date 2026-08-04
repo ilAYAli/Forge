@@ -865,6 +865,32 @@ def task_done_payload(manifest: dict[str, Any], task: dict[str, Any]) -> dict[st
     payload = read_state_json(task_done_path(manifest, task))
     return payload if isinstance(payload, dict) else None
 
+
+def active_task_log_progress_data(
+    manifest: dict[str, Any],
+    task: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Read log progress only when the log belongs to the current attempt."""
+    log_path = task_log_path(manifest, task)
+    claim = read_state_json(task_claim_path(manifest, task))
+    running = read_state_json(task_running_path(manifest, task))
+    attempt_started = 0.0
+    for payload in (claim, running):
+        if not isinstance(payload, dict):
+            continue
+        value = payload.get("claimed_epoch") or payload.get("started_epoch")
+        if isinstance(value, (int, float)):
+            attempt_started = max(attempt_started, float(value))
+        timestamp = parse_timestamp_epoch(payload.get("started_at"))
+        if timestamp is not None:
+            attempt_started = max(attempt_started, timestamp)
+    try:
+        if attempt_started and log_path.stat().st_mtime + 1.0 < attempt_started:
+            return None
+    except OSError:
+        return None
+    return task_log_progress_data(manifest, task)
+
 def infer_progress_rate(
     progress_data: dict[str, Any] | None,
     running_payload: dict[str, Any] | None,
@@ -1683,6 +1709,16 @@ def run_status_payload(summary: dict[str, Any]) -> dict[str, Any]:
         for key, value in summary.items()
         if key not in {"manifest_payload", "rows"}
     }
+    worker_processes = summary.get("worker_processes", [])
+    active_processes = [
+        process for process in worker_processes
+        if bool(process.get("active"))
+    ] if isinstance(worker_processes, list) else []
+    active_process_count = (
+        len(active_processes)
+        if isinstance(worker_processes, list) and worker_processes
+        else counts["running"] + counts["claimed"] + counts["stale"]
+    )
     payload.update({
         "run": summary["run"],
         "state": run_state(summary),
@@ -1712,8 +1748,9 @@ def run_status_payload(summary: dict[str, Any]) -> dict[str, Any]:
                 "groups": copy.deepcopy(summary["groups"]["done"]),
             },
             "active": {
-                "count": counts["running"] + counts["claimed"] + counts["stale"],
+                "count": active_process_count,
                 "tasks": copy.deepcopy(summary["active"]),
+                "processes": copy.deepcopy(active_processes),
                 "fields": active_fields,
                 "summary": active_worker_summary_payload(summary),
                 "summary_text": active_summary,
@@ -2719,6 +2756,10 @@ def status_worker(manifest: dict[str, Any], task: dict[str, Any], state: str) ->
     elif state in {"claimed", "running", "stale"}:
         paths.append(task_claim_path(manifest, task))
         paths.append(task_running_path(manifest, task))
+        # The task may finish between the fast marker scan and this payload
+        # read; preserve its worker name from the newly written result.
+        paths.append(task_done_path(manifest, task))
+        paths.append(task_fail_path(manifest, task))
 
     for path in paths:
         payload = read_state_json(path)
@@ -2730,7 +2771,8 @@ def status_worker(manifest: dict[str, Any], task: dict[str, Any], state: str) ->
         worker = worker or payload.get("host")
         if worker:
             return worker_group_name(str(worker))
-    return ""
+    preferred = str(task.get("claim_worker") or "").strip()
+    return worker_group_name(preferred) if preferred else ""
 
 def status_worker_id(manifest: dict[str, Any], task: dict[str, Any], state: str) -> str:
     paths: list[Path] = []
@@ -4490,9 +4532,9 @@ def status_summary(
         if state in {"running", "claimed", "stale"}:
             progress_data = task_heartbeat_progress_data(manifest, task)
             if progress_data is None and state in {"running", "stale"}:
-                progress_data = task_log_progress_data(manifest, task)
+                progress_data = active_task_log_progress_data(manifest, task)
             elif manifest_kind in {"selfplay-to-bullet", "label-pgn", "label-tb"}:
-                progress_data = task_log_progress_data(manifest, task) or progress_data
+                progress_data = active_task_log_progress_data(manifest, task) or progress_data
         running_payload = task_running_payload(manifest, task) if state in {"running", "claimed", "stale"} else None
         if isinstance(progress_config, dict):
             progress_data = infer_progress_rate(progress_data, running_payload)
@@ -4643,6 +4685,13 @@ def status_summary(
         manifest,
         pending=counts["pending"],
     )
+    active_worker_ids = {
+        str(row.get("worker_id") or "").strip()
+        for row in active
+        if str(row.get("worker_id") or "").strip()
+    }
+    for process in worker_processes:
+        process["active"] = str(process.get("worker_id") or "").strip() in active_worker_ids
 
     return {
         "tasks": len(manifest["tasks"]),
@@ -4799,7 +4848,13 @@ def print_status_details(
         section_fields = active_section_fields(summary)
         section_fields = color_status_fields(section_fields, summary=summary, color_enabled=color_enabled)
         suffix = f" {' '.join(section_fields)}" if section_fields else ""
-        active_title = color_count_line("active workers", len(active_rows), "yellow", color_enabled=color_enabled)
+        process_rows = summary.get("worker_processes")
+        active_process_count = (
+            sum(1 for process in process_rows if bool(process.get("active")))
+            if isinstance(process_rows, list) and process_rows
+            else len(active_rows)
+        )
+        active_title = color_count_line("active workers", active_process_count, "yellow", color_enabled=color_enabled)
         print(f"{indent}{active_title}{suffix}")
         print_active_rows(active_rows)
     elif show_empty:
@@ -4809,7 +4864,7 @@ def print_status_details(
         print_active_rows(stale_rows)
     process_rows = summary.get("worker_processes")
     if isinstance(process_rows, list) and process_rows:
-        inactive_rows = [p for p in process_rows if str(p.get("state") or "") != "running"]
+        inactive_rows = [p for p in process_rows if not bool(p.get("active"))]
         if inactive_rows:
             print(f"{indent}{color_count_line('inactive workers', len(inactive_rows), 'cyan', color_enabled=color_enabled)}")
             for process in inactive_rows:

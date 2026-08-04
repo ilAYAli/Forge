@@ -111,6 +111,32 @@ def load_manifest(path: Path) -> dict[str, Any]:
         pass
     return manifest
 
+
+def manifest_checksum_for_path(path: Path, manifest: dict[str, Any]) -> str:
+    """Cache the canonical manifest checksum without changing its semantics."""
+    cache_path = path.with_suffix(".checksum.json")
+    try:
+        stat = path.stat()
+        cached = read_json(cache_path)
+        if (
+            int(cached.get("mtime_ns", -1)) == stat.st_mtime_ns
+            and int(cached.get("size", -1)) == stat.st_size
+            and isinstance(cached.get("sha256"), str)
+        ):
+            return str(cached["sha256"])
+    except (OSError, SystemExit, TypeError, ValueError):
+        stat = path.stat()
+    digest = manifest_checksum(manifest)
+    try:
+        write_json(cache_path, {
+            "mtime_ns": stat.st_mtime_ns,
+            "size": stat.st_size,
+            "sha256": digest,
+        })
+    except OSError:
+        pass
+    return digest
+
 def task_template_values(manifest: dict[str, Any], task: dict[str, Any]) -> dict[str, Any]:
     vars_obj = manifest.get("vars", {})
     if not isinstance(vars_obj, dict):
