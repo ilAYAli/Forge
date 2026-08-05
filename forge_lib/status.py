@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import shlex
+import sqlite3
 
 from .calibration import adaptive_blended_throughput, adaptive_rate_warmup_units
 from .config import default_notify_command, speedup_single_host_workers
@@ -4959,6 +4960,10 @@ def _cmd_wait(args: argparse.Namespace) -> int:
                     payload[key] = finalization[key]
         write_json(run_summary_path(manifest_path), payload)
         try:
+            record_sprt_completion(payload)
+        except Exception as exc:
+            print(f"sprt.db recording failed: {exc}", file=sys.stderr)
+        try:
             from .web import remember_web_run_payload
 
             remember_web_run_payload(payload, coordinator_runs=configured_coordinator_runs())
@@ -5243,6 +5248,129 @@ def run_completion_event_payload(
             payload["sprt"] = sprt
     payload.update(metadata)
     return payload
+
+SPRT_DB_PATH = Path.home() / "code" / "chess" / "forge" / "logs" / "sprt.db"
+
+SPRT_DB_SCHEMA = """
+CREATE TABLE IF NOT EXISTS sprt (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    date TEXT NOT NULL,
+    run TEXT NOT NULL,
+    comment TEXT,
+    candidate_net TEXT,
+    reference_net TEXT,
+    engine TEXT,
+    requested_games INTEGER,
+    games INTEGER,
+    elo REAL,
+    ci REAL,
+    llr REAL,
+    llr_bound REAL,
+    los REAL,
+    draw REAL,
+    raw_json TEXT NOT NULL
+);
+"""
+
+def record_sprt_completion(payload: dict[str, Any]) -> None:
+    """Record a completed SPRT run's aggregate result to SPRT_DB_PATH.
+
+    Fires from _cmd_wait's finish(), the single place a run's completion is
+    detected regardless of what triggered the wait (an explicit `forge
+    resume --wait`, or the background wait-monitor a plain `forge run sprt`
+    deploy starts on its own) - so every SPRT run gets recorded here, not
+    just ones launched through a project-specific wrapper script. Callers
+    must wrap this in try/except: recording is a best-effort side effect
+    and must never be allowed to break the actual completion/notify flow.
+    """
+    if str(payload.get("kind") or "").lower() != "sprt":
+        return
+    if not payload.get("completed_at"):
+        return
+
+    display = payload.get("display")
+    fields = display.get("fields") if isinstance(display, dict) else None
+    if not isinstance(fields, list):
+        return
+
+    metrics: dict[str, str] = {}
+    for field in fields:
+        key, _, value = str(field).partition("=")
+        metrics[key] = value
+
+    if "elo" not in metrics or "games" not in metrics:
+        return
+
+    games_parts = metrics["games"].split("/")
+    if len(games_parts) != 2 or not all(part.isdigit() for part in games_parts):
+        return
+    games, requested_games = int(games_parts[0]), int(games_parts[1])
+    if games != requested_games:
+        return
+
+    commands = payload.get("commands")
+    command_text = ""
+    if isinstance(commands, list) and commands:
+        command_text = str(commands[0].get("command") or "")
+
+    def extract_flag(flag: str) -> str | None:
+        match = re.search(rf"{re.escape(flag)}\s+(\S+)", command_text)
+        return match.group(1) if match else None
+
+    candidate_net = extract_flag("--candidate-net")
+    reference_net = extract_flag("--reference-net")
+    engine_path = extract_flag("--candidate")
+
+    llr_value, _, llr_rest = metrics.get("llr", "").partition("/")
+    llr_bound = llr_rest.split(" ")[0] if llr_rest else None
+
+    def pct(key: str) -> float | None:
+        value = metrics.get(key)
+        if not value:
+            return None
+        try:
+            return float(str(value).rstrip("%"))
+        except ValueError:
+            return None
+
+    def to_float(value: Any) -> float | None:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    SPRT_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(SPRT_DB_PATH)
+    try:
+        conn.executescript(SPRT_DB_SCHEMA)
+        conn.execute(
+            """
+            INSERT INTO sprt
+                (date, run, comment, candidate_net, reference_net, engine,
+                 requested_games, games, elo, ci, llr, llr_bound, los, draw, raw_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                str(payload.get("completed_at"))[:10],
+                payload.get("run"),
+                payload.get("comment"),
+                Path(candidate_net).name if candidate_net else None,
+                Path(reference_net).name if reference_net else None,
+                Path(engine_path).name if engine_path else None,
+                requested_games,
+                games,
+                to_float(metrics.get("elo")),
+                to_float(metrics.get("ci")),
+                to_float(llr_value) if llr_value else None,
+                to_float(llr_bound),
+                pct("los"),
+                pct("draw"),
+                json.dumps(payload),
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
 def verify_manifest(manifest: dict[str, Any], *, verify_requirements: bool = True) -> None:
     if verify_requirements:
