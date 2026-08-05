@@ -5347,8 +5347,9 @@ def record_sprt_completion(payload: dict[str, Any]) -> None:
             """
             INSERT INTO sprt
                 (date, run, comment, candidate_net, reference_net, engine,
-                 requested_games, games, elo, ci, llr, llr_bound, los, draw, raw_json)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 requested_games, games, elo, ci, llr, llr_bound, los, draw,
+                 source_ledger, raw_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 str(payload.get("completed_at"))[:10],
@@ -5365,6 +5366,7 @@ def record_sprt_completion(payload: dict[str, Any]) -> None:
                 to_float(llr_bound),
                 pct("los"),
                 pct("draw"),
+                "forge_lib.status",
                 json.dumps(payload),
             ),
         )
