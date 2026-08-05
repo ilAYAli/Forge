@@ -1,3 +1,5 @@
+#!/usr/bin/env bash
+set -euo pipefail
 ROOT=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
 sqlite3 -header -box "$ROOT/logs/sprt.db" '
 SELECT candidate_net, elo
