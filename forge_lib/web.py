@@ -743,8 +743,18 @@ _HTML = r"""<!DOCTYPE html>
     function makeSection(run, section, titleHtml, titleCls, detailHtml, defaultOpen) {
       const id = sid(run, section);
       const open = resolveOpen(id, defaultOpen);
+      const help = {
+        graphs: 'Progress and result history reported by this run.',
+        commands: 'Commands that created or can reproduce this run.',
+        active: 'Worker processes currently executing tasks for this run.',
+        workers: 'Worker processes assigned to this run but not currently executing a task.',
+        unassigned: 'Configured worker slots that are not participating in this run.',
+        pending: 'Tasks that have not yet been claimed by a worker.',
+        fail: 'Tasks that ended in failure and may need to be resumed or inspected.',
+      }[section] || '';
+      const helpAttrs = help ? ` title="${attrEsc(help)}" aria-label="${attrEsc(help)}"` : '';
       return `<div class="section">
-        <div class="section-hdr" onclick="toggleId('${id}')">
+        <div class="section-hdr" tabindex="0"${helpAttrs} onclick="toggleId('${id}')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();toggleId('${id}')}">
           <span class="arrow${open?' open':''}">&#9654;</span>
           <span class="section-title ${titleCls||''}">${titleHtml}</span>
         </div>

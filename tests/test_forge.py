@@ -1693,6 +1693,22 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
             compact_run["sections"]["pending"]["groups"]["task"],
         )
 
+    def test_web_status_sections_explain_their_meaning(self) -> None:
+        import forge_lib.web as web
+
+        expected = {
+            "commands": "Commands that created or can reproduce this run.",
+            "active": "Worker processes currently executing tasks for this run.",
+            "workers": "Worker processes assigned to this run but not currently executing a task.",
+            "unassigned": "Configured worker slots that are not participating in this run.",
+            "pending": "Tasks that have not yet been claimed by a worker.",
+            "fail": "Tasks that ended in failure and may need to be resumed or inspected.",
+        }
+        for section, description in expected.items():
+            with self.subTest(section=section):
+                self.assertIn(f"{section}: '{description}'", web._HTML)
+        self.assertIn('class="section-hdr" tabindex="0"${helpAttrs}', web._HTML)
+
     def test_web_status_api_uses_coordinator_payload_before_first_refresh(self) -> None:
         import forge_lib.web as web
 
