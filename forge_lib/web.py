@@ -2811,7 +2811,7 @@ def _compact_web_api_run(run: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(sections, dict):
         return compact
     compact_sections: dict[str, Any] = {}
-    for name in ("active", "workers", "pending", "fail"):
+    for name in ("active", "workers", "unassigned", "pending", "fail"):
         section = sections.get(name)
         if not isinstance(section, dict):
             continue
@@ -2819,6 +2819,8 @@ def _compact_web_api_run(run: dict[str, Any]) -> dict[str, Any]:
             fields = ("count", "fields", "summary", "summary_text", "tasks")
         elif name == "workers":
             fields = ("count", "processes")
+        elif name == "unassigned":
+            fields = ("count", "workers")
         else:
             fields = ("count", "groups")
         compact_sections[name] = {

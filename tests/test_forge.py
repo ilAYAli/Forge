@@ -1658,6 +1658,12 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
                     "fields": ["workers=1"],
                     "tasks": [{"id": "task_active", "progress": "items=1/2"}],
                 },
+                "unassigned": {
+                    "count": 4,
+                    "workers": [
+                        {"host": "pwa-rce", "profile": "linux", "slots": 4},
+                    ],
+                },
                 "pending": {
                     "count": 9998,
                     "groups": {"task": list(range(1, 9999))},
@@ -1677,6 +1683,10 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
         self.assertNotIn("tasks", compact_run["sections"]["pending"])
         self.assertNotIn("done", compact_run["sections"])
         self.assertEqual("task_active", compact_run["sections"]["active"]["tasks"][0]["id"])
+        self.assertEqual(
+            [{"host": "pwa-rce", "profile": "linux", "slots": 4}],
+            compact_run["sections"]["unassigned"]["workers"],
+        )
         self.assertEqual(9998, compact_run["sections"]["pending"]["count"])
         self.assertEqual(
             {"count": 9998, "ranges": "1-9998"},
