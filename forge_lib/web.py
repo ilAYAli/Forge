@@ -1855,7 +1855,7 @@ _HTML = r"""<!DOCTYPE html>
       if (state === 'stopped' || state === 'stalled') actions.push(`<button class="act resume" onclick="event.stopPropagation();runCmd('${runArg}','resume',this)">resume</button>`);
       if (state === 'done') actions.push(`<button class="act" onclick="event.stopPropagation();runCmd('${runArg}','hide',this)">hide</button>`);
       if (state === 'done') actions.push(`<button class="act del" onclick="event.stopPropagation();runCmd('${runArg}','del',this)">del</button>`);
-      if ((failCount > 0 && activeCount === 0) || inactiveFailed) actions.push(`<button class="act retry" onclick="event.stopPropagation();runCmd('${runArg}','retry',this)">retry</button>`);
+      if ((failCount > 0 && activeCount === 0) || inactiveFailed) actions.push(`<button class="act resume" onclick="event.stopPropagation();runCmd('${runArg}','resume',this)">resume</button>`);
       if ((failCount > 0 && activeCount === 0) || inactiveFailed) actions.push(`<button class="act del" onclick="event.stopPropagation();runCmd('${runArg}','del',this)">del</button>`);
       if (state === 'stopped' && activeCount === 0) actions.push(`<button class="act del" onclick="event.stopPropagation();runCmd('${runArg}','del',this)">del</button>`);
 
@@ -3064,7 +3064,7 @@ def _run_api_command(run: str, cmd: str, *, server: ThreadingHTTPServer | None =
         if result.returncode == 0:
             _invalidate_status_cache()
         return result
-    if cmd in ("resume", "retry"):
+    if cmd == "resume":
         return _run_web_cli([cmd, run])
     raise ValueError(f"unknown command: {cmd}")
 

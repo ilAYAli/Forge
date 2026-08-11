@@ -675,7 +675,7 @@ class ForgeTests(unittest.TestCase):
         advanced = stdout.index("Advanced:")
         common_positions = {
             command: stdout.index(f"    {command}")
-            for command in ("run", "sprt", "start", "del", "stop", "resume", "retry", "worker", "status", "update", "template")
+            for command in ("run", "sprt", "start", "del", "stop", "resume", "worker", "status", "update", "template")
         }
         for position in common_positions.values():
             self.assertLess(common, position)
@@ -686,8 +686,7 @@ class ForgeTests(unittest.TestCase):
         self.assertLess(common_positions["start"], common_positions["del"])
         self.assertLess(common_positions["del"], common_positions["stop"])
         self.assertLess(common_positions["stop"], common_positions["resume"])
-        self.assertLess(common_positions["resume"], common_positions["retry"])
-        self.assertLess(common_positions["retry"], common_positions["worker"])
+        self.assertLess(common_positions["resume"], common_positions["worker"])
         self.assertLess(common_positions["worker"], common_positions["status"])
         self.assertLess(common_positions["status"], common_positions["update"])
         self.assertLess(common_positions["update"], common_positions["template"])
@@ -998,7 +997,7 @@ except SystemExit as exc:
         self.assertIn("function attrEsc", web._HTML)
         self.assertNotIn("function statePri", web._HTML)
         self.assertIn("failCount > 0 && activeCount === 0", web._HTML)
-        self.assertIn("runCmd('${runArg}','retry',this)", web._HTML)
+        self.assertIn("runCmd('${runArg}','resume',this)", web._HTML)
         self.assertIn("runCmd('${runArg}','del',this)", web._HTML)
         self.assertIn(".act.del", web._HTML)
         self.assertIn("function runStoppedEarly", web._HTML)
@@ -6537,7 +6536,7 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
             "run", "sprt", "selfplay", "sync", "sh", "template", "plan", "add-input", "add-repo", "add-command", "sync-repos", "start", "run-task", "claim",
             "release", "heartbeat", "work", "doctor", "status",
             "wait", "verify", "merge", "stop", "drain", "del", "self-update",
-            "update", "version", "deploy", "resume", "retry", "worker",
+            "update", "version", "deploy", "resume", "worker",
         ]
         for command in commands:
             with self.subTest(command=command):
@@ -8090,130 +8089,6 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
             self.assertIn("start: deploy failed", result.stderr)
             self.assertFalse(merged.exists())
 
-    def test_retry_without_run_requeues_failed_tasks_without_launching_workers(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            runs = Path(tmp) / "runs"
-            run_a = self.write_retry_run(runs, "failed-a", failed=True)
-            run_b = self.write_retry_run(runs, "failed-b", failed=True)
-            self.write_retry_run(runs, "done-run", failed=False)
-
-            with (
-                self.patch_runs_dir(runs),
-                mock.patch("forge_lib.workers.cmd_run_job") as run_job,
-            ):
-                stdout = io.StringIO()
-                with contextlib.redirect_stdout(stdout):
-                    rc = forge.cmd_retry(self.retry_args())
-
-            self.assertEqual(0, rc)
-            run_job.assert_not_called()
-            self.assertFalse((run_a / "state" / "task_0.fail.json").exists())
-            self.assertFalse((run_b / "state" / "task_0.fail.json").exists())
-            output = stdout.getvalue()
-            self.assertIn("retry: failed-a (1/2)", output)
-            self.assertIn("retry: failed-b (2/2)", output)
-            self.assertIn("retry: failed-a requeued=1; no workers launched", output)
-            self.assertIn("retry: failed-b requeued=1; no workers launched", output)
-
-    def test_retry_can_use_alternate_workers_for_named_run(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            runs = root / "runs"
-            self.write_retry_run(runs, "failed-a", failed=True)
-            alternate_workers = root / "alternate-workers.json"
-            forge.write_json(alternate_workers, {
-                "schema": "forge.workers.v1",
-                "workers": ["worker-b"],
-            })
-
-            with (
-                self.patch_runs_dir(runs),
-                mock.patch("forge_lib.workers.cmd_run_job", return_value=0) as run_job,
-            ):
-                rc = forge.cmd_retry(self.retry_args(run="failed-a", workers=str(alternate_workers)))
-
-            self.assertEqual(0, rc)
-            retry_args = run_job.call_args.args[0]
-            self.assertEqual("failed-a", retry_args.run)
-            self.assertEqual(str(alternate_workers), retry_args.workers)
-            self.assertTrue(retry_args.resume)
-            self.assertTrue(retry_args.retry_failed)
-
-    def test_retry_clears_stop_and_queue_before_restart(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            runs = Path(tmp) / "runs"
-            run = self.write_retry_run(runs, "failed-a", failed=True)
-            manifest = forge.load_manifest(run / "manifest.json")
-            task = manifest["tasks"][0]
-            fail_path = forge.task_fail_path(manifest, task)
-            forge.write_json(forge.stop_request_path(manifest), {
-                "schema": "forge.task.v1",
-                "run": "failed-a",
-            })
-            forge.write_json(forge.queue_request_path(manifest), {
-                "schema": "forge.task.v1",
-                "run": "failed-a",
-            })
-
-            with (
-                self.patch_runs_dir(runs),
-                mock.patch("forge_lib.workers.cmd_run_job") as run_job,
-            ):
-                stdout = io.StringIO()
-                with contextlib.redirect_stdout(stdout):
-                    rc = forge.cmd_retry(self.retry_args(run="failed-a"))
-
-            self.assertEqual(0, rc)
-            run_job.assert_not_called()
-            self.assertFalse(forge.stop_request_path(manifest).exists())
-            self.assertFalse(forge.queue_request_path(manifest).exists())
-            self.assertFalse(fail_path.exists())
-            archived = list((forge.state_dir(manifest) / "retry-failures").glob("*/task_0.fail.json"))
-            self.assertEqual(1, len(archived))
-            output = stdout.getvalue()
-            self.assertIn("retry: cleared stop request for failed-a", output)
-            self.assertIn("retry: cleared queue request for failed-a", output)
-            self.assertIn("retry: archived 1 failed task marker(s) for failed-a", output)
-            self.assertIn("retry: failed-a requeued=1; no workers launched", output)
-
-    def test_retry_with_workers_refuses_to_double_launch_active_run(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            runs = Path(tmp) / "runs"
-            run = self.write_retry_run(runs, "failed-a", failed=True)
-            manifest = forge.load_manifest(run / "manifest.json")
-            active_task = {"id": "task_1", "index": 1, "command": "true", "outputs": []}
-            manifest["tasks"].append(active_task)
-            forge.write_json(run / "manifest.json", manifest)
-            forge.claim_task(
-                manifest,
-                worker="worker-a",
-                profile=None,
-                lease_seconds=600,
-                retry_failed=False,
-            )
-
-            with (
-                self.patch_runs_dir(runs),
-                mock.patch("forge_lib.workers.cmd_run_job") as run_job,
-                self.assertRaises(SystemExit) as raised,
-            ):
-                forge.cmd_retry(self.retry_args(run="failed-a", workers="worker-b:2"))
-
-            run_job.assert_not_called()
-            self.assertTrue((run / "state" / "task_0.fail.json").exists())
-            self.assertIn("already has 1 active/claimed/stale task", str(raised.exception))
-
-    def test_queued_retry_command_stays_retry(self) -> None:
-        args = self.retry_args(run="failed-a")
-        args.retry_failed = True
-
-        command = forge.queue_resume_command(args, "failed-a")
-
-        self.assertEqual("retry", Path(command[2]).name if "/" in command[2] else command[2])
-        self.assertEqual("failed-a", command[3])
-        self.assertEqual("--workers", command[4])
-        self.assertTrue(command[5].endswith("/failed-a/workers.json"))
-
     def test_queued_command_uses_durable_run_workers_snapshot(self) -> None:
         args = self.retry_args(run="queued-a", workers="/tmp/forge.ephemeral")
 
@@ -8222,58 +8097,6 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
         self.assertEqual("--workers", command[4])
         self.assertTrue(command[5].endswith("/queued-a/workers.json"))
         self.assertNotEqual("/tmp/forge.ephemeral", command[5])
-
-    def test_retry_with_workers_preserves_live_queue_launch_reservation(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            runs = Path(tmp) / "runs"
-            run = self.write_retry_run(runs, "failed-a", failed=True)
-            manifest = forge.load_manifest(run / "manifest.json")
-            forge.write_json(forge.launch_request_path(manifest), {
-                "schema": "forge.task.v1",
-                "run": "failed-a",
-                "reason": "queue",
-                "pid": os.getpid(),
-                "requested_epoch": time.time(),
-            })
-
-            with (
-                self.patch_runs_dir(runs),
-                mock.patch("forge_lib.workers.cmd_run_job", return_value=0) as run_job,
-            ):
-                self.assertEqual(0, forge.cmd_retry(self.retry_args(run="failed-a", workers="worker-b")))
-
-            self.assertTrue(forge.launch_request_path(manifest).exists())
-            run_job.assert_called_once()
-
-    def test_retry_named_run_delegates_to_coordinator(self) -> None:
-        remote_result = subprocess.CompletedProcess(
-            args=["ssh"],
-            returncode=0,
-            stdout="remote retry\n",
-            stderr="",
-        )
-        with mock.patch.dict(
-            os.environ,
-            {"FORGE_COORDINATOR_RUNS": "pwa-llm:/home/petter/code/chess/forge/runs"},
-        ), mock.patch(
-            "forge_lib.workers.run_interruptible_coordinator_process",
-            return_value=remote_result,
-        ) as run_mock:
-            stdout = io.StringIO()
-            with contextlib.redirect_stdout(stdout):
-                rc = forge.cmd_retry(self.retry_args(run="failed-a"))
-
-        self.assertEqual(0, rc)
-        self.assertEqual(
-            "coordinator: pwa-llm:/home/petter/code/chess/forge/runs\nremote retry\n",
-            stdout.getvalue(),
-        )
-        host, remote, pid_file = run_mock.call_args.args
-        self.assertEqual("pwa-llm", host)
-        self.assertIn("FORGE_RUNS_DIR=/home/petter/code/chess/forge/runs", remote)
-        self.assertIn("FORGE_COORDINATOR_RUNS=", remote)
-        self.assertIn("forge retry failed-a", remote)
-        self.assertIn(pid_file, remote)
 
     def test_coordinator_forwards_hook_events_when_set(self) -> None:
         remote_result = subprocess.CompletedProcess(
@@ -8315,16 +8138,6 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
 
         remote = run_mock.call_args.args[1]
         self.assertNotIn("HOOK_EVENTS=", remote)
-
-    def test_retry_without_failed_runs_errors(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            runs = Path(tmp) / "runs"
-            self.write_retry_run(runs, "done-run", failed=False)
-
-            with self.patch_runs_dir(runs), self.assertRaises(SystemExit) as raised:
-                forge.cmd_retry(self.retry_args())
-
-            self.assertIn("no failed Forge run found", str(raised.exception))
 
     def test_resume_preserves_stop_until_deploy_cleans_old_workers(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -10834,8 +10647,12 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
                 ],
             })
 
+            processes = [
+                {"worker": "worker-a", "worker_id": "worker-a#1"},
+                {"worker": "inline-only", "worker_id": "inline-only#1"},
+            ]
             with mock.patch("forge_lib.status.config_workers_path", return_value=configured):
-                rows = forge.unassigned_worker_rows(manifest)
+                rows = forge.unassigned_worker_rows(processes)
 
         self.assertEqual([
             {"host": "worker-b", "slots": 8, "profile": "linux"},

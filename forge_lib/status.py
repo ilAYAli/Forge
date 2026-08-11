@@ -2858,32 +2858,29 @@ def configured_worker_slots(worker: dict[str, Any]) -> int:
     except (TypeError, ValueError):
         return 0
 
-def unassigned_worker_rows(manifest: dict[str, Any]) -> list[dict[str, Any]]:
-    """Configured workers absent from this run's durable worker snapshot."""
-    run_workers_path = state_dir(manifest).parent / RUN_WORKERS_NAME
+def unassigned_worker_rows(worker_processes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Configured workers with no worker process participating in this run."""
     configured_path = config_workers_path()
-    if not run_workers_path.is_file() or not configured_path.is_file():
+    if not configured_path.is_file():
         return []
     try:
-        run_payload = read_json(run_workers_path)
         configured_payload = read_json(configured_path)
     except (OSError, SystemExit, TypeError, ValueError):
         return []
-    run_workers = run_payload.get("workers")
     configured_workers = configured_payload.get("workers")
-    if not isinstance(run_workers, list) or not isinstance(configured_workers, list):
+    if not isinstance(configured_workers, list):
         return []
-    assigned_hosts = {
-        str(worker.get("host") or "").strip()
-        for worker in run_workers
-        if isinstance(worker, dict) and str(worker.get("host") or "").strip()
+    participating_hosts = {
+        str(process.get("worker") or "").strip()
+        for process in worker_processes
+        if isinstance(process, dict) and str(process.get("worker") or "").strip()
     }
     rows = []
     for worker in configured_workers:
         if not isinstance(worker, dict):
             continue
         host = str(worker.get("host") or "").strip()
-        if not host or host in assigned_hosts:
+        if not host or host in participating_hosts:
             continue
         row = {"host": host, "slots": configured_worker_slots(worker)}
         profile = str(worker.get("profile") or "").strip()
@@ -4790,7 +4787,7 @@ def status_summary(
         manifest,
         pending=counts["pending"],
     )
-    unassigned_workers = unassigned_worker_rows(manifest)
+    unassigned_workers = unassigned_worker_rows(worker_processes)
     unassigned_worker_slots = sum(
         configured_worker_slots(worker) for worker in unassigned_workers
     )
