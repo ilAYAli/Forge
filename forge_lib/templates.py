@@ -994,6 +994,7 @@ def run_name_values(template_name: str, params: dict[str, Any]) -> dict[str, Any
     for key, value in list(params.items()):
         if isinstance(value, str):
             stem = Path(value).name or value
+            values[f"{key}_name"] = stem
             values[f"{key}_stem"] = re.sub(r"[^A-Za-z0-9._-]+", "-", stem).strip("-") or key
             commit_match = re.fullmatch(r"[0-9A-Fa-f]{7,40}", stem)
             if commit_match is None:

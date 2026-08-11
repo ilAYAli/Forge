@@ -2563,8 +2563,24 @@ def run_deploy(args: argparse.Namespace) -> int:
         before_pending = before_counts["pending"]
         launch_executor = concurrent.futures.ThreadPoolExecutor(max_workers=max(1, len(workers)))
 
+    completion_monitor_pid = 0
+
     def launch_ready_workers(group_results: list[dict[str, Any]]) -> None:
+        nonlocal completion_monitor_pid
         assert launch_executor is not None
+        if bool(getattr(args, "start_wait_monitor", False)) and completion_monitor_pid <= 0:
+            completion_monitor_pid = start_wait_monitor(
+                run_dir=run_dir,
+                manifest_path=manifest_path,
+                args=args,
+                notify_command=getattr(
+                    args,
+                    "wait_monitor_notify_command",
+                    getattr(args, "notify_command", None) or default_notify_command(),
+                ),
+            )
+            if completion_monitor_pid:
+                status(colorize(f"deploy: completion monitor pid={completion_monitor_pid}", "green", enabled=color_enabled))
         status(
             colorize(
                 f"deploy: {result_label(group_results)} ready; launching now",
@@ -2710,11 +2726,11 @@ def run_deploy(args: argparse.Namespace) -> int:
     completion_deferred_to_wait = False
     if failed == 0 and has_tasks and bool(getattr(args, "launch_only", False)):
         if bool(getattr(args, "start_wait_monitor", False)):
-            monitor_pid = start_wait_monitor(
+            monitor_pid = completion_monitor_pid or start_wait_monitor(
                 run_dir=run_dir,
                 manifest_path=manifest_path,
                 args=args,
-                notify_command=notify_command,
+                notify_command=getattr(args, "wait_monitor_notify_command", notify_command),
             )
             if monitor_pid:
                 completion_deferred_to_wait = True
@@ -2822,9 +2838,16 @@ def interruptible_coordinator_command(
         "signal.signal(signal.SIGINT, signal.SIG_DFL); "
         "os.execvp(sys.argv[1], sys.argv[1:])"
     )
+    hook_events = os.environ.get("HOOK_EVENTS")
+    hook_events_env = (
+        f"HOOK_EVENTS={shlex.quote(hook_events)} "
+        if hook_events
+        else ""
+    )
     child = (
         f"exec env {shlex.quote(COORDINATOR_RUNS_ENV)}= "
         f"{shlex.quote(RUNS_DIR_ENV)}={shlex.quote(runs_path)} "
+        f"{hook_events_env}"
         f"python3 -c {shlex.quote(reset_sigint_exec)} forge {shell_join(command)}"
     )
     remote = (
@@ -3005,12 +3028,19 @@ def start_on_coordinator(args: argparse.Namespace, coordinator_runs: str) -> int
 def run_coordinator_command(coordinator_runs: str, command: list[str]) -> subprocess.CompletedProcess[str]:
     host, runs_path = parse_coordinator(coordinator_runs)
     if host:
+        hook_events = os.environ.get("HOOK_EVENTS")
+        hook_events_env = (
+            f"HOOK_EVENTS={shlex.quote(hook_events)} "
+            if hook_events
+            else ""
+        )
         remote = (
             "command -v forge >/dev/null 2>&1 || "
             "{ echo 'forge not found in PATH on coordinator' >&2; exit 127; }; "
             f"exec env {shlex.quote(COORDINATOR_RUNS_ENV)}= "
             f"{shlex.quote(COLOR_ENV)}=never "
             f"{shlex.quote(RUNS_DIR_ENV)}={shlex.quote(runs_path)} "
+            f"{hook_events_env}"
             f"forge {shell_join(command)}"
         )
         return subprocess.run(
@@ -3275,7 +3305,11 @@ def run_local_job(args: argparse.Namespace) -> int:
         newline_between=args.newline_between,
         queue_foreground=should_wait,
         command_label=label,
-        start_wait_monitor=not should_wait,
+        # Always start a detached completion owner before the first worker.
+        # A foreground --wait remains attached for output/verification, while
+        # this safety monitor survives terminal or launcher death.
+        start_wait_monitor=True,
+        wait_monitor_notify_command="" if should_wait else (args.notify_command or default_notify_command()),
         defer_completion_notify=should_wait,
         no_color=args.no_color,
         verbose=args.verbose,

@@ -3,6 +3,7 @@
   "name": "sprt",
   "kind": "sprt",
   "description": "Run distributed SPRT game shards",
+  "comment": "{candidate_net_name} vs {reference_net_name}",
   "run_name": "sprt-{candidate_stem}-{games}-{timestamp}",
   "work_dir": "~",
   "materialize_inputs": true,

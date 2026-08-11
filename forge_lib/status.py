@@ -5,7 +5,7 @@ import shlex
 import sqlite3
 
 from .calibration import adaptive_blended_throughput, adaptive_rate_warmup_units
-from .config import default_notify_command, speedup_single_host_workers
+from .config import config_workers_path, default_notify_command, speedup_single_host_workers
 from .core import *
 from .manifest import *
 from .tasks import *
@@ -584,7 +584,7 @@ def run_done(summary: dict[str, Any]) -> bool:
     )
 
 def run_failed(summary: dict[str, Any]) -> bool:
-    return summary["counts"]["fail"] > 0 or run_launch_stale(summary)
+    return summary["counts"]["fail"] > 0 or run_launch_failed(summary)
 
 def run_started(summary: dict[str, Any]) -> bool:
     counts = summary["counts"]
@@ -651,10 +651,18 @@ def run_launch_stale(summary: dict[str, Any]) -> bool:
         return False
     return launch_request_stale(summary.get("launch"))
 
+def run_launch_failed(summary: dict[str, Any]) -> bool:
+    """Whether a stale launcher actually left the run without live work."""
+    return (
+        run_launch_stale(summary)
+        and run_active_count(summary) == 0
+        and not run_done(summary)
+    )
+
 def run_current(summary: dict[str, Any]) -> bool:
     counts = summary["counts"]
     active = counts["running"] + counts["claimed"] + counts["stale"]
-    if run_launch_stale(summary):
+    if run_launch_stale(summary) and active == 0:
         return False
     if run_stopped(summary) and active == 0 and not run_launching(summary):
         return False
@@ -740,7 +748,7 @@ def run_state_fields(summary: dict[str, Any]) -> list[str]:
         return ["state=stalled"]
     if run_queued(summary):
         return ["state=queued"]
-    if run_launch_stale(summary):
+    if run_launch_failed(summary):
         return ["state=launch-stale"]
     if run_stopped(summary) and run_active_count(summary) > 0:
         return ["state=stopping"]
@@ -1759,6 +1767,10 @@ def run_status_payload(summary: dict[str, Any]) -> dict[str, Any]:
             "workers": {
                 "count": len(summary.get("worker_processes", [])),
                 "processes": copy.deepcopy(summary.get("worker_processes", [])),
+            },
+            "unassigned": {
+                "count": int(summary.get("unassigned_worker_slots") or 0),
+                "workers": copy.deepcopy(summary.get("unassigned_workers", [])),
             },
             "pending": {
                 "count": counts["pending"],
@@ -2840,6 +2852,47 @@ def worker_process_status_rows(
     rows.sort(key=lambda row: worker_id_sort_key(str(row["worker_id"])))
     return rows
 
+def configured_worker_slots(worker: dict[str, Any]) -> int:
+    try:
+        return max(0, int(worker.get("slots", 1) or 0))
+    except (TypeError, ValueError):
+        return 0
+
+def unassigned_worker_rows(manifest: dict[str, Any]) -> list[dict[str, Any]]:
+    """Configured workers absent from this run's durable worker snapshot."""
+    run_workers_path = state_dir(manifest).parent / RUN_WORKERS_NAME
+    configured_path = config_workers_path()
+    if not run_workers_path.is_file() or not configured_path.is_file():
+        return []
+    try:
+        run_payload = read_json(run_workers_path)
+        configured_payload = read_json(configured_path)
+    except (OSError, SystemExit, TypeError, ValueError):
+        return []
+    run_workers = run_payload.get("workers")
+    configured_workers = configured_payload.get("workers")
+    if not isinstance(run_workers, list) or not isinstance(configured_workers, list):
+        return []
+    assigned_hosts = {
+        str(worker.get("host") or "").strip()
+        for worker in run_workers
+        if isinstance(worker, dict) and str(worker.get("host") or "").strip()
+    }
+    rows = []
+    for worker in configured_workers:
+        if not isinstance(worker, dict):
+            continue
+        host = str(worker.get("host") or "").strip()
+        if not host or host in assigned_hosts:
+            continue
+        row = {"host": host, "slots": configured_worker_slots(worker)}
+        profile = str(worker.get("profile") or "").strip()
+        if profile:
+            row["profile"] = profile
+        rows.append(row)
+    rows.sort(key=lambda row: worker_id_sort_key(str(row["host"])))
+    return rows
+
 def log_tail(path: Path, *, max_bytes: int = 8192) -> str:
     with path.open("rb") as file:
         file.seek(0, os.SEEK_END)
@@ -3452,6 +3505,35 @@ def score_rate_elo(score_rate: float) -> float:
     bounded = min(1.0 - 1e-12, max(1e-12, score_rate))
     return 400.0 * math.log10(bounded / (1.0 - bounded))
 
+def pentanomial_elo_ci(pentanomial: list[int]) -> tuple[float, float] | None:
+    """Return pooled Elo and its 95% half-width from paired game results.
+
+    A pentanomial bucket index represents a pair score of index / 2, or a
+    per-game score rate of index / 4.  Treating opening pairs as the
+    independent observations preserves the color/opening correlation that a
+    WDL-only interval loses.  At least two non-identical pairs are required;
+    reporting zero uncertainty for an all-identical sample is misleading.
+    """
+    if len(pentanomial) != 5 or any(count < 0 for count in pentanomial):
+        return None
+    pairs = sum(pentanomial)
+    if pairs < 2:
+        return None
+    score_rate = sum(index * count for index, count in enumerate(pentanomial)) / (4.0 * pairs)
+    if not 0.0 < score_rate < 1.0:
+        return None
+    squared_error = sum(
+        count * (index / 4.0 - score_rate) ** 2
+        for index, count in enumerate(pentanomial)
+    )
+    sample_variance = squared_error / (pairs - 1)
+    if sample_variance <= 0.0:
+        return None
+    score_standard_error = math.sqrt(sample_variance / pairs)
+    elo = score_rate_elo(score_rate)
+    elo_derivative = 400.0 / (math.log(10.0) * score_rate * (1.0 - score_rate))
+    return elo, 1.96 * score_standard_error * elo_derivative
+
 def sprt_aggregate_graph_points(
     rows: list[dict[str, Any]],
     series_names: dict[str, str],
@@ -3471,6 +3553,8 @@ def sprt_aggregate_graph_points(
     cumulative_done = 0
     llr_total = 0.0
     llr_seen = False
+    pentanomial = [0, 0, 0, 0, 0]
+    pentanomial_seen = False
     def row_x(row: dict[str, Any]) -> float:
         try:
             return float(row["x"])
@@ -3495,6 +3579,13 @@ def sprt_aggregate_graph_points(
         if ci is not None and ci >= 0:
             weighted_ci_squares += (ci * done) ** 2
             ci_weight_total += done
+        pentanomial_text = normalize_progress_fields(fields).get("pentanomial")
+        if isinstance(pentanomial_text, str):
+            parts = pentanomial_text.split("-")
+            if len(parts) == 5 and all(part.isdigit() for part in parts):
+                for index, part in enumerate(parts):
+                    pentanomial[index] += int(part)
+                pentanomial_seen = True
         llr, _bound = progress_field_llr(fields)
         if math.isfinite(llr):
             llr_total += llr
@@ -3504,8 +3595,12 @@ def sprt_aggregate_graph_points(
                 points[name].append({"x": x, "y": score_rate_elo(weighted_score / weight_total)})
             elif field_name == "llr" and llr_seen:
                 points[name].append({"x": x, "y": llr_total})
-            elif field_name == "ci" and ci_weight_total > 0:
-                points[name].append({"x": x, "y": math.sqrt(weighted_ci_squares) / ci_weight_total})
+            elif field_name == "ci":
+                pooled = pentanomial_elo_ci(pentanomial) if pentanomial_seen else None
+                if pooled is not None:
+                    points[name].append({"x": x, "y": pooled[1]})
+                elif not pentanomial_seen and ci_weight_total > 0:
+                    points[name].append({"x": x, "y": math.sqrt(weighted_ci_squares) / ci_weight_total})
     return {name: values for name, values in points.items() if values}
 
 def progress_history_path(manifest: dict[str, Any]) -> Path:
@@ -4027,11 +4122,20 @@ def sprt_aggregate_fields(summary: dict[str, Any]) -> list[str]:
     if not stats:
         return []
     weight_total = int(stats["weight_total"])
-    pooled_elo = score_rate_elo(float(stats["weighted_score"]) / weight_total)
+    pentanomial = stats.get("pentanomial")
+    paired_estimate = pentanomial_elo_ci(pentanomial) if isinstance(pentanomial, list) else None
+    pooled_elo = (
+        paired_estimate[0]
+        if paired_estimate is not None
+        else score_rate_elo(float(stats["weighted_score"]) / weight_total)
+    )
     fields = [f"elo={pooled_elo:+.1f}"]
     ci_weight_total = int(stats["ci_weight_total"])
     pooled_ci = 0.0
-    if ci_weight_total > 0:
+    if paired_estimate is not None:
+        pooled_ci = paired_estimate[1]
+        fields.append(f"ci={pooled_ci:.1f}")
+    elif not isinstance(pentanomial, list) and ci_weight_total > 0:
         pooled_ci = math.sqrt(float(stats["weighted_ci_squares"])) / ci_weight_total
         fields.append(f"ci={pooled_ci:.1f}")
     if int(stats["llr_count"]) > 0:
@@ -4686,6 +4790,10 @@ def status_summary(
         manifest,
         pending=counts["pending"],
     )
+    unassigned_workers = unassigned_worker_rows(manifest)
+    unassigned_worker_slots = sum(
+        configured_worker_slots(worker) for worker in unassigned_workers
+    )
     active_worker_ids = {
         str(row.get("worker_id") or "").strip()
         for row in active
@@ -4709,6 +4817,8 @@ def status_summary(
         "worker_outputs": worker_outputs,
         "worker_rates": worker_rates,
         "worker_processes": worker_processes,
+        "unassigned_workers": unassigned_workers,
+        "unassigned_worker_slots": unassigned_worker_slots,
         "queue": queue_payload,
         "launch": launch_payload,
         "launch_state": launch_state,
@@ -4873,6 +4983,17 @@ def print_status_details(
                 state_name = str(process.get("state") or "unknown")
                 age = compact_duration(float(process.get("state_age_s") or 0))
                 print(f"{indent}  {worker_id} [{state_name}] {age}")
+    unassigned_rows = summary.get("unassigned_workers")
+    if isinstance(unassigned_rows, list) and unassigned_rows:
+        slots = sum(configured_worker_slots(worker) for worker in unassigned_rows)
+        title = color_count_line("unassigned workers", slots, "cyan", color_enabled=color_enabled)
+        print(f"{indent}{title} hosts={len(unassigned_rows)}")
+        for worker in unassigned_rows:
+            host = str(worker.get("host") or "unknown")
+            slots = int(worker.get("slots") or 0)
+            profile = str(worker.get("profile") or "").strip()
+            profile_text = f" profile={profile}" if profile else ""
+            print(f"{indent}  {host} [{slots} slots]{profile_text}")
     print_pending_status(summary, color_enabled=color_enabled, show_empty=show_empty, indent=indent)
     print_status_group("fail", summary["groups"]["fail"], color_enabled=color_enabled, show_empty=show_empty, indent=indent)
     for item in summary.get("failure_reasons", []):
@@ -5027,7 +5148,13 @@ def _cmd_wait(args: argparse.Namespace) -> int:
         if run_launch_stale(summary) and active == 0 and counts["pending"] > 0:
             print("launch failed: no active workers and launch request is stale", file=sys.stderr)
             return finish("run_launch_failed", "failed", 1, manifest)
-        if active == 0 and counts["pending"] > 0 and not stop_requested(manifest) and not run_launch_stale(summary):
+        if (
+            active == 0
+            and counts["pending"] > 0
+            and not stop_requested(manifest)
+            and not run_launching(summary)
+            and not run_launch_stale(summary)
+        ):
             run_name = manifest_path.parent.name
             print(f"wait: no active workers with {counts['pending']} pending task(s); redeploying {run_name}", flush=True)
             result = subprocess.run(
@@ -5266,11 +5393,71 @@ CREATE TABLE IF NOT EXISTS sprt (
     ci REAL,
     llr REAL,
     llr_bound REAL,
+    llr_lower_bound REAL,
+    llr_upper_bound REAL,
+    elo0 REAL,
+    elo1 REAL,
+    alpha REAL,
+    beta REAL,
+    wins INTEGER,
+    draws INTEGER,
+    losses INTEGER,
+    pentanomial TEXT,
+    candidate_engine TEXT,
+    reference_engine TEXT,
+    tc TEXT,
+    threads INTEGER,
+    concurrency INTEGER,
+    hash_mb INTEGER,
+    book TEXT,
+    book_order TEXT,
+    book_seed INTEGER,
+    book_offset INTEGER,
+    restart TEXT,
     los REAL,
     draw REAL,
+    source_ledger TEXT NOT NULL,
     raw_json TEXT NOT NULL
 );
 """
+
+SPRT_DB_RESULT_COLUMNS = {
+    "llr_lower_bound": "REAL",
+    "llr_upper_bound": "REAL",
+    "elo0": "REAL",
+    "elo1": "REAL",
+    "alpha": "REAL",
+    "beta": "REAL",
+    "wins": "INTEGER",
+    "draws": "INTEGER",
+    "losses": "INTEGER",
+    "pentanomial": "TEXT",
+    "candidate_engine": "TEXT",
+    "reference_engine": "TEXT",
+    "tc": "TEXT",
+    "threads": "INTEGER",
+    "concurrency": "INTEGER",
+    "hash_mb": "INTEGER",
+    "book": "TEXT",
+    "book_order": "TEXT",
+    "book_seed": "INTEGER",
+    "book_offset": "INTEGER",
+    "restart": "TEXT",
+}
+
+def migrate_sprt_result_columns(conn: sqlite3.Connection) -> None:
+    columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(sprt)")}
+    for name, column_type in SPRT_DB_RESULT_COLUMNS.items():
+        if name not in columns:
+            conn.execute(f"ALTER TABLE sprt ADD COLUMN {name} {column_type}")
+    conn.execute(
+        "DELETE FROM sprt WHERE run IS NOT NULL AND id NOT IN "
+        "(SELECT MAX(id) FROM sprt WHERE run IS NOT NULL GROUP BY run)"
+    )
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_sprt_run_unique "
+        "ON sprt(run) WHERE run IS NOT NULL"
+    )
 
 def record_sprt_completion(payload: dict[str, Any]) -> None:
     """Record a completed SPRT run's aggregate result to SPRT_DB_PATH.
@@ -5305,21 +5492,33 @@ def record_sprt_completion(payload: dict[str, Any]) -> None:
     if len(games_parts) != 2 or not all(part.isdigit() for part in games_parts):
         return
     games, requested_games = int(games_parts[0]), int(games_parts[1])
-    if games != requested_games:
-        return
 
     commands = payload.get("commands")
     command_text = ""
     if isinstance(commands, list) and commands:
         command_text = str(commands[0].get("command") or "")
 
+    command_flags: dict[str, str] = {}
+    try:
+        tokens = shlex.split(command_text)
+    except ValueError:
+        tokens = command_text.split()
+    for index, token in enumerate(tokens):
+        if not token.startswith("--"):
+            continue
+        if "=" in token:
+            flag, value = token.split("=", 1)
+            command_flags[flag] = value
+        elif index + 1 < len(tokens) and not tokens[index + 1].startswith("--"):
+            command_flags[token] = tokens[index + 1]
+
     def extract_flag(flag: str) -> str | None:
-        match = re.search(rf"{re.escape(flag)}\s+(\S+)", command_text)
-        return match.group(1) if match else None
+        return command_flags.get(flag)
 
     candidate_net = extract_flag("--candidate-net")
     reference_net = extract_flag("--reference-net")
-    engine_path = extract_flag("--candidate")
+    candidate_engine = extract_flag("--candidate")
+    reference_engine = extract_flag("--reference")
 
     llr_value, _, llr_rest = metrics.get("llr", "").partition("/")
     llr_bound = llr_rest.split(" ")[0] if llr_rest else None
@@ -5339,17 +5538,53 @@ def record_sprt_completion(payload: dict[str, Any]) -> None:
         except (TypeError, ValueError):
             return None
 
+    def to_int(value: Any) -> int | None:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    elo0 = to_float(extract_flag("--elo0"))
+    elo1 = to_float(extract_flag("--elo1"))
+    alpha = to_float(extract_flag("--alpha"))
+    beta = to_float(extract_flag("--beta"))
+    llr_lower_bound = None
+    llr_upper_bound = to_float(llr_bound)
+    if (
+        alpha is not None and beta is not None
+        and 0.0 < alpha < 1.0 and 0.0 < beta < 1.0
+    ):
+        llr_lower_bound = math.log(beta / (1.0 - alpha))
+        llr_upper_bound = math.log((1.0 - beta) / alpha)
+
+    sprt = payload.get("sprt")
+    sprt = sprt if isinstance(sprt, dict) else {}
+    wdl = sprt.get("wdl")
+    if not (isinstance(wdl, list) and len(wdl) == 3):
+        wdl = [None, None, None]
+    pentanomial = sprt.get("pentanomial")
+    pentanomial_text = (
+        "-".join(str(int(value)) for value in pentanomial)
+        if isinstance(pentanomial, list) and len(pentanomial) == 5
+        else None
+    )
+
     SPRT_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(SPRT_DB_PATH)
     try:
         conn.executescript(SPRT_DB_SCHEMA)
+        migrate_sprt_result_columns(conn)
         conn.execute(
             """
-            INSERT INTO sprt
+            INSERT OR IGNORE INTO sprt
                 (date, run, comment, candidate_net, reference_net, engine,
                  requested_games, games, elo, ci, llr, llr_bound, los, draw,
-                 source_ledger, raw_json)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 source_ledger, raw_json, llr_lower_bound, llr_upper_bound,
+                 elo0, elo1, alpha, beta, wins, draws, losses, pentanomial,
+                 candidate_engine, reference_engine, tc, threads, concurrency,
+                 hash_mb, book, book_order, book_seed, book_offset, restart)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 str(payload.get("completed_at"))[:10],
@@ -5357,7 +5592,7 @@ def record_sprt_completion(payload: dict[str, Any]) -> None:
                 payload.get("comment"),
                 Path(candidate_net).name if candidate_net else None,
                 Path(reference_net).name if reference_net else None,
-                Path(engine_path).name if engine_path else None,
+                Path(candidate_engine).name if candidate_engine else None,
                 requested_games,
                 games,
                 to_float(metrics.get("elo")),
@@ -5368,6 +5603,27 @@ def record_sprt_completion(payload: dict[str, Any]) -> None:
                 pct("draw"),
                 "forge_lib.status",
                 json.dumps(payload),
+                llr_lower_bound,
+                llr_upper_bound,
+                elo0,
+                elo1,
+                alpha,
+                beta,
+                to_int(wdl[0]),
+                to_int(wdl[1]),
+                to_int(wdl[2]),
+                pentanomial_text,
+                Path(candidate_engine).name if candidate_engine else None,
+                Path(reference_engine).name if reference_engine else None,
+                extract_flag("--tc"),
+                to_int(extract_flag("--threads")),
+                to_int(extract_flag("--concurrency")),
+                to_int(extract_flag("--hash")),
+                Path(extract_flag("--book")).name if extract_flag("--book") else None,
+                extract_flag("--book-order"),
+                to_int(extract_flag("--book-seed")),
+                to_int(extract_flag("--book-offset")),
+                extract_flag("--restart"),
             ),
         )
         conn.commit()

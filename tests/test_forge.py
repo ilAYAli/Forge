@@ -4466,6 +4466,25 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
         self.assertLess(command.index("--candidate-uci Hash=128"), command.index("--candidate-uci Hash=256"))
         self.assertIn("--reference-uci nnue_file=~/code/chess/enyo/net/reference.nn", command)
 
+    def test_sprt_template_generates_comment_from_net_basenames(self) -> None:
+        template_path = ROOT / "templates" / "sprt.template.json"
+        template = forge.load_template(template_path)
+        params = forge.parse_template_parameters(
+            "sprt",
+            template,
+            [
+                "--candidate", "~/assets/engines/enyo_9696dac",
+                "--candidate-net", "~/nets/candidate net.nnue",
+                "--reference-net", "/srv/nets/reference.nnue",
+                "--games", "2",
+                "--shards", "1",
+            ],
+        )
+
+        manifest = forge.expand_template("sprt", template_path, template, params)
+
+        self.assertEqual("candidate net.nnue vs reference.nnue", manifest["comment"])
+
     def test_sprt_template_hash_override_applies_to_both_engines(self) -> None:
         template_path = ROOT / "templates" / "sprt.template.json"
         template = forge.load_template(template_path)
@@ -8256,6 +8275,47 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
         self.assertIn("forge retry failed-a", remote)
         self.assertIn(pid_file, remote)
 
+    def test_coordinator_forwards_hook_events_when_set(self) -> None:
+        remote_result = subprocess.CompletedProcess(
+            args=["ssh"],
+            returncode=0,
+            stdout="remote retry\n",
+            stderr="",
+        )
+        with mock.patch.dict(
+            os.environ,
+            {"HOOK_EVENTS": "done,fail"},
+        ), mock.patch(
+            "forge_lib.workers.run_interruptible_coordinator_process",
+            return_value=remote_result,
+        ) as run_mock:
+            result = forge.interruptible_coordinator_command(
+                "pwa-llm",
+                "/home/petter/code/chess/forge/runs",
+                ["retry", "failed-a"],
+            )
+
+        self.assertEqual(0, result.returncode)
+        remote = run_mock.call_args.args[1]
+        self.assertIn("HOOK_EVENTS=done,fail", remote)
+
+    def test_coordinator_does_not_invent_hook_events(self) -> None:
+        remote_result = subprocess.CompletedProcess(
+            args=["ssh"], returncode=0, stdout="", stderr=""
+        )
+        with mock.patch.dict(os.environ, {}, clear=True), mock.patch(
+            "forge_lib.workers.run_interruptible_coordinator_process",
+            return_value=remote_result,
+        ) as run_mock:
+            forge.interruptible_coordinator_command(
+                "pwa-llm",
+                "/home/petter/code/chess/forge/runs",
+                ["retry", "failed-a"],
+            )
+
+        remote = run_mock.call_args.args[1]
+        self.assertNotIn("HOOK_EVENTS=", remote)
+
     def test_retry_without_failed_runs_errors(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             runs = Path(tmp) / "runs"
@@ -10728,6 +10788,73 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
         }
         self.assertEqual("failed", forge.run_state(summary))
 
+    def test_stale_launcher_with_active_tasks_is_current(self) -> None:
+        summary = {
+            "tasks": 3,
+            "launch_state": "stale",
+            "counts": {
+                "done": 1,
+                "fail": 0,
+                "running": 1,
+                "claimed": 0,
+                "stale": 0,
+                "pending": 1,
+            },
+        }
+
+        self.assertEqual("current", forge.run_state(summary))
+        self.assertFalse(forge.run_failed(summary))
+        self.assertEqual([], forge.run_state_fields(summary))
+
+    def test_unassigned_workers_are_configured_hosts_absent_from_run(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run = root / "runs" / "worker-subset"
+            state = run / "state"
+            state.mkdir(parents=True)
+            manifest = {
+                "schema": "forge.task.v1",
+                "name": "worker-subset",
+                "state_dir": str(state),
+            }
+            forge.write_json(run / "workers.json", {
+                "schema": "forge.workers.v1",
+                "workers": [
+                    {"host": "worker-a", "slots": 4},
+                    {"host": "inline-only", "slots": 1},
+                ],
+            })
+            configured = root / "workers.json"
+            forge.write_json(configured, {
+                "schema": "forge.workers.v1",
+                "workers": [
+                    {"host": "worker-a", "profile": "linux", "slots": 4},
+                    {"host": "worker-b", "profile": "linux", "slots": 8},
+                    {"host": "worker-c", "slots": 2},
+                ],
+            })
+
+            with mock.patch("forge_lib.status.config_workers_path", return_value=configured):
+                rows = forge.unassigned_worker_rows(manifest)
+
+        self.assertEqual([
+            {"host": "worker-b", "slots": 8, "profile": "linux"},
+            {"host": "worker-c", "slots": 2},
+        ], rows)
+
+        summary = {
+            "active": [],
+            "worker_processes": [],
+            "unassigned_workers": rows,
+            "pending": [],
+            "groups": {"done": {}, "fail": {}},
+            "failure_reasons": [],
+        }
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            forge.print_status_details(summary)
+        self.assertIn("unassigned workers: 10 hosts=2", stdout.getvalue())
+
     def test_stopping_run_state_takes_precedence_while_tasks_drain(self) -> None:
         summary = {
             "tasks": 3,
@@ -13120,6 +13247,44 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
             pooled_los_percent(-5.0, 10.0),
             places=9,
         )
+
+    def test_pentanomial_ci_pools_one_pair_shards(self) -> None:
+        from forge_lib.status import pentanomial_elo_ci
+
+        estimate = pentanomial_elo_ci([10, 20, 40, 20, 10])
+
+        self.assertIsNotNone(estimate)
+        elo, ci = estimate
+        self.assertAlmostEqual(0.0, elo, places=9)
+        self.assertGreater(ci, 0.0)
+        self.assertAlmostEqual(37.5, ci, places=1)
+
+    def test_pentanomial_ci_rejects_fake_zero_uncertainty(self) -> None:
+        from forge_lib.status import pentanomial_elo_ci
+
+        self.assertIsNone(pentanomial_elo_ci([0, 0, 1, 0, 0]))
+        self.assertIsNone(pentanomial_elo_ci([0, 0, 100, 0, 0]))
+
+    def test_sprt_aggregate_ignores_zero_shard_ci_when_pentanomial_exists(self) -> None:
+        summary = {
+            "metadata": {"kind": "sprt"},
+            "rows": [
+                {"progress_data": {"done": 2, "fields": {
+                    "elo": "0.0", "ci": "0.0", "pentanomial": "0-0-1-0-0",
+                }}},
+                {"progress_data": {"done": 2, "fields": {
+                    "elo": "190.8", "ci": "nan", "pentanomial": "0-0-0-1-0",
+                }}},
+                {"progress_data": {"done": 2, "fields": {
+                    "elo": "-190.8", "ci": "nan", "pentanomial": "0-1-0-0-0",
+                }}},
+            ],
+        }
+
+        fields = forge.sprt_aggregate_fields(summary)
+
+        ci = next(float(field.removeprefix("ci=")) for field in fields if field.startswith("ci="))
+        self.assertGreater(ci, 0.0)
 
     def test_status_sprt_progress_does_not_require_eta(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -17397,8 +17562,12 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
                 encoding="utf-8",
             )
 
+            monitor_started = threading.Event()
+
             def fake_run(self, command, **kwargs):
                 if " work " in command[-1]:
+                    if not monitor_started.is_set():
+                        raise AssertionError("completion monitor started after worker launch")
                     manifest = forge.load_manifest(runs / "launch-monitor" / "manifest.json")
                     task = manifest["tasks"][0]
                     forge.write_json(forge.task_running_path(manifest, task), {
@@ -17411,6 +17580,7 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
 
             class FakePopen:
                 def __init__(self, command, **kwargs):
+                    monitor_started.set()
                     self.pid = 4242
                     self.command = command
 

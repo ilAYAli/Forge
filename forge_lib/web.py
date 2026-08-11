@@ -1704,6 +1704,14 @@ _HTML = r"""<!DOCTYPE html>
       }).join('');
     }
 
+    function renderUnassignedWorkers(workers) {
+      return (workers || []).map(worker => {
+        const slots = Number(worker.slots || 0);
+        const profile = worker.profile ? ` profile=${worker.profile}` : '';
+        return `<div class="group-row">${esc(worker.host || '?')} [${slots} slots]${esc(profile)}</div>`;
+      }).join('');
+    }
+
     function commandDisplayText(command) {
       return String(command || '').replace(/\s+/g, ' ').trim();
     }
@@ -1811,6 +1819,7 @@ _HTML = r"""<!DOCTYPE html>
       const state  = r.state||'empty';
       const active  = r.sections?.active  || {count:0, tasks:[]};
       const workers = r.sections?.workers || {count:0, processes:[]};
+      const unassigned = r.sections?.unassigned || {count:0, workers:[]};
       const pending = r.sections?.pending || {count:0, groups:{}};
       const fail    = r.sections?.fail    || {count:0, groups:{}};
       const display = r.display || {};
@@ -1909,6 +1918,13 @@ _HTML = r"""<!DOCTYPE html>
         sections.push(makeSection(r.run, 'workers',
           `inactive workers: <b>${inactiveWorkers.length}</b>`, 'dim',
           renderWorkerProcesses(inactiveWorkers), false
+        ));
+      }
+
+      if (unassigned.count > 0) {
+        sections.push(makeSection(r.run, 'unassigned',
+          `unassigned workers: <b>${unassigned.count}</b>`, 'dim',
+          renderUnassignedWorkers(unassigned.workers), false
         ));
       }
 
