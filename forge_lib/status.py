@@ -15,6 +15,7 @@ QUEUE_MONITOR_NAME = "queue-monitor.json"
 PROGRESS_HISTORY_NAME = "progress-history.jsonl"
 FINISHED_PROGRESS_CACHE_NAME = "finished-progress.jsonl"
 PROGRESS_GRAPH_VERSION = 7
+WORKER_REDEPLOY_INTERVAL_SECONDS = 300.0
 SIGNED_PROGRESS_SERIES = {"balance", "elo", "llr"}
 PROGRESS_GRAPH_SERIES_OPTION_KEYS = {
     "band_max_fraction",
@@ -596,6 +597,41 @@ def run_launching(summary: dict[str, Any]) -> bool:
     if summary.get("launch_state") == "stale":
         return False
     return isinstance(summary.get("launch"), dict) and not run_launch_stale(summary)
+
+
+def worker_deploy_launching(summary: dict[str, Any]) -> bool:
+    launch = summary.get("launch")
+    return run_launching(summary) and not (
+        isinstance(launch, dict) and launch.get("reason") == "wait-monitor"
+    )
+
+
+def missing_worker_specs(manifest_path: Path, summary: dict[str, Any]) -> list[str]:
+    workers_path = manifest_path.parent / "workers.json"
+    if not workers_path.is_file():
+        return []
+    try:
+        workers = read_json(workers_path).get("workers")
+    except (OSError, SystemExit, TypeError, ValueError):
+        return []
+    if not isinstance(workers, list):
+        return []
+    live: dict[str, int] = {}
+    for process in summary.get("worker_processes", []):
+        if not isinstance(process, dict) or process.get("state") == "stale":
+            continue
+        host = str(process.get("worker") or "").strip()
+        if host:
+            live[host] = live.get(host, 0) + 1
+    specs = []
+    for worker in workers:
+        if not isinstance(worker, dict):
+            continue
+        host = str(worker.get("host") or "").strip()
+        slots = configured_worker_slots(worker)
+        if host and slots > live.get(host, 0):
+            specs.append(f"{host}:{slots}")
+    return specs
 
 def run_queued(summary: dict[str, Any]) -> bool:
     return run_queue_requested(summary)
@@ -2882,7 +2918,10 @@ def unassigned_worker_rows(worker_processes: list[dict[str, Any]]) -> list[dict[
         host = str(worker.get("host") or "").strip()
         if not host or host in participating_hosts:
             continue
-        row = {"host": host, "slots": configured_worker_slots(worker)}
+        slots = configured_worker_slots(worker)
+        if slots <= 0:
+            continue
+        row = {"host": host, "slots": slots}
         profile = str(worker.get("profile") or "").strip()
         if profile:
             row["profile"] = profile
@@ -5037,6 +5076,7 @@ def _cmd_wait(args: argparse.Namespace) -> int:
     deadline = time.monotonic() + args.timeout_seconds if args.timeout_seconds > 0 else None
     notify_command = getattr(args, "notify_command", None) or default_notify_command()
     last_line = ""
+    worker_redeploy_at: dict[str, float] = {}
 
     def deleted() -> int:
         print(f"run deleted while waiting: {manifest_path.parent.name}", file=sys.stderr)
@@ -5149,7 +5189,7 @@ def _cmd_wait(args: argparse.Namespace) -> int:
             active == 0
             and counts["pending"] > 0
             and not stop_requested(manifest)
-            and not run_launching(summary)
+            and not worker_deploy_launching(summary)
             and not run_launch_stale(summary)
         ):
             run_name = manifest_path.parent.name
@@ -5162,6 +5202,19 @@ def _cmd_wait(args: argparse.Namespace) -> int:
             if result.returncode != 0:
                 print(f"wait: auto-redeploy failed for {run_name}", file=sys.stderr)
                 return finish("run_fail", "failed", 1, manifest)
+        elif counts["pending"] > 0 and not stop_requested(manifest) and not worker_deploy_launching(summary):
+            attempt_epoch = time.monotonic()
+            for spec in missing_worker_specs(manifest_path, summary):
+                host = spec.rsplit(":", 1)[0]
+                if attempt_epoch - worker_redeploy_at.get(host, -math.inf) < WORKER_REDEPLOY_INTERVAL_SECONDS:
+                    continue
+                worker_redeploy_at[host] = attempt_epoch
+                print(f"wait: restoring missing worker capacity {spec}", flush=True)
+                subprocess.run(
+                    [sys.executable, str(script_path()), "worker", "set", spec, str(manifest_path.parent)],
+                    stdin=subprocess.DEVNULL,
+                    check=False,
+                )
         if stop_requested(manifest) and active == 0:
             return finish("run_stopped", "stopped", 130, manifest)
         if deadline is not None and time.monotonic() >= deadline:

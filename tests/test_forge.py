@@ -1000,6 +1000,15 @@ except SystemExit as exc:
         self.assertIn("runCmd('${runArg}','resume',this)", web._HTML)
         self.assertIn("runCmd('${runArg}','del',this)", web._HTML)
         self.assertIn(".act.del", web._HTML)
+        self.assertIn('<summary>actions</summary>', web._HTML)
+        self.assertIn('class="actions-list"', web._HTML)
+        self.assertIn("const actionsMenu = actions.length", web._HTML)
+        self.assertIn("function fmtCompletionTime", web._HTML)
+        self.assertIn('class="run-completion"', web._HTML)
+        self.assertIn("estimated completion", web._HTML)
+        self.assertIn("const etaCompletion = isCurrent && etaSeconds != null", web._HTML)
+        self.assertIn("`ETA ~${fmtCompletionTime(remaining)}`", web._HTML)
+        self.assertIn("runGraph, isCurrent", web._HTML)
         self.assertIn("function runStoppedEarly", web._HTML)
 
     def test_web_starts_sprt_graph_at_first_valid_ci(self) -> None:
@@ -1693,6 +1702,21 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
             compact_run["sections"]["pending"]["groups"]["task"],
         )
 
+    def test_web_status_api_compacts_graphs_without_changing_endpoints(self) -> None:
+        import forge_lib.web as web
+
+        points = [{"x": index, "y": index * 2} for index in range(1000)]
+        graph = {"x_unit": "games", "series": [{"name": "elo", "points": points}]}
+        compact = web._compact_web_graph(graph)
+        compact_points = compact["series"][0]["points"]
+
+        self.assertEqual(web._WEB_GRAPH_POINTS, len(compact_points))
+        self.assertEqual(points[0], compact_points[0])
+        self.assertEqual(points[-1], compact_points[-1])
+        self.assertEqual(1000, len(points))
+        history = web._compact_web_api_run({"state": "done", "progress_graph": graph})
+        self.assertEqual(web._WEB_HISTORY_GRAPH_POINTS, len(history["progress_graph"]["series"][0]["points"]))
+
     def test_web_status_sections_explain_their_meaning(self) -> None:
         import forge_lib.web as web
 
@@ -1708,6 +1732,15 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
             with self.subTest(section=section):
                 self.assertIn(f"{section}: '{description}'", web._HTML)
         self.assertIn('class="section-hdr" tabindex="0"${helpAttrs}', web._HTML)
+
+    def test_web_responses_are_not_cached(self) -> None:
+        import forge_lib.web as web
+
+        handler = mock.Mock()
+        web._Handler._respond(handler, 200, "text/plain", b"ok")
+
+        handler.send_header.assert_any_call("Cache-Control", "no-store")
+        handler.wfile.write.assert_called_once_with(b"ok")
 
     def test_web_status_api_uses_coordinator_payload_before_first_refresh(self) -> None:
         import forge_lib.web as web
@@ -10670,6 +10703,7 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
                     {"host": "worker-a", "profile": "linux", "slots": 4},
                     {"host": "worker-b", "profile": "linux", "slots": 8},
                     {"host": "worker-c", "slots": 2},
+                    {"host": "disabled", "slots": 0},
                 ],
             })
 
@@ -10905,6 +10939,40 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
 
             self.assertEqual(["task_0000"], requeued)
             self.assertEqual("pending", forge.task_state(manifest, task, lease_seconds=1))
+
+    def test_wait_monitor_marker_does_not_block_worker_redeploy(self) -> None:
+        summary = {
+            "launch_state": "launching",
+            "launch": {"reason": "wait-monitor", "pid": os.getpid()},
+        }
+
+        self.assertTrue(forge.run_launching(summary))
+        self.assertFalse(forge.worker_deploy_launching(summary))
+        self.assertTrue(forge.worker_deploy_launching({
+            "launch_state": "launching",
+            "launch": {"reason": "deploy", "pid": os.getpid()},
+        }))
+
+    def test_missing_worker_specs_uses_run_snapshot_and_ignores_disabled_workers(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            run = Path(tmp)
+            manifest_path = run / "manifest.json"
+            forge.write_json(run / "workers.json", {
+                "workers": [
+                    {"host": "worker-a", "slots": 4},
+                    {"host": "worker-b", "slots": 2},
+                    {"host": "dead-worker", "slots": 0},
+                ],
+            })
+            summary = {"worker_processes": [
+                {"worker": "worker-a", "worker_id": "worker-a#1", "state": "running"},
+                {"worker": "worker-b", "worker_id": "worker-b#1", "state": "stale"},
+            ]}
+
+            self.assertEqual(
+                ["worker-a:4", "worker-b:2"],
+                forge.missing_worker_specs(manifest_path, summary),
+            )
 
     def test_stale_running_marker_does_not_block_reclaim(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

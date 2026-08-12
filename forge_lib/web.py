@@ -50,6 +50,7 @@ _HTML = r"""<!DOCTYPE html>
 
     /* run card */
     .run { border: 1px solid var(--border); border-radius: 7px; overflow: hidden; }
+    .run:has(.actions-menu[open]) { overflow: visible; position: relative; z-index: 30; }
     .run.current { border-color: #2a3848; }
     .run.stopping { border-color: rgba(200,142,74,.65); }
     .run.failed  { border-color: #3d2424; }
@@ -79,9 +80,9 @@ _HTML = r"""<!DOCTYPE html>
     .arrow.open { transform: rotate(90deg); }
     .run-name { min-width: 0; overflow: hidden; text-overflow: ellipsis;
                 white-space: nowrap; font-weight: 600; cursor: text; }
-    .run-start, .run-elapsed, .run-time-separator { color: var(--dim); font-size: 12px; font-variant-numeric: tabular-nums; flex-shrink: 0; }
+    .run-start, .run-elapsed, .run-completion, .run-time-separator { color: var(--dim); font-size: 12px; font-variant-numeric: tabular-nums; flex-shrink: 0; }
     .run-start { width: 12ch; margin-left: 8px; }
-    .run-elapsed { width: 7ch; }
+    .run-completion { color: var(--yel); }
     .run-spacer { flex: 1; min-width: 0; }
     .badge { font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 10px; flex-shrink: 0; }
     .badge.current { background: rgba(212,168,34,.15); color: var(--yel); }
@@ -101,7 +102,6 @@ _HTML = r"""<!DOCTYPE html>
     .run-state.stopped-early { color: var(--warn); }
     .run-fields { color: var(--text); }
     .games-current { color: var(--yel); font-weight: 600; }
-    .run-eta   { color: var(--yel); font-weight: 600; }
     .elo-pos { color: var(--grn); font-weight: 600; }
     .elo-neu { color: var(--yel); font-weight: 600; }
     .elo-neg { color: var(--red); font-weight: 600; }
@@ -256,11 +256,22 @@ _HTML = r"""<!DOCTYPE html>
 
     .empty { color: var(--dim); padding: 10px 0; font-size: 13px; }
 
-    /* action buttons */
-    .run-actions { display: flex; gap: 5px; flex-shrink: 0; }
+    /* run actions menu */
+    .run-actions { position: relative; flex-shrink: 0; }
+    .actions-menu { position: relative; }
+    .actions-menu summary { list-style: none; background: none; border: 1px solid var(--border);
+                            border-radius: 4px; color: var(--dim); font-family: var(--font);
+                            font-size: 11px; padding: 1px 7px; cursor: pointer; user-select: none; }
+    .actions-menu summary::-webkit-details-marker { display: none; }
+    .actions-menu summary::after { content: ' ▾'; }
+    .actions-menu[open] summary, .actions-menu summary:hover { color: var(--text); border-color: var(--dim); }
+    .actions-list { position: absolute; z-index: 20; top: calc(100% + 4px); right: 0;
+                    min-width: 110px; padding: 4px; display: grid; gap: 3px;
+                    border: 1px solid var(--border); border-radius: 5px;
+                    background: var(--bg2); box-shadow: 0 8px 24px rgba(0,0,0,.35); }
     .act { background: none; border: 1px solid var(--border); border-radius: 4px;
            color: var(--dim); font-family: var(--font); font-size: 11px;
-           padding: 1px 7px; cursor: pointer; }
+           padding: 4px 8px; cursor: pointer; text-align: left; width: 100%; }
     .act:hover { color: var(--text); border-color: var(--dim); }
     .act.stop   { border-color: rgba(217,95,95,.4);  color: var(--red); }
     .act.stop:hover   { background: rgba(217,95,95,.1); }
@@ -770,6 +781,11 @@ _HTML = r"""<!DOCTYPE html>
       const d=Math.floor(s/86400),h=Math.floor((s%86400)/3600); return `${d}d${String(h).padStart(2,'0')}h`;
     }
 
+    function fmtCompletionTime(remainingS) {
+      return new Date(Date.now() + remainingS * 1000)
+        .toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'});
+    }
+
     function progressEtaFromRate(pd) {
       if (!pd || typeof pd.done !== 'number' || typeof pd.total !== 'number') return null;
       if (pd.total <= 0 || pd.done >= pd.total) return null;
@@ -895,7 +911,9 @@ _HTML = r"""<!DOCTYPE html>
       document.querySelectorAll('[data-etas]').forEach(el => {
         const remaining = parseFloat(el.dataset.etas) - elapsed;
         const prefix = el.dataset.etaEstimate === '1' ? '~' : '';
-        el.textContent = remaining > 0 ? prefix + fmtEta(remaining) : '—';
+        const formatted = el.classList.contains('run-completion')
+          ? `ETA ~${fmtCompletionTime(remaining)}` : fmtEta(remaining);
+        el.textContent = remaining > 0 ? prefix + formatted : '—';
       });
       document.querySelectorAll('[data-hbt]').forEach(el => {
         const age = now - parseFloat(el.dataset.hbt);
@@ -1838,11 +1856,7 @@ _HTML = r"""<!DOCTYPE html>
       const pct = display.progress_fraction != null
         ? (display.progress_fraction * 100).toFixed(1)
         : (r.tasks > 0 ? (r.done/r.tasks*100).toFixed(1) : 0);
-      const eta = etaFromFields(display.fields);
-      const countStr = (() => {
-        const parts = (display.fields||[]).filter(f=>!f.startsWith('eta='));
-        return parts.join(' ');
-      })();
+      const etaSeconds = parseEtaStr(etaFromFields(display.fields));
 
       const rId = rbid(r.run);
       const bodyOpen = resolveOpen(rId, isCurrent);
@@ -1852,6 +1866,7 @@ _HTML = r"""<!DOCTYPE html>
       const commentText = display.comment || '';
       const descText = runDescriptionText(display.description, Boolean(commentText));
       const timing = runTiming(r);
+      const etaCompletion = isCurrent && etaSeconds != null ? `ETA ~${fmtCompletionTime(etaSeconds)}` : '';
       const stoppedEarly = runStoppedEarly(r, pending, fail, display);
       const stateField = stoppedEarly ? '<span class="run-state stopped-early">stopped</span>' : '';
       const stateLabel = state === 'current' ? 'active' : state === 'done' ? 'completed' : state;
@@ -1868,6 +1883,8 @@ _HTML = r"""<!DOCTYPE html>
       if ((failCount > 0 && activeCount === 0) || inactiveFailed) actions.push(`<button class="act resume" onclick="event.stopPropagation();runCmd('${runArg}','resume',this)">resume</button>`);
       if ((failCount > 0 && activeCount === 0) || inactiveFailed) actions.push(`<button class="act del" onclick="event.stopPropagation();runCmd('${runArg}','del',this)">del</button>`);
       if (state === 'stopped' && activeCount === 0) actions.push(`<button class="act del" onclick="event.stopPropagation();runCmd('${runArg}','del',this)">del</button>`);
+      const actionsMenu = actions.length ? `<details class="actions-menu" onclick="event.stopPropagation()">
+        <summary>actions</summary><div class="actions-list">${actions.join('')}</div></details>` : '';
 
       // header — always visible
       const meta = descText || commentText ? `
@@ -1882,8 +1899,9 @@ _HTML = r"""<!DOCTYPE html>
           <span class="run-start" title="started">${esc(timing.start)}</span>
           <span class="run-time-separator">·</span>
           <span class="run-elapsed" title="elapsed">${esc(timing.elapsed)}</span>
+          ${etaCompletion ? `<span class="run-time-separator">·</span><span class="run-completion" title="estimated completion" data-etas="${etaSeconds}">${esc(etaCompletion)}</span>` : ''}
           <span class="run-spacer"></span>
-          <div class="run-actions">${actions.join('')}</div>
+          <div class="run-actions">${actionsMenu}</div>
           <span class="badge ${state}">${stateLabel}</span>
         </div>
         ${meta}
@@ -1891,7 +1909,6 @@ _HTML = r"""<!DOCTYPE html>
         <div class="run-summary">
           ${stateField}
           <span class="run-fields">${nonEtaFields.map(renderField).join(' &nbsp;')}</span>
-          ${eta ? `<span class="run-eta" data-etas="${parseEtaStr(eta)??''}">${esc(eta)}</span>` : ''}
         </div>`;
 
       // body sections (no description here — it's in the header now)
@@ -1901,7 +1918,7 @@ _HTML = r"""<!DOCTYPE html>
       if (runGraph) {
         sections.push(makeSection(r.run, 'graphs',
           'graphs', 'dim',
-          runGraph, true
+          runGraph, isCurrent
         ));
       }
 
@@ -2810,6 +2827,24 @@ _WEB_API_RUN_FIELDS = {
     "tasks",
 }
 
+_WEB_GRAPH_POINTS = 256
+_WEB_HISTORY_GRAPH_POINTS = 64
+
+
+def _compact_web_graph(graph: Any, limit: int = _WEB_GRAPH_POINTS) -> Any:
+    if not isinstance(graph, dict) or not isinstance(graph.get("series"), list):
+        return graph
+    compact = dict(graph)
+    compact["series"] = []
+    for item in graph["series"]:
+        series = dict(item) if isinstance(item, dict) else item
+        points = series.get("points") if isinstance(series, dict) else None
+        if isinstance(points, list) and len(points) > limit:
+            last = len(points) - 1
+            series["points"] = [points[round(i * last / (limit - 1))] for i in range(limit)]
+        compact["series"].append(series)
+    return compact
+
 
 def _compact_web_api_run(run: dict[str, Any]) -> dict[str, Any]:
     compact = {
@@ -2817,6 +2852,9 @@ def _compact_web_api_run(run: dict[str, Any]) -> dict[str, Any]:
         for key, value in run.items()
         if key in _WEB_API_RUN_FIELDS
     }
+    if "progress_graph" in compact:
+        limit = _WEB_GRAPH_POINTS if run.get("state") in {"current", "stopping"} else _WEB_HISTORY_GRAPH_POINTS
+        compact["progress_graph"] = _compact_web_graph(compact["progress_graph"], limit)
     sections = run.get("sections")
     if not isinstance(sections, dict):
         return compact
@@ -3135,6 +3173,7 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_response(code)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(body)
 
