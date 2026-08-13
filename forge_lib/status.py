@@ -17,6 +17,7 @@ FINISHED_PROGRESS_CACHE_NAME = "finished-progress.jsonl"
 PROGRESS_GRAPH_VERSION = 7
 WORKER_REDEPLOY_INTERVAL_SECONDS = 300.0
 SIGNED_PROGRESS_SERIES = {"balance", "elo", "llr"}
+SPRT_ELO_GRAPH_MIN_GAMES = 50
 PROGRESS_GRAPH_SERIES_OPTION_KEYS = {
     "band_max_fraction",
     "band_scale",
@@ -3627,7 +3628,7 @@ def sprt_aggregate_graph_points(
             llr_total += llr
             llr_seen = True
         for name, field_name in series_names.items():
-            if field_name == "elo" and weight_total > 0:
+            if field_name == "elo" and weight_total > 0 and cumulative_done >= SPRT_ELO_GRAPH_MIN_GAMES:
                 paired = pentanomial_elo_ci(pentanomial) if pentanomial_seen else None
                 points[name].append({
                     "x": x,
@@ -3635,7 +3636,7 @@ def sprt_aggregate_graph_points(
                 })
             elif field_name == "llr" and llr_seen:
                 points[name].append({"x": x, "y": llr_total})
-            elif field_name == "ci":
+            elif field_name == "ci" and cumulative_done >= SPRT_ELO_GRAPH_MIN_GAMES:
                 pooled = pentanomial_elo_ci(pentanomial) if pentanomial_seen else None
                 if pooled is not None:
                     points[name].append({"x": x, "y": pooled[1]})
@@ -4824,7 +4825,11 @@ def status_summary(
 
     append_finished_progress_cache(manifest, new_finished_progress)
     current_progress_graph = None
-    if include_completed_progress:
+    # The fast JSON path still loads every SPRT shard's cached progress for
+    # the pooled headline. Build its cheap aggregate graph from those same
+    # rows so the graph cannot lag behind the headline until a verbose status
+    # request happens to refresh history.
+    if include_completed_progress or manifest_kind == "sprt":
         current_progress_graph = run_progress_graph_from_rows(
             manifest,
             rows,

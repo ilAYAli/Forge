@@ -13091,7 +13091,21 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
         )
 
         self.assertEqual([0.0, 26.0, 52.0, 78.0, 104.0], [point["x"] for point in points["llr"]])
-        self.assertEqual([0.0, 26.0, 52.0, 78.0, 104.0], [point["x"] for point in points["elo"]])
+        self.assertEqual([0.0, 52.0, 78.0, 104.0], [point["x"] for point in points["elo"]])
+
+    def test_sprt_run_graph_hides_unstable_initial_elo_and_ci(self) -> None:
+        points = forge.sprt_aggregate_graph_points(
+            [
+                {"x": 2.0, "done": 2, "fields": {"elo": "+100.0", "ci": "200.0", "llr": "0.01/2.20"}},
+                {"x": 48.0, "done": 46, "fields": {"elo": "-100.0", "ci": "100.0", "llr": "-0.01/2.20"}},
+                {"x": 50.0, "done": 2, "fields": {"elo": "+10.0", "ci": "80.0", "llr": "0.01/2.20"}},
+            ],
+            {"elo": "elo", "ci": "ci", "llr": "llr"},
+        )
+
+        self.assertEqual([0.0, 50.0], [point["x"] for point in points["elo"]])
+        self.assertEqual([50.0], [point["x"] for point in points["ci"]])
+        self.assertEqual([0.0, 2.0, 48.0, 50.0], [point["x"] for point in points["llr"]])
 
     def test_sprt_run_graph_uses_same_pentanomial_elo_as_header(self) -> None:
         pentanomial = [1, 1, 0, 0, 0]
@@ -13099,8 +13113,8 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
         self.assertIsNotNone(expected)
         points = forge.sprt_aggregate_graph_points(
             [
-                {"x": 2.0, "done": 2, "fields": {"elo": "+100.0", "pentanomial": "1-0-0-0-0"}},
-                {"x": 4.0, "done": 2, "fields": {"elo": "+100.0", "pentanomial": "0-1-0-0-0"}},
+                {"x": 25.0, "done": 25, "fields": {"elo": "+100.0", "pentanomial": "1-0-0-0-0"}},
+                {"x": 50.0, "done": 25, "fields": {"elo": "+100.0", "pentanomial": "0-1-0-0-0"}},
             ],
             {"elo": "elo"},
         )
@@ -16032,6 +16046,14 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
             (state / "sprt_0000.done.json").write_text(json.dumps({"task": "sprt_0000"}), encoding="utf-8")
             log = logs / "sprt_0000.log"
             log.write_text(losing + "\n", encoding="utf-8")
+
+            fast_summary = forge.status_summary(
+                manifest, lease_seconds=600, include_completed_progress=False
+            )
+            graph = fast_summary["progress_graph"]
+            self.assertIsNotNone(graph)
+            llr = next(item for item in graph["series"] if item["name"] == "llr")
+            self.assertEqual(2.0, llr["points"][-1]["x"])
 
             def wdl() -> list[int]:
                 summary = forge.status_summary(
