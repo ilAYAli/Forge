@@ -10,6 +10,7 @@ import argparse
 import re
 import signal
 import shutil
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -200,6 +201,113 @@ class ForgeTests(unittest.TestCase):
             check=False,
             env=process_env,
         )
+
+    def make_sprt_report_db(self, path: Path) -> None:
+        connection = sqlite3.connect(path)
+        connection.execute(
+            "CREATE TABLE sprt (id INTEGER PRIMARY KEY, date TEXT, candidate_net TEXT, "
+            "reference_net TEXT, elo REAL, ci REAL, llr REAL, engine TEXT, games INTEGER, run TEXT)"
+        )
+        connection.executemany(
+            "INSERT INTO sprt VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            [
+                (1, "2026-08-10", "enyo-a.nn", "ref.nn", 10.0, 2.0, 1.0, "engine-a", 1500, "run-a-short"),
+                (2, "2026-08-09", "enyo-a.nn", "ref.nn", 5.0, 1.0, 2.0, "engine-a", 4000, "run-a-long"),
+                (3, "2026-08-11", "enyo-b.nn", "ref.nn", 8.0, 1.5, 3.0, "engine-a", 4000, "run-b"),
+                (4, "2026-08-12", "enyo-c.nn", "other.nn", 20.0, 1.0, 4.0, "engine-a", 4000, "run-c"),
+            ],
+        )
+        connection.commit()
+        connection.close()
+
+    def test_sprt_score_report_ranks_latest_largest_candidate_run(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            database = Path(tmp) / "sprt.db"
+            self.make_sprt_report_db(database)
+
+            payload = forge.sprt_score_report(
+                reference_net="ref.nn", candidate_net="enyo-", min_games=1500, limit=20, db_path=database
+            )
+
+            self.assertEqual(["enyo-b.nn", "enyo-a.nn"], [row["candidate_net"] for row in payload["rows"]])
+            self.assertEqual([8.0, 5.0], [row["elo"] for row in payload["rows"]])
+            self.assertEqual([1, 2], [row["rank"] for row in payload["rows"]])
+
+    def test_sprt_score_report_cli_and_web_share_backend(self) -> None:
+        import forge_lib.web as web
+
+        with tempfile.TemporaryDirectory() as tmp:
+            database = Path(tmp) / "sprt.db"
+            self.make_sprt_report_db(database)
+            env = {"FORGE_SPRT_DB": str(database)}
+
+            result = self.run_cli(
+                "report", "sprt", "score", "--reference-net", "ref.nn", "--candidate-net", "enyo-",
+                "--min-games", "0", "--limit", "1", "--json", env=env,
+            )
+            with mock.patch.dict(os.environ, env, clear=False):
+                api = json.loads(web._api_sprt_score(
+                    "view=ranking&reference_net=ref.nn&candidate_net=enyo-&min_games=0&limit=1"
+                ))
+
+            self.assertEqual(0, result.returncode, result.stderr)
+            self.assertEqual(api, json.loads(result.stdout))
+            self.assertIn('href="/reports/sprt"', web._HTML)
+            self.assertIn("String(r.kind || '').toLowerCase() === 'sprt'", web._HTML)
+            self.assertIn('<a class="top-tab active" href="/">runs</a>', web._HTML)
+            self.assertIn('<a class="top-tab active" href="/reports/sprt">SPRT scores</a>', web._SPRT_REPORT_HTML)
+            self.assertIn("/api/reports/sprt/score", web._SPRT_REPORT_HTML)
+
+    def test_sprt_template_declares_score_report(self) -> None:
+        template = json.loads((ROOT / "templates" / "sprt.template.json").read_text(encoding="utf-8"))
+        self.assertEqual(
+            [{"name": "score", "title": "Scores", "provider": "sprt", "views": ["ranking", "runs"]}],
+            template["reports"],
+        )
+
+    def test_web_history_is_paginated_ten_runs_at_a_time(self) -> None:
+        import forge_lib.web as web
+
+        lingering = {
+            f"run-{index:02d}": {
+                "run": f"run-{index:02d}",
+                "state": "done",
+                "created_at": f"2026-08-{index + 1:02d}T12:00:00+0200",
+                "tasks": 1,
+                "done": 1,
+                "fail": 0,
+                "pending": 0,
+                "display": {"fields": []},
+            }
+            for index in range(23)
+        }
+        with mock.patch("forge_lib.web._history_web_state", return_value={"lingering_runs": lingering}):
+            first = json.loads(web._api_history("page=0&limit=10"))
+            last = json.loads(web._api_history("page=2&limit=10"))
+
+        self.assertEqual((23, 3, 10), (first["total"], first["pages"], len(first["runs"])))
+        self.assertEqual("run-22", first["runs"][0]["run"])
+        self.assertEqual(3, len(last["runs"]))
+        self.assertIn("/api/history?page=${Math.max(0,page)}&limit=10", web._HTML)
+        self.assertIn(">previous</button>", web._HTML)
+        self.assertIn(">next</button>", web._HTML)
+
+    def test_live_status_excludes_completed_history(self) -> None:
+        import forge_lib.web as web
+
+        payload = {
+            "runs": [
+                {"run": "active", "state": "current", "running": 1},
+                {"run": "old", "state": "done", "running": 0},
+            ]
+        }
+        with (
+            mock.patch("forge_lib.web.configured_coordinator_runs", return_value=None),
+            mock.patch("forge_lib.web._collect_local_status_payload", return_value=payload),
+        ):
+            live = web._collect_live_status_payload()
+
+        self.assertEqual(["active"], [run["run"] for run in live["runs"]])
 
     def test_label_search_command_expands_to_label_search_template(self) -> None:
         self.assertEqual(

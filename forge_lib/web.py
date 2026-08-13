@@ -6,8 +6,10 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qs, urlsplit
 
 from .core import *
+from .reports import sprt_score_report
 from .status import PROGRESS_GRAPH_VERSION, configured_coordinator_runs, format_status_values
 from .tasks import parse_coordinator, shell_join
 
@@ -41,12 +43,23 @@ _HTML = r"""<!DOCTYPE html>
     #ts { color: var(--dim); margin-left: auto; }
     .top-btn { background: none; border: 1px solid var(--border); border-radius: 4px;
              color: var(--dim); font-family: var(--font); font-size: 11px;
-             padding: 1px 7px; cursor: pointer; }
+             padding: 1px 7px; cursor: pointer; text-decoration: none; }
     #sound.on { color: var(--yel); border-color: rgba(212,168,34,.45); }
     .top-btn:hover { color: var(--text); border-color: var(--dim); }
+    .top-tabs { display: flex; gap: 3px; }
+    .top-tab { color: var(--dim); text-decoration: none; padding: 2px 7px;
+               border-radius: 4px; font-size: 11px; }
+    .top-tab:hover { color: var(--text); background: var(--bg3); }
+    .top-tab.active { color: var(--yel); background: rgba(212,168,34,.1); }
     #err { display: none; padding: 6px 14px; background: rgba(217,95,95,.1);
            color: var(--red); border-bottom: 1px solid rgba(217,95,95,.2); font-size: 13px; }
     #runs { padding: 10px 12px; display: flex; flex-direction: column; gap: 6px; }
+    .history-nav { display:flex; align-items:center; justify-content:center; gap:10px;
+                   padding:7px; color:var(--dim); font-size:11px; }
+    .history-nav button { background:none; border:1px solid var(--border); border-radius:4px;
+                          color:var(--dim); font:11px var(--font); padding:2px 8px; cursor:pointer; }
+    .history-nav button:hover:not(:disabled) { color:var(--text); border-color:var(--dim); }
+    .history-nav button:disabled { opacity:.35; cursor:default; }
 
     /* run card */
     .run { border: 1px solid var(--border); border-radius: 7px; overflow: hidden; }
@@ -271,7 +284,8 @@ _HTML = r"""<!DOCTYPE html>
                     background: var(--bg2); box-shadow: 0 8px 24px rgba(0,0,0,.35); }
     .act { background: none; border: 1px solid var(--border); border-radius: 4px;
            color: var(--dim); font-family: var(--font); font-size: 11px;
-           padding: 4px 8px; cursor: pointer; text-align: left; width: 100%; }
+           padding: 4px 8px; cursor: pointer; text-align: left; width: 100%;
+           text-decoration: none; display: block; }
     .act:hover { color: var(--text); border-color: var(--dim); }
     .act.stop   { border-color: rgba(217,95,95,.4);  color: var(--red); }
     .act.stop:hover   { background: rgba(217,95,95,.1); }
@@ -285,6 +299,7 @@ _HTML = r"""<!DOCTYPE html>
   <div id="err"></div>
   <header>
     <div id="dot"></div>
+    <nav class="top-tabs"><a class="top-tab active" href="/">runs</a><a class="top-tab" href="/reports/sprt">SPRT scores</a></nav>
     <span id="coord"></span>
     <span id="ts">Loading…</span>
     <button id="inactive" class="top-btn" type="button" onclick="toggleInactiveRuns()" title="Toggle completed, stopped, failed, and empty runs">inactive on</button>
@@ -512,7 +527,8 @@ _HTML = r"""<!DOCTYPE html>
       showInactiveRuns = !showInactiveRuns;
       localStorage.setItem('forge.showInactive', showInactiveRuns ? '1' : '0');
       updateInactiveButton();
-      refresh();
+      if (showInactiveRuns && !historyData.loaded) loadHistory(0);
+      else renderDashboard();
     }
 
     function runIsActive(r) {
@@ -1876,6 +1892,7 @@ _HTML = r"""<!DOCTYPE html>
       const activeCount = Number(active.count || 0);
       const failCount = Number(fail.count || r.fail || 0);
       const inactiveFailed = state === 'failed' && activeCount === 0;
+      if (String(r.kind || '').toLowerCase() === 'sprt') actions.push(`<a class="act" href="/reports/sprt" onclick="event.stopPropagation()">scores</a>`);
       if (state === 'current' || state === 'queued' || state === 'stalled') actions.push(`<button class="act stop"   onclick="event.stopPropagation();runCmd('${runArg}','stop',this)">stop</button>`);
       if (state === 'stopped' || state === 'stalled') actions.push(`<button class="act resume" onclick="event.stopPropagation();runCmd('${runArg}','resume',this)">resume</button>`);
       if (state === 'done') actions.push(`<button class="act" onclick="event.stopPropagation();runCmd('${runArg}','hide',this)">hide</button>`);
@@ -2069,6 +2086,49 @@ _HTML = r"""<!DOCTYPE html>
     }
 
     let refreshing = false;
+    let statusData = {runs:[]};
+    let historyData = {runs:[], page:0, pages:0, total:0, loaded:false};
+
+    function renderDashboard() {
+      if (shouldDeferRefreshForSelection()) return;
+      saveState();
+      const activeRuns = (statusData.runs || [])
+        .filter(r => !hiddenRunNames.has(String(r.run || '')))
+        .slice().sort(compareRunsByCreated);
+      const historyRuns = showInactiveRuns
+        ? (historyData.runs || []).filter(r => !hiddenRunNames.has(String(r.run || '')))
+        : [];
+      const parts = [...activeRuns, ...historyRuns].map(renderRun);
+      if (statusData.collapsed_failures_count > 0) {
+        const n = statusData.collapsed_failures_count;
+        parts.unshift(`<div class="empty" style="color:var(--red)">failed: ${n} run${n===1?'':'s'} — use forge status --failed</div>`);
+      }
+      if (showInactiveRuns && historyData.loaded && historyData.pages > 1) {
+        parts.push(`<div class="history-nav"><button ${historyData.page<=0?'disabled':''} onclick="loadHistory(${historyData.page-1})">previous</button><span>${historyData.page+1} / ${historyData.pages}</span><button ${historyData.page+1>=historyData.pages?'disabled':''} onclick="loadHistory(${historyData.page+1})">next</button></div>`);
+      }
+      if (!parts.length) {
+        parts.push(statusData.loading ? '<div class="empty">loading Forge status...</div>'
+          : !showInactiveRuns && historyData.total ? `<div class="empty">inactive runs hidden: ${historyData.total} — click “inactive off” to show them</div>`
+          : '<div class="empty">no Forge runs found</div>');
+      }
+      document.getElementById('runs').innerHTML = parts.join('');
+      initResizableTables();
+      applySortToAllTables();
+      saveUiState();
+    }
+
+    async function loadHistory(page=0) {
+      try {
+        const res = await fetch(`/api/history?page=${Math.max(0,page)}&limit=10`, {cache:'no-store'});
+        if (!res.ok) throw new Error('history HTTP '+res.status);
+        historyData = {...await res.json(), loaded:true};
+        renderDashboard();
+      } catch(e) {
+        document.getElementById('err').style.display = 'block';
+        document.getElementById('err').textContent = 'History: '+e.message;
+      }
+    }
+
     async function refresh() {
       if (refreshing) return;
       refreshing = true;
@@ -2076,6 +2136,8 @@ _HTML = r"""<!DOCTYPE html>
         const res = await fetch('/api/status');
         if (!res.ok) throw new Error('HTTP '+res.status);
         const data = await res.json();
+        const hadLiveRun = (statusData.runs || []).length > 0;
+        statusData = data;
         document.getElementById('err').style.display = 'none';
         document.getElementById('dot').className = '';
         document.getElementById('coord').textContent =
@@ -2090,46 +2152,8 @@ _HTML = r"""<!DOCTYPE html>
         }
         if (!data.loading) notifyStartedJobs(data);
 
-        if (!data.loading) {
-          const serverRunNames = new Set((data.runs||[]).map(r => String(r.run || '')));
-          let hiddenChanged = false;
-          for (const name of [...hiddenRunNames]) {
-            if (!serverRunNames.has(name)) {
-              hiddenRunNames.delete(name);
-              hiddenChanged = true;
-            }
-          }
-          if (hiddenChanged) saveHiddenRunNames();
-        }
-
-        const runs = (data.runs||[])
-          .filter(r => !hiddenRunNames.has(String(r.run || '')))
-          .filter(r => showInactiveRuns || runIsActive(r))
-          .slice()
-          .sort(compareRunsByCreated);
-
-        if (shouldDeferRefreshForSelection()) return;
-        saveState();
-        const el = document.getElementById('runs');
-        const parts = [];
-        if (data.collapsed_failures_count > 0) {
-          const n = data.collapsed_failures_count;
-          parts.push(`<div class="empty" style="color:var(--red)">failed: ${n} run${n===1?'':'s'} — use forge status --failed</div>`);
-        }
-        if (runs.length) {
-          parts.push(...runs.map(renderRun));
-        } else if (data.loading) {
-          parts.push('<div class="empty">loading Forge status...</div>');
-        } else if (!data.collapsed_failures_count) {
-          const hiddenInactive = !showInactiveRuns && (data.runs||[]).length;
-          parts.push(hiddenInactive
-            ? `<div class="empty">inactive runs hidden: ${(data.runs||[]).length} — click “inactive off” to show them</div>`
-            : '<div class="empty">no Forge runs found</div>');
-        }
-        el.innerHTML = parts.join('');
-        initResizableTables();
-        applySortToAllTables();
-        saveUiState();
+        renderDashboard();
+        if (hadLiveRun && !(data.runs || []).length && showInactiveRuns) loadHistory(0);
       } catch(e) {
         document.getElementById('dot').className = 'err';
         document.getElementById('err').style.display = 'block';
@@ -2154,12 +2178,133 @@ _HTML = r"""<!DOCTYPE html>
     });
     window.addEventListener('blur', () => { selectionGesture = false; });
     refresh();
+    if (showInactiveRuns) loadHistory(0);
     setInterval(refresh, 5000);
   </script>
 </body>
 </html>"""
 
 _HTML_BYTES = _HTML.encode()
+
+_SPRT_REPORT_HTML = r"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Forge SPRT Scores</title>
+  <link rel="icon" type="image/png" href="/favicon.png">
+  <style>
+    :root { --bg:#0e0e10; --bg2:#16161a; --bg3:#1e1e24; --text:#c8c8d2;
+      --dim:#767680; --border:#2b2b32; --yel:#d4a822; --grn:#4db36a;
+      --red:#d95f5f; --font:'SF Mono','JetBrains Mono','Fira Code',ui-monospace,monospace; }
+    * { box-sizing:border-box; }
+    body { margin:0; background:var(--bg); color:var(--text); font:13px/1.4 var(--font); }
+    header { height:39px; display:flex; align-items:center; gap:10px; padding:7px 14px;
+      border-bottom:1px solid var(--border); position:sticky; top:0; background:var(--bg); z-index:2; }
+    a { color:var(--dim); text-decoration:none; } a:hover { color:var(--text); }
+    .top-tabs { display:flex; gap:3px; }
+    .top-tab { padding:2px 7px; border-radius:4px; font-size:11px; }
+    .top-tab:hover { background:var(--bg3); }
+    .top-tab.active { color:var(--yel); background:rgba(212,168,34,.1); }
+    #state { margin-left:auto; color:var(--dim); }
+    main { padding:12px 14px 24px; }
+    form { display:flex; align-items:end; gap:9px; flex-wrap:wrap; padding:10px;
+      border:1px solid var(--border); border-radius:6px; background:var(--bg2); }
+    label { display:grid; gap:3px; color:var(--dim); font-size:11px; }
+    input,button { font:12px var(--font); color:var(--text); background:var(--bg3);
+      border:1px solid var(--border); border-radius:4px; padding:5px 7px; }
+    input { width:190px; } input.small { width:85px; }
+    button { cursor:pointer; } button:hover,button.active { color:var(--yel); border-color:var(--yel); }
+    .tabs { display:flex; gap:6px; margin:11px 0 7px; }
+    .table-wrap { overflow:auto; border:1px solid var(--border); border-radius:6px; }
+    table { width:100%; border-collapse:collapse; white-space:nowrap; background:var(--bg2); }
+    th,td { text-align:left; padding:6px 10px; border-bottom:1px solid var(--border); }
+    th { color:var(--dim); font-size:11px; cursor:pointer; user-select:none; }
+    tbody tr:hover { background:var(--bg3); } tbody tr:last-child td { border-bottom:0; }
+    td.num { text-align:right; font-variant-numeric:tabular-nums; }
+    td.pos { color:var(--grn); font-weight:600; } td.neg { color:var(--red); font-weight:600; }
+    .empty { color:var(--dim); padding:18px; text-align:center; }
+    @media(max-width:700px) { main { padding:8px; } input { width:155px; }
+      form { gap:7px; } th,td { padding:5px 8px; } }
+  </style>
+</head>
+<body>
+  <header><nav class="top-tabs"><a class="top-tab" href="/">runs</a><a class="top-tab active" href="/reports/sprt">SPRT scores</a></nav><span id="state">loading…</span></header>
+  <main>
+    <form id="filters">
+      <label>reference net<input id="reference" value="nn-0ee0657fb25e.nnue"></label>
+      <label>candidate<input id="candidate" value="enyo-%"></label>
+      <label>engine<input id="engine" placeholder="all"></label>
+      <label>min games<input id="min-games" class="small" type="number" min="0" value="1500"></label>
+      <label>limit<input id="limit" class="small" type="number" min="1" max="1000" value="20"></label>
+      <button type="submit">apply</button>
+    </form>
+    <div class="tabs"><button data-view="ranking" class="active">ranking</button><button data-view="runs">runs</button></div>
+    <div class="table-wrap"><table><thead></thead><tbody></tbody></table></div>
+  </main>
+  <script>
+    const state = {view:'ranking', payload:null, sort:null, desc:false};
+    const esc = value => String(value ?? '—').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    const label = name => String(name).replaceAll('_',' ');
+    function params() {
+      const p = new URLSearchParams({view:state.view,
+        reference_net:document.querySelector('#reference').value,
+        candidate_net:document.querySelector('#candidate').value,
+        engine:document.querySelector('#engine').value,
+        min_games:document.querySelector('#min-games').value,
+        limit:document.querySelector('#limit').value});
+      return p;
+    }
+    function valueText(column,value) {
+      if (value === null || value === undefined || value === '') return '—';
+      if (typeof value === 'number' && ['elo','ci'].includes(column)) return value.toFixed(1);
+      if (typeof value === 'number' && column === 'llr') return value.toFixed(2);
+      return String(value);
+    }
+    function render() {
+      const payload=state.payload, columns=payload?.columns||[];
+      let rows=[...(payload?.rows||[])];
+      if (state.sort) rows.sort((a,b) => {
+        const x=a[state.sort], y=b[state.sort];
+        const order = typeof x==='number' && typeof y==='number' ? x-y : String(x??'').localeCompare(String(y??''));
+        return state.desc ? -order : order;
+      });
+      document.querySelector('thead').innerHTML='<tr>'+columns.map(c=>`<th data-column="${esc(c)}">${esc(label(c))}</th>`).join('')+'</tr>';
+      document.querySelector('tbody').innerHTML=rows.length ? rows.map(row=>'<tr>'+columns.map(c=>{
+        const n=typeof row[c]==='number', score=c==='elo' ? (row[c]>0?' pos':row[c]<0?' neg':'') : '';
+        return `<td class="${n?'num':''}${score}">${esc(valueText(c,row[c]))}</td>`;
+      }).join('')+'</tr>').join('') : `<tr><td class="empty" colspan="${columns.length||1}">no matching results</td></tr>`;
+      document.querySelectorAll('th').forEach(th=>th.onclick=()=>{
+        const column=th.dataset.column;
+        state.desc=state.sort===column ? !state.desc : false; state.sort=column; render();
+      });
+    }
+    async function load() {
+      document.querySelector('#state').textContent='loading…';
+      try {
+        const p=params(); history.replaceState(null,'',`?${p}`);
+        const response=await fetch(`/api/reports/sprt/score?${p}`,{cache:'no-store'});
+        const data=await response.json(); if(!response.ok) throw new Error(data.error||`HTTP ${response.status}`);
+        state.payload=data; state.sort=null; render();
+        document.querySelector('#state').textContent=`${data.rows.length} rows`;
+      } catch(error) { document.querySelector('#state').textContent=error.message; }
+    }
+    document.querySelector('#filters').onsubmit=event=>{event.preventDefault();load();};
+    document.querySelectorAll('[data-view]').forEach(button=>button.onclick=()=>{
+      state.view=button.dataset.view;
+      document.querySelectorAll('[data-view]').forEach(item=>item.classList.toggle('active',item===button)); load();
+    });
+    const initial=new URLSearchParams(location.search);
+    for (const [key,id] of [['reference_net','reference'],['candidate_net','candidate'],['engine','engine'],['min_games','min-games'],['limit','limit']])
+      if(initial.has(key)) document.querySelector(`#${id}`).value=initial.get(key);
+    if(['ranking','runs'].includes(initial.get('view'))) state.view=initial.get('view');
+    document.querySelectorAll('[data-view]').forEach(item=>item.classList.toggle('active',item.dataset.view===state.view));
+    load();
+  </script>
+</body>
+</html>"""
+
+_SPRT_REPORT_HTML_BYTES = _SPRT_REPORT_HTML.encode()
 
 def _favicon_bytes() -> bytes | None:
     try:
@@ -2732,7 +2877,11 @@ def _collect_local_status_payload() -> dict[str, Any]:
     data["coordinator"] = None
     return data
 
-def _collect_coordinator_status_payload(coordinator_runs: str) -> dict[str, Any]:
+def _collect_coordinator_status_payload(
+    coordinator_runs: str,
+    *,
+    attach_web_state: bool = True,
+) -> dict[str, Any]:
     host, runs_path = parse_coordinator(coordinator_runs)
     command = ["status", "--json"]
     if host:
@@ -2768,13 +2917,36 @@ def _collect_coordinator_status_payload(coordinator_runs: str) -> dict[str, Any]
         raise RuntimeError(result.stderr.strip() or f"forge status exit {result.returncode}")
     data = json.loads(result.stdout)
     data["coordinator"] = coordinator_runs
-    _attach_coordinator_web_state(data, coordinator_runs)
+    if attach_web_state:
+        _attach_coordinator_web_state(data, coordinator_runs)
+    return data
+
+
+def _collect_live_status_payload() -> dict[str, Any]:
+    """Collect only live/queued status; history has its own paginated API."""
+    coordinator_runs = configured_coordinator_runs()
+    if coordinator_runs:
+        local_payload = _collect_local_status_payload()
+        if _status_payload_has_current_run(local_payload):
+            data = local_payload
+        else:
+            data = _collect_coordinator_status_payload(coordinator_runs, attach_web_state=False)
+    else:
+        data = _collect_local_status_payload()
+    data["runs"] = [
+        run for run in data.get("runs", [])
+        if isinstance(run, dict)
+        and (
+            _run_payload_state(run) in {"current", "stopping", "queued", "stalled"}
+            or _payload_active_count(run) > 0
+        )
+    ]
     return data
 
 def _refresh_status_cache() -> None:
     global _STATUS_CACHE, _STATUS_CACHE_EPOCH, _STATUS_CACHE_ERROR, _STATUS_REFRESHING
     try:
-        data = _collect_status_payload()
+        data = _collect_live_status_payload()
         fetched_at = time.time()
         data["timestamp"] = fetched_at
         with _STATUS_CACHE_LOCK:
@@ -2819,6 +2991,7 @@ _WEB_API_RUN_FIELDS = {
     "display",
     "done",
     "fail",
+    "kind",
     "pending",
     "progress_graph",
     "run",
@@ -2902,6 +3075,53 @@ def _compact_web_api_payload(payload: dict[str, Any]) -> dict[str, Any]:
     return compact
 
 
+def _history_web_state() -> dict[str, Any]:
+    coordinator_runs = configured_coordinator_runs()
+    return _read_coordinator_web_state(coordinator_runs) if coordinator_runs else _read_web_state()
+
+
+def _api_history(query: str) -> bytes:
+    values = parse_qs(query, keep_blank_values=True)
+
+    def integer(name: str, default: int) -> int:
+        raw = values.get(name, [str(default)])[-1]
+        return int(raw)
+
+    page = integer("page", 0)
+    limit = integer("limit", 10)
+    if page < 0:
+        raise ValueError("page must be non-negative")
+    if limit < 1 or limit > 50:
+        raise ValueError("limit must be between 1 and 50")
+    state = _history_web_state()
+    lingering = state.get("lingering_runs")
+    hidden = set(_state_list(state, "hidden_runs"))
+    deleted = set(_state_list(state, "deleted_runs"))
+    runs = [
+        _normalize_web_run_payload(payload)
+        for name, payload in (lingering.items() if isinstance(lingering, dict) else [])
+        if isinstance(payload, dict) and str(name) not in hidden and str(name) not in deleted
+    ]
+
+    def sort_key(run: dict[str, Any]) -> tuple[str, str]:
+        return (str(run.get("created_at") or ""), str(run.get("run") or ""))
+
+    runs.sort(key=sort_key, reverse=True)
+    total = len(runs)
+    pages = (total + limit - 1) // limit
+    if pages and page >= pages:
+        page = pages - 1
+    start = page * limit
+    payload = {
+        "runs": [_compact_web_api_run(run) for run in runs[start:start + limit]],
+        "page": page,
+        "pages": pages,
+        "limit": limit,
+        "total": total,
+    }
+    return json.dumps(payload, separators=(",", ":")).encode()
+
+
 def _api_status() -> bytes:
     global _STATUS_CACHE, _STATUS_CACHE_EPOCH, _STATUS_CACHE_ERROR
     now = time.time()
@@ -2912,7 +3132,7 @@ def _api_status() -> bytes:
         refreshing = _STATUS_REFRESHING
     if cached is None:
         try:
-            cached = _collect_status_payload()
+            cached = _collect_live_status_payload()
             cached["timestamp"] = now
             with _STATUS_CACHE_LOCK:
                 _STATUS_CACHE = copy.deepcopy(cached)
@@ -2930,6 +3150,24 @@ def _api_status() -> bytes:
     if error:
         cached["error"] = error
     return json.dumps(_compact_web_api_payload(cached), separators=(",", ":")).encode()
+
+
+def _api_sprt_score(query: str) -> bytes:
+    values = parse_qs(query, keep_blank_values=True)
+
+    def value(name: str, default: str) -> str:
+        items = values.get(name)
+        return str(items[-1]) if items else default
+
+    payload = sprt_score_report(
+        view=value("view", "ranking"),
+        reference_net=value("reference_net", "nn-0ee0657fb25e.nnue"),
+        candidate_net=value("candidate_net", "enyo-%"),
+        engine=value("engine", ""),
+        min_games=int(value("min_games", "1500")),
+        limit=int(value("limit", "20")),
+    )
+    return json.dumps(payload, separators=(",", ":")).encode()
 
 def _invalidate_status_cache() -> None:
     global _STATUS_CACHE, _STATUS_CACHE_EPOCH, _STATUS_CACHE_ERROR
@@ -3148,9 +3386,12 @@ class _Handler(BaseHTTPRequestHandler):
             self.end_headers()
 
     def do_GET(self) -> None:
-        path = self.path.split("?", 1)[0]
+        request = urlsplit(self.path)
+        path = request.path
         if path in ("/", "/index.html"):
             self._respond(200, "text/html; charset=utf-8", _HTML_BYTES)
+        elif path in ("/reports/sprt", "/reports/sprt/"):
+            self._respond(200, "text/html; charset=utf-8", _SPRT_REPORT_HTML_BYTES)
         elif path == "/favicon.png":
             body = _favicon_bytes()
             if body is None:
@@ -3165,6 +3406,18 @@ class _Handler(BaseHTTPRequestHandler):
             except Exception as exc:
                 body = json.dumps({"error": str(exc)}).encode()
                 self._respond(500, "application/json", body)
+        elif path == "/api/history":
+            try:
+                self._respond(200, "application/json", _api_history(request.query))
+            except ValueError as exc:
+                body = json.dumps({"error": str(exc)}).encode()
+                self._respond(400, "application/json", body)
+        elif path == "/api/reports/sprt/score":
+            try:
+                self._respond(200, "application/json", _api_sprt_score(request.query))
+            except (ValueError, FileNotFoundError) as exc:
+                body = json.dumps({"error": str(exc)}).encode()
+                self._respond(400, "application/json", body)
         else:
             self.send_response(404)
             self.end_headers()

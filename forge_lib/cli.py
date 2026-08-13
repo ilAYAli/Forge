@@ -11,6 +11,7 @@ from .workers import *
 from .templates import *
 from .shell import *
 from .spsa import *
+from .reports import *
 
 try:
     from .web import cmd_web
@@ -43,6 +44,7 @@ COMMON_COMMANDS = [
     "resume",
     "worker",
     "status",
+    "report",
     "update",
     "template",
 ]
@@ -385,6 +387,22 @@ def build_parser() -> argparse.ArgumentParser:
     template_show = template_sub.add_parser("show", help="Show a template JSON document.")
     template_show.add_argument("name", help="Template name.")
     template_show.set_defaults(func=cmd_template)
+
+    report = sub.add_parser(
+        "report",
+        help="Show a template report.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    report.add_argument("template", choices=("sprt",), help="Template providing the report.")
+    report.add_argument("report", nargs="?", default="score", choices=("score",), help="Report name.")
+    report.add_argument("--view", choices=SPRT_REPORT_VIEWS, default="ranking", help="Report view.")
+    report.add_argument("--reference-net", "--reference", default="nn-0ee0657fb25e.nnue")
+    report.add_argument("--candidate-net", default="enyo-%", help="Candidate name or SQL LIKE pattern.")
+    report.add_argument("--engine", default="", help="Exact engine basename.")
+    report.add_argument("--min-games", type=int, default=1500)
+    report.add_argument("--limit", type=int, default=20)
+    report.add_argument("--json", action="store_true")
+    report.set_defaults(func=cmd_report)
 
     plan = sub.add_parser(
         "plan",

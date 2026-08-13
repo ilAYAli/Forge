@@ -174,6 +174,10 @@ forge status --done
 Default status shows active and queued runs. `--verbose` adds pending, failed,
 diagnostics, and more detail.
 
+The web UI polls only the single live run. Completed history is loaded ten runs
+at a time with `previous` and `next`; changing history pages does not affect the
+live status refresh.
+
 If a worker should read status from the coordinator by default, put a
 coordinator pointer in `runs/coordinator`:
 
@@ -184,6 +188,21 @@ printf '%s\n' 'coordinator.example.net:/srv/forge/runs' > runs/coordinator
 
 `FORGE_RUNS_DIR` changes the local run root. `FORGE_COORDINATOR_RUNS`
 overrides `runs/coordinator`.
+
+## Reports
+
+Templates may declare reports alongside their run configuration. The SPRT
+template provides ranking and run-history views backed by `logs/sprt.db`:
+
+```sh
+forge report sprt score
+forge report sprt score --view runs --min-games 0
+forge report sprt score --reference-net reference.nn --candidate-net 'enyo-%'
+```
+
+The same report is available at `/reports/sprt` when `forge web` is running.
+Its filters and tables load separately from status, so reports do not add work
+to the normal status refresh loop. `FORGE_SPRT_DB` overrides the database path.
 
 ## Stop And Resume
 

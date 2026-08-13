@@ -7,4 +7,5 @@ from .workers import *
 from .templates import *
 from .shell import *
 from .spsa import *
+from .reports import *
 from .cli import *
