@@ -291,13 +291,20 @@ class ForgeTests(unittest.TestCase):
         self.assertIn("/api/history?page=${Math.max(0,page)}&limit=10", web._HTML)
         self.assertIn(">previous</button>", web._HTML)
         self.assertIn(">next</button>", web._HTML)
+        self.assertIn("parts.push(historyNavHtml('top'))", web._HTML)
+        self.assertIn("parts.push(historyNavHtml('bottom'))", web._HTML)
+        self.assertIn("renderRun(run, true)", web._HTML)
+        self.assertIn("@media (orientation: landscape) and (max-height: 560px)", web._HTML)
+        self.assertIn(".history-run .run-meta { display:none; }", web._HTML)
 
     def test_live_status_excludes_completed_history(self) -> None:
         import forge_lib.web as web
 
         payload = {
             "runs": [
-                {"run": "active", "state": "current", "running": 1},
+                {"run": "restarted-old-run", "state": "current", "running": 1},
+                {"run": "queued-first", "state": "queued", "running": 0},
+                {"run": "queued-second", "state": "queued", "running": 0},
                 {"run": "old", "state": "done", "running": 0},
             ]
         }
@@ -307,7 +314,28 @@ class ForgeTests(unittest.TestCase):
         ):
             live = web._collect_live_status_payload()
 
-        self.assertEqual(["active"], [run["run"] for run in live["runs"]])
+        self.assertEqual(
+            ["restarted-old-run", "queued-first", "queued-second"],
+            [run["run"] for run in live["runs"]],
+        )
+        self.assertNotIn("compareRunsByCreated", web._HTML)
+
+    def test_web_history_sorts_missing_created_at_by_run_timestamp(self) -> None:
+        import forge_lib.web as web
+
+        names = [
+            "enyo-scc-1.2.0-rc2-sprt-1500-20260806-211722",
+            "enyo-5.9.0-rc5-sprt-1500-20260813-113410",
+            "enyo-5.8.0-rc1-sprt-1500-20260813-032025",
+        ]
+        lingering = {
+            name: {"run": name, "state": "done", "tasks": 1, "done": 1, "display": {"fields": []}}
+            for name in names
+        }
+        with mock.patch("forge_lib.web._history_web_state", return_value={"lingering_runs": lingering}):
+            payload = json.loads(web._api_history("page=0&limit=10"))
+
+        self.assertEqual([names[1], names[2], names[0]], [run["run"] for run in payload["runs"]])
 
     def test_label_search_command_expands_to_label_search_template(self) -> None:
         self.assertEqual(
@@ -1383,11 +1411,10 @@ const runs = [
   {run: 'sprt-enyo_f908b4b-1000-20260630-152429', created_at: '2026-06-30T15:24:29+0200'},
   {run: 'label-static-training-run2-test91-20260128-1817-20260729-215510'},
 ];
-console.log(runs.sort(compareRunsByCreated).map(run => run.run).join('\\n'));
 const done = {state:'done', created_at:'2026-07-02T21:16:00+0200', completed_at:'2026-07-03T00:42:00+0200'};
 console.log(JSON.stringify(runTiming(done, false)));
 console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.parse(done.completed_at) / 1000)));
-console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:00:00+02:00') / 1000)));
+console.log(JSON.stringify(runTiming(runs[2], false, Date.parse('2026-07-29T22:00:00+02:00') / 1000)));
 """
         result = subprocess.run(
             ["node", "-e", probe],
@@ -1401,9 +1428,6 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
         self.assertEqual(0, result.returncode, result.stderr)
         self.assertEqual(
             [
-                "label-static-training-run2-test91-20260128-1817-20260729-215510",
-                "sprt-enyo_f908b4b-1000-20260630-152429",
-                "native-4.20.0-rc1-sprt-1500-20260630-141436",
                 '{"start":"02 Jul 21:16","elapsed":"3h26m"}',
                 '{"start":"21:16","elapsed":"3h26m"}',
                 '{"start":"29 Jul 21:55","elapsed":"4m"}',
@@ -1424,12 +1448,13 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
         self.assertIn("pendingCount <= 0", web._HTML)
         self.assertNotIn("state=stopped", web._HTML)
         self.assertIn("id=\"inactive\"", web._HTML)
-        self.assertIn("let showInactiveRuns = localStorage.getItem('forge.showInactive') !== '0'", web._HTML)
+        self.assertIn("let showInactiveRuns = localStorage.getItem('forge.showHistory') !== '0'", web._HTML)
         self.assertIn("function updateInactiveButton", web._HTML)
         self.assertIn("function toggleInactiveRuns", web._HTML)
         self.assertIn("function runIsActive", web._HTML)
         self.assertIn("state === 'current' || state === 'stopping' || state === 'queued' || state === 'stalled'", web._HTML)
-        self.assertIn(".filter(r => showInactiveRuns || runIsActive(r))", web._HTML)
+        self.assertIn("const historyRuns = showInactiveRuns", web._HTML)
+        self.assertIn("history on", web._HTML)
         self.assertIn("updateInactiveButton()", web._HTML)
         self.assertIn("const HIDDEN_RUNS_KEY = 'forge.hiddenRuns.v1'", web._HTML)
         self.assertIn("const hiddenRunNames = loadHiddenRunNames()", web._HTML)
@@ -1439,7 +1464,6 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
         self.assertIn("function restoreRunCard", web._HTML)
         self.assertIn("hiddenRunNames.add(String(run))", web._HTML)
         self.assertIn("saveHiddenRunNames()", web._HTML)
-        self.assertIn("const serverRunNames = new Set((data.runs||[]).map(r => String(r.run || '')))", web._HTML)
         self.assertIn("!hiddenRunNames.has(String(r.run || ''))", web._HTML)
         self.assertIn("const card = body?.closest?.('.run')", web._HTML)
         self.assertIn("const inactiveFailed = state === 'failed' && activeCount === 0", web._HTML)
@@ -1458,9 +1482,7 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
         self.assertIn("function runNameEpoch", web._HTML)
         self.assertIn("function runSortEpoch", web._HTML)
         self.assertIn("text.replace(/([+-]\\d{2})(\\d{2})$/, '$1:$2')", web._HTML)
-        self.assertIn("function compareRunsByCreated", web._HTML)
-        self.assertIn("if (ea !== eb) return eb - ea", web._HTML)
-        self.assertIn(".sort(compareRunsByCreated)", web._HTML)
+        self.assertNotIn("compareRunsByCreated", web._HTML)
         self.assertIn('<span class="run-name">${esc(r.run)}</span>', web._HTML)
         self.assertIn('<span class="run-start" title="started">${esc(timing.start)}</span>', web._HTML)
         self.assertIn('<span class="run-time-separator">·</span>', web._HTML)
@@ -1477,14 +1499,14 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
         self.assertIn("const bodyOpen = resolveOpen(rId, isCurrent)", web._HTML)
         self.assertIn("openState[id] = nowOpen", web._HTML)
         self.assertNotIn("openState[el.id] = el.classList.contains('open')", web._HTML)
-        self.assertIn("runGraph, true", web._HTML)
+        self.assertIn("runGraph, isCurrent", web._HTML)
         self.assertIn("commandRows, false", web._HTML)
         self.assertIn("ws + renderTasks(active.tasks), false", web._HTML)
         self.assertIn("renderGroups(pending.groups), false", web._HTML)
         self.assertIn("renderGroups(fail.groups), false", web._HTML)
         self.assertIn("clearOldHashState()", web._HTML)
         self.assertNotIn("location.replace('#'", web._HTML)
-        self.assertIn('path = self.path.split("?", 1)[0]', inspect.getsource(web._Handler.do_GET))
+        self.assertIn("request = urlsplit(self.path)", inspect.getsource(web._Handler.do_GET))
         self.assertIn("ThreadingHTTPServer", web.ThreadingHTTPServer.__name__)
 
     def test_web_restart_command_schedules_server_restart(self) -> None:

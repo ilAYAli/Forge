@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import datetime
 import re
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -10,7 +11,7 @@ from urllib.parse import parse_qs, urlsplit
 
 from .core import *
 from .reports import sprt_score_report
-from .status import PROGRESS_GRAPH_VERSION, configured_coordinator_runs, format_status_values
+from .status import PROGRESS_GRAPH_VERSION, configured_coordinator_runs, format_status_values, parse_timestamp_epoch
 from .tasks import parse_coordinator, shell_join
 
 _ASSETS_DIR = Path(__file__).resolve().parent.parent / "assets"
@@ -56,6 +57,9 @@ _HTML = r"""<!DOCTYPE html>
     #runs { padding: 10px 12px; display: flex; flex-direction: column; gap: 6px; }
     .history-nav { display:flex; align-items:center; justify-content:center; gap:10px;
                    padding:7px; color:var(--dim); font-size:11px; }
+    .history-nav.top { position:sticky; top:39px; z-index:8; background:rgba(14,14,16,.96);
+                       border-bottom:1px solid var(--border); }
+    .history-label { margin-right:auto; color:var(--text); font-weight:600; }
     .history-nav button { background:none; border:1px solid var(--border); border-radius:4px;
                           color:var(--dim); font:11px var(--font); padding:2px 8px; cursor:pointer; }
     .history-nav button:hover:not(:disabled) { color:var(--text); border-color:var(--dim); }
@@ -94,6 +98,7 @@ _HTML = r"""<!DOCTYPE html>
     .run-name { min-width: 0; overflow: hidden; text-overflow: ellipsis;
                 white-space: nowrap; font-weight: 600; cursor: text; }
     .run-start, .run-elapsed, .run-completion, .run-time-separator { color: var(--dim); font-size: 12px; font-variant-numeric: tabular-nums; flex-shrink: 0; }
+    .run-timing { display:inline-flex; align-items:center; gap:0; flex-shrink:0; }
     .run-start { width: 12ch; margin-left: 8px; }
     .run-completion { color: var(--yel); }
     .run-spacer { flex: 1; min-width: 0; }
@@ -235,12 +240,30 @@ _HTML = r"""<!DOCTYPE html>
     .graph-legend-value { color: #c3ccda; font-variant-numeric: tabular-nums; }
 
     @media (max-width: 640px) {
-      #runs { padding: 8px 6px; }
-      .run-hdr { padding: 8px 9px; }
-      .run-start { width: 5ch; }
+      body { font-size:12px; }
+      header { gap:5px; padding:5px 7px; }
+      #coord, #restart, #sound { display:none; }
+      #ts { font-size:10px; }
+      .top-tab { padding:2px 5px; }
+      #runs { padding: 6px 5px; gap:4px; }
+      .history-nav { padding:5px 3px; }
+      .history-nav.top { top:35px; }
+      .run-hdr { padding: 6px 7px; }
+      .run-hdr-top { display:grid; grid-template-columns:10px minmax(0,1fr) auto;
+                     gap:2px 6px; align-items:center; }
+      .run-name { grid-column:2; grid-row:1; }
+      .run-hdr-top > .arrow { grid-column:1; grid-row:1; }
+      .run-timing { grid-column:2; grid-row:2; color:var(--dim); font-size:10px; }
+      .run-actions { grid-column:3; grid-row:2; }
+      .run-spacer { display:none; }
+      .badge { grid-column:3; grid-row:1; font-size:9px; padding:1px 6px; }
+      .run-start { width:auto; margin-left:0; }
+      .run-time-separator { margin:0 2px; }
+      .run-meta { margin-top:3px; padding-left:16px; gap:5px; font-size:11px; }
+      .history-run .run-meta { display:none; }
       .mobile-score { display: grid; grid-template-columns: repeat(5, max-content);
-                      column-gap: 9px; row-gap: 1px; margin: 6px 0 2px 18px;
-                      color: var(--text); font-size: 12px; line-height: 1.25;
+                      justify-content:space-between; column-gap:5px; row-gap:1px;
+                      margin:4px 0 1px 16px; color:var(--text); font-size:10px; line-height:1.2;
                       font-variant-numeric: tabular-nums; }
       .mobile-score-label { color: var(--dim); font-size: 9px; font-weight: 700;
                             letter-spacing: .04em; text-transform: uppercase; }
@@ -256,6 +279,25 @@ _HTML = r"""<!DOCTYPE html>
       .graph-value { display: none; }
       .graph-plot { min-width: 0; }
       .graph-legend { margin-left: 51px; gap: 3px 8px; }
+      .history-run .run-hdr { padding-top:5px; padding-bottom:5px; }
+      .history-run .mobile-score { margin-top:3px; }
+      .history-run .pbar-wrap { display:none; }
+    }
+
+    @media (orientation: landscape) and (max-height: 560px) {
+      header { padding-top:3px; padding-bottom:3px; }
+      #coord, #restart, #sound { display:none; }
+      #runs { padding:4px 7px; gap:3px; }
+      .history-nav.top { top:31px; }
+      .run-hdr { padding:4px 8px; }
+      .run-hdr-top { min-height:19px; }
+      .run-meta { margin-top:1px; }
+      .history-run .run-meta, .history-run .pbar-wrap { display:none; }
+      .mobile-score { margin-top:2px; }
+      .graph-axis { height:150px; }
+      .graph-plot, .graph-plot svg { height:170px; }
+      .graph-row.combined .graph-axis { height:54px; }
+      .graph-row.combined .graph-plot, .graph-row.combined .graph-plot svg { height:70px; }
     }
 
     /* pending / fail groups */
@@ -302,7 +344,7 @@ _HTML = r"""<!DOCTYPE html>
     <nav class="top-tabs"><a class="top-tab active" href="/">runs</a><a class="top-tab" href="/reports/sprt">SPRT scores</a></nav>
     <span id="coord"></span>
     <span id="ts">Loading…</span>
-    <button id="inactive" class="top-btn" type="button" onclick="toggleInactiveRuns()" title="Toggle completed, stopped, failed, and empty runs">inactive on</button>
+    <button id="inactive" class="top-btn" type="button" onclick="toggleInactiveRuns()" title="Show or hide paginated run history">history on</button>
     <button id="restart" class="top-btn" type="button" onclick="restartWeb(this)" title="Restart this web server process">restart</button>
     <button id="sound" class="top-btn" type="button" onclick="toggleSound()" title="Toggle job start sound" aria-pressed="false">ding off</button>
   </header>
@@ -476,14 +518,8 @@ _HTML = r"""<!DOCTYPE html>
       return {start:started, elapsed:fmtAge(Math.max(0, (end ?? now) - start))};
     }
 
-    function compareRunsByCreated(a, b) {
-      const ea = runSortEpoch(a), eb = runSortEpoch(b);
-      if (ea !== eb) return eb - ea;
-      return a.run < b.run ? -1 : a.run > b.run ? 1 : 0;
-    }
-
     let soundEnabled = localStorage.getItem('forge.sound') === '1';
-    let showInactiveRuns = localStorage.getItem('forge.showInactive') !== '0';
+    let showInactiveRuns = localStorage.getItem('forge.showHistory') !== '0';
     let audioCtx = null;
     let activeJobKeys = null;
     const HIDDEN_RUNS_KEY = 'forge.hiddenRuns.v1';
@@ -520,12 +556,12 @@ _HTML = r"""<!DOCTYPE html>
       if (!btn) return;
       btn.classList.toggle('on', showInactiveRuns);
       btn.setAttribute('aria-pressed', showInactiveRuns ? 'true' : 'false');
-      btn.textContent = showInactiveRuns ? 'inactive on' : 'inactive off';
+      btn.textContent = showInactiveRuns ? 'history on' : 'history off';
     }
 
     function toggleInactiveRuns() {
       showInactiveRuns = !showInactiveRuns;
-      localStorage.setItem('forge.showInactive', showInactiveRuns ? '1' : '0');
+      localStorage.setItem('forge.showHistory', showInactiveRuns ? '1' : '0');
       updateInactiveButton();
       if (showInactiveRuns && !historyData.loaded) loadHistory(0);
       else renderDashboard();
@@ -1859,7 +1895,7 @@ _HTML = r"""<!DOCTYPE html>
       });
     }
 
-    function renderRun(r) {
+    function renderRun(r, historyRun=false) {
       const state  = r.state||'empty';
       const active  = r.sections?.active  || {count:0, tasks:[]};
       const workers = r.sections?.workers || {count:0, processes:[]};
@@ -1913,10 +1949,9 @@ _HTML = r"""<!DOCTYPE html>
         <div class="run-hdr-top">
           <span class="arrow${bodyOpen?' open':''}" onclick="event.stopPropagation();toggleId('${rId}')">&#9654;</span>
           <span class="run-name">${esc(r.run)}</span>
-          <span class="run-start" title="started">${esc(timing.start)}</span>
-          <span class="run-time-separator">·</span>
-          <span class="run-elapsed" title="elapsed">${esc(timing.elapsed)}</span>
-          ${etaCompletion ? `<span class="run-time-separator">·</span><span class="run-completion" title="estimated completion" data-etas="${etaSeconds}">${esc(etaCompletion)}</span>` : ''}
+          <span class="run-timing"><span class="run-start" title="started">${esc(timing.start)}</span>
+          <span class="run-time-separator">·</span><span class="run-elapsed" title="elapsed">${esc(timing.elapsed)}</span>
+          ${etaCompletion ? `<span class="run-time-separator">·</span><span class="run-completion" title="estimated completion" data-etas="${etaSeconds}">${esc(etaCompletion)}</span>` : ''}</span>
           <span class="run-spacer"></span>
           <div class="run-actions">${actionsMenu}</div>
           <span class="badge ${state}">${stateLabel}</span>
@@ -1988,7 +2023,7 @@ _HTML = r"""<!DOCTYPE html>
         ));
       }
 
-      return `<div class="run ${state}${stoppedEarly?' stopped-early':''}${bodyOpen?' expanded':''}">
+      return `<div class="run ${state}${historyRun?' history-run':''}${stoppedEarly?' stopped-early':''}${bodyOpen?' expanded':''}">
         <div class="run-hdr" onclick="toggleRunHeader(event,'${rId}')">${hdr}</div>
         <div class="pbar-wrap"><div class="pbar-fill" style="width:${pct}%"></div></div>
         <div class="run-body${bodyOpen?' open':''}" id="${rId}"><div class="run-tree">${sections.join('')}</div></div>
@@ -2089,26 +2124,34 @@ _HTML = r"""<!DOCTYPE html>
     let statusData = {runs:[]};
     let historyData = {runs:[], page:0, pages:0, total:0, loaded:false};
 
+    function historyNavHtml(position) {
+      if (!showInactiveRuns || !historyData.loaded) return '';
+      const pages = Math.max(1, Number(historyData.pages || 0));
+      return `<div class="history-nav ${position}"><span class="history-label">history</span><button ${historyData.page<=0?'disabled':''} onclick="loadHistory(${historyData.page-1})">previous</button><span>${historyData.page+1} / ${pages}</span><button ${historyData.page+1>=historyData.pages?'disabled':''} onclick="loadHistory(${historyData.page+1})">next</button></div>`;
+    }
+
     function renderDashboard() {
       if (shouldDeferRefreshForSelection()) return;
       saveState();
       const activeRuns = (statusData.runs || [])
         .filter(r => !hiddenRunNames.has(String(r.run || '')))
-        .slice().sort(compareRunsByCreated);
+        .slice();
       const historyRuns = showInactiveRuns
         ? (historyData.runs || []).filter(r => !hiddenRunNames.has(String(r.run || '')))
         : [];
-      const parts = [...activeRuns, ...historyRuns].map(renderRun);
+      const parts = activeRuns.map(run => renderRun(run, false));
       if (statusData.collapsed_failures_count > 0) {
         const n = statusData.collapsed_failures_count;
         parts.unshift(`<div class="empty" style="color:var(--red)">failed: ${n} run${n===1?'':'s'} — use forge status --failed</div>`);
       }
-      if (showInactiveRuns && historyData.loaded && historyData.pages > 1) {
-        parts.push(`<div class="history-nav"><button ${historyData.page<=0?'disabled':''} onclick="loadHistory(${historyData.page-1})">previous</button><span>${historyData.page+1} / ${historyData.pages}</span><button ${historyData.page+1>=historyData.pages?'disabled':''} onclick="loadHistory(${historyData.page+1})">next</button></div>`);
+      if (showInactiveRuns && historyData.loaded) {
+        parts.push(historyNavHtml('top'));
+        parts.push(...historyRuns.map(run => renderRun(run, true)));
+        if (historyData.pages > 1) parts.push(historyNavHtml('bottom'));
       }
       if (!parts.length) {
         parts.push(statusData.loading ? '<div class="empty">loading Forge status...</div>'
-          : !showInactiveRuns && historyData.total ? `<div class="empty">inactive runs hidden: ${historyData.total} — click “inactive off” to show them</div>`
+          : !showInactiveRuns && historyData.total ? `<div class="empty">history hidden: ${historyData.total} runs — click “history off” to show them</div>`
           : '<div class="empty">no Forge runs found</div>');
       }
       document.getElementById('runs').innerHTML = parts.join('');
@@ -3103,8 +3146,18 @@ def _api_history(query: str) -> bytes:
         if isinstance(payload, dict) and str(name) not in hidden and str(name) not in deleted
     ]
 
-    def sort_key(run: dict[str, Any]) -> tuple[str, str]:
-        return (str(run.get("created_at") or ""), str(run.get("run") or ""))
+    def sort_key(run: dict[str, Any]) -> tuple[float, str]:
+        created = parse_timestamp_epoch(run.get("created_at"))
+        if created is None:
+            matches = list(re.finditer(r"(\d{8})-(\d{6})", str(run.get("run") or "")))
+            if matches:
+                try:
+                    created = datetime.datetime.strptime("".join(matches[-1].groups()), "%Y%m%d%H%M%S").timestamp()
+                except ValueError:
+                    pass
+        if created is None:
+            created = parse_timestamp_epoch(run.get("completed_at")) or 0.0
+        return (created, str(run.get("run") or ""))
 
     runs.sort(key=sort_key, reverse=True)
     total = len(runs)
