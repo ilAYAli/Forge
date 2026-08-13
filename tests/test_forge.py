@@ -13122,6 +13122,17 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
         self.assertAlmostEqual(expected[0], points["elo"][-1]["y"])
         self.assertLess(points["elo"][-1]["y"], 0.0)
 
+    def test_sprt_header_keeps_llr_from_rows_without_elo(self) -> None:
+        summary = {
+            "metadata": {"kind": "sprt"},
+            "rows": [
+                {"progress_data": {"done": 2, "fields": {"elo": "+10.0", "llr": "0.10/2.20"}}},
+                {"progress_data": {"done": 2, "fields": {"llr": "0.20/2.20"}}},
+            ],
+        }
+
+        self.assertAlmostEqual(0.3, forge.sprt_aggregate_stats(summary)["llr_total"])
+
     def test_current_graph_replaces_stale_history_at_same_progress(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             manifest = {
@@ -13141,6 +13152,19 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
             graph = forge.run_progress_history_graph(manifest, current)
             elo = next(series for series in graph["series"] if series["name"] == "elo")
             self.assertEqual({"x": 100.0, "y": -4.0}, elo["points"][-1])
+
+    def test_sprt_graph_discards_old_unstable_history(self) -> None:
+        history = [
+            {"epoch": 1, "x": 6, "series": {"elo": 58.0, "ci": 117.0, "llr": 0.1}},
+            {"epoch": 2, "x": 50, "series": {"elo": 5.0, "ci": 60.0, "llr": 0.2}},
+            {"epoch": 3, "x": 60, "series": {"elo": 4.0, "ci": 55.0, "llr": 0.3}},
+        ]
+
+        graph = forge.progress_graph_from_history(history, None, kind="sprt")
+        series = {item["name"]: item["points"] for item in graph["series"]}
+        self.assertEqual([0.0, 50.0, 60.0], [point["x"] for point in series["elo"]])
+        self.assertEqual([50.0, 60.0], [point["x"] for point in series["ci"]])
+        self.assertEqual([0.0, 6.0, 50.0, 60.0], [point["x"] for point in series["llr"]])
 
     def test_status_sprt_header_shows_aggregated_elo(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

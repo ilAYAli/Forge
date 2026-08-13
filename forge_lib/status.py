@@ -3954,6 +3954,8 @@ def progress_graph_from_history(
         elif is_selfplay:
             series = {name: value for name, value in series.items() if str(name).lower() == "balance"}
         for name, value in series.items():
+            if kind.lower() == "sprt" and str(name).lower() in {"elo", "ci"} and x < SPRT_ELO_GRAPH_MIN_GAMES:
+                continue
             y = parse_float(value)
             if y is None:
                 continue
@@ -4109,14 +4111,6 @@ def sprt_aggregate_stats(summary: dict[str, Any]) -> dict[str, Any]:
                     pentanomial[index] += int(part)
                 pentanomial_available = True
         elo = progress_field_float(normalized_fields, "elo", "elo~", "Elo")
-        if elo is None:
-            continue
-        weighted_score += elo_score_rate(elo) * done
-        weight_total += done
-        ci = progress_field_float(normalized_fields, "ci", "err", "error", "+/-", "elo_ci")
-        if ci is not None and ci >= 0:
-            weighted_ci_squares += (ci * done) ** 2
-            ci_weight_total += done
         llr, bound = progress_field_llr(normalized_fields)
         if math.isfinite(llr):
             llr_total += llr
@@ -4126,6 +4120,14 @@ def sprt_aggregate_stats(summary: dict[str, Any]) -> dict[str, Any]:
                     llr_bound = bound
                 elif not math.isclose(llr_bound, bound, rel_tol=1e-9, abs_tol=1e-9):
                     llr_mixed_bound = True
+        if elo is None:
+            continue
+        weighted_score += elo_score_rate(elo) * done
+        weight_total += done
+        ci = progress_field_float(normalized_fields, "ci", "err", "error", "+/-", "elo_ci")
+        if ci is not None and ci >= 0:
+            weighted_ci_squares += (ci * done) ** 2
+            ci_weight_total += done
         los = progress_field_float(normalized_fields, "los", "LOS")
         if los is not None:
             weighted_los += los * done
