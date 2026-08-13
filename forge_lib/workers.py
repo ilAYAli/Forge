@@ -2721,7 +2721,9 @@ def run_deploy(args: argparse.Namespace) -> int:
         status(colorize("deploy: launch complete", "green", enabled=color_enabled) if failed == 0 else colorize("deploy: launch failed", "red", enabled=color_enabled))
     else:
         status(colorize("deploy: tasks complete", "green", enabled=color_enabled) if failed == 0 else colorize("deploy: tasks failed", "red", enabled=color_enabled))
-    notify_command = getattr(args, "notify_command", None) or default_notify_command()
+    notify_command = None if bool(getattr(args, "no_notify", False)) else (
+        getattr(args, "notify_command", None) or default_notify_command()
+    )
     completion_deferred_to_wait = False
     if failed == 0 and has_tasks and bool(getattr(args, "launch_only", False)):
         if bool(getattr(args, "start_wait_monitor", False)):
@@ -3117,6 +3119,8 @@ def worker_control_command_args(action: str, args: argparse.Namespace) -> list[s
             command.append("--newline-between")
         if getattr(args, "notify_command", None):
             command.extend(["--notify-command", str(args.notify_command)])
+        if bool(getattr(args, "no_notify", False)):
+            command.append("--no-notify")
         if getattr(args, "task_complete_command", None):
             command.extend(["--task-complete-command", str(args.task_complete_command)])
         if bool(getattr(args, "task_complete_sync", False)):
@@ -3550,6 +3554,7 @@ def cmd_worker_set(args: argparse.Namespace) -> int:
                 merge_force=args.merge_force,
                 newline_between=args.newline_between,
                 notify_command=args.notify_command,
+                no_notify=bool(getattr(args, "no_notify", False)),
                 task_complete_command=getattr(args, "task_complete_command", None),
                 task_complete_sync=bool(getattr(args, "task_complete_sync", False)),
                 no_color=args.no_color,

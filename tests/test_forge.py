@@ -8579,6 +8579,9 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
             self.assertEqual("worker set", set_args.command_label)
             self.assertTrue(set_args.launch_only)
 
+            args = self.worker_set_args(run="active", worker="pwa-mbp:6", no_notify=True)
+            self.assertIn("--no-notify", forge.worker_control_command_args("set", args))
+
     def test_worker_set_seeds_defaults_then_merges_repeated_updates(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -13089,6 +13092,41 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
 
         self.assertEqual([0.0, 26.0, 52.0, 78.0, 104.0], [point["x"] for point in points["llr"]])
         self.assertEqual([0.0, 26.0, 52.0, 78.0, 104.0], [point["x"] for point in points["elo"]])
+
+    def test_sprt_run_graph_uses_same_pentanomial_elo_as_header(self) -> None:
+        pentanomial = [1, 1, 0, 0, 0]
+        expected = forge.pentanomial_elo_ci(pentanomial)
+        self.assertIsNotNone(expected)
+        points = forge.sprt_aggregate_graph_points(
+            [
+                {"x": 2.0, "done": 2, "fields": {"elo": "+100.0", "pentanomial": "1-0-0-0-0"}},
+                {"x": 4.0, "done": 2, "fields": {"elo": "+100.0", "pentanomial": "0-1-0-0-0"}},
+            ],
+            {"elo": "elo"},
+        )
+
+        self.assertAlmostEqual(expected[0], points["elo"][-1]["y"])
+        self.assertLess(points["elo"][-1]["y"], 0.0)
+
+    def test_current_graph_replaces_stale_history_at_same_progress(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            manifest = {
+                "kind": "sprt",
+                "state_dir": tmp,
+                "tasks": [{"id": "task", "outputs": []}],
+            }
+            Path(tmp, "progress-history.jsonl").write_text(
+                json.dumps({"epoch": 1, "x": 100, "x_unit": "games", "series": {"elo": 8.0}}) + "\n",
+                encoding="utf-8",
+            )
+            current = {
+                "x_unit": "games",
+                "series": [{"name": "elo", "points": [{"x": 0.0, "y": 0.0}, {"x": 100.0, "y": -4.0}]}],
+            }
+
+            graph = forge.run_progress_history_graph(manifest, current)
+            elo = next(series for series in graph["series"] if series["name"] == "elo")
+            self.assertEqual({"x": 100.0, "y": -4.0}, elo["points"][-1])
 
     def test_status_sprt_header_shows_aggregated_elo(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -17746,6 +17784,17 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
             self.assertEqual("smoke", payload["kind"])
             self.assertEqual("notify check", payload["description"])
             self.assertEqual(0, payload["tasks"])
+
+            args.run = "silent-run"
+            args.no_notify = True
+            with (
+                self.patch_runs_dir(runs),
+                mock.patch.dict(os.environ, {"FORGE_CONFIG": str(config), "FORGE_NOTIFY_COMMAND": ""}, clear=False),
+                mock.patch("forge.ProcessTracker.run", return_value=subprocess.CompletedProcess(["sh"], 0, stdout="", stderr="")),
+                mock.patch("forge_lib.workers.run_notify_command") as notify,
+            ):
+                self.assertEqual(0, forge.cmd_deploy(args))
+            notify.assert_not_called()
 
     def test_deploy_does_not_use_user_notify_config_by_default(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

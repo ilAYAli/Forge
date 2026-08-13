@@ -3628,7 +3628,11 @@ def sprt_aggregate_graph_points(
             llr_seen = True
         for name, field_name in series_names.items():
             if field_name == "elo" and weight_total > 0:
-                points[name].append({"x": x, "y": score_rate_elo(weighted_score / weight_total)})
+                paired = pentanomial_elo_ci(pentanomial) if pentanomial_seen else None
+                points[name].append({
+                    "x": x,
+                    "y": paired[0] if paired is not None else score_rate_elo(weighted_score / weight_total),
+                })
             elif field_name == "llr" and llr_seen:
                 points[name].append({"x": x, "y": llr_total})
             elif field_name == "ci":
@@ -4000,7 +4004,14 @@ def run_progress_history_graph(
     manifest: dict[str, Any],
     current_graph: dict[str, Any] | None,
 ) -> dict[str, Any] | None:
-    history = append_progress_history(manifest, progress_graph_snapshot(current_graph))
+    snapshot = progress_graph_snapshot(current_graph)
+    history = append_progress_history(manifest, snapshot)
+    current = progress_history_entry(snapshot)
+    if current is not None:
+        current_x = float(current["x"])
+        history = [entry for entry in history if float(entry["x"]) != current_x]
+        history.append(current)
+        history.sort(key=lambda entry: (float(entry["x"]), float(entry.get("epoch") or 0.0)))
     kind = str(manifest_metadata(manifest).get("kind") or manifest.get("kind") or "")
     if (
         current_graph is not None
@@ -5211,7 +5222,10 @@ def _cmd_wait(args: argparse.Namespace) -> int:
                 worker_redeploy_at[host] = attempt_epoch
                 print(f"wait: restoring missing worker capacity {spec}", flush=True)
                 subprocess.run(
-                    [sys.executable, str(script_path()), "worker", "set", spec, str(manifest_path.parent)],
+                    [
+                        sys.executable, str(script_path()), "worker", "set", spec,
+                        str(manifest_path.parent), "--no-notify",
+                    ],
                     stdin=subprocess.DEVNULL,
                     check=False,
                 )

@@ -212,6 +212,7 @@ def add_worker_set_options(parser: argparse.ArgumentParser) -> None:
         "--notify-command",
         help="Command run on deploy/wait completion with FORGE_EVENT_JSON and JSON on stdin.",
     )
+    parser.add_argument("--no-notify", action="store_true", help="Suppress deploy notifications.")
     parser.add_argument(
         "--task-complete-command",
         help=(
