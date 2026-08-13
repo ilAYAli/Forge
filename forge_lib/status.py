@@ -17,6 +17,7 @@ FINISHED_PROGRESS_CACHE_NAME = "finished-progress.jsonl"
 PROGRESS_GRAPH_VERSION = 7
 WORKER_REDEPLOY_INTERVAL_SECONDS = 300.0
 SIGNED_PROGRESS_SERIES = {"balance", "elo", "llr"}
+ZERO_ORIGIN_PROGRESS_SERIES = {"balance", "llr"}
 SPRT_ELO_GRAPH_MIN_GAMES = 50
 PROGRESS_GRAPH_SERIES_OPTION_KEYS = {
     "band_max_fraction",
@@ -3149,7 +3150,7 @@ def sprt_progress_series_options(field: str) -> dict[str, Any]:
             "band_max_fraction": 0.24,
             "band_scale": 0.35,
             "band_series": "ci",
-            "scale": "symmetric",
+            "scale": "linear",
             "smooth": True,
         }
     if key == "llr":
@@ -3163,6 +3164,8 @@ def progress_series_options(item: dict[str, Any], *, kind: str | None = None, fi
     for key in PROGRESS_GRAPH_SERIES_OPTION_KEYS:
         if key in item:
             options[key] = item[key]
+    if str(kind or "").lower() == "sprt" and field.lower() == "elo":
+        options["scale"] = "linear"
     return options
 
 def graph_series_with_options(name: str, points: list[dict[str, float]], options: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -3580,7 +3583,7 @@ def sprt_aggregate_graph_points(
     if not rows or not series_names:
         return {}
     points: dict[str, list[dict[str, float]]] = {
-        name: ([{"x": 0.0, "y": 0.0}] if field_name in {"elo", "llr"} else [])
+        name: ([{"x": 0.0, "y": 0.0}] if field_name == "llr" else [])
         for name, field_name in series_names.items()
     }
     weighted_score = 0.0
@@ -3986,7 +3989,7 @@ def progress_graph_from_history(
         for point in raw_points:
             by_x[float(point["x"])] = point
         points = [by_x[x] for x in sorted(by_x)]
-        if name.lower() in SIGNED_PROGRESS_SERIES and (not points or points[0]["x"] > 0.0):
+        if name.lower() in ZERO_ORIGIN_PROGRESS_SERIES and (not points or points[0]["x"] > 0.0):
             points = [{"x": 0.0, "y": 0.0}, *points]
         if len(points) >= 2:
             series.append(graph_series_with_options(name, points, options_by_name.get(name)))

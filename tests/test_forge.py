@@ -10147,8 +10147,7 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
                 [{"x": 0.0, "y": 0.0}, {"x": 2.0, "y": 0.1}, {"x": 4.0, "y": 0.0}],
                 series["llr"],
             )
-            self.assertAlmostEqual(0.0, series["elo"][0]["y"], places=1)
-            self.assertAlmostEqual(0.0, series["elo"][-1]["y"], places=1)
+            self.assertNotIn("elo", series)
             self.assertEqual([{"label": "sprt", "count": 2, "command": "true"}], payload["commands"])
             self.assertEqual([1, 1, 2], payload["sprt"]["wdl"])
             self.assertEqual([1, 0, 1, 0, 0], payload["sprt"]["pentanomial"])
@@ -12935,15 +12934,10 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
                 [{"x": 0.0, "y": 0.0}, {"x": 2.0, "y": 0.01}, {"x": 4.0, "y": -0.01}],
                 series["llr"],
             )
-            self.assertAlmostEqual(0.0, series["elo"][0]["y"], places=1)
-            self.assertAlmostEqual(-5.0, series["elo"][-1]["y"], places=1)
+            self.assertNotIn("elo", series)
             self.assertEqual(-2.94, meta["llr"]["min"])
             self.assertEqual(2.94, meta["llr"]["max"])
             self.assertEqual("symmetric", meta["llr"]["scale"])
-            self.assertEqual("ci", meta["elo"]["band_series"])
-            self.assertEqual(0.35, meta["elo"]["band_scale"])
-            self.assertEqual(0.24, meta["elo"]["band_max_fraction"])
-            self.assertTrue(meta["elo"]["smooth"])
 
     def test_status_sprt_run_graph_uses_processed_game_positions(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -12999,7 +12993,7 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
             self.assertEqual(6, graph["x_total"])
             series = {item["name"]: item["points"] for item in graph["series"]}
             self.assertEqual([0.0, 4.0], [point["x"] for point in series["llr"]])
-            self.assertEqual([0.0, 4.0], [point["x"] for point in series["elo"]])
+            self.assertNotIn("elo", series)
 
     def test_status_run_graph_history_keeps_old_samples(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -13091,7 +13085,7 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
         )
 
         self.assertEqual([0.0, 26.0, 52.0, 78.0, 104.0], [point["x"] for point in points["llr"]])
-        self.assertEqual([0.0, 52.0, 78.0, 104.0], [point["x"] for point in points["elo"]])
+        self.assertEqual([52.0, 78.0, 104.0], [point["x"] for point in points["elo"]])
 
     def test_sprt_run_graph_hides_unstable_initial_elo_and_ci(self) -> None:
         points = forge.sprt_aggregate_graph_points(
@@ -13103,9 +13097,10 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
             {"elo": "elo", "ci": "ci", "llr": "llr"},
         )
 
-        self.assertEqual([0.0, 50.0], [point["x"] for point in points["elo"]])
+        self.assertEqual([50.0], [point["x"] for point in points["elo"]])
         self.assertEqual([50.0], [point["x"] for point in points["ci"]])
         self.assertEqual([0.0, 2.0, 48.0, 50.0], [point["x"] for point in points["llr"]])
+        self.assertEqual("linear", forge.sprt_progress_series_options("elo")["scale"])
 
     def test_sprt_run_graph_uses_same_pentanomial_elo_as_header(self) -> None:
         pentanomial = [1, 1, 0, 0, 0]
@@ -13141,7 +13136,8 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
                 "tasks": [{"id": "task", "outputs": []}],
             }
             Path(tmp, "progress-history.jsonl").write_text(
-                json.dumps({"epoch": 1, "x": 100, "x_unit": "games", "series": {"elo": 8.0}}) + "\n",
+                json.dumps({"epoch": 1, "x": 50, "x_unit": "games", "series": {"elo": 2.0}}) + "\n"
+                + json.dumps({"epoch": 2, "x": 100, "x_unit": "games", "series": {"elo": 8.0}}) + "\n",
                 encoding="utf-8",
             )
             current = {
@@ -13162,7 +13158,7 @@ console.log(JSON.stringify(runTiming(runs[0], false, Date.parse('2026-07-29T22:0
 
         graph = forge.progress_graph_from_history(history, None, kind="sprt")
         series = {item["name"]: item["points"] for item in graph["series"]}
-        self.assertEqual([0.0, 50.0, 60.0], [point["x"] for point in series["elo"]])
+        self.assertEqual([50.0, 60.0], [point["x"] for point in series["elo"]])
         self.assertEqual([50.0, 60.0], [point["x"] for point in series["ci"]])
         self.assertEqual([0.0, 6.0, 50.0, 60.0], [point["x"] for point in series["llr"]])
 

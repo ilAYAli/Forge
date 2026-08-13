@@ -250,7 +250,7 @@
           "band_max_fraction": 0.24,
           "band_scale": 0.35,
           "band_series": "ci",
-          "scale": "symmetric",
+          "scale": "linear",
           "smooth": true
         },
         {
