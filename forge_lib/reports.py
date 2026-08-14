@@ -61,7 +61,7 @@ def sprt_score_report(
             FROM (
                 SELECT *, ROW_NUMBER() OVER (
                     PARTITION BY candidate_net
-                    ORDER BY games DESC, date DESC, elo DESC, id DESC
+                    ORDER BY date DESC, id DESC
                 ) AS candidate_rank
                 FROM sprt
                 WHERE {predicate}

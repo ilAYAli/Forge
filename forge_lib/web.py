@@ -2259,12 +2259,12 @@ _SPRT_REPORT_HTML = r"""<!DOCTYPE html>
     input { width:190px; } input.small { width:85px; }
     button { cursor:pointer; } button:hover,button.active { color:var(--yel); border-color:var(--yel); }
     .tabs { display:flex; gap:6px; margin:11px 0 7px; }
-    .table-wrap { overflow:auto; border:1px solid var(--border); border-radius:6px; }
-    table { width:100%; border-collapse:collapse; white-space:nowrap; background:var(--bg2); }
+    .table-wrap { overflow:auto; border:1px solid var(--border); border-radius:6px; background:var(--bg2); }
+    table { width:max-content; border-collapse:collapse; white-space:nowrap; background:var(--bg2); }
     th,td { text-align:left; padding:6px 10px; border-bottom:1px solid var(--border); }
-    th { color:var(--dim); font-size:11px; cursor:pointer; user-select:none; }
+    th.num,td.num { text-align:right; font-variant-numeric:tabular-nums; }
+    th { width:1%; color:var(--dim); font-size:11px; cursor:pointer; user-select:none; }
     tbody tr:hover { background:var(--bg3); } tbody tr:last-child td { border-bottom:0; }
-    td.num { text-align:right; font-variant-numeric:tabular-nums; }
     td.pos { color:var(--grn); font-weight:600; } td.neg { color:var(--red); font-weight:600; }
     .empty { color:var(--dim); padding:18px; text-align:center; }
     @media(max-width:700px) { main { padding:8px; } input { width:155px; }
@@ -2312,7 +2312,8 @@ _SPRT_REPORT_HTML = r"""<!DOCTYPE html>
         const order = typeof x==='number' && typeof y==='number' ? x-y : String(x??'').localeCompare(String(y??''));
         return state.desc ? -order : order;
       });
-      document.querySelector('thead').innerHTML='<tr>'+columns.map(c=>`<th data-column="${esc(c)}">${esc(label(c))}</th>`).join('')+'</tr>';
+      const numeric=new Set(columns.filter(c=>rows.some(row=>typeof row[c]==='number')));
+      document.querySelector('thead').innerHTML='<tr>'+columns.map(c=>`<th class="${numeric.has(c)?'num':''}" data-column="${esc(c)}">${esc(label(c))}</th>`).join('')+'</tr>';
       document.querySelector('tbody').innerHTML=rows.length ? rows.map(row=>'<tr>'+columns.map(c=>{
         const n=typeof row[c]==='number', score=c==='elo' ? (row[c]>0?' pos':row[c]<0?' neg':'') : '';
         return `<td class="${n?'num':''}${score}">${esc(valueText(c,row[c]))}</td>`;

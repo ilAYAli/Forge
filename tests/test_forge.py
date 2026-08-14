@@ -220,7 +220,7 @@ class ForgeTests(unittest.TestCase):
         connection.commit()
         connection.close()
 
-    def test_sprt_score_report_ranks_latest_largest_candidate_run(self) -> None:
+    def test_sprt_score_report_ranks_latest_candidate_run(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             database = Path(tmp) / "sprt.db"
             self.make_sprt_report_db(database)
@@ -229,8 +229,8 @@ class ForgeTests(unittest.TestCase):
                 reference_net="ref.nn", candidate_net="enyo-", min_games=1500, limit=20, db_path=database
             )
 
-            self.assertEqual(["enyo-b.nn", "enyo-a.nn"], [row["candidate_net"] for row in payload["rows"]])
-            self.assertEqual([8.0, 5.0], [row["elo"] for row in payload["rows"]])
+            self.assertEqual(["enyo-a.nn", "enyo-b.nn"], [row["candidate_net"] for row in payload["rows"]])
+            self.assertEqual([10.0, 8.0], [row["elo"] for row in payload["rows"]])
             self.assertEqual([1, 2], [row["rank"] for row in payload["rows"]])
 
     def test_sprt_score_report_cli_and_web_share_backend(self) -> None:
@@ -257,6 +257,10 @@ class ForgeTests(unittest.TestCase):
             self.assertIn('<a class="top-tab active" href="/">runs</a>', web._HTML)
             self.assertIn('<a class="top-tab active" href="/reports/sprt">SPRT scores</a>', web._SPRT_REPORT_HTML)
             self.assertIn("/api/reports/sprt/score", web._SPRT_REPORT_HTML)
+            self.assertIn("th.num,td.num { text-align:right", web._SPRT_REPORT_HTML)
+            self.assertIn("table { width:max-content", web._SPRT_REPORT_HTML)
+            self.assertIn("th { width:1%;", web._SPRT_REPORT_HTML)
+            self.assertIn("const numeric=new Set", web._SPRT_REPORT_HTML)
 
     def test_sprt_template_declares_score_report(self) -> None:
         template = json.loads((ROOT / "templates" / "sprt.template.json").read_text(encoding="utf-8"))
