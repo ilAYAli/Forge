@@ -1718,7 +1718,11 @@ def run_queue_launcher(payload: dict[str, Any]) -> int:
     last_blockers: list[str] | None = None
     while True:
         with scheduler_lock():
-            summaries = load_run_summaries(lease_seconds=lease_seconds)
+            summaries = load_run_summaries(
+                lease_seconds=lease_seconds,
+                attention_only=True,
+                include_completed_progress=False,
+            )
             target = next((summary for summary in summaries if str(summary.get("run")) == run_name), None)
             if target is None:
                 print(f"queue: {run_name} disappeared", flush=True)
@@ -2112,7 +2116,11 @@ def run_deploy(args: argparse.Namespace) -> int:
             existing_queue = None
             blockers: list[dict[str, Any]] = []
         else:
-            summaries = load_run_summaries(lease_seconds=lease_seconds)
+            summaries = load_run_summaries(
+                lease_seconds=lease_seconds,
+                attention_only=True,
+                include_completed_progress=False,
+            )
             target = next((summary for summary in summaries if str(summary.get("run")) == run_name), None)
             existing_queue = target.get("queue") if isinstance(target, dict) else None
             blockers = queue_blockers_for_run(run_name, summaries)

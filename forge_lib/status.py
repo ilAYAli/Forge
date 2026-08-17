@@ -380,6 +380,18 @@ def run_dir_has_attention_state(run_dir: Path) -> bool:
     state = run_dir / "state"
     claims = run_dir / "claims"
     try:
+        completion_path = run_dir / RUN_SUMMARY_NAME
+        try:
+            completion = read_json(completion_path)
+        except (FileNotFoundError, OSError, TypeError, ValueError):
+            completion = None
+        if isinstance(completion, dict) and completion.get("event") in {"run_done", "run_stopped"}:
+            completed_mtime = completion_path.stat().st_mtime
+            if not any(
+                path.exists() and path.stat().st_mtime > completed_mtime
+                for path in (state / "queue.json", state / "launch.json")
+            ):
+                return False
         if (state / "queue.json").exists() or (state / "launch.json").exists() or (state / "stop.json").exists():
             return True
         # Single pass over state dir to check both fail and running markers.
@@ -532,11 +544,7 @@ def run_manifest_has_attention_state(manifest: dict[str, Any]) -> bool:
             manifest_path = state.parent / "manifest.json"
             completion_path = run_summary_path(manifest_path)
             completion = read_run_summary_payload(manifest_path)
-            if (
-                isinstance(completion, dict)
-                and completion.get("event") == "run_stopped"
-                and completion.get("state") == "stopped"
-            ):
+            if isinstance(completion, dict) and completion.get("event") in {"run_done", "run_stopped"}:
                 completed_mtime = file_mtime_epoch(completion_path) or 0.0
                 newer_request = any(
                     (file_mtime_epoch(path) or 0.0) > completed_mtime

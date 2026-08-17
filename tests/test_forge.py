@@ -3217,32 +3217,32 @@ console.log(JSON.stringify(runTiming(runs[2], false, Date.parse('2026-07-29T22:0
         self.assertIn("--json", command)
         self.assertNotIn("--all", command)
 
-    def test_stopped_completion_ignores_residual_attention_markers(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            run = Path(tmp)
-            manifest_path = run / "manifest.json"
-            manifest = {
-                "schema": "forge.task.v1",
-                "name": "stopped",
-                "state_dir": str(run / "state"),
-                "claim_dir": str(run / "claims"),
-                "tasks": [],
-            }
-            forge.write_json(manifest_path, manifest)
-            state = run / "state"
-            state.mkdir()
-            forge.write_json(forge.stop_request_path(manifest), {"reason": "stopped"})
-            forge.write_json(state / "old.running.json", {"task": "old"})
-            forge.write_json(run / "summary.json", {
-                "event": "run_stopped",
-                "state": "stopped",
-            })
+    def test_terminal_completion_ignores_residual_attention_markers(self) -> None:
+        for event in ("run_done", "run_stopped"):
+            with self.subTest(event=event), tempfile.TemporaryDirectory() as tmp:
+                run = Path(tmp)
+                manifest_path = run / "manifest.json"
+                manifest = {
+                    "schema": "forge.task.v1",
+                    "name": "completed",
+                    "state_dir": str(run / "state"),
+                    "claim_dir": str(run / "claims"),
+                    "tasks": [],
+                }
+                forge.write_json(manifest_path, manifest)
+                state = run / "state"
+                state.mkdir()
+                forge.write_json(forge.stop_request_path(manifest), {"reason": "stopped"})
+                forge.write_json(state / "old.running.json", {"task": "old"})
+                forge.write_json(run / "summary.json", {"event": event})
 
-            self.assertFalse(forge.run_manifest_has_attention_state(manifest))
+                self.assertFalse(forge.run_dir_has_attention_state(run))
+                self.assertFalse(forge.run_manifest_has_attention_state(manifest))
 
-            time.sleep(0.01)
-            forge.write_json(forge.launch_request_path(manifest), {"reason": "resume"})
-            self.assertTrue(forge.run_manifest_has_attention_state(manifest))
+                time.sleep(0.01)
+                forge.write_json(forge.launch_request_path(manifest), {"reason": "resume"})
+                self.assertTrue(forge.run_dir_has_attention_state(run))
+                self.assertTrue(forge.run_manifest_has_attention_state(manifest))
 
     def test_config_yml_supplies_default_workers_and_template_dirs(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
