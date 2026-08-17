@@ -434,7 +434,10 @@ class ForgeTests(unittest.TestCase):
             calls = root / "curl.calls"
             curl = fake_bin / "curl"
             curl.write_text(
-                "#!/bin/sh\nprintf 'call\\n' >> \"$FORGE_TEST_CURL_CALLS\"\n",
+                "#!/bin/sh\n"
+                "url=\n"
+                "for argument do url=$argument; done\n"
+                "printf '%s\\n' \"$url\" >> \"$FORGE_TEST_CURL_CALLS\"\n",
                 encoding="utf-8",
             )
             curl.chmod(0o755)
@@ -461,7 +464,10 @@ class ForgeTests(unittest.TestCase):
             self.assertEqual(0, publish("task_done"))
             self.assertFalse(calls.exists())
             self.assertEqual(0, publish("run_done"))
-            self.assertEqual(["call", "call"], calls.read_text(encoding="utf-8").splitlines())
+            self.assertEqual(
+                ["https://ntfy.wahlman.no/forge", "https://ntfy.wahlman.no/llmsh"],
+                calls.read_text(encoding="utf-8").splitlines(),
+            )
 
     def test_task_complete_command_does_not_fall_back_to_notify_command(self) -> None:
         with mock.patch.dict(os.environ, {"FORGE_TASK_COMPLETE_COMMAND": ""}, clear=False):

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-AI_STDOUT_URL=${FORGE_AI_STDOUT_URL:-https://ntfy.wahlman.no/AI_stdout}
-AI_STDIN_URL=${FORGE_AI_STDIN_URL:-https://ntfy.wahlman.no/AI_stdin}
+AI_STDOUT_URL=${FORGE_AI_STDOUT_URL:-https://ntfy.wahlman.no/llmsh}
+AI_STDIN_URL=${FORGE_AI_STDIN_URL:-https://ntfy.wahlman.no/llmsh}
 AI_STDIN_ENABLE=${FORGE_AI_STDIN_ENABLE:-1}
 HOOK_EVENTS=${HOOK_EVENTS:-}
 DRY_RUN=${FORGE_NTFY_DRY_RUN:-0}
