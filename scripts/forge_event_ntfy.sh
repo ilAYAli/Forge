@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-AI_STDOUT_URL=${FORGE_AI_STDOUT_URL:-https://ntfy.wahlman.no/llmsh}
-AI_STDIN_URL=${FORGE_AI_STDIN_URL:-https://ntfy.wahlman.no/llmsh}
-AI_STDIN_ENABLE=${FORGE_AI_STDIN_ENABLE:-1}
+LLMSH_URL=${FORGE_LLMSH_URL:-https://ntfy.wahlman.no/llmsh}
+LLMSH_ENABLE=${FORGE_LLMSH_ENABLE:-1}
 HOOK_EVENTS=${HOOK_EVENTS:-}
 DRY_RUN=${FORGE_NTFY_DRY_RUN:-0}
 
@@ -219,7 +218,6 @@ send_ntfy() {
 }
 
 rc=0
-AI_STDOUT_ENABLE=0
 FORGE_EVENTS_URL=${FORGE_EVENTS_URL:-https://ntfy.wahlman.no/forge}
 event_name=$(
     python3 - "$payload_file" <<'PY'
@@ -251,8 +249,8 @@ event_selected() {
     return 1
 }
 
-if [ "$AI_STDIN_ENABLE" = "1" ] && event_selected "$event_name" "$HOOK_EVENTS"; then
-    send_ntfy "$AI_STDIN_URL" "Forge" "$wake_message" || rc=$?
+if [ "$LLMSH_ENABLE" = "1" ] && event_selected "$event_name" "$HOOK_EVENTS"; then
+    send_ntfy "$LLMSH_URL" "Forge" "$wake_message" || rc=$?
 fi
 
 exit "$rc"

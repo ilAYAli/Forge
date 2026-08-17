@@ -444,7 +444,7 @@ class ForgeTests(unittest.TestCase):
             env = {
                 **os.environ,
                 "PATH": f"{fake_bin}:{os.environ.get('PATH', '')}",
-                "FORGE_AI_STDIN_ENABLE": "1",
+                "FORGE_LLMSH_ENABLE": "1",
                 "FORGE_TEST_CURL_CALLS": str(calls),
                 "HOOK_EVENTS": "done,fail",
             }
