@@ -219,7 +219,10 @@ send_ntfy() {
 }
 
 rc=0
-send_ntfy "$AI_STDOUT_URL" "Forge" "$rendered" || rc=$?
+AI_STDOUT_ENABLE=${FORGE_AI_STDOUT_ENABLE:-1}
+if [ "$AI_STDOUT_ENABLE" = "1" ]; then
+    send_ntfy "$AI_STDOUT_URL" "Forge" "$rendered" || rc=$?
+fi
 
 event_name=$(
     python3 - "$payload_file" <<'PY'
