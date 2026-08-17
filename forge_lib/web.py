@@ -2906,7 +2906,9 @@ def _merge_lingering_runs(payload: dict[str, Any]) -> dict[str, Any]:
                         linger[name] = item
                         if not _web_run_snapshot_needs_refresh(item):
                             command_checked.discard(name)
-                runs.append(_normalize_web_run_payload(item))
+                item = _normalize_web_run_payload(item)
+                linger[name] = item
+                runs.append(item)
 
         state["hidden_runs"] = sorted(hidden)
         state["deleted_runs"] = sorted(deleted)

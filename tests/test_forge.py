@@ -1915,6 +1915,46 @@ console.log(JSON.stringify(runTiming(runs[2], false, Date.parse('2026-07-29T22:0
         )
         self.assertEqual(1000, len(points))
 
+    def test_web_state_merge_persists_compacted_finished_graphs(self) -> None:
+        import forge_lib.web as web
+
+        points = [{"x": index, "y": index} for index in range(1000)]
+        state = {
+            "seen_runs": {"finished": {"coordinator": None, "source": "status"}},
+            "lingering_runs": {
+                "finished": {
+                    "run": "finished",
+                    "state": "done",
+                    "tasks": 1,
+                    "counts": {
+                        "done": 1,
+                        "fail": 0,
+                        "running": 0,
+                        "claimed": 0,
+                        "stale": 0,
+                        "pending": 0,
+                    },
+                    "progress_graph": {
+                        "series": [{"name": "elo", "points": points}],
+                    },
+                },
+            },
+        }
+        with (
+            mock.patch("forge_lib.web._read_web_state", return_value=copy.deepcopy(state)),
+            mock.patch("forge_lib.web._write_web_state") as write_state,
+            mock.patch("forge_lib.web._payload_belongs_to_web_runs", return_value=True),
+            mock.patch("forge_lib.web._payload_local_manifest_missing", return_value=False),
+            mock.patch("forge_lib.web._web_run_snapshot_needs_refresh", return_value=False),
+        ):
+            web._merge_lingering_runs({"runs": [], "coordinator": None})
+
+        persisted = write_state.call_args.args[0]["lingering_runs"]["finished"]
+        self.assertEqual(
+            web._WEB_HISTORY_GRAPH_POINTS,
+            len(persisted["progress_graph"]["series"][0]["points"]),
+        )
+
     def test_web_status_sections_explain_their_meaning(self) -> None:
         import forge_lib.web as web
 
