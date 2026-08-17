@@ -464,14 +464,10 @@ not just at the end of the whole run. It gets the same
 with `"event": "task_done"` or `"task_fail"`, plus `progress_data` when
 available.
 
-You don't need to configure this separately just to get task-level
-notifications: if `--task-complete-command`/`FORGE_TASK_COMPLETE_COMMAND`/
-`task_complete_command` isn't set, it falls back to whatever
-`--notify-command`/`FORGE_NOTIFY_COMMAND`/`notify_command` resolves to. Set
-`notify_command` once and it drives both run-level and per-task
-notifications through the same script, distinguished by the `"event"`
-field. Only set `--task-complete-command` separately if you actually want a
-*different* command (or none) for per-task events specifically.
+Task-level notifications are opt-in. `notify_command` handles run-level
+events only; configure `--task-complete-command`,
+`FORGE_TASK_COMPLETE_COMMAND`, or `task_complete_command` explicitly when a
+consumer actually needs one event per shard.
 
 By default this fires fire-and-forget: the worker does not wait for the
 command to finish before claiming its next task, so shard throughput never
@@ -497,27 +493,22 @@ lose track of work it already appended. Use `--task-complete-sync` instead if
 you'd rather trade shard throughput for simplicity.
 
 **High task counts mean high event counts.** A run chunked into hundreds or
-thousands of shards fires `task_done`/`task_fail` that many times. Since
-`task_complete_command` now defaults to the same command as
-`notify_command`, wiring up one notification command means that volume
-applies by default — not just to the once-per-run events. If your hook
-always publishes somewhere, budget for that; don't assume it fires as
-infrequently as `run_done`/`deploy_done` do.
+thousands of shards fires `task_done`/`task_fail` that many times when a
+`task_complete_command` is explicitly configured.
 
 ### Reference hook script and filtering
 
-`scripts/forge_event_ntfy.sh` is a working example: it renders any of the
-event shapes above into a short message and publishes it over
-[ntfy](https://ntfy.sh). It always publishes every event it receives to one
-base channel — there's no built-in volume filtering on that channel, so the
-high-task-count caveat above applies directly.
+`scripts/forge_event_ntfy.sh` is a working example: it renders event payloads
+into short [ntfy](https://ntfy.sh) messages. Its base channel ignores
+`task_done`/`task_fail` so a mistakenly configured per-task hook cannot flood
+the queue.
 
 It separately supports an opt-in `HOOK_EVENTS` environment variable that
 gates a second, interruptive notification on top of the base one (e.g. to
 wake a human or an agent, rather than just log). `HOOK_EVENTS` is a
 comma-separated list matched against `"event"`; entries ending in `_done` or
-`_fail` also match a bare `done`/`fail` in the list (so `HOOK_EVENTS=fail`
-matches `run_fail`, `deploy_fail`, and `task_fail` alike). This mirrors the
+run-level completion events also match bare `done`/`fail`; task and deploy
+events require their explicit names. This mirrors the
 `NNUE_HOOK_EVENTS` convention in the sibling `nnue` pipeline
 (`tools/events/nnue_event_ntfy.sh`), which uses the same `phase_start`/
 `phase_done`/`done`/`fail` vocabulary for its own (unrelated) training

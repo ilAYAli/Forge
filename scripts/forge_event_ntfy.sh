@@ -4,7 +4,7 @@ set -euo pipefail
 AI_STDOUT_URL=${FORGE_AI_STDOUT_URL:-https://ntfy.wahlman.no/AI_stdout}
 AI_STDIN_URL=${FORGE_AI_STDIN_URL:-https://ntfy.wahlman.no/AI_stdin}
 AI_STDIN_ENABLE=${FORGE_AI_STDIN_ENABLE:-1}
-HOOK_EVENTS=${HOOK_EVENTS:-deploy_done,deploy_fail}
+HOOK_EVENTS=${HOOK_EVENTS:-}
 DRY_RUN=${FORGE_NTFY_DRY_RUN:-0}
 
 payload=${FORGE_EVENT_JSON:-}
@@ -219,11 +219,8 @@ send_ntfy() {
 }
 
 rc=0
-AI_STDOUT_ENABLE=${FORGE_AI_STDOUT_ENABLE:-1}
-if [ "$AI_STDOUT_ENABLE" = "1" ]; then
-    send_ntfy "$AI_STDOUT_URL" "Forge" "$rendered" || rc=$?
-fi
-
+AI_STDOUT_ENABLE=0
+FORGE_EVENTS_URL=${FORGE_EVENTS_URL:-https://ntfy.wahlman.no/forge}
 event_name=$(
     python3 - "$payload_file" <<'PY'
 import json
@@ -231,6 +228,11 @@ import sys
 print(json.loads(open(sys.argv[1]).read()).get("event", ""))
 PY
 )
+
+case "$event_name" in
+    task_done|task_fail) ;;
+    *) send_ntfy "$FORGE_EVENTS_URL" "Forge" "$rendered" || rc=$? ;;
+esac
 
 event_selected() {
     local event="$1"
@@ -241,8 +243,10 @@ event_selected() {
         *,"$event",*) return 0 ;;
     esac
     case "$event" in
-        *_done) case ",$list," in *,done,*) return 0 ;; esac ;;
-        *_fail) case ",$list," in *,fail,*) return 0 ;; esac ;;
+        run_done) case ",$list," in *,done,*) return 0 ;; esac ;;
+        run_fail|run_timeout|run_finalize_fail|run_launch_failed)
+            case ",$list," in *,fail,*) return 0 ;; esac
+            ;;
     esac
     return 1
 }

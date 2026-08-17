@@ -205,9 +205,9 @@ def default_task_complete_command(config: dict[str, Any] | None = None) -> str |
         return value.strip() or None
     config = config if config is not None else load_config()
     value = config.get("task_complete_command") or config.get("default_task_complete_command")
-    if value:
-        return str(value).strip() or None
-    return default_notify_command(config)
+    if not value:
+        return None
+    return str(value).strip() or None
 
 
 def speedup_single_host_workers(config: dict[str, Any] | None = None) -> int:

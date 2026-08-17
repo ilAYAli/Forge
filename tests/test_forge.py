@@ -426,6 +426,51 @@ class ForgeTests(unittest.TestCase):
         self.assertNotIn("<output>", result.stdout)
         self.assertNotIn("</output>", result.stdout)
 
+    def test_event_ntfy_does_not_publish_task_done_for_hook_done(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fake_bin = root / "bin"
+            fake_bin.mkdir()
+            calls = root / "curl.calls"
+            curl = fake_bin / "curl"
+            curl.write_text(
+                "#!/bin/sh\nprintf 'call\\n' >> \"$FORGE_TEST_CURL_CALLS\"\n",
+                encoding="utf-8",
+            )
+            curl.chmod(0o755)
+            env = {
+                **os.environ,
+                "PATH": f"{fake_bin}:{os.environ.get('PATH', '')}",
+                "FORGE_AI_STDIN_ENABLE": "1",
+                "FORGE_TEST_CURL_CALLS": str(calls),
+                "HOOK_EVENTS": "done,fail",
+            }
+
+            def publish(event: str) -> int:
+                payload = {"event": event, "run": "test", "task": "sprt_0001"}
+                return subprocess.run(
+                    ["bash", str(ROOT / "scripts/forge_event_ntfy.sh")],
+                    text=True,
+                    input=json.dumps(payload),
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    check=False,
+                    env=env,
+                ).returncode
+
+            self.assertEqual(0, publish("task_done"))
+            self.assertFalse(calls.exists())
+            self.assertEqual(0, publish("run_done"))
+            self.assertEqual(["call", "call"], calls.read_text(encoding="utf-8").splitlines())
+
+    def test_task_complete_command_does_not_fall_back_to_notify_command(self) -> None:
+        with mock.patch.dict(os.environ, {"FORGE_TASK_COMPLETE_COMMAND": ""}, clear=False):
+            self.assertIsNone(forge.default_task_complete_command({"notify_command": "notify"}))
+            self.assertEqual(
+                "per-task",
+                forge.default_task_complete_command({"task_complete_command": "per-task"}),
+            )
+
     @contextlib.contextmanager
     def patch_runs_dir(self, path: Path):
         with (
