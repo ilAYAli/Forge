@@ -14174,6 +14174,19 @@ console.log(JSON.stringify(runTiming(runs[2], false, Date.parse('2026-07-29T22:0
         self.assertEqual("90k", payload["display"]["active_summary"]["output_text"])
         self.assertEqual("slow", payload["sections"]["active"]["summary"]["min"]["worker"])
 
+    def test_sprt_run_fields_show_games_per_minute(self) -> None:
+        summary = {"metadata": {"kind": "sprt"}}
+        with mock.patch(
+            "forge_lib.status.summary_progress",
+            return_value="progress=games=1368/5000, elo=-8.4, rate=2.29/s, eta=26m28s",
+        ):
+            fields = forge.run_progress_fields(summary)
+
+        self.assertEqual(
+            ["games=1368/5000", "elo=-8.4", "games/min=137", "eta=26m28s"],
+            fields,
+        )
+
     def test_status_speedup_uses_progress_rates_without_output(self) -> None:
         summary = {
             "run": "run-a",

@@ -1878,6 +1878,12 @@ def split_eta_last(fields: list[str]) -> list[str]:
     rest = [field for field in fields if not field.startswith("eta=")]
     return rest + eta
 
+def sprt_games_per_minute_field(field: str) -> str | None:
+    match = re.fullmatch(r"rate=([0-9]+(?:\.[0-9]+)?)/s", field)
+    if not match:
+        return None
+    return f"games/min={compact_rate(float(match.group(1)) * 60.0)}"
+
 def elo_value_color(value: str) -> str:
     try:
         elo = float(value.rstrip("%"))
@@ -1960,15 +1966,18 @@ def run_progress_fields(summary: dict[str, Any]) -> list[str]:
             if field.startswith("eta=") or field.startswith("iterations=")
         ])
     if kind == "sprt":
-        return split_eta_last([
-            field
-            for field in fields
-            if (
+        sprt_fields: list[str] = []
+        for field in fields:
+            games_per_minute = sprt_games_per_minute_field(field)
+            if games_per_minute:
+                sprt_fields.append(games_per_minute)
+            elif (
                 field.startswith("eta=")
                 or field.startswith("games=")
                 or field.split("=", 1)[0] in SPRT_PROGRESS_FIELD_KEYS
-            )
-        ])
+            ):
+                sprt_fields.append(field)
+        return split_eta_last(sprt_fields)
     return split_eta_last(fields)
 
 def run_progress_fraction(summary: dict[str, Any]) -> float | None:
