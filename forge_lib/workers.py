@@ -429,16 +429,37 @@ def worker_set_record_from_arg(
     value: str,
     *,
     inline_defaults_path: str | Path | None = None,
+    notices: list[str] | None = None,
 ) -> dict[str, Any]:
     if "," in value:
         raise SystemExit("worker set accepts a single worker spec")
-    host, profile, slots = parse_inline_worker_spec(value)
+    spec, separator, slot_text = value.rpartition(":")
+    use_max = bool(separator) and slot_text.strip().lower() == "max"
+    parsed_value = f"{spec}:0" if use_max else value
+    host, profile, slots = parse_inline_worker_spec(parsed_value)
     if slots is None:
         raise SystemExit(f"{value}: worker set requires an explicit slot count")
+    current_defaults = default_inline_worker_records()
+    configured_worker = current_defaults.get(host)
+    if use_max:
+        if configured_worker is None:
+            raise SystemExit(
+                f"{host}: cannot use max; worker is not in the current workers config"
+            )
+        slots = worker_record_slots(configured_worker)
+    elif configured_worker is not None:
+        configured_max = worker_record_slots(configured_worker)
+        if slots > configured_max:
+            requested_slots = slots
+            slots = configured_max
+            if notices is not None:
+                notices.append(
+                    f"worker set: {host} requested={requested_slots} capped={configured_max}"
+                )
     # A run snapshot may predate metadata added to the global worker config
     # (for example an explicit Homebrew Python path).  Keep per-run values,
     # but fill fields missing from the snapshot from current defaults.
-    defaults = default_inline_worker_records()
+    defaults = current_defaults
     for default_host, run_record in default_inline_worker_records(inline_defaults_path).items():
         merged = dict(defaults.get(default_host, {}))
         merged.update(run_record)
@@ -2085,11 +2106,16 @@ def run_deploy(args: argparse.Namespace) -> int:
             lease_seconds=lease_seconds,
             label=label,
         )
+    attach_existing = bool(getattr(args, "attach_existing", False))
     with scheduler_lock():
-        summaries = load_run_summaries(lease_seconds=lease_seconds)
-        target = next((summary for summary in summaries if str(summary.get("run")) == run_name), None)
-        existing_queue = target.get("queue") if isinstance(target, dict) else None
-        blockers = queue_blockers_for_run(run_name, summaries)
+        if attach_existing:
+            existing_queue = None
+            blockers: list[dict[str, Any]] = []
+        else:
+            summaries = load_run_summaries(lease_seconds=lease_seconds)
+            target = next((summary for summary in summaries if str(summary.get("run")) == run_name), None)
+            existing_queue = target.get("queue") if isinstance(target, dict) else None
+            blockers = queue_blockers_for_run(run_name, summaries)
         run_dir, manifest_path, workers_path = materialize_run(
             template_path=template_path,
             workers_arg=str(args.workers),
@@ -2100,7 +2126,7 @@ def run_deploy(args: argparse.Namespace) -> int:
             run_name_arg=getattr(args, "run", None),
             resume=bool(getattr(args, "resume", False)),
             replace=bool(getattr(args, "replace", False)),
-            attach_existing=bool(getattr(args, "attach_existing", False)),
+            attach_existing=attach_existing,
         )
         manifest = load_manifest(manifest_path)
         command = queue_resume_command(args, run_name)
@@ -2150,6 +2176,21 @@ def run_deploy(args: argparse.Namespace) -> int:
         if launch_workers_payload is not None
         else load_workers(workers_path)
     )
+    launch_worker_ids = {
+        str(worker_id)
+        for worker_id in (getattr(args, "launch_worker_ids", None) or [])
+    }
+    if launch_worker_ids:
+        workers = [
+            worker for worker in workers
+            if worker_process_id(
+                str(worker["host"]),
+                worker.get("_slot"),
+                worker.get("_slots"),
+            ) in launch_worker_ids
+        ]
+        if not workers:
+            raise SystemExit(f"{label}: no requested worker IDs found in launch payload")
     jobs = max(1, int(args.jobs))
     remote_timeout = max(1.0, float(args.remote_timeout_seconds))
     bootstrap_timeout = min(remote_timeout, DEPLOY_BOOTSTRAP_TIMEOUT_SECONDS)
@@ -2253,12 +2294,16 @@ def run_deploy(args: argparse.Namespace) -> int:
         return label
 
     def setup_worker_group(group: list[tuple[int, dict[str, Any]]]) -> list[dict[str, Any]]:
+        reuse_setup = bool(getattr(args, "reuse_worker_setup", False))
         status(
-            f"  {colorize('SETUP ', 'cyan', enabled=color_enabled)} "
-            f"{setup_group_label(group)}: setup"
+            f"  {colorize('REUSE ' if reuse_setup else 'SETUP ', 'cyan', enabled=color_enabled)} "
+            f"{setup_group_label(group)}: {'existing setup' if reuse_setup else 'setup'}"
         )
         representative = group[0][1]
-        prereq = run_worker_setup(representative)
+        prereq = (
+            subprocess.CompletedProcess(["reuse", str(representative["host"])], 0, stdout="", stderr="")
+            if reuse_setup else run_worker_setup(representative)
+        )
         payloads = []
         for index, worker in group:
             host = str(worker["host"])
@@ -3282,6 +3327,8 @@ def run_local_job(args: argparse.Namespace) -> int:
         preserve_workers_snapshot=bool(getattr(args, "preserve_workers_snapshot", False)),
         worker_snapshot_commit_payload=getattr(args, "worker_snapshot_commit_payload", None),
         launch_workers_payload=getattr(args, "launch_workers_payload", None),
+        launch_worker_ids=getattr(args, "launch_worker_ids", None),
+        reuse_worker_setup=bool(getattr(args, "reuse_worker_setup", False)),
         launch_only=True,
         manifest=args.manifest,
         jobs=args.jobs,
@@ -3436,17 +3483,31 @@ def run_active_task_count(manifest: dict[str, Any], *, lease_seconds: int) -> in
     except (TypeError, ValueError):
         return 0
 
-def run_active_worker_process_count(manifest: dict[str, Any], worker: str, *, pending: int) -> int:
-    """Count live worker processes for a host (running/idle/starved/claimed),
-    not just tasks currently claimed. A worker between claims still holds its
-    slot, so counting claims alone undercounts and causes worker set to pile
-    duplicate processes on top of already-running ones."""
+def run_active_worker_process_ids(manifest: dict[str, Any], worker: str, *, pending: int) -> set[str]:
+    """Return live process IDs, including workers currently between claims."""
     rows = worker_process_status_rows(manifest, pending=pending)
-    return sum(
-        1
+    return {
+        str(row.get("worker_id") or "")
         for row in rows
-        if str(row.get("worker") or "") == worker and str(row.get("state") or "") != "stale"
-    )
+        if str(row.get("worker") or "") == worker
+        and str(row.get("state") or "") != "stale"
+        and str(row.get("worker_id") or "")
+    }
+
+def desired_worker_process_ids(host: str, slots: int) -> set[str]:
+    if slots <= 0:
+        return set()
+    if slots == 1:
+        return {host}
+    return {f"{host}#{slot}" for slot in range(1, slots + 1)}
+
+def missing_worker_process_ids(host: str, slots: int, active_ids: set[str]) -> set[str]:
+    desired = desired_worker_process_ids(host, slots)
+    normalized = set(active_ids)
+    if slots > 1 and host in normalized:
+        normalized.remove(host)
+        normalized.add(f"{host}#1")
+    return desired - normalized
 
 def run_pending_task_count(manifest: dict[str, Any], *, lease_seconds: int) -> int:
     states = fast_task_states(manifest, lease_seconds=lease_seconds)
@@ -3502,10 +3563,14 @@ def cmd_worker_set(args: argparse.Namespace) -> int:
     targets = worker_run_paths(args.run, lease_seconds=args.lease_seconds)
     failed = 0
     for run_name, manifest_path, workers_path in targets:
+        notices: list[str] = []
         set_worker = worker_set_record_from_arg(
             str(args.worker),
             inline_defaults_path=workers_path,
+            notices=notices,
         )
+        for notice in notices:
+            print(notice)
         host = worker_host(set_worker)
         desired_slots = worker_record_slots(set_worker)
         current_payload = read_json(workers_path)
@@ -3514,17 +3579,21 @@ def cmd_worker_set(args: argparse.Namespace) -> int:
         delta = desired_slots - current_slots
         manifest = load_manifest(manifest_path)
         pending_tasks = run_pending_task_count(manifest, lease_seconds=int(args.lease_seconds))
-        active_slots = run_active_worker_process_count(
+        active_worker_ids = run_active_worker_process_ids(
             manifest,
             host,
             pending=pending_tasks,
         )
-        launch_slots = max(0, desired_slots - active_slots) if pending_tasks else 0
+        active_slots = len(active_worker_ids)
+        missing_worker_ids = (
+            missing_worker_process_ids(host, desired_slots, active_worker_ids)
+            if pending_tasks else set()
+        )
 
-        if launch_slots > 0:
-            launch_worker = set_worker_record_slots(set_worker, launch_slots)
+        if missing_worker_ids:
+            launch_worker = set_worker_record_slots(set_worker, desired_slots)
             launch_payload = workers_payload_from_records([launch_worker])
-            launch_workers = worker_inline_arg_for_slots(set_worker, launch_slots)
+            launch_workers = worker_inline_arg_for_slots(set_worker, desired_slots)
             clear_worker_drains(manifest, [host], run_name=run_name, label="worker set")
             resume_args = argparse.Namespace(
                 manifest=str(manifest_path),
@@ -3534,6 +3603,8 @@ def cmd_worker_set(args: argparse.Namespace) -> int:
                 preserve_workers_snapshot=True,
                 worker_snapshot_commit_payload=next_payload,
                 launch_workers_payload=launch_payload,
+                launch_worker_ids=sorted(missing_worker_ids, key=worker_id_sort_key),
+                reuse_worker_setup=bool(active_worker_ids),
                 launch_only=True,
                 jobs=args.jobs,
                 run=run_name,

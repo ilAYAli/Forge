@@ -256,11 +256,13 @@ class ForgeTests(unittest.TestCase):
             self.assertIn("String(r.kind || '').toLowerCase() === 'sprt'", web._HTML)
             self.assertIn('<a class="top-tab active" href="/">runs</a>', web._HTML)
             self.assertIn('<a class="top-tab active" href="/reports/sprt">SPRT scores</a>', web._SPRT_REPORT_HTML)
+            self.assertIn('<button data-view="runs">history</button>', web._SPRT_REPORT_HTML)
             self.assertIn("/api/reports/sprt/score", web._SPRT_REPORT_HTML)
             self.assertIn("th.num,td.num { text-align:right", web._SPRT_REPORT_HTML)
             self.assertIn("table { width:max-content", web._SPRT_REPORT_HTML)
             self.assertIn("th { width:1%;", web._SPRT_REPORT_HTML)
             self.assertIn("const numeric=new Set", web._SPRT_REPORT_HTML)
+            self.assertIn("range.selectNodeContents(cell)", web._SPRT_REPORT_HTML)
 
     def test_sprt_template_declares_score_report(self) -> None:
         template = json.loads((ROOT / "templates" / "sprt.template.json").read_text(encoding="utf-8"))
@@ -298,6 +300,8 @@ class ForgeTests(unittest.TestCase):
         self.assertIn("parts.push(historyNavHtml('top'))", web._HTML)
         self.assertIn("parts.push(historyNavHtml('bottom'))", web._HTML)
         self.assertIn("renderRun(run, true)", web._HTML)
+        self.assertIn("const liveRunFinished = [...previousLiveRuns].some", web._HTML)
+        self.assertIn("if (liveRunFinished && showInactiveRuns) loadHistory(0)", web._HTML)
         self.assertIn("@media (orientation: landscape) and (max-height: 560px)", web._HTML)
         self.assertIn(".history-run .run-meta { display:none; }", web._HTML)
 
@@ -1123,7 +1127,7 @@ except SystemExit as exc:
         self.assertIn("lines.join('\\n')", web._HTML)
         self.assertIn("commandDisplayBlock(c.command)", web._HTML)
         self.assertIn("function commandDisplayText", web._HTML)
-        self.assertIn("const commentText = display.comment || ''", web._HTML)
+        self.assertIn("const commentText = r.comment || ''", web._HTML)
         self.assertIn("function runDescriptionText", web._HTML)
         self.assertIn("const descText = runDescriptionText(display.description, Boolean(commentText))", web._HTML)
         self.assertIn("run-comment", web._HTML)
@@ -1475,6 +1479,8 @@ console.log(JSON.stringify(runTiming(runs[2], false, Date.parse('2026-07-29T22:0
         self.assertIn("user-select: text", web._HTML)
         self.assertIn("onclick=\"event.stopPropagation();toggleId('${rId}')\"", web._HTML)
         self.assertIn("function toggleRunHeader", web._HTML)
+        self.assertIn("function selectElementText", web._HTML)
+        self.assertIn('onclick="selectElementText(this)"', web._HTML)
         self.assertIn("event.target.closest('button,a,input,select,textarea,.arrow')", web._HTML)
         self.assertIn("window.getSelection", web._HTML)
         self.assertIn('<div class="run-hdr" onclick="toggleRunHeader(event,', web._HTML)
@@ -1787,6 +1793,7 @@ console.log(JSON.stringify(runTiming(runs[2], false, Date.parse('2026-07-29T22:0
 
         run = {
             "run": "large-run",
+            "comment": "plain comment",
             "state": "current",
             "tasks": 10000,
             "done": 1,
@@ -1821,6 +1828,7 @@ console.log(JSON.stringify(runTiming(runs[2], false, Date.parse('2026-07-29T22:0
         compact_run = compact["runs"][0]
 
         self.assertNotIn("rows", compact_run)
+        self.assertEqual("plain comment", compact_run["comment"])
         self.assertNotIn("active", compact_run)
         self.assertNotIn("pending_groups", compact_run)
         self.assertNotIn("tasks", compact_run["sections"]["pending"])
@@ -8657,7 +8665,7 @@ console.log(JSON.stringify(runTiming(runs[2], false, Date.parse('2026-07-29T22:0
             self.assertIn("paused-b", message)
 
 
-    def test_worker_set_launches_only_delta_slots_and_commits_total(self) -> None:
+    def test_worker_set_launches_missing_worker_ids_and_commits_total(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             runs = Path(tmp) / "runs"
             run = self.write_retry_run(runs, "active", failed=None)
@@ -8669,21 +8677,28 @@ console.log(JSON.stringify(runTiming(runs[2], false, Date.parse('2026-07-29T22:0
                     "profile": "mac",
                     "local": True,
                     "cache_dir": str(cache),
-                    "slots": 4,
+                    "slots": 2,
                 }],
             })
 
             with (
                 self.patch_runs_dir(runs),
-                mock.patch("forge_lib.workers.run_active_worker_process_count", return_value=4),
+                mock.patch(
+                    "forge_lib.workers.run_active_worker_process_ids",
+                    return_value={"pwa-mbp#1", "pwa-mbp#2"},
+                ),
                 mock.patch("forge_lib.workers.cmd_run_job", return_value=0) as run_job,
             ):
-                rc = forge.cmd_worker_set(self.worker_set_args(run="active", worker="pwa-mbp:6"))
+                rc = forge.cmd_worker_set(self.worker_set_args(run="active", worker="pwa-mbp:8"))
 
             self.assertEqual(0, rc)
             set_args = run_job.call_args.args[0]
             self.assertEqual("active", set_args.run)
-            self.assertEqual("pwa-mbp=mac:2", set_args.workers)
+            self.assertEqual("pwa-mbp=mac:8", set_args.workers)
+            self.assertEqual(
+                [f"pwa-mbp#{slot}" for slot in range(3, 9)],
+                set_args.launch_worker_ids,
+            )
             self.assertEqual(
                 {
                     "schema": "forge.workers.v1",
@@ -8692,7 +8707,7 @@ console.log(JSON.stringify(runTiming(runs[2], false, Date.parse('2026-07-29T22:0
                         "profile": "mac",
                         "local": True,
                         "cache_dir": str(cache),
-                        "slots": 2,
+                        "slots": 8,
                     }],
                 },
                 set_args.launch_workers_payload,
@@ -8705,13 +8720,14 @@ console.log(JSON.stringify(runTiming(runs[2], false, Date.parse('2026-07-29T22:0
                         "profile": "mac",
                         "local": True,
                         "cache_dir": str(cache),
-                        "slots": 6,
+                        "slots": 8,
                     }],
                 },
                 set_args.worker_snapshot_commit_payload,
             )
             self.assertEqual("worker set", set_args.command_label)
             self.assertTrue(set_args.launch_only)
+            self.assertTrue(set_args.reuse_worker_setup)
 
             args = self.worker_set_args(run="active", worker="pwa-mbp:6", no_notify=True)
             self.assertIn("--no-notify", forge.worker_control_command_args("set", args))
@@ -8775,6 +8791,101 @@ console.log(JSON.stringify(runTiming(runs[2], false, Date.parse('2026-07-29T22:0
             set_args = run_job.call_args.args[0]
             self.assertEqual("/opt/homebrew/bin/python3", set_args.launch_workers_payload["workers"][0]["python"])
             self.assertEqual("/opt/homebrew/bin/python3", set_args.worker_snapshot_commit_payload["workers"][0]["python"])
+
+    def test_worker_set_max_uses_current_config_not_run_snapshot(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            runs = root / "runs"
+            run = self.write_retry_run(runs, "active", failed=None)
+            forge.write_json(run / "workers.json", {
+                "schema": "forge.workers.v1",
+                "workers": [{"host": "worker-b", "profile": "old", "slots": 2}],
+            })
+            defaults = root / "config-workers.json"
+            forge.write_json(defaults, {
+                "schema": "forge.workers.v1",
+                "workers": [{"host": "worker-b", "profile": "linux", "slots": 8}],
+            })
+
+            with (
+                self.patch_runs_dir(runs),
+                mock.patch("forge_lib.workers.default_workers_path", return_value=defaults),
+                mock.patch(
+                    "forge_lib.workers.run_active_worker_process_ids",
+                    return_value={"worker-b#1", "worker-b#2"},
+                ),
+                mock.patch("forge_lib.workers.cmd_run_job", return_value=0) as run_job,
+            ):
+                rc = forge.cmd_worker_set(
+                    self.worker_set_args(run="active", worker="worker-b:max")
+                )
+
+            self.assertEqual(0, rc)
+            set_args = run_job.call_args.args[0]
+            self.assertEqual("worker-b=old:8", set_args.workers)
+            self.assertEqual(8, set_args.worker_snapshot_commit_payload["workers"][0]["slots"])
+            self.assertEqual(
+                [f"worker-b#{slot}" for slot in range(3, 9)],
+                set_args.launch_worker_ids,
+            )
+
+    def test_worker_set_caps_numeric_slots_at_current_config_max(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            runs = root / "runs"
+            run = self.write_retry_run(runs, "active", failed=None)
+            forge.write_json(run / "workers.json", {
+                "schema": "forge.workers.v1",
+                "workers": [{"host": "worker-b", "slots": 2}],
+            })
+            defaults = root / "config-workers.json"
+            forge.write_json(defaults, {
+                "schema": "forge.workers.v1",
+                "workers": [{"host": "worker-b", "slots": 8}],
+            })
+
+            with (
+                self.patch_runs_dir(runs),
+                mock.patch("forge_lib.workers.default_workers_path", return_value=defaults),
+                mock.patch(
+                    "forge_lib.workers.run_active_worker_process_ids",
+                    return_value={"worker-b#1", "worker-b#2"},
+                ),
+                mock.patch("forge_lib.workers.cmd_run_job", return_value=0) as run_job,
+            ):
+                stdout = io.StringIO()
+                with contextlib.redirect_stdout(stdout):
+                    rc = forge.cmd_worker_set(
+                        self.worker_set_args(run="active", worker="worker-b:999")
+                    )
+
+            self.assertEqual(0, rc)
+            self.assertEqual(
+                "worker set: worker-b requested=999 capped=8\n",
+                stdout.getvalue(),
+            )
+            set_args = run_job.call_args.args[0]
+            self.assertEqual(8, set_args.worker_snapshot_commit_payload["workers"][0]["slots"])
+            self.assertEqual(
+                [f"worker-b#{slot}" for slot in range(3, 9)],
+                set_args.launch_worker_ids,
+            )
+
+    def test_worker_set_max_supports_zero_and_rejects_unknown_host(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            defaults = Path(tmp) / "config-workers.json"
+            forge.write_json(defaults, {
+                "schema": "forge.workers.v1",
+                "workers": [{"host": "worker-b", "slots": 0}],
+            })
+
+            with mock.patch("forge_lib.workers.default_workers_path", return_value=defaults):
+                record = forge.worker_set_record_from_arg("worker-b:max")
+                self.assertEqual(0, forge.worker_record_slots(record))
+                with self.assertRaises(SystemExit) as raised:
+                    forge.worker_set_record_from_arg("unknown:max")
+
+            self.assertIn("worker is not in the current workers config", str(raised.exception))
 
     def test_worker_set_launch_preserves_all_default_workers(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -8841,7 +8952,10 @@ console.log(JSON.stringify(runTiming(runs[2], false, Date.parse('2026-07-29T22:0
 
             with (
                 self.patch_runs_dir(runs),
-                mock.patch("forge_lib.workers.run_active_worker_process_count", return_value=6),
+                mock.patch(
+                    "forge_lib.workers.run_active_worker_process_ids",
+                    return_value={f"pwa-mbp#{slot}" for slot in range(1, 7)},
+                ),
                 mock.patch("forge_lib.workers.cmd_run_job") as run_job,
             ):
                 stdout = io.StringIO()
@@ -8868,7 +8982,10 @@ console.log(JSON.stringify(runTiming(runs[2], false, Date.parse('2026-07-29T22:0
 
             with (
                 self.patch_runs_dir(runs),
-                mock.patch("forge_lib.workers.run_active_worker_process_count", return_value=6),
+                mock.patch(
+                    "forge_lib.workers.run_active_worker_process_ids",
+                    return_value={f"pwa-mbp#{slot}" for slot in range(1, 7)},
+                ),
                 mock.patch("forge_lib.workers.cmd_run_job") as run_job,
             ):
                 stdout = io.StringIO()
@@ -8992,7 +9109,10 @@ console.log(JSON.stringify(runTiming(runs[2], false, Date.parse('2026-07-29T22:0
 
             with (
                 self.patch_runs_dir(runs),
-                mock.patch("forge_lib.workers.run_active_worker_process_count", return_value=4),
+                mock.patch(
+                    "forge_lib.workers.run_active_worker_process_ids",
+                    return_value={f"worker-b#{slot}" for slot in range(1, 5)},
+                ),
                 mock.patch("forge_lib.workers.cmd_run_job", return_value=0) as run_job,
             ):
                 args = forge.build_parser().parse_args(["worker", "set", "worker-b:6", "paused"])
@@ -9001,8 +9121,9 @@ console.log(JSON.stringify(runTiming(runs[2], false, Date.parse('2026-07-29T22:0
             self.assertEqual(0, rc)
             set_args = run_job.call_args.args[0]
             self.assertEqual("paused", set_args.run)
-            self.assertEqual("worker-b:2", set_args.workers)
-            self.assertEqual(2, set_args.launch_workers_payload["workers"][0]["slots"])
+            self.assertEqual("worker-b:6", set_args.workers)
+            self.assertEqual(6, set_args.launch_workers_payload["workers"][0]["slots"])
+            self.assertEqual(["worker-b#5", "worker-b#6"], set_args.launch_worker_ids)
             self.assertEqual(6, set_args.worker_snapshot_commit_payload["workers"][0]["slots"])
 
 
@@ -16909,11 +17030,19 @@ console.log(JSON.stringify(runTiming(runs[2], false, Date.parse('2026-07-29T22:0
             launch_payload = {
                 "schema": "forge.workers.v1",
                 "workers": [
-                    {"host": "worker-b", "profile": "worker-b", "local": True, "cache_dir": str(root / "cache-b")},
+                    {
+                        "host": "worker-b",
+                        "profile": "worker-b",
+                        "local": True,
+                        "cache_dir": str(root / "cache-b"),
+                        "slots": 3,
+                    },
                 ],
             }
+            commands = []
 
             def fake_run(self, command, **kwargs):
+                commands.append(command)
                 if " work " in command[-1]:
                     loaded = forge.load_manifest(run_dir / "manifest.json")
                     task = loaded["tasks"][0]
@@ -16927,14 +17056,17 @@ console.log(JSON.stringify(runTiming(runs[2], false, Date.parse('2026-07-29T22:0
 
             args = argparse.Namespace(
                 manifest=str(run_dir / "manifest.json"),
-                workers="worker-b",
+                workers="worker-b:3",
                 worker_snapshot_payload=None,
                 preserve_workers_snapshot=True,
                 worker_snapshot_commit_payload=None,
                 launch_workers_payload=launch_payload,
+                launch_worker_ids=["worker-b#2", "worker-b#3"],
+                reuse_worker_setup=True,
                 jobs=1,
                 run="resume-launch",
-                resume=True,
+                resume=False,
+                attach_existing=True,
                 replace=False,
                 launch_only=True,
                 remote_timeout_seconds=1800.0,
@@ -16945,6 +17077,7 @@ console.log(JSON.stringify(runTiming(runs[2], false, Date.parse('2026-07-29T22:0
                 self.patch_runs_dir(runs),
                 mock.patch("forge.ProcessTracker.run", fake_run),
                 mock.patch("forge_lib.workers.kill_run_workers") as kill_workers,
+                mock.patch("forge_lib.workers.load_run_summaries") as load_summaries,
             ):
                 stdout = io.StringIO()
                 with contextlib.redirect_stdout(stdout):
@@ -16952,7 +17085,14 @@ console.log(JSON.stringify(runTiming(runs[2], false, Date.parse('2026-07-29T22:0
 
             self.assertEqual(0, rc)
             kill_workers.assert_not_called()
+            load_summaries.assert_not_called()
+            launch_scripts = [command[-1] for command in commands if " work " in command[-1]]
+            self.assertEqual(2, len(launch_scripts))
+            self.assertTrue(any("worker-b#2" in script for script in launch_scripts))
+            self.assertTrue(any("worker-b#3" in script for script in launch_scripts))
+            self.assertFalse(any("worker-b#1" in script for script in launch_scripts))
             output = stdout.getvalue()
+            self.assertIn("REUSE  worker-b [2 slots]: existing setup", output)
             self.assertIn("deploy: workers active", output)
             self.assertIn("deploy: launch complete", output)
 

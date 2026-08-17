@@ -167,7 +167,7 @@ _HTML = r"""<!DOCTYPE html>
     .task-th { color: var(--dim); font-size: 11px; font-weight: normal;
                padding: 2px 14px 4px 0; position: relative;
                border-bottom: 1px solid var(--border); user-select: none; }
-    .task-td { padding: 2px 14px 2px 0; }
+    .task-td { padding: 2px 14px 2px 0; cursor:text; }
     .task-row:hover { background: var(--bg3); }
     .td-worker { color: var(--blu); }
     .td-label  { color: var(--dim); }
@@ -789,6 +789,15 @@ _HTML = r"""<!DOCTYPE html>
       const selection = window.getSelection && window.getSelection();
       return !!(selection && !selection.isCollapsed && String(selection).trim());
     }
+
+    function selectElementText(element) {
+      const selection = window.getSelection && window.getSelection();
+      if (!selection) return;
+      const range = document.createRange();
+      range.selectNodeContents(element);
+      selection.removeAllRanges();
+      selection.addRange(range);
+    }
     let selectionGesture = false;
     let selectionDeferredSince = null;
     function shouldDeferRefreshForSelection() {
@@ -990,7 +999,7 @@ _HTML = r"""<!DOCTYPE html>
           ? ` data-etas="${etaSec}"${pd?.eta_estimate?' data-eta-estimate="1"':''}`
           : '';
         return `<tr class="task-row">` + cols.map(c =>
-          `<td class="task-td ${taskCellClass(c)}" data-sort="${esc(taskSortValue(t, c))}"${c==='eta'?etaAttr:''}>${taskCell(t, c)}</td>`
+          `<td class="task-td ${taskCellClass(c)}" data-sort="${esc(taskSortValue(t, c))}"${c==='eta'?etaAttr:''} onclick="selectElementText(this)">${taskCell(t, c)}</td>`
         ).join('') + `</tr>`;
       }).join('') + '</tbody>';
       return `<table class="task-table">${cg}${thead}${tbody}</table>`;
@@ -1780,7 +1789,7 @@ _HTML = r"""<!DOCTYPE html>
       return (processes || []).map(process => {
         const state = String(process.state || 'unknown');
         const age = fmtAge(Number(process.state_age_s || 0));
-        return `<div class="group-row">${esc(process.worker_id || process.worker || '?')} [${esc(state)}] ${esc(age)}</div>`;
+        return `<div class="group-row" onclick="selectElementText(this)">${esc(process.worker_id || process.worker || '?')} [${esc(state)}] ${esc(age)}</div>`;
       }).join('');
     }
 
@@ -1788,7 +1797,7 @@ _HTML = r"""<!DOCTYPE html>
       return (workers || []).map(worker => {
         const slots = Number(worker.slots || 0);
         const profile = worker.profile ? ` profile=${worker.profile}` : '';
-        return `<div class="group-row">${esc(worker.host || '?')} [${slots} slots]${esc(profile)}</div>`;
+        return `<div class="group-row" onclick="selectElementText(this)">${esc(worker.host || '?')} [${slots} slots]${esc(profile)}</div>`;
       }).join('');
     }
 
@@ -1915,7 +1924,7 @@ _HTML = r"""<!DOCTYPE html>
 
       const nonEtaFields = (display.fields||[]).filter(f=>!f.startsWith('eta='));
       const activeFields = display.active_fields || active.fields || [];
-      const commentText = display.comment || '';
+      const commentText = r.comment || '';
       const descText = runDescriptionText(display.description, Boolean(commentText));
       const timing = runTiming(r);
       const etaCompletion = isCurrent && etaSeconds != null ? `ETA ~${fmtCompletionTime(etaSeconds)}` : '';
@@ -2179,7 +2188,12 @@ _HTML = r"""<!DOCTYPE html>
         const res = await fetch('/api/status');
         if (!res.ok) throw new Error('HTTP '+res.status);
         const data = await res.json();
-        const hadLiveRun = (statusData.runs || []).length > 0;
+        const previousLiveRuns = new Set(
+          (statusData.runs || []).map(run => String(run.run || '')));
+        const currentLiveRuns = new Set(
+          (data.runs || []).map(run => String(run.run || '')));
+        const liveRunFinished = [...previousLiveRuns].some(
+          run => run && !currentLiveRuns.has(run));
         statusData = data;
         document.getElementById('err').style.display = 'none';
         document.getElementById('dot').className = '';
@@ -2196,7 +2210,7 @@ _HTML = r"""<!DOCTYPE html>
         if (!data.loading) notifyStartedJobs(data);
 
         renderDashboard();
-        if (hadLiveRun && !(data.runs || []).length && showInactiveRuns) loadHistory(0);
+        if (liveRunFinished && showInactiveRuns) loadHistory(0);
       } catch(e) {
         document.getElementById('dot').className = 'err';
         document.getElementById('err').style.display = 'block';
@@ -2264,6 +2278,7 @@ _SPRT_REPORT_HTML = r"""<!DOCTYPE html>
     th,td { text-align:left; padding:6px 10px; border-bottom:1px solid var(--border); }
     th.num,td.num { text-align:right; font-variant-numeric:tabular-nums; }
     th { width:1%; color:var(--dim); font-size:11px; cursor:pointer; user-select:none; }
+    td { cursor:text; }
     tbody tr:hover { background:var(--bg3); } tbody tr:last-child td { border-bottom:0; }
     td.pos { color:var(--grn); font-weight:600; } td.neg { color:var(--red); font-weight:600; }
     .empty { color:var(--dim); padding:18px; text-align:center; }
@@ -2282,7 +2297,7 @@ _SPRT_REPORT_HTML = r"""<!DOCTYPE html>
       <label>limit<input id="limit" class="small" type="number" min="1" max="1000" value="20"></label>
       <button type="submit">apply</button>
     </form>
-    <div class="tabs"><button data-view="ranking" class="active">ranking</button><button data-view="runs">runs</button></div>
+    <div class="tabs"><button data-view="ranking" class="active">ranking</button><button data-view="runs">history</button></div>
     <div class="table-wrap"><table><thead></thead><tbody></tbody></table></div>
   </main>
   <script>
@@ -2321,6 +2336,10 @@ _SPRT_REPORT_HTML = r"""<!DOCTYPE html>
       document.querySelectorAll('th').forEach(th=>th.onclick=()=>{
         const column=th.dataset.column;
         state.desc=state.sort===column ? !state.desc : false; state.sort=column; render();
+      });
+      document.querySelectorAll('tbody td').forEach(cell=>cell.onclick=()=>{
+        const range=document.createRange(), selection=window.getSelection();
+        range.selectNodeContents(cell); selection.removeAllRanges(); selection.addRange(range);
       });
     }
     async function load() {
@@ -3030,6 +3049,7 @@ def _empty_status_payload(*, loading: bool, error: str | None) -> dict[str, Any]
 
 _WEB_API_RUN_FIELDS = {
     "commands",
+    "comment",
     "completed_at",
     "created_at",
     "display",
