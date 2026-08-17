@@ -1903,6 +1903,17 @@ console.log(JSON.stringify(runTiming(runs[2], false, Date.parse('2026-07-29T22:0
         self.assertEqual(1000, len(points))
         history = web._compact_web_api_run({"state": "done", "progress_graph": graph})
         self.assertEqual(web._WEB_HISTORY_GRAPH_POINTS, len(history["progress_graph"]["series"][0]["points"]))
+        normalized = web._normalize_web_run_payload({
+            "state": "done",
+            "tasks": 1,
+            "counts": {"done": 1},
+            "progress_graph": graph,
+        })
+        self.assertEqual(
+            web._WEB_HISTORY_GRAPH_POINTS,
+            len(normalized["progress_graph"]["series"][0]["points"]),
+        )
+        self.assertEqual(1000, len(points))
 
     def test_web_status_sections_explain_their_meaning(self) -> None:
         import forge_lib.web as web

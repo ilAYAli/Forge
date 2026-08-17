@@ -2641,6 +2641,11 @@ def _normalize_web_run_payload(payload: dict[str, Any]) -> dict[str, Any]:
         return payload
     normalized = copy.deepcopy(payload)
     normalized["state"] = "done"
+    if "progress_graph" in normalized:
+        normalized["progress_graph"] = _compact_web_graph(
+            normalized["progress_graph"],
+            _WEB_HISTORY_GRAPH_POINTS,
+        )
     normalized["web_snapshot_version"] = _WEB_RUN_SNAPSHOT_VERSION
     return normalized
 
