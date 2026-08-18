@@ -1549,7 +1549,7 @@ def queue_blockers_for_run(run_name: str, summaries: list[dict[str, Any]]) -> li
 def active_or_queued_blockers(run_name: str, *, lease_seconds: int) -> list[dict[str, Any]]:
     return queue_blockers_for_run(
         run_name,
-        load_run_summaries(lease_seconds=lease_seconds),
+        load_live_run_summaries(lease_seconds=lease_seconds),
     )
 
 def queue_resume_command(args: argparse.Namespace, run_name: str) -> list[str]:
@@ -1718,11 +1718,7 @@ def run_queue_launcher(payload: dict[str, Any]) -> int:
     last_blockers: list[str] | None = None
     while True:
         with scheduler_lock():
-            summaries = load_run_summaries(
-                lease_seconds=lease_seconds,
-                attention_only=True,
-                include_completed_progress=False,
-            )
+            summaries = load_live_run_summaries(lease_seconds=lease_seconds)
             target = next((summary for summary in summaries if str(summary.get("run")) == run_name), None)
             if target is None:
                 print(f"queue: {run_name} disappeared", flush=True)
@@ -1838,7 +1834,7 @@ def recover_queue_monitors(
     monitors: dict[str, int] = {}
     excluded = exclude or set()
     summaries = sorted(
-        (summary for summary in load_run_summaries(lease_seconds=lease_seconds) if run_queue_requested(summary)),
+        (summary for summary in load_live_run_summaries(lease_seconds=lease_seconds) if run_queue_requested(summary)),
         key=queued_run_sort_key,
     )
     for summary in summaries:
@@ -2116,11 +2112,7 @@ def run_deploy(args: argparse.Namespace) -> int:
             existing_queue = None
             blockers: list[dict[str, Any]] = []
         else:
-            summaries = load_run_summaries(
-                lease_seconds=lease_seconds,
-                attention_only=True,
-                include_completed_progress=False,
-            )
+            summaries = load_live_run_summaries(lease_seconds=lease_seconds)
             target = next((summary for summary in summaries if str(summary.get("run")) == run_name), None)
             existing_queue = target.get("queue") if isinstance(target, dict) else None
             blockers = queue_blockers_for_run(run_name, summaries)
@@ -3132,7 +3124,7 @@ def single_active_run_name(summaries: list[dict[str, Any]], *, source: str = "")
     return str(active[0]["run"])
 
 def single_active_local_run_name(*, lease_seconds: int) -> str:
-    return single_active_run_name(load_run_summaries(lease_seconds=lease_seconds))
+    return single_active_run_name(load_live_run_summaries(lease_seconds=lease_seconds))
 
 def single_active_coordinator_run_name(coordinator_runs: str, *, lease_seconds: int) -> str:
     result = run_coordinator_command(

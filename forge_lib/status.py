@@ -375,23 +375,33 @@ def queue_monitor_state(manifest_path: Path) -> tuple[str | None, dict[str, Any]
         return "invalid", payload
     return ("running" if process_is_alive(pid) else "dead"), payload
 
+def run_dir_has_terminal_completion(run_dir: Path) -> bool:
+    """Return whether a terminal summary is newer than any restart request."""
+    state = run_dir / "state"
+    completion_path = run_dir / RUN_SUMMARY_NAME
+    try:
+        try:
+            completion = read_json(completion_path)
+        except (FileNotFoundError, OSError, TypeError, ValueError):
+            return False
+        if not isinstance(completion, dict) or completion.get("event") not in {"run_done", "run_stopped"}:
+            return False
+        completed_mtime = completion_path.stat().st_mtime
+        return not any(
+            path.exists() and path.stat().st_mtime > completed_mtime
+            for path in (state / "queue.json", state / "launch.json")
+        )
+    except OSError:
+        return False
+
+
 def run_dir_has_attention_state(run_dir: Path) -> bool:
     """Fast attention-state check from directory structure, no manifest load needed."""
     state = run_dir / "state"
     claims = run_dir / "claims"
     try:
-        completion_path = run_dir / RUN_SUMMARY_NAME
-        try:
-            completion = read_json(completion_path)
-        except (FileNotFoundError, OSError, TypeError, ValueError):
-            completion = None
-        if isinstance(completion, dict) and completion.get("event") in {"run_done", "run_stopped"}:
-            completed_mtime = completion_path.stat().st_mtime
-            if not any(
-                path.exists() and path.stat().st_mtime > completed_mtime
-                for path in (state / "queue.json", state / "launch.json")
-            ):
-                return False
+        if run_dir_has_terminal_completion(run_dir):
+            return False
         if (state / "queue.json").exists() or (state / "launch.json").exists() or (state / "stop.json").exists():
             return True
         # Single pass over state dir to check both fail and running markers.
@@ -540,21 +550,9 @@ def annotate_run_ordering(
 def run_manifest_has_attention_state(manifest: dict[str, Any]) -> bool:
     try:
         state = state_dir(manifest)
+        if run_dir_has_terminal_completion(state.parent):
+            return False
         if queue_request_path(manifest).exists() or launch_request_path(manifest).exists() or stop_request_path(manifest).exists():
-            manifest_path = state.parent / "manifest.json"
-            completion_path = run_summary_path(manifest_path)
-            completion = read_run_summary_payload(manifest_path)
-            if isinstance(completion, dict) and completion.get("event") in {"run_done", "run_stopped"}:
-                completed_mtime = file_mtime_epoch(completion_path) or 0.0
-                newer_request = any(
-                    (file_mtime_epoch(path) or 0.0) > completed_mtime
-                    for path in (
-                        queue_request_path(manifest),
-                        launch_request_path(manifest),
-                    )
-                )
-                if not newer_request:
-                    return False
             return True
         if any(state.glob("*.fail.json")) or any(state.glob("*.running.json")):
             return True
@@ -580,6 +578,23 @@ def load_run_summaries(
             include_completed_progress=include_completed_progress,
         )
         if summary is not None:
+            summaries.append(summary)
+    return summaries
+
+
+def load_live_run_summaries(*, lease_seconds: int) -> list[dict[str, Any]]:
+    """Load active and queued runs without scanning terminal run state."""
+    summaries = []
+    for path in run_manifest_paths():
+        if run_dir_has_terminal_completion(path.parent):
+            continue
+        summary = load_run_summary_from_manifest(
+            path,
+            lease_seconds=lease_seconds,
+            attention_only=False,
+            include_completed_progress=False,
+        )
+        if summary is not None and (run_current(summary) or run_queue_requested(summary)):
             summaries.append(summary)
     return summaries
 
@@ -2584,7 +2599,7 @@ def cmd_stop(args: argparse.Namespace) -> int:
     if not args.all and not args.run:
         raise SystemExit("stop requires a run name or --all")
     targets = (
-        [Path(item["manifest"]) for item in load_run_summaries(lease_seconds=args.lease_seconds) if run_current(item)]
+        [Path(item["manifest"]) for item in load_live_run_summaries(lease_seconds=args.lease_seconds) if run_current(item)]
         if args.all else
         [run_manifest_path(args.run)]
     )
@@ -2639,7 +2654,7 @@ def cmd_drain(args: argparse.Namespace) -> int:
     if not worker:
         raise SystemExit("drain requires --worker")
     targets = (
-        [Path(item["manifest"]) for item in load_run_summaries(lease_seconds=args.lease_seconds) if run_current(item)]
+        [Path(item["manifest"]) for item in load_live_run_summaries(lease_seconds=args.lease_seconds) if run_current(item)]
         if args.all else
         [run_manifest_path(args.run)]
     )
