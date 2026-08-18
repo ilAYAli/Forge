@@ -5232,6 +5232,17 @@ def _cmd_wait(args: argparse.Namespace) -> int:
             summary = status_summary(manifest, lease_seconds=args.lease_seconds)
             summary["metadata"] = manifest_metadata(manifest)
             counts = summary["counts"]
+            active = counts["running"] + counts["claimed"] + counts["stale"]
+            if active == 0 and counts["pending"] > 0:
+                finalize_sprt_aggregate_decision(
+                    manifest_path,
+                    manifest,
+                    decision,
+                    lease_seconds=args.lease_seconds,
+                )
+                summary = status_summary(manifest, lease_seconds=args.lease_seconds)
+                summary["metadata"] = manifest_metadata(manifest)
+                counts = summary["counts"]
         if counts["done"] == total:
             return finish("run_done", "ok", 0, manifest)
         active = counts["running"] + counts["claimed"] + counts["stale"]

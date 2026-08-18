@@ -10578,6 +10578,75 @@ console.log(JSON.stringify(runTiming(runs[2], false, Date.parse('2026-07-29T22:0
             self.assertEqual("aggregate_sprt_decision", skipped["skip_reason"])
             self.assertEqual("H1", skipped["decision"]["side"])
 
+    def test_wait_soft_cancels_task_that_becomes_pending_during_sprt_finalization(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run = root / "sprt-finalize-race"
+            manifest_path = run / "manifest.json"
+            state = run / "state"
+            logs = run / "logs"
+            state.mkdir(parents=True)
+            logs.mkdir()
+            tasks = [
+                {
+                    "id": f"task_{index}",
+                    "index": index,
+                    "command": "true",
+                    "outputs": [],
+                    "progress": {"unit": "games", "total": 10},
+                }
+                for index in range(2)
+            ]
+            forge.write_json(manifest_path, {
+                "schema": "forge.task.v1",
+                "name": "sprt-finalize-race",
+                "kind": "sprt",
+                "work_dir": str(run),
+                "state_dir": str(state),
+                "log_dir": str(logs),
+                "claim_dir": str(run / "claims"),
+                "tasks": tasks,
+            })
+            forge.write_json(state / "task_0.done.json", {"task": "task_0", "host": "worker"})
+            (logs / "task_0.log").write_text(
+                "[10/10] Elo  300.0 +/-  50.0 | LLR 2.3/2.20 ( 105%) | LOS 99.0% | draw 1.0%\n",
+                encoding="utf-8",
+            )
+            forge.write_json(state / "task_1.running.json", {
+                "task": "task_1",
+                "worker": "worker-a",
+                "started_epoch": forge.epoch(),
+            })
+
+            args = argparse.Namespace(
+                manifest=str(manifest_path),
+                profile=None,
+                lease_seconds=600,
+                interval_seconds=0.01,
+                timeout_seconds=1.0,
+                fail_on_fail=True,
+                notify_command=None,
+            )
+            real_status_summary = forge.status_summary
+            calls = 0
+
+            def racing_status_summary(*call_args, **call_kwargs):
+                nonlocal calls
+                calls += 1
+                if calls == 2:
+                    (state / "task_1.running.json").unlink()
+                return real_status_summary(*call_args, **call_kwargs)
+
+            with mock.patch("forge_lib.status.status_summary", side_effect=racing_status_summary):
+                rc = forge.cmd_wait(args)
+
+            self.assertEqual(0, rc)
+            summary = json.loads((run / "summary.json").read_text(encoding="utf-8"))
+            self.assertEqual("run_done", summary["event"])
+            self.assertEqual(2, summary["counts"]["done"])
+            skipped = json.loads((state / "task_1.done.json").read_text(encoding="utf-8"))
+            self.assertTrue(skipped["soft_cancel"])
+
     def test_wait_sends_fail_notification_payload(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
