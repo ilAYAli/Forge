@@ -1199,10 +1199,12 @@ except SystemExit as exc:
         self.assertIn('class="actions-list"', web._HTML)
         self.assertIn("const actionsMenu = actions.length", web._HTML)
         self.assertIn("function fmtCompletionTime", web._HTML)
+        self.assertIn("function fmtRunEta", web._HTML)
+        self.assertIn("second: '2-digit'", web._HTML)
         self.assertIn('class="run-completion"', web._HTML)
         self.assertIn("estimated completion", web._HTML)
         self.assertIn("const etaCompletion = isCurrent && etaSeconds != null", web._HTML)
-        self.assertIn("`ETA ~${fmtCompletionTime(remaining)}`", web._HTML)
+        self.assertIn("`ETA: ${fmtCompletionTime(remainingS)} · in ${fmtEta(remainingS)}`", web._HTML)
         self.assertIn("runGraph, isCurrent", web._HTML)
         self.assertIn("function runStoppedEarly", web._HTML)
 

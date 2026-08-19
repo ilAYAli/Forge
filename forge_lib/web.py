@@ -844,7 +844,11 @@ _HTML = r"""<!DOCTYPE html>
 
     function fmtCompletionTime(remainingS) {
       return new Date(Date.now() + remainingS * 1000)
-        .toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'});
+        .toLocaleTimeString([], {hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false});
+    }
+
+    function fmtRunEta(remainingS) {
+      return `ETA: ${fmtCompletionTime(remainingS)} · in ${fmtEta(remainingS)}`;
     }
 
     function progressEtaFromRate(pd) {
@@ -973,8 +977,8 @@ _HTML = r"""<!DOCTYPE html>
         const remaining = parseFloat(el.dataset.etas) - elapsed;
         const prefix = el.dataset.etaEstimate === '1' ? '~' : '';
         const formatted = el.classList.contains('run-completion')
-          ? `ETA ~${fmtCompletionTime(remaining)}` : fmtEta(remaining);
-        el.textContent = remaining > 0 ? prefix + formatted : '—';
+          ? fmtRunEta(remaining) : prefix + fmtEta(remaining);
+        el.textContent = remaining > 0 ? formatted : '—';
       });
       document.querySelectorAll('[data-hbt]').forEach(el => {
         const age = now - parseFloat(el.dataset.hbt);
@@ -1927,7 +1931,7 @@ _HTML = r"""<!DOCTYPE html>
       const commentText = r.comment || '';
       const descText = runDescriptionText(display.description, Boolean(commentText));
       const timing = runTiming(r);
-      const etaCompletion = isCurrent && etaSeconds != null ? `ETA ~${fmtCompletionTime(etaSeconds)}` : '';
+      const etaCompletion = isCurrent && etaSeconds != null ? fmtRunEta(etaSeconds) : '';
       const stoppedEarly = runStoppedEarly(r, pending, fail, display);
       const stateField = stoppedEarly ? '<span class="run-state stopped-early">stopped</span>' : '';
       const stateLabel = state === 'current' ? 'active' : state === 'done' ? 'completed' : state;
