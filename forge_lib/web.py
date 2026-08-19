@@ -2173,15 +2173,26 @@ _HTML = r"""<!DOCTYPE html>
       saveUiState();
     }
 
-    async function loadHistory(page=0) {
+    async function loadHistory(page=0, render=true) {
       try {
         const res = await fetch(`/api/history?page=${Math.max(0,page)}&limit=10`, {cache:'no-store'});
         if (!res.ok) throw new Error('history HTTP '+res.status);
         historyData = {...await res.json(), loaded:true};
-        renderDashboard();
+        if (render) renderDashboard();
+        return historyData;
       } catch(e) {
         document.getElementById('err').style.display = 'block';
         document.getElementById('err').textContent = 'History: '+e.message;
+        return null;
+      }
+    }
+
+    async function waitForHistoryRuns(runNames) {
+      for (let attempt=0; attempt<20; attempt++) {
+        const loaded = await loadHistory(0, false);
+        const names = new Set((loaded?.runs || []).map(run => String(run.run || '')));
+        if (runNames.every(run => names.has(run))) return;
+        await new Promise(resolve => setTimeout(resolve, 250));
       }
     }
 
@@ -2196,8 +2207,11 @@ _HTML = r"""<!DOCTYPE html>
           (statusData.runs || []).map(run => String(run.run || '')));
         const currentLiveRuns = new Set(
           (data.runs || []).map(run => String(run.run || '')));
-        const liveRunFinished = [...previousLiveRuns].some(
+        const finishedRunNames = [...previousLiveRuns].filter(
           run => run && !currentLiveRuns.has(run));
+        if (finishedRunNames.length && showInactiveRuns) {
+          await waitForHistoryRuns(finishedRunNames);
+        }
         statusData = data;
         document.getElementById('err').style.display = 'none';
         document.getElementById('dot').className = '';
@@ -2214,7 +2228,6 @@ _HTML = r"""<!DOCTYPE html>
         if (!data.loading) notifyStartedJobs(data);
 
         renderDashboard();
-        if (liveRunFinished && showInactiveRuns) loadHistory(0);
       } catch(e) {
         document.getElementById('dot').className = 'err';
         document.getElementById('err').style.display = 'block';

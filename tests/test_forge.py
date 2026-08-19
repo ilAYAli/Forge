@@ -300,8 +300,14 @@ class ForgeTests(unittest.TestCase):
         self.assertIn("parts.push(historyNavHtml('top'))", web._HTML)
         self.assertIn("parts.push(historyNavHtml('bottom'))", web._HTML)
         self.assertIn("renderRun(run, true)", web._HTML)
-        self.assertIn("const liveRunFinished = [...previousLiveRuns].some", web._HTML)
-        self.assertIn("if (liveRunFinished && showInactiveRuns) loadHistory(0)", web._HTML)
+        self.assertIn("async function waitForHistoryRuns", web._HTML)
+        self.assertIn("await loadHistory(0, false)", web._HTML)
+        self.assertIn("const finishedRunNames = [...previousLiveRuns].filter", web._HTML)
+        self.assertIn("await waitForHistoryRuns(finishedRunNames)", web._HTML)
+        self.assertLess(
+            web._HTML.index("await waitForHistoryRuns(finishedRunNames)"),
+            web._HTML.index("statusData = data", web._HTML.index("async function refresh()")),
+        )
         self.assertIn("@media (orientation: landscape) and (max-height: 560px)", web._HTML)
         self.assertIn(".history-run .run-meta { display:none; }", web._HTML)
 
