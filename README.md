@@ -39,6 +39,7 @@ The name of the respective workers should likely be a hostname rather than worke
     {
       "host": "worker1",
       "profile": "worker1",
+      "resources": ["cpu"],
       "slots": 11
     },
     {
@@ -316,7 +317,9 @@ Workers files as JSON:
 ```
 
 Object workers support `host`, `profile`, `python`, `local`, `cache_dir`,
-`slots`, and `enabled`. Inline entries inherit matching worker-file defaults.
+`slots`, `resources`, and `enabled`. `resources` is a non-empty list containing
+`cpu` and/or `gpu`; omitted workers are CPU-only. Inline entries inherit matching
+worker-file defaults.
 
 ## Manifests
 

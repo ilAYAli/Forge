@@ -642,6 +642,8 @@ def claim_task(
                 digest = manifest_checksum_for_path(manifest_path, manifest)
                 for task in sorted(manifest["tasks"], key=claim_order):
                     preferred = str(task.get("claim_worker") or "").strip()
+                    if preferred and task.get("strict_claim_worker") and preferred != worker:
+                        continue
                     if live_rechunk and preferred and preferred != worker:
                         continue
                     task_id = str(task.get("id") or "")
@@ -735,6 +737,9 @@ def claim_task(
         )
 
     for task in sorted(manifest["tasks"], key=claim_order):
+        preferred = str(task.get("claim_worker") or "").strip()
+        if preferred and task.get("strict_claim_worker") and preferred != worker:
+            continue
         if task_complete(manifest, task):
             continue
         fail_path = task_fail_path(manifest, task)

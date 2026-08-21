@@ -5143,8 +5143,12 @@ def _cmd_wait(args: argparse.Namespace) -> int:
             try:
                 verify_manifest(manifest, verify_requirements=False)
                 from .labeling import finalize_labeling
+                from .training import finalize_distributed_train
 
-                finalization = finalize_labeling(manifest_path, manifest)
+                finalization = (
+                    finalize_labeling(manifest_path, manifest)
+                    or finalize_distributed_train(manifest_path, manifest)
+                )
             except (OSError, ValueError, json.JSONDecodeError, SystemExit) as exc:
                 print(f"finalization failed: {exc}", file=sys.stderr)
                 event, state, rc = "run_finalize_fail", "failed", 1
@@ -5166,7 +5170,7 @@ def _cmd_wait(args: argparse.Namespace) -> int:
         )
         if isinstance(finalization, dict):
             payload["finalization"] = finalization
-            for key in ("merged_bytes", "positions", "shard_count", "inventory_digest", "task_totals"):
+            for key in ("merged_bytes", "positions", "shard_count", "inventory_digest", "task_totals", "quantised_sha256", "ranks"):
                 if key in finalization:
                     payload[key] = finalization[key]
         write_json(run_summary_path(manifest_path), payload)

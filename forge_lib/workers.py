@@ -341,12 +341,27 @@ def parse_worker_record(item: Any) -> dict[str, Any]:
         record["cache_dir"] = str(item["cache_dir"])
     if item.get("python"):
         record["python"] = str(item["python"])
+    if "resources" in item:
+        record["resources"] = sorted(worker_resources(item))
     if item.get("path_map") is not None:
         path_map = item["path_map"]
         if not isinstance(path_map, dict):
             raise SystemExit(f"{host}: path_map must be an object")
         record["path_map"] = {str(src): str(dst) for src, dst in path_map.items()}
     return record
+
+
+def worker_resources(worker: dict[str, Any]) -> set[str]:
+    """Return declared worker capabilities; omitted means a CPU-only host."""
+    raw = worker.get("resources", ["cpu"])
+    if not isinstance(raw, list) or not raw or not all(isinstance(item, str) for item in raw):
+        host = worker_host(worker) or "worker"
+        raise SystemExit(f"{host}: resources must be a non-empty list of cpu and/or gpu")
+    resources = {item.strip().lower() for item in raw}
+    if not resources or resources - {"cpu", "gpu"}:
+        host = worker_host(worker) or "worker"
+        raise SystemExit(f"{host}: resources must contain only cpu and/or gpu")
+    return resources
 
 def parse_worker_slots(value: Any, *, label: str) -> int:
     if isinstance(value, bool):
@@ -804,17 +819,21 @@ def worker_profile_args(manifest: dict[str, Any], worker: dict[str, Any]) -> lis
 def worker_manifest(manifest: dict[str, Any], worker: dict[str, Any]) -> dict[str, Any]:
     profile = active_worker_profile(manifest, worker)
     if profile:
-        return apply_profile(manifest, profile)
-    if worker_path_map(worker):
+        result = apply_profile(manifest, profile)
+    elif worker_path_map(worker):
         profile = worker_profile_name(manifest, worker)
-        return apply_profile(manifest_with_worker_path_map(manifest, worker), profile)
-    return manifest
+        result = apply_profile(manifest_with_worker_path_map(manifest, worker), profile)
+    else:
+        result = dict(manifest)
+    result["_active_worker_host"] = worker_host(worker)
+    return result
 
 def local_manifest_for_worker(manifest: dict[str, Any], worker: dict[str, Any]) -> dict[str, Any]:
     profile = worker_profile_name(manifest, worker)
     local_manifest = manifest_with_worker_path_map(manifest, worker)
     if profile:
         local_manifest["_active_profile"] = profile
+    local_manifest["_active_worker_host"] = worker_host(worker)
     return local_manifest
 
 def normalize_host_name(value: str) -> str:

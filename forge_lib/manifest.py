@@ -335,12 +335,24 @@ def input_requirement_items(manifest: dict[str, Any]) -> list[dict[str, Any]]:
     if not isinstance(inputs, list):
         raise SystemExit("requirements.inputs must be a list")
     active_profile = str(manifest.get("_active_profile") or "").strip() or None
+    active_host = str(manifest.get("_active_worker_host") or "").strip() or None
     items = []
     for item in inputs:
         if not isinstance(item, dict):
             raise SystemExit("requirements.inputs entries must be objects")
-        if item_matches_profile(item, active_profile, field="requirements.inputs"):
-            items.append(item)
+        if not item_matches_profile(item, active_profile, field="requirements.inputs"):
+            continue
+        hosts = item.get("hosts")
+        if hosts is not None:
+            if isinstance(hosts, str):
+                selected_hosts = {hosts}
+            elif isinstance(hosts, list) and all(isinstance(host, str) for host in hosts):
+                selected_hosts = set(hosts)
+            else:
+                raise SystemExit("requirements.inputs.hosts must be a string or list of strings")
+            if active_host is not None and active_host not in selected_hosts:
+                continue
+        items.append(item)
     return items
 
 

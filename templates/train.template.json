@@ -1,0 +1,32 @@
+{
+  "schema": "forge.template.v1",
+  "name": "train",
+  "kind": "distributed-train",
+  "description": "Run one synchronized Bullet training rank on every selected GPU host",
+  "run_name": "train-{run}-{timestamp}",
+  "work_dir": "{nnue_repo}",
+  "materialize_inputs": true,
+  "parameters": {
+    "nnue_repo": {"type": "source", "default": "nnue", "require_clean_git": true, "include": ["architecture.json", "build.json", "defaults.json", "tools/bullet/spike_trainer/**", "tools/bullet/bullet-patched/**"], "exclude": ["**/target/**"], "output": "~/.cache/forge/sources/nnue-{digest12}", "help": "Committed NNUE trainer, configuration, and build files staged identically on every host"},
+    "run": {"required": true, "help": "Training run name; must match build.json's run field"},
+    "shard_dir": {"required": true, "path_context": "shared_home", "help": "Directory containing one HOST.bullet file for every selected worker"},
+    "parent_checkpoint": {"required": true, "path_context": "shared_home", "help": "Parent NNUE checkpoint; staged identically and injected as initialize_from"},
+    "coordinator": {"default": "pwa-llm", "help": "Selected host that runs the coordinator rank"},
+    "listen_port": {"type": "int", "default": 9219, "help": "Coordinator TCP port"},
+    "sync_every": {"type": "int", "default": 512, "help": "Distributed optimizer synchronization interval in superbatches"},
+    "timeout_seconds": {"type": "int", "default": 600, "help": "Distributed peer timeout"}
+  },
+  "requirements": {
+    "python_min": "3.11",
+    "sources": [{"name": "nnue trainer", "path": "{nnue_repo}", "digest": "{nnue_repo_digest}", "build_timeout_s": 1800, "build": ["CUDA_PATH=\"${CUDA_PATH:-}\"; if [ -z \"$CUDA_PATH\" ]; then for candidate in /usr/local/cuda /usr/lib/cuda; do if [ -f \"$candidate/include/cuda.h\" ]; then CUDA_PATH=\"$candidate\"; break; fi; done; fi; test -n \"$CUDA_PATH\" && test -f \"$CUDA_PATH/include/cuda.h\"; export CUDA_PATH CUDA_HOME=\"${CUDA_HOME:-$CUDA_PATH}\"; export PATH=\"$CUDA_PATH/bin:$PATH\"; cargo build --release --features cuda --manifest-path tools/bullet/spike_trainer/Cargo.toml"], "probe": ["test -x tools/bullet/spike_trainer/target/release/train", "tools/bullet/spike_trainer/target/release/train run --help | grep -- '--build'"]}],
+    "inputs": [{"name": "parent checkpoint", "source": "{parent_checkpoint}", "path": "~/.cache/forge/inputs/train/{run}/parent.nn"}]
+  },
+  "task": {
+    "split": {"count": "{rank_count}"},
+    "prefix": "train",
+    "output": "{output_dir}/{task_name}.quantised.sha256",
+    "command": "set -euo pipefail; HOST=\"$(hostname -s)\"; if [ \"$HOST\" = \"{coordinator}\" ]; then ROLE=coordinator; ROLE_ARGS=(ENYO_BULLET_DISTRIBUTED_LISTEN_ADDR=0.0.0.0:{listen_port} ENYO_BULLET_DISTRIBUTED_NUM_PEERS={peer_count}); else ROLE=worker; ROLE_ARGS=(ENYO_BULLET_DISTRIBUTED_COORDINATOR_ADDR={coordinator}:{listen_port}); fi; BUILD=\".forge-{task_name}.build.json\"; python3 - build.json \"$BUILD\" ~/.cache/forge/inputs/train/{run}/parent.nn <<'PY'\nimport json\nimport sys\nsource, destination, parent = sys.argv[1:]\nwith open(source, encoding='utf-8') as handle:\n    build = json.load(handle)\nbuild['initialize_from'] = parent\nwith open(destination, 'w', encoding='utf-8') as handle:\n    json.dump(build, handle, indent=2, sort_keys=True)\n    handle.write('\\n')\nPY\nenv ENYO_BULLET_DISTRIBUTED_ROLE=\"$ROLE\" ENYO_BULLET_DISTRIBUTED_RUN_ID=\"{run_name}\" ENYO_BULLET_DISTRIBUTED_NODE_ID=\"$HOST\" ENYO_BULLET_DISTRIBUTED_DATA=\"{train_shard}\" ENYO_BULLET_DISTRIBUTED_SYNC_EVERY={sync_every} ENYO_BULLET_DISTRIBUTED_TIMEOUT_SECS={timeout_seconds} \"${ROLE_ARGS[@]}\" tools/bullet/spike_trainer/target/release/train run --build \"$BUILD\"; QUANTISED=\"$(find \"runs/{run}/checkpoints\" -type f -name quantised.bin -print | sort | tail -n 1)\"; test -n \"$QUANTISED\"; python3 - \"$QUANTISED\" \"{output_dir}/{task_name}.quantised.sha256\" <<'PY'\nimport hashlib\nimport pathlib\nimport sys\nsource, output = map(pathlib.Path, sys.argv[1:])\nhash = hashlib.sha256()\nwith source.open('rb') as handle:\n    for chunk in iter(lambda: handle.read(1024 * 1024), b''):\n        hash.update(chunk)\npathlib.Path(output).write_text(hash.hexdigest() + '\\n', encoding='utf-8')\nPY",
+    "progress": {"unit": "superbatches", "log_regex": "superbatch\\s+(?P<done>\\d+)\\s+\\|\\s+loss\\s+(?P<loss>[0-9.eE+-]+)\\s+\\|\\s+(?P<rate>[0-9.eE+-]+)k pos/s\\s+\\|\\s+LR\\s+(?P<lr>[0-9.eE+-]+)", "series": [{"name": "loss", "field": "loss", "x": "done", "scale": "linear"}, {"name": "kpos/s", "field": "rate", "x": "done", "scale": "linear"}, {"name": "learning rate", "field": "lr", "x": "done", "scale": "linear"}]}
+  },
+  "finalize": {"type": "distributed-train"}
+}

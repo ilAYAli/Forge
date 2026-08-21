@@ -10,6 +10,11 @@ from .manifest import *
 from .labeling import attach_label_task_inputs, build_inventory
 from .task_inputs import attach_pgn_task_inputs
 from .source_artifacts import attach_source_artifacts
+from .training import (
+    attach_distributed_train_inputs,
+    distributed_train_workers_payload,
+    prepare_distributed_train_parameters,
+)
 from .chunking import adaptive_autosized_shards
 from .spsa import (
     attach_spsa_manifest_config,
@@ -1038,6 +1043,14 @@ def source_template_parameters(
             candidate = configured_source(value, config)
         else:
             alias = candidate.name
+        if bool(spec.get("require_clean_git", False)):
+            if not (candidate / ".git").exists():
+                raise SystemExit(f"{key}: committed source must be a Git checkout: {candidate}")
+            commit = git_output_or_empty(candidate, "rev-parse", "HEAD")
+            if not commit:
+                raise SystemExit(f"{key}: could not resolve source commit: {candidate}")
+            if git_output_or_empty(candidate, "status", "--porcelain"):
+                raise SystemExit(f"{key}: source checkout has uncommitted changes: {candidate}")
         include = spec.get("include", [])
         exclude = spec.get("exclude", [])
         if not isinstance(include, list) or not all(isinstance(item, str) for item in include):
@@ -1067,6 +1080,8 @@ def source_template_parameters(
         result[f"{key}_artifact"] = artifact["path"]
         result[f"{key}_digest"] = artifact["digest"]
         result[f"{key}_source_id"] = artifact["source_id"]
+        if bool(spec.get("require_clean_git", False)):
+            result[f"{key}_commit"] = commit
         result[key] = safe_format(output_template, output_values)
     return result
 
@@ -1167,6 +1182,7 @@ def expand_template(
     kind = str(template.get("kind") or template_name)
     name_template = str(template.get("run_name") or f"{template_name}-{{timestamp}}")
     run_name = validate_run_name(str(safe_format(name_template, values)))
+    values["run_name"] = run_name
     description = clean_manifest_text(safe_format(template.get("description"), values), label="description")
     comment = clean_manifest_text(safe_format(template.get("comment"), values), label="comment")
     work_dir = str(safe_format(template.get("work_dir") or ".", values))
@@ -1641,7 +1657,17 @@ def cmd_template_run(args: argparse.Namespace) -> int:
     sprt_workers_payload: dict[str, Any] | None = None
     selfplay_workers_payload: dict[str, Any] | None = None
     spsa_workers_payload: dict[str, Any] | None = None
-    if template_name == "sprt":
+    train_workers_payload: dict[str, Any] | None = None
+    if template_name == "train":
+        from .workers import workers_payload_from_arg
+
+        params = parse_template_parameters(template_name, template, template_args)
+        workers_arg = resolved_workers_arg(run_options, config)
+        train_workers_payload = distributed_train_workers_payload(
+            workers_payload_from_arg(workers_arg, default_ok=False)
+        )
+        params = prepare_distributed_train_parameters(params, train_workers_payload)
+    elif template_name == "sprt":
         params = parse_sprt_template_parameters(template_name, template, template_args)
         shards_supplied = template_parameter_supplied(template, template_args, {"shards"})
         needs_workers = (
@@ -1785,6 +1811,10 @@ def cmd_template_run(args: argparse.Namespace) -> int:
         manifest,
         resolved_params if isinstance(resolved_params, dict) else params,
     )
+    if template_name == "train":
+        if train_workers_payload is None:
+            raise RuntimeError("distributed train workers were not resolved")
+        attach_distributed_train_inputs(manifest, train_workers_payload)
     finalizer = manifest.get("finalize")
     if isinstance(finalizer, dict) and finalizer.get("type") == "bullet-labels":
         finalizer["replace"] = bool(run_options.replace)
@@ -1808,10 +1838,12 @@ def cmd_template_run(args: argparse.Namespace) -> int:
     with tempfile.TemporaryDirectory(prefix="forge-template-") as tmp:
         manifest_path = Path(tmp) / f"{manifest['name']}.manifest.json"
         write_json(manifest_path, manifest)
-        if template_name in {"sprt", "selfplay", "spsa"}:
+        if template_name in {"sprt", "selfplay", "spsa", "train"}:
             workers_path = Path(tmp) / "workers.json"
             if template_name == "spsa":
                 worker_payload = spsa_workers_payload or spsa_worker_slots_payload(workers_arg)
+            elif template_name == "train":
+                worker_payload = train_workers_payload
             else:
                 worker_payload = (
                     sprt_workers_payload
