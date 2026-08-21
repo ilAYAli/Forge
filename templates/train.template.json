@@ -18,7 +18,7 @@
   },
   "requirements": {
     "python_min": "3.11",
-    "sources": [{"name": "nnue trainer", "path": "{nnue_repo}", "digest": "{nnue_repo_digest}", "build_timeout_s": 1800, "build": ["CUDA_PATH=\"${CUDA_PATH:-}\"; if [ -z \"$CUDA_PATH\" ]; then for candidate in /usr/local/cuda /usr/lib/cuda; do if [ -f \"$candidate/include/cuda.h\" ]; then CUDA_PATH=\"$candidate\"; break; fi; done; fi; test -n \"$CUDA_PATH\" && test -f \"$CUDA_PATH/include/cuda.h\"; export CUDA_PATH CUDA_HOME=\"${CUDA_HOME:-$CUDA_PATH}\"; export PATH=\"$CUDA_PATH/bin:$PATH\"; cargo build --release --features cuda --manifest-path tools/bullet/spike_trainer/Cargo.toml"], "probe": ["test -x tools/bullet/spike_trainer/target/release/train", "tools/bullet/spike_trainer/target/release/train run --help | grep -- '--build'"]}],
+    "sources": [{"name": "nnue trainer", "path": "{nnue_repo}", "digest": "{nnue_repo_digest}", "build_timeout_s": 1800, "build": ["CUDA_PATH=\"${CUDA_PATH:-}\"; if [ -z \"$CUDA_PATH\" ]; then for candidate in /usr/local/cuda /usr/lib/cuda; do if [ -f \"$candidate/include/cuda.h\" ]; then CUDA_PATH=\"$candidate\"; break; fi; done; fi; test -n \"$CUDA_PATH\" && test -f \"$CUDA_PATH/include/cuda.h\"; export CUDA_PATH CUDA_HOME=\"${CUDA_HOME:-$CUDA_PATH}\"; export PATH=\"$CUDA_PATH/bin:$PATH\"; cargo build --release --features cuda --manifest-path tools/bullet/spike_trainer/Cargo.toml"], "probe": ["test -x tools/bullet/spike_trainer/target/release/train", "tools/bullet/spike_trainer/target/release/train 2>&1 | grep -q '<plan|data|run>'"]}],
     "inputs": [{"name": "parent checkpoint", "source": "{parent_checkpoint}", "path": "~/.cache/forge/inputs/train/{run}/parent.nn"}]
   },
   "task": {

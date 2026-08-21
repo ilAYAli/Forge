@@ -3426,6 +3426,7 @@ def run_local_job(args: argparse.Namespace) -> int:
                 and counts["claimed"] == 0
                 and counts["stale"] == 0
                 and not stop_request_path(failed_manifest).exists()
+                and str(failed_manifest.get("kind") or "") != "distributed-train"
             ):
                 shutil.rmtree(run_dir)
                 mark_deleted_run_for_web(run_name)
