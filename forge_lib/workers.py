@@ -341,6 +341,8 @@ def parse_worker_record(item: Any) -> dict[str, Any]:
         record["cache_dir"] = str(item["cache_dir"])
     if item.get("python"):
         record["python"] = str(item["python"])
+    if "env" in item:
+        record["env"] = worker_environment(item)
     if "resources" in item:
         record["resources"] = sorted(worker_resources(item))
     if item.get("path_map") is not None:
@@ -349,6 +351,24 @@ def parse_worker_record(item: Any) -> dict[str, Any]:
             raise SystemExit(f"{host}: path_map must be an object")
         record["path_map"] = {str(src): str(dst) for src, dst in path_map.items()}
     return record
+
+
+def worker_environment(worker: dict[str, Any]) -> dict[str, str]:
+    """Return validated environment variables declared for a worker."""
+    raw = worker.get("env", {})
+    if not isinstance(raw, dict):
+        host = worker_host(worker) or "worker"
+        raise SystemExit(f"{host}: env must be an object mapping variable names to strings")
+    environment: dict[str, str] = {}
+    for name, value in raw.items():
+        if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
+            host = worker_host(worker) or "worker"
+            raise SystemExit(f"{host}: env variable names must be valid shell variable names")
+        if not isinstance(value, str):
+            host = worker_host(worker) or "worker"
+            raise SystemExit(f"{host}: env values must be strings")
+        environment[name] = value
+    return environment
 
 
 def worker_resources(worker: dict[str, Any]) -> set[str]:
@@ -636,6 +656,10 @@ def run_worker_shell(
     tracker: ProcessTracker | None = None,
     retries: int = 0,
 ) -> subprocess.CompletedProcess[str]:
+    environment = worker_environment(worker)
+    if environment:
+        exports = " ".join(f"{name}={shlex.quote(value)}" for name, value in sorted(environment.items()))
+        script = f"export {exports}; {script}"
     command = ["sh", "-lc", script] if is_local_worker(worker) else ["ssh", *SSH_OPTS, str(worker["host"]), managed_remote_script(script)]
     return run_process_command_with_retries(command, timeout=timeout, tracker=tracker, retries=retries)
 

@@ -317,8 +317,10 @@ Workers files as JSON:
 ```
 
 Object workers support `host`, `profile`, `python`, `local`, `cache_dir`,
-`slots`, `resources`, and `enabled`. `resources` is a non-empty list containing
-`cpu` and/or `gpu`; omitted workers are CPU-only. Inline entries inherit matching
+`slots`, `resources`, `env`, and `enabled`. `resources` is a non-empty list
+containing `cpu` and/or `gpu`; omitted workers are CPU-only. `env` maps shell
+variable names to literal string values and is exported for every Forge command
+on that worker (for example, a CUDA toolkit path). Inline entries inherit matching
 worker-file defaults.
 
 ## Manifests

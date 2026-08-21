@@ -12,7 +12,7 @@ from forge_lib.training import (
     distributed_train_workers_payload,
     finalize_distributed_train,
 )
-from forge_lib.workers import parse_worker_record, worker_resources
+from forge_lib.workers import parse_worker_record, run_worker_shell, worker_resources
 
 
 class DistributedTrainingTests(unittest.TestCase):
@@ -23,6 +23,21 @@ class DistributedTrainingTests(unittest.TestCase):
                 "schema": "forge.workers.v1",
                 "workers": [{"host": "cpu-a"}, {"host": "gpu-b", "resources": ["gpu"]}],
             })
+
+    def test_worker_environment_is_exported_for_worker_commands(self) -> None:
+        worker = parse_worker_record({
+            "host": "localhost",
+            "local": True,
+            "env": {"CUDA_HOME": "/usr/lib/cuda", "CUDA_PATH": "/usr/lib/cuda"},
+        })
+        self.assertEqual("/usr/lib/cuda", worker["env"]["CUDA_PATH"])
+        result = run_worker_shell(
+            worker,
+            'test "$CUDA_PATH" = /usr/lib/cuda && test "$CUDA_HOME" = /usr/lib/cuda',
+        )
+        self.assertEqual(0, result.returncode)
+        with self.assertRaisesRegex(SystemExit, "env variable names"):
+            parse_worker_record({"host": "localhost", "env": {"CUDA-PATH": "/usr/lib/cuda"}})
 
     def test_stages_one_shard_per_host_and_pins_each_rank(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
