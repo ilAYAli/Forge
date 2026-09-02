@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import copy
+import fnmatch
 import io
 import inspect
 import json
@@ -9158,6 +9159,35 @@ console.log(JSON.stringify(runTiming(runs[2], false, Date.parse('2026-07-29T22:0
             self.assertEqual("active", run_name)
             self.assertEqual(["pwa-mbp#6", "pwa-mbp#5"], worker_ids)
             self.assertIn("worker set: active pwa-mbp slots=6->4 killed=2", stdout.getvalue())
+
+    def test_worker_id_pid_glob_matches_the_real_pid_filename_with_a_distinct_profile(self) -> None:
+        # worker_id (e.g. "pwa-hak#3") is host+slot only -- deliberately
+        # profile-agnostic so claims/status stay stable regardless of a
+        # host's configured profile. But the PID file on disk is named via
+        # worker_label(), which *does* embed the profile whenever it differs
+        # from the host. A glob built naively from worker_id alone never
+        # matched real files on any host with profile != host, so
+        # kill_worker_id_processes() silently killed nothing there.
+        stem = forge.launch_file_stem(
+            "active", 2, {"host": "pwa-hak", "profile": "linux", "_slot": 3, "_slots": 24},
+        )
+        real_pid_filename = f"{stem}.pid"
+        pattern = forge.worker_id_pid_glob_pattern("active", "pwa-hak#3")
+        self.assertTrue(
+            fnmatch.fnmatch(real_pid_filename, pattern),
+            f"{pattern!r} does not match real PID filename {real_pid_filename!r}",
+        )
+
+    def test_worker_id_pid_glob_matches_the_real_pid_filename_without_a_distinct_profile(self) -> None:
+        stem = forge.launch_file_stem(
+            "active", 6, {"host": "pwa-llm", "profile": "pwa-llm", "_slot": 7, "_slots": 12},
+        )
+        real_pid_filename = f"{stem}.pid"
+        pattern = forge.worker_id_pid_glob_pattern("active", "pwa-llm#7")
+        self.assertTrue(
+            fnmatch.fnmatch(real_pid_filename, pattern),
+            f"{pattern!r} does not match real PID filename {real_pid_filename!r}",
+        )
 
     def test_worker_path_map_applies_to_worker_manifest_without_coordinator_profile(self) -> None:
         manifest = {

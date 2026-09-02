@@ -1394,7 +1394,25 @@ def worker_pid_glob_suffix(worker_id: str) -> str:
     return re.sub(r"[^A-Za-z0-9_.-]+", "_", worker_id)
 
 def worker_id_pid_glob_pattern(run_name: str, worker_id: str) -> str:
-    return f"{shlex.quote(run_name)}-*-{shlex.quote(worker_pid_glob_suffix(worker_id))}.pid"
+    """Glob for this worker_id's PID file under a run's cache dir.
+
+    worker_id (e.g. "pwa-hak#3") is deliberately profile-agnostic --
+    worker_process_id() builds it from host+slot only, so claims/status stay
+    stable across a host's configured profile. But the PID file on disk is
+    named from worker_label(), which *does* embed the profile whenever it
+    differs from the host (e.g. "pwa-hak/linux#3" sanitizes to
+    "..._pwa-hak_linux_3.pid"). A literal-suffix glob built from worker_id
+    alone therefore never matches on any host with profile != host, and
+    kill_worker_id_processes() silently kills nothing. Split off the slot
+    number and glob through the middle so an embedded profile segment
+    doesn't break the match.
+    """
+    host_part, sep, slot_part = worker_id.rpartition("#")
+    if not sep:
+        return f"{shlex.quote(run_name)}-*-{shlex.quote(worker_pid_glob_suffix(worker_id))}.pid"
+    host_glob = shlex.quote(re.sub(r"[^A-Za-z0-9_.-]+", "_", host_part))
+    slot_glob = shlex.quote(re.sub(r"[^A-Za-z0-9_.-]+", "_", slot_part))
+    return f"{shlex.quote(run_name)}-*-{host_glob}*_{slot_glob}.pid"
 
 def kill_worker_id_processes(
     worker: dict[str, Any],
