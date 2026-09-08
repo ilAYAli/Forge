@@ -465,6 +465,7 @@ def worker_set_record_from_arg(
     *,
     inline_defaults_path: str | Path | None = None,
     notices: list[str] | None = None,
+    force: bool = False,
 ) -> dict[str, Any]:
     if "," in value:
         raise SystemExit("worker set accepts a single worker spec")
@@ -482,7 +483,7 @@ def worker_set_record_from_arg(
                 f"{host}: cannot use max; worker is not in the current workers config"
             )
         slots = worker_record_slots(configured_worker)
-    elif configured_worker is not None:
+    elif configured_worker is not None and not force:
         configured_max = worker_record_slots(configured_worker)
         if slots > configured_max:
             requested_slots = slots
@@ -3293,6 +3294,8 @@ def worker_control_command_args(action: str, args: argparse.Namespace) -> list[s
     if args.run is not None:
         command.append(str(args.run))
     if action in ("add", "set"):
+        if action == "set" and bool(getattr(args, "force", False)):
+            command.append("--force")
         if bool(getattr(args, "wait", False)):
             command.append("--wait")
         if getattr(args, "verify", None) is True:
@@ -3712,6 +3715,7 @@ def cmd_worker_set(args: argparse.Namespace) -> int:
             str(args.worker),
             inline_defaults_path=workers_path,
             notices=notices,
+            force=bool(getattr(args, "force", False)),
         )
         for notice in notices:
             print(notice)

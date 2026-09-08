@@ -242,6 +242,9 @@ forge worker set worker3:4 my-run
 when absent, then updates or adds only `worker3`. Missing workers are started;
 existing workers keep running.
 
+Configured worker limits cap numeric requests by default. Use `--force` to
+override that cap, for example `forge worker set worker3:8 --force my-run`.
+
 Drain a worker from a run:
 
 ```sh

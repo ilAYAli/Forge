@@ -9001,6 +9001,43 @@ console.log(JSON.stringify(runTiming(runs[2], false, Date.parse('2026-07-29T22:0
                 set_args.launch_worker_ids,
             )
 
+    def test_worker_set_force_allows_slots_above_current_config_max(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            runs = root / "runs"
+            run = self.write_retry_run(runs, "active", failed=None)
+            forge.write_json(run / "workers.json", {
+                "schema": "forge.workers.v1",
+                "workers": [{"host": "worker-b", "slots": 2}],
+            })
+            defaults = root / "config-workers.json"
+            forge.write_json(defaults, {
+                "schema": "forge.workers.v1",
+                "workers": [{"host": "worker-b", "slots": 8}],
+            })
+
+            with (
+                self.patch_runs_dir(runs),
+                mock.patch("forge_lib.workers.default_workers_path", return_value=defaults),
+                mock.patch("forge_lib.workers.run_pending_task_count", return_value=0),
+            ):
+                stdout = io.StringIO()
+                with contextlib.redirect_stdout(stdout):
+                    rc = forge.cmd_worker_set(
+                        self.worker_set_args(run="active", worker="worker-b:999", force=True)
+                    )
+
+            self.assertEqual(0, rc)
+            self.assertEqual(
+                "worker set: active worker-b slots=2->999; no pending tasks\n",
+                stdout.getvalue(),
+            )
+            self.assertEqual(999, forge.worker_slots_for_host(forge.read_json(run / "workers.json"), "worker-b"))
+
+    def test_worker_set_force_is_forwarded_to_coordinator(self) -> None:
+        args = self.worker_set_args(run="paused", worker="worker-b:999", force=True)
+        self.assertIn("--force", forge.worker_control_command_args("set", args))
+
     def test_worker_set_caps_numeric_slots_at_current_config_max(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

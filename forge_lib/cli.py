@@ -197,6 +197,7 @@ class ForgeArgumentParser(argparse.ArgumentParser):
 def add_worker_set_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("worker", help="Inline worker spec; worker-a:5 sets the total slot count to five.")
     parser.add_argument("run", nargs="?", help="Run name or run directory. Omit to use the single active run.")
+    parser.add_argument("--force", action="store_true", help="Allow slots above the configured worker maximum.")
     parser.add_argument("--jobs", type=int, default=4, help="Maximum workers to prepare concurrently.")
     parser.add_argument("--task-attempts", type=int, default=2, help="Total attempts per task before final failure.")
     parser.add_argument("--coordinator-host", help="Coordinator hostname workers should SSH back to.")
