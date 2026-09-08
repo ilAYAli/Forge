@@ -286,16 +286,117 @@ def manifest_checksum(manifest: dict[str, Any]) -> str:
     payload = json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(payload).hexdigest()
 
+def _manifest_path_canonicalization_map(manifest: dict[str, Any]) -> dict[str, str]:
+    """Map every host-local path a manifest's own ``path_maps`` declares as a
+    legitimate translation target back to its canonical source.
+
+    ``path_maps`` is the manifest's own declaration of which path
+    substitutions are legitimate host-local routing (e.g. a macOS cache
+    directory, or a worker whose checkout lives at a different absolute
+    path).  Reversing every declared mapping gives a stable canonical form
+    regardless of which worker profile happened to render a given task.
+    """
+    combined: dict[str, str] = {}
+    path_maps = manifest.get("path_maps")
+    if isinstance(path_maps, dict):
+        for mapping in path_maps.values():
+            if not isinstance(mapping, dict):
+                continue
+            for src, dst in mapping.items():
+                if isinstance(src, str) and isinstance(dst, str) and dst and src != dst:
+                    combined[dst] = src
+    return combined
+
+def _path_like_var(key: Any, value: Any) -> bool:
+    if not isinstance(value, str) or not value:
+        return False
+    if value.startswith("~") or value.startswith("/"):
+        return True
+    return isinstance(key, str) and key.endswith(("_dir", "_path", "_root"))
+
+def _canonicalized_vars(vars_obj: Any, path_map: dict[str, str]) -> Any:
+    """Drop host-local path values; keep everything execution-semantic."""
+    if not isinstance(vars_obj, dict):
+        return vars_obj
+    canonical: dict[str, Any] = {}
+    for key, value in vars_obj.items():
+        if _path_like_var(key, value):
+            continue
+        canonical[key] = translate_obj(value, path_map) if path_map else value
+    return canonical
+
+def _canonicalized_requirement_item(item: Any) -> Any:
+    """Reduce a content-addressed requirement entry to its content identity.
+
+    An entry that already carries a ``sha256``/``digest`` is bound to that
+    content hash; its ``path``/``source`` is where that content happens to
+    live on one host and must not affect the checksum.  An entry with no
+    digest keeps hashing as a full object (no regression for callers that
+    haven't adopted content-addressing yet).
+    """
+    if not isinstance(item, dict):
+        return item
+    digest = item.get("sha256") or item.get("digest")
+    if not digest:
+        return item
+    identity = {"name": item.get("name"), "tree": item.get("tree")}
+    for field in ("sha256", "digest", "files", "bytes"):
+        if field in item:
+            identity[field] = item[field]
+    return identity
+
+def _canonicalized_requirements(requirements: Any) -> Any:
+    if not isinstance(requirements, dict):
+        return requirements
+    canonical = dict(requirements)
+    for field in ("inputs", "sources"):
+        items = requirements.get(field)
+        if isinstance(items, list):
+            canonical[field] = [_canonicalized_requirement_item(item) for item in items]
+    return canonical
+
 def task_execution_checksum(manifest: dict[str, Any], task: dict[str, Any]) -> str:
-    """Hash inputs that define a task's execution, excluding mutable routing."""
+    """Hash inputs that define a task's execution, excluding mutable routing
+    and bookkeeping, and host-local filesystem locations.
+
+    ``work_dir`` is a pure execution location and is dropped.  Path-shaped
+    ``vars`` entries and any occurrence of a path this manifest's own
+    ``path_maps`` declares as a legitimate host-local translation target are
+    normalized before hashing, so a worker's cache layout or checkout path
+    cannot change this checksum.  Content identity — engine/net/source/shard
+    — stays bound: non-path vars hash unchanged, and requirement entries
+    that carry a ``sha256``/``digest`` are hashed by that digest rather than
+    by wherever the file happens to live.
+
+    ``progress`` is dropped for the same reason ``claim_worker`` is: several
+    code paths (resume sealing, adaptive-chunk calibration display) rewrite
+    ``progress.total`` on an already-materialized task after it starts or
+    finishes to reflect an observed/actual value, even though it started as
+    a static target. It describes how to report status, not what the task
+    executes, so a task legitimately completing must not have its recorded
+    checksum invalidated by that rewrite the next time this is recomputed.
+    """
+    path_map = _manifest_path_canonicalization_map(manifest)
     execution_task = dict(task)
     execution_task.pop("claim_worker", None)
+    execution_task.pop("progress", None)
+    if path_map:
+        for field in ("command", "outputs"):
+            if field in execution_task:
+                execution_task[field] = translate_obj(execution_task[field], path_map)
+        inputs = execution_task.get("inputs")
+        if isinstance(inputs, list):
+            execution_task["inputs"] = [
+                {**item, "path": translate_obj(item["path"], path_map)}
+                if isinstance(item, dict) and isinstance(item.get("path"), str)
+                else item
+                for item in inputs
+            ]
     execution = {
         "schema": manifest.get("schema"),
         "kind": manifest.get("kind"),
-        "work_dir": manifest.get("work_dir"),
-        "vars": manifest.get("vars"),
-        "requirements": manifest.get("requirements"),
+        "vars": _canonicalized_vars(manifest.get("vars"), path_map),
+        "requirements": _canonicalized_requirements(manifest.get("requirements")),
         "task": execution_task,
     }
     payload = json.dumps(execution, sort_keys=True, separators=(",", ":")).encode("utf-8")

@@ -3,6 +3,9 @@ from __future__ import annotations
 import json
 import argparse
 import copy
+import gzip
+import io
+import tarfile
 import tempfile
 import unittest
 from pathlib import Path
@@ -15,6 +18,7 @@ from forge_lib.labeling import (
     finalize_labeling,
     inventory_digest,
     marker_matches,
+    unpack_lc0_archives,
     verify_inventory_tree,
 )
 from forge_lib.core import file_record, write_json
@@ -24,6 +28,27 @@ from forge_lib.tasks import task_done_path
 
 
 class Lc0InventoryTests(unittest.TestCase):
+    def test_unpacks_tar_training_members_for_balanced_inventory(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "source"
+            cache = root / "cache"
+            source.mkdir()
+            archive = source / "training.2-test91.tar"
+            with tarfile.open(archive, "w") as handle:
+                for name, size in (("training.small.gz", 8), ("training.large.gz", 32)):
+                    payload = gzip.compress(b"x" * size)
+                    member = tarfile.TarInfo(f"batch/{name}")
+                    member.size = len(payload)
+                    handle.addfile(member, io.BytesIO(payload))
+
+            unpacked = unpack_lc0_archives(source, cache_home=cache)
+
+            self.assertNotEqual(source, unpacked)
+            self.assertTrue((unpacked / "training.2-test91" / "batch" / "training.small.gz").is_file())
+            self.assertTrue((unpacked / "training.2-test91" / "batch" / "training.large.gz").is_file())
+            self.assertEqual(unpacked, unpack_lc0_archives(source, cache_home=cache))
+
     def test_template_uses_source_neutral_labeling_name(self) -> None:
         template_path = Path(__file__).resolve().parents[1] / "templates" / "label-search.template.json"
         template = json.loads(template_path.read_text(encoding="utf-8"))

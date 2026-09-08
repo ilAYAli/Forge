@@ -26,7 +26,7 @@ def candidate_pattern(value: str) -> str:
 def sprt_score_report(
     *,
     view: str = "ranking",
-    reference_net: str = "nn-0ee0657fb25e.nnue",
+    reference_net: str = "nn-1a298aa575a0.nnue",
     candidate_net: str = "enyo-%",
     engine: str = "",
     min_games: int = 1500,

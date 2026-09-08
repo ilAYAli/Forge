@@ -14,7 +14,8 @@ from .tasks import *
 QUEUE_MONITOR_NAME = "queue-monitor.json"
 PROGRESS_HISTORY_NAME = "progress-history.jsonl"
 FINISHED_PROGRESS_CACHE_NAME = "finished-progress.jsonl"
-PROGRESS_GRAPH_VERSION = 7
+PROGRESS_GRAPH_VERSION = 8
+ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 WORKER_REDEPLOY_INTERVAL_SECONDS = 300.0
 SIGNED_PROGRESS_SERIES = {"balance", "elo", "llr"}
 ZERO_ORIGIN_PROGRESS_SERIES = {"balance", "llr"}
@@ -863,6 +864,15 @@ def compact_duration(seconds: float) -> str:
         return f"{minutes}m{seconds:02d}s"
     return f"{seconds}s"
 
+
+def parse_compact_duration(value: str) -> float | None:
+    """Parse Bullet's compact duration format, e.g. ``5h10m13s``."""
+    parts = re.findall(r"(\d+)([dhms])", value)
+    if not parts or "".join(f"{amount}{unit}" for amount, unit in parts) != value:
+        return None
+    factors = {"d": 86400, "h": 3600, "m": 60, "s": 1}
+    return float(sum(int(amount) * factors[unit] for amount, unit in parts))
+
 def progress_eta_seconds(done: Any, total: Any, rate: Any) -> float | None:
     if not isinstance(done, int) or not isinstance(total, int) or total <= 0:
         return None
@@ -905,6 +915,10 @@ def progress_data_eta_text(data: dict[str, Any], done: Any, total: Any) -> str:
         return ""
     seconds, unknown_when_elapsed = eta
     return eta_field(seconds, unknown_when_elapsed=unknown_when_elapsed, estimated=bool(data.get("eta_estimate")))
+
+
+def is_eta_field(field: str) -> bool:
+    return str(field).startswith(("eta=", "eta~="))
 
 def parse_timestamp_epoch(value: Any) -> float | None:
     if isinstance(value, (int, float)):
@@ -1085,6 +1099,11 @@ def progress_config_unit_total(task: dict[str, Any]) -> tuple[str, int] | None:
         return None
     unit = str(progress_config.get("unit") or "").strip()
     total = progress_config.get("total")
+    # A label task with an unlimited input explicitly has no bounded record
+    # total.  Its template split is a queueing hint, not a progress target;
+    # showing an ETA from it is actively misleading.
+    if unit == "records" and "--max-records 0" in str(task.get("command") or ""):
+        return None
     if not unit or not isinstance(total, int) or total <= 0:
         return None
     return unit, total
@@ -1227,6 +1246,36 @@ def run_cumulative_rate(summary: dict[str, Any], done: float) -> float | None:
 def summary_progress(summary: dict[str, Any]) -> str:
     if progress := spsa_summary_progress(summary):
         return progress
+    if summary_kind(summary) == "distributed-train":
+        ranks = [
+            row.get("progress_data")
+            for row in summary.get("active", [])
+            if row.get("state") == "running" and isinstance(row.get("progress_data"), dict)
+        ]
+        ranks = [data for data in ranks if isinstance(data.get("done"), int)]
+        if ranks:
+            # Every rank executes the same local schedule. Summing their
+            # superbatches makes a fictional 75k-superbatch run; the slowest
+            # rank determines when the synchronized job actually completes.
+            done = min(int(data["done"]) for data in ranks)
+            totals = [
+                int(data["total"])
+                for data in ranks
+                if isinstance(data.get("total"), int) and int(data["total"]) > 0
+            ]
+            parts = [
+                f"superbatches={compact_count(done)}/{compact_count(min(totals))}"
+                if totals else f"superbatches=~{compact_count(done)}"
+            ]
+            known = [
+                item
+                for data in ranks
+                if (item := progress_data_eta_seconds(data, data.get("done"), data.get("total"))) is not None
+            ]
+            if known:
+                seconds, overdue = max(known, key=lambda item: item[0])
+                parts.append(eta_field(seconds, unknown_when_elapsed=overdue))
+            return f"progress={', '.join(parts)}"
     subtask_done = 0
     subtask_total = 0
     subtask_rate = 0.0
@@ -1426,8 +1475,46 @@ def summary_progress(summary: dict[str, Any]) -> str:
         parts.append(f"{output_unit}={compact_count(value)}")
     parts.extend(sprt_aggregate_fields(summary))
     parts.extend(rates)
+    if summary_kind(summary) == "label" and not any(is_eta_field(eta) for eta in etas):
+        estimate = unbounded_label_eta_seconds(summary)
+        if estimate is not None:
+            etas.append(eta_field(estimate, estimated=True))
     parts.extend(etas)
     return f"progress={', '.join(parts)}" if parts else ""
+
+
+def unbounded_label_eta_seconds(summary: dict[str, Any]) -> float | None:
+    """Estimate completion time from observed completed-shard throughput."""
+    if summary_kind(summary) != "label":
+        return None
+    counts = summary.get("counts")
+    total_tasks = summary.get("tasks")
+    completion_rate = summary.get("observed_task_rate_per_second")
+    if not isinstance(counts, dict) or not isinstance(total_tasks, int) or total_tasks <= 0:
+        return None
+    if not isinstance(completion_rate, (int, float)) or completion_rate <= 0:
+        return None
+    done = int(counts.get("done") or 0)
+    remaining = total_tasks - done
+    if remaining <= 0:
+        return None
+    return remaining / float(completion_rate)
+
+
+def completed_task_rate_per_second(
+    completion_epochs: list[float],
+    *,
+    now_epoch: float | None = None,
+) -> float | None:
+    """Return historical completed-task throughput from completion markers."""
+    epochs = sorted(float(value) for value in completion_epochs if float(value) > 0)
+    if len(epochs) < 2:
+        return None
+    end_epoch = epoch() if now_epoch is None else float(now_epoch)
+    elapsed = end_epoch - epochs[0]
+    if elapsed <= 0:
+        return None
+    return len(epochs) / elapsed
 
 def worker_group_name(worker: str) -> str:
     name = worker.strip() or "unknown"
@@ -1897,8 +1984,8 @@ def summary_progress_fields(summary: dict[str, Any]) -> list[str]:
     return [part.strip() for part in progress.split(", ") if part.strip()]
 
 def split_eta_last(fields: list[str]) -> list[str]:
-    eta = [field for field in fields if field.startswith("eta=")]
-    rest = [field for field in fields if not field.startswith("eta=")]
+    eta = [field for field in fields if is_eta_field(field)]
+    rest = [field for field in fields if not is_eta_field(field)]
     return rest + eta
 
 def sprt_games_per_minute_field(field: str) -> str | None:
@@ -1930,9 +2017,9 @@ def status_field_color(field: str, summary: dict[str, Any] | None = None) -> str
         return "red"
     if key in {"active", "claimed", "pending", "running", "state"}:
         return "yellow"
-    if key == "eta" and field == "eta=unknown":
+    if key.removesuffix("~") == "eta" and field == f"{key}=unknown":
         return "yellow"
-    if key in {"run", "eta", "speedup"}:
+    if key in {"run", "eta", "eta~", "speedup"}:
         return "blue"
     return None
 
@@ -1944,9 +2031,9 @@ def color_progress_text(text: str, *, color_enabled: bool) -> str:
             colored.append(colorize(field, "green", enabled=color_enabled))
         elif field.partition("=")[0] in {"elo", "elo~", "Elo"}:
             colored.append(color_status_field(field, color_enabled=color_enabled))
-        elif field == "eta=unknown":
+        elif is_eta_field(field) and field.endswith("=unknown"):
             colored.append(color_status_field(field, color_enabled=color_enabled))
-        elif field.startswith("eta="):
+        elif is_eta_field(field):
             colored.append(color_status_field(field, color_enabled=color_enabled))
         else:
             colored.append(field)
@@ -1986,7 +2073,7 @@ def run_progress_fields(summary: dict[str, Any]) -> list[str]:
         return split_eta_last([
             field
             for field in fields
-            if field.startswith("eta=") or field.startswith("iterations=")
+            if is_eta_field(field) or field.startswith("iterations=")
         ])
     if kind == "sprt":
         sprt_fields: list[str] = []
@@ -1995,7 +2082,7 @@ def run_progress_fields(summary: dict[str, Any]) -> list[str]:
             if games_per_minute:
                 sprt_fields.append(games_per_minute)
             elif (
-                field.startswith("eta=")
+                is_eta_field(field)
                 or field.startswith("games=")
                 or field.split("=", 1)[0] in SPRT_PROGRESS_FIELD_KEYS
             ):
@@ -2034,8 +2121,8 @@ def run_progress_fraction(summary: dict[str, Any]) -> float | None:
 def run_display_fields(summary: dict[str, Any]) -> list[str]:
     counts = summary["counts"]
     progress = run_progress_fields(summary)
-    eta = [field for field in progress if field.startswith("eta=")]
-    remaining = [field for field in progress if not field.startswith("eta=")]
+    eta = [field for field in progress if is_eta_field(field)]
+    remaining = [field for field in progress if not is_eta_field(field)]
     ordered: list[str] = []
     for key in ("elo", "llr", "los", "ci", "draw", "games"):
         matches = [
@@ -2080,9 +2167,18 @@ def format_status_key(key: str, values: list[int | str]) -> str:
 def color_count_line(label: str, count: int, color: str, *, color_enabled: bool) -> str:
     return f"{label}: {colorize(str(count), color, enabled=color_enabled)}"
 
-def color_failure_summary(count: int, *, color_enabled: bool) -> str:
+def color_failure_summary(
+    runs: list[dict[str, Any]],
+    *,
+    color_enabled: bool,
+) -> str:
+    count = len(runs)
     noun = "run" if count == 1 else "runs"
-    return f"failed: {colorize(str(count), 'red', enabled=color_enabled)} {noun} (use forge status --failed)"
+    run_ids = ", ".join(str(summary["run"]) for summary in runs)
+    return (
+        f"failed: {colorize(str(count), 'red', enabled=color_enabled)} {noun}"
+        f" — {run_ids} (inspect: forge status <run> --verbose)"
+    )
 
 def print_run_status(
     summaries: list[dict[str, Any]],
@@ -2135,7 +2231,7 @@ def print_run_status(
         if id(summary) not in collapsed_ids
     ]
     if collapsed_failures:
-        print(color_failure_summary(len(collapsed_failures), color_enabled=color_enabled))
+        print(color_failure_summary(collapsed_failures, color_enabled=color_enabled))
         if visible and show_details:
             print()
     for index, summary in enumerate(visible):
@@ -3278,6 +3374,7 @@ def task_log_progress_graph(manifest: dict[str, Any], task: dict[str, Any]) -> d
 
     points_by_name: dict[str, list[dict[str, float]]] = {spec["name"]: [] for spec in specs}
     for line in text.splitlines():
+        line = ANSI_ESCAPE_RE.sub("", line)
         match = progress_re.search(line)
         if not match:
             continue
@@ -3354,11 +3451,23 @@ def run_progress_graph_from_rows(
     conversion_rows: list[dict[str, float | str]] = []
     conversion_series_names: set[str] = set()
     selfplay_rows: list[dict[str, Any]] = []
+    live_task_graphs: list[dict[str, Any]] = []
     x_unit = ""
     for row in rows:
         task = tasks_by_id.get(str(row.get("id") or ""))
         if task is None:
             continue
+        # A running worker's complete log graph is richer than its heartbeat,
+        # which carries just the latest point.  Generic single-task workloads
+        # (including distributed training's coordinator) can use that graph
+        # directly for the run-level dashboard.
+        row_graph = row.get("progress_graph")
+        if (
+            not (is_sprt or is_labeling or is_selfplay or is_conversion)
+            and isinstance(row_graph, dict)
+            and isinstance(row_graph.get("series"), list)
+        ):
+            live_task_graphs.append(row_graph)
         specs = task_progress_graph_point_specs(manifest, task)
         if not specs:
             continue
@@ -3546,6 +3655,15 @@ def run_progress_graph_from_rows(
         if len(points) >= 2 or (is_labeling and points) or (is_conversion and points) or (is_selfplay and name == "games/s" and points) or (name.lower() == "ci" and points):
             series.append(graph_series_with_options(name, points, options_by_name.get(name)))
     if not series:
+        if live_task_graphs:
+            return max(
+                live_task_graphs,
+                key=lambda graph: sum(
+                    len(item.get("points", []))
+                    for item in graph.get("series", [])
+                    if isinstance(item, dict)
+                ),
+            )
         return None
     result = {
         "version": PROGRESS_GRAPH_VERSION,
@@ -4041,6 +4159,8 @@ def progress_graph_from_history(
 def run_progress_history_graph(
     manifest: dict[str, Any],
     current_graph: dict[str, Any] | None,
+    *,
+    completed_tasks: int | None = None,
 ) -> dict[str, Any] | None:
     snapshot = progress_graph_snapshot(current_graph)
     history = append_progress_history(manifest, snapshot)
@@ -4067,16 +4187,64 @@ def run_progress_history_graph(
             )
         ):
             return current_graph
-        return progress_graph_from_history(
+        result = progress_graph_from_history(
             history,
             current_graph,
             kind=kind,
         )
-    return progress_graph_from_history(
-        history,
-        current_graph,
-        kind=kind,
+    else:
+        result = progress_graph_from_history(
+            history,
+            current_graph,
+            kind=kind,
+        )
+    return add_unbounded_label_graph_total(
+        manifest,
+        result,
+        completed_tasks=completed_tasks,
+        history=history,
     )
+
+
+def add_unbounded_label_graph_total(
+    manifest: dict[str, Any],
+    graph: dict[str, Any] | None,
+    *,
+    completed_tasks: int | None,
+    history: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    """Give unlimited label graphs an approximate, non-autoscaling x-axis."""
+    if not isinstance(graph, dict) or str(manifest.get("kind") or "").lower() != "label":
+        return graph
+    if not any(
+        isinstance(task, dict)
+        and "--max-records 0" in str(task.get("command") or "")
+        for task in manifest.get("tasks") or []
+    ):
+        return graph
+    if parse_int(graph.get("x_total")) not in (None, 0):
+        return graph
+    total_tasks = len(manifest.get("tasks") or [])
+    if not isinstance(completed_tasks, int) or completed_tasks < 2 or total_tasks <= completed_tasks:
+        return graph
+    observed_x = max(
+        (
+            float(entry["x"])
+            for entry in history
+            if parse_float(entry.get("x")) is not None and float(entry["x"]) > 0
+        ),
+        default=0.0,
+    )
+    current_x = progress_graph_snapshot(graph)
+    if isinstance(current_x, dict) and isinstance(current_x.get("x"), (int, float)):
+        observed_x = max(observed_x, float(current_x["x"]))
+    if observed_x <= 0:
+        return graph
+    estimated_total = max(observed_x, int(round(observed_x * total_tasks / completed_tasks)))
+    result = dict(graph)
+    result["x_total"] = estimated_total
+    result["x_total_estimate"] = True
+    return result
 
 def sprt_summary_rows(summary: dict[str, Any]) -> list[dict[str, Any]]:
     rows = summary.get("rows")
@@ -4402,6 +4570,10 @@ def selfplay_pgn_progress_data(
 
 
 def parse_task_progress_text(text: str, config: Any, *, eta_epoch: float) -> dict[str, Any] | None:
+    # Bullet colourises its live progress lines.  Remove terminal escapes
+    # before applying a template regex so live progress (including ETA) is
+    # parsed the same way as the graph parser below.
+    text = ANSI_ESCAPE_RE.sub("", text)
     if isinstance(config, dict) and config.get("log_regex"):
         try:
             progress_re = re.compile(str(config["log_regex"]))
@@ -4450,6 +4622,14 @@ def parse_task_progress_text(text: str, config: Any, *, eta_epoch: float) -> dic
                 data["output"] = output
             if rate is not None:
                 data["rate"] = rate
+            # Bullet already computes a wall-clock ETA.  Its displayed rate
+            # is positions/s, not this template's progress unit (superbatches),
+            # so use the trainer ETA rather than deriving one from that rate.
+            trainer_eta = re.search(r"\bETA:\s+\S+\s+·\s+in\s+(\S+)", line)
+            if trainer_eta is not None:
+                eta_s = parse_compact_duration(trainer_eta.group(1))
+                if eta_s is not None:
+                    data["eta_s"] = eta_s
             fields = progress_match_fields(match, config)
             for key, value in sprt_progress_line_fields(line).items():
                 fields.setdefault(key, value)
@@ -4542,6 +4722,16 @@ def status_summary(
 ) -> dict[str, Any]:
     clear_state_diagnostics()
     manifest_kind = str(manifest_metadata(manifest).get("kind") or "").lower()
+    # An unlimited label task has no known input-record total.  `shards` is a
+    # queueing choice only, so remove the generated split total from this
+    # in-memory status view rather than invent an ETA from it.
+    if manifest_kind == "label":
+        for task in manifest.get("tasks", []):
+            if not isinstance(task, dict) or "--max-records 0" not in str(task.get("command") or ""):
+                continue
+            progress = task.get("progress")
+            if isinstance(progress, dict) and str(progress.get("unit") or "") == "records":
+                task["progress"] = {key: value for key, value in progress.items() if key != "total"}
     # SPRT headline stats pool elo/LLR/WDL across every finished shard, so
     # skipping completed progress would leave only the shards still in flight:
     # one 2-game shard would set the headline, or blank it before any parse.
@@ -4579,6 +4769,7 @@ def status_summary(
     progress_task_offsets: dict[str, tuple[str, int]] = {}
     progress_unit_totals: dict[str, int] = {}
     failure_reasons: dict[str, dict[str, Any]] = {}
+    completed_task_epochs: list[float] = []
     now_epoch = epoch()
 
     def record_completed_rate(
@@ -4680,12 +4871,20 @@ def status_summary(
         return calibrated_process_rates[key]
 
     for task in manifest["tasks"]:
+        unbounded_label_input = (
+            manifest_kind == "label"
+            and "--max-records 0" in str(task.get("command") or "")
+        )
         state = (
             fast_states.get(str(task["id"]), "pending")
             if fast_states is not None
             else task_state(manifest, task, lease_seconds=lease_seconds)
         )
         counts[state] += 1
+        if unbounded_label_input and state == "done":
+            completed_epoch = path_epoch(task_done_path(manifest, task))
+            if completed_epoch > 0:
+                completed_task_epochs.append(completed_epoch)
         # Skipping the per-task marker read is what makes the fast path fast,
         # but failures are rare and their host is the whole point of the fail
         # grouping, so resolve those; done is the bulk this is avoiding.
@@ -4725,6 +4924,15 @@ def status_summary(
                 progress_data = active_task_log_progress_data(manifest, task)
             elif manifest_kind in {"selfplay-to-bullet", "label-pgn", "label-tb"}:
                 progress_data = active_task_log_progress_data(manifest, task) or progress_data
+        if unbounded_label_input and isinstance(progress_data, dict):
+            # The worker inherited the template's queueing split as `total`.
+            # It is not an input bound, so hide it with the bogus ETA.
+            progress_data = {
+                key: value
+                for key, value in progress_data.items()
+                if key not in {"total", "global_total", "eta_s", "eta_epoch", "text"}
+            }
+            progress_data["text"] = progress_text(progress_data)
         running_payload = task_running_payload(manifest, task) if state in {"running", "claimed", "stale"} else None
         if isinstance(progress_config, dict):
             progress_data = infer_progress_rate(progress_data, running_payload)
@@ -4874,7 +5082,15 @@ def status_summary(
             progress_unit_totals,
             progress_done,
         )
-    progress_graph = run_progress_history_graph(manifest, current_progress_graph)
+    observed_task_rate_per_second = completed_task_rate_per_second(
+        completed_task_epochs,
+        now_epoch=now_epoch,
+    )
+    progress_graph = run_progress_history_graph(
+        manifest,
+        current_progress_graph,
+        completed_tasks=counts["done"],
+    )
     worker_processes = worker_process_status_rows(
         manifest,
         pending=counts["pending"],
@@ -4905,6 +5121,7 @@ def status_summary(
         "progress_outputs": progress_outputs,
         "worker_outputs": worker_outputs,
         "worker_rates": worker_rates,
+        **({"observed_task_rate_per_second": observed_task_rate_per_second} if observed_task_rate_per_second is not None else {}),
         "worker_processes": worker_processes,
         "unassigned_workers": unassigned_workers,
         "unassigned_worker_slots": unassigned_worker_slots,
@@ -5139,6 +5356,7 @@ def _cmd_wait(args: argparse.Namespace) -> int:
         if not manifest_path.exists():
             return deleted()
         finalization = None
+        worker_cache_cleanup = None
         if event == "run_done" and state == "ok" and isinstance(manifest.get("finalize"), dict):
             try:
                 verify_manifest(manifest, verify_requirements=False)
@@ -5152,6 +5370,18 @@ def _cmd_wait(args: argparse.Namespace) -> int:
             except (OSError, ValueError, json.JSONDecodeError, SystemExit) as exc:
                 print(f"finalization failed: {exc}", file=sys.stderr)
                 event, state, rc = "run_finalize_fail", "failed", 1
+        if event == "run_done" and state == "ok":
+            from .workers import cleanup_worker_run_cache
+
+            worker_cache_cleanup = cleanup_worker_run_cache(manifest_path.parent)
+            failures = {
+                host: detail
+                for host, detail in worker_cache_cleanup.items()
+                if detail != "ok"
+            }
+            if failures:
+                detail = ", ".join(f"{host}: {reason}" for host, reason in sorted(failures.items()))
+                print(f"worker cache cleanup incomplete: {detail}", file=sys.stderr)
         if state != "ok":
             from .labeling import cleanup_partials
 
@@ -5173,6 +5403,8 @@ def _cmd_wait(args: argparse.Namespace) -> int:
             for key in ("merged_bytes", "positions", "shard_count", "inventory_digest", "task_totals", "quantised_sha256", "ranks"):
                 if key in finalization:
                     payload[key] = finalization[key]
+        if worker_cache_cleanup is not None:
+            payload["worker_cache_cleanup"] = worker_cache_cleanup
         write_json(run_summary_path(manifest_path), payload)
         try:
             record_sprt_completion(payload)

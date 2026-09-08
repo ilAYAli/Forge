@@ -111,9 +111,11 @@ def adaptive_chunk_signature(params: dict[str, Any]) -> dict[str, Any]:
 
 
 def adaptive_workload_signature(
-    template_data: dict[str, Any],
+    template_data: dict[str, Any] | None,
     params: dict[str, Any],
 ) -> str | None:
+    if not isinstance(template_data, dict):
+        return None
     chunking = template_data.get("chunking")
     keys = chunking.get("signature_parameters") if isinstance(chunking, dict) else None
     version = chunking.get("signature_version") if isinstance(chunking, dict) else None

@@ -5735,6 +5735,22 @@ console.log(JSON.stringify(runTiming(runs[2], false, Date.parse('2026-07-29T22:0
                 json.loads(signature),
             )
 
+    def test_calibration_allows_missing_template_file(self) -> None:
+        from forge_lib.calibration import adaptive_template_parameters
+
+        manifest = {
+            "kind": "label-lc0-root",
+            "template": {
+                "name": "label-lc0-root",
+                "path": "/does/not/exist.template.json",
+                "parameters": {},
+            },
+        }
+        self.assertEqual({}, {
+            key: value for key, value in adaptive_template_parameters(manifest).items()
+            if not key.startswith("__forge_")
+        })
+
     def test_adaptive_chunk_history_sizes_every_split_template(self) -> None:
         from forge_lib import chunking
 
@@ -11542,6 +11558,142 @@ console.log(JSON.stringify(runTiming(runs[2], false, Date.parse('2026-07-29T22:0
             forge.task_execution_checksum(changed_requirement, changed_requirement["tasks"][0]),
         )
 
+    def test_task_execution_checksum_is_invariant_to_host_local_work_dir(self) -> None:
+        manifest = {
+            "schema": "forge.task.v1",
+            "kind": "label",
+            "work_dir": "/home/petter/sync/code/chess/nnue",
+            "vars": {},
+            "requirements": {},
+            "tasks": [{"id": "task_0000", "index": 0, "command": "label --depth 12"}],
+        }
+        expected = forge.task_execution_checksum(manifest, manifest["tasks"][0])
+
+        elsewhere = copy.deepcopy(manifest)
+        elsewhere["work_dir"] = "/home/petter/code/chess/nnue"
+        self.assertEqual(
+            expected,
+            forge.task_execution_checksum(elsewhere, elsewhere["tasks"][0]),
+        )
+
+    def test_task_execution_checksum_is_invariant_to_declared_path_maps(self) -> None:
+        manifest = {
+            "schema": "forge.task.v1",
+            "kind": "label",
+            "work_dir": "/work",
+            "vars": {},
+            "path_maps": {"macos": {"~/.cache/forge": "~/Library/Caches/forge"}},
+            "requirements": {},
+            "tasks": [{
+                "id": "task_0000",
+                "index": 0,
+                "command": "label --net ~/.cache/forge/inputs/net.nnue",
+                "outputs": ["~/.cache/forge/outputs/task_0000.bullet"],
+            }],
+        }
+        expected = forge.task_execution_checksum(manifest, manifest["tasks"][0])
+
+        translated = copy.deepcopy(manifest)
+        translated["tasks"][0]["command"] = "label --net ~/Library/Caches/forge/inputs/net.nnue"
+        translated["tasks"][0]["outputs"] = ["~/Library/Caches/forge/outputs/task_0000.bullet"]
+        self.assertEqual(
+            expected,
+            forge.task_execution_checksum(translated, translated["tasks"][0]),
+        )
+
+        # A path that isn't a declared path_maps target is a genuine content
+        # difference (e.g. a different net file) and must still diverge.
+        different_net = copy.deepcopy(manifest)
+        different_net["tasks"][0]["command"] = "label --net ~/.cache/forge/inputs/other-net.nnue"
+        self.assertNotEqual(
+            expected,
+            forge.task_execution_checksum(different_net, different_net["tasks"][0]),
+        )
+
+    def test_task_execution_checksum_binds_content_digest_not_path(self) -> None:
+        manifest = {
+            "schema": "forge.task.v1",
+            "kind": "label",
+            "work_dir": "/work",
+            "vars": {"run_dir": "/home/petter/sync/code/chess/nnue/runs/x", "depth": 12},
+            "requirements": {
+                "inputs": [
+                    {"name": "Stockfish net", "path": "/home/petter/sync/assets/net.nnue", "sha256": "abc123"},
+                ],
+            },
+            "tasks": [{"id": "task_0000", "index": 0, "command": "label"}],
+        }
+        expected = forge.task_execution_checksum(manifest, manifest["tasks"][0])
+
+        # Same content, different host-local paths for the run dir and the
+        # net file: checksum must not change.
+        moved = copy.deepcopy(manifest)
+        moved["vars"]["run_dir"] = "/home/petter/code/chess/nnue/runs/x"
+        moved["requirements"]["inputs"][0]["path"] = "/home/petter/code/chess/nnue/assets/net.nnue"
+        self.assertEqual(
+            expected,
+            forge.task_execution_checksum(moved, moved["tasks"][0]),
+        )
+
+        # Same path, different content: checksum must change.
+        different_content = copy.deepcopy(manifest)
+        different_content["requirements"]["inputs"][0]["sha256"] = "def456"
+        self.assertNotEqual(
+            expected,
+            forge.task_execution_checksum(different_content, different_content["tasks"][0]),
+        )
+
+        # A genuinely different execution parameter must still diverge.
+        different_depth = copy.deepcopy(manifest)
+        different_depth["vars"]["depth"] = 13
+        self.assertNotEqual(
+            expected,
+            forge.task_execution_checksum(different_depth, different_depth["tasks"][0]),
+        )
+
+    def test_task_execution_checksum_ignores_progress_bookkeeping_mutation(self) -> None:
+        # Regression: a real run showed several code paths (resume sealing,
+        # adaptive-chunk calibration) rewrite task.progress.total on an
+        # already-materialized, already-completed task to reflect an
+        # observed value. A task that finished successfully must not have
+        # its recorded checksum invalidated the next time this recomputes,
+        # since progress describes how to report status, not what ran.
+        manifest = {
+            "schema": "forge.task.v1",
+            "kind": "label",
+            "vars": {},
+            "requirements": {},
+            "tasks": [{
+                "id": "task_0000",
+                "index": 0,
+                "command": "label --depth 12",
+                "progress": {
+                    "log_regex": "read=(?P<done>\\d+)",
+                    "unit": "records",
+                    "output_unit": "positions",
+                },
+            }],
+        }
+        expected = forge.task_execution_checksum(manifest, manifest["tasks"][0])
+
+        # progress.total appears later (e.g. sealed by a resume, or backfilled
+        # from observed adaptive-chunk throughput).
+        mutated = copy.deepcopy(manifest)
+        mutated["tasks"][0]["progress"]["total"] = 1
+        self.assertEqual(
+            expected,
+            forge.task_execution_checksum(mutated, mutated["tasks"][0]),
+        )
+
+        # A task with no progress config at all hashes the same as one whose
+        # progress config is present but irrelevant to execution.
+        no_progress = copy.deepcopy(manifest)
+        del no_progress["tasks"][0]["progress"]
+        self.assertEqual(
+            expected,
+            forge.task_execution_checksum(no_progress, no_progress["tasks"][0]),
+        )
+
     def test_verify_prefers_task_execution_checksum_over_manifest_checksum(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -12453,12 +12605,11 @@ console.log(JSON.stringify(runTiming(runs[2], false, Date.parse('2026-07-29T22:0
             failed_status = self.run_cli("status", cwd=root, env=env)
             self.assertEqual(1, failed_status.returncode)
             self.assertIn("zzz-active", failed_status.stdout)
-            self.assertIn("failed: 1 run (use forge status --failed)", failed_status.stdout)
+            self.assertIn("failed: 1 run — aaa-failed (inspect: forge status <run> --verbose)", failed_status.stdout)
             self.assertLess(
-                failed_status.stdout.index("failed: 1 run (use forge status --failed)"),
+                failed_status.stdout.index("failed: 1 run — aaa-failed (inspect: forge status <run> --verbose)"),
                 failed_status.stdout.index("zzz-active"),
             )
-            self.assertNotIn("aaa-failed", failed_status.stdout)
             self.assertNotIn("waiting", failed_status.stdout)
 
             failed_json = self.run_cli("status", "--json", cwd=root, env=env)
@@ -14116,6 +14267,77 @@ console.log(JSON.stringify(runTiming(runs[2], false, Date.parse('2026-07-29T22:0
             "progress_totals": {"rows": 400},
         }
         self.assertEqual("progress=rows=200/400, eta=10s", forge.summary_progress(summary))
+
+    def test_unbounded_label_summary_reports_approximate_eta(self) -> None:
+        summary = {
+            "metadata": {"kind": "label"},
+            "tasks": 1600,
+            "counts": {
+                "done": 376,
+                "running": 57,
+                "claimed": 0,
+                "pending": 1167,
+                "fail": 0,
+                "stale": 0,
+            },
+            "active": [],
+            # 10.9 completed shards per minute; active slots must not change
+            # this historical-rate ETA.
+            "observed_task_rate_per_second": 10.9 / 60.0,
+        }
+
+        self.assertEqual("progress=eta~=1h52m", forge.summary_progress(summary))
+
+    def test_unbounded_label_eta_waits_for_observed_completions(self) -> None:
+        summary = {
+            "metadata": {"kind": "label"},
+            "tasks": 1600,
+            "counts": {"done": 1, "running": 57, "claimed": 0, "pending": 1542},
+            "active": [],
+        }
+
+        self.assertNotIn("eta", forge.summary_progress(summary))
+
+    def test_unbounded_label_graph_uses_estimated_total_x_domain(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest = {
+                "schema": "forge.task.v1",
+                "name": "label-progress",
+                "kind": "label",
+                "work_dir": str(root),
+                "tasks": [
+                    {
+                        "id": f"label_{index:04d}",
+                        "index": index,
+                        "command": "label --max-records 0",
+                    }
+                    for index in range(100)
+                ],
+            }
+            graph = {
+                "version": forge.PROGRESS_GRAPH_VERSION,
+                "x_unit": "records",
+                "series": [{
+                    "name": "total",
+                    "points": [{"x": 1000.0, "y": 10.0}, {"x": 2000.0, "y": 10.0}],
+                }],
+            }
+
+            result = forge.add_unbounded_label_graph_total(
+                manifest,
+                graph,
+                completed_tasks=10,
+                history=[
+                    {"x": 1000.0},
+                    {"x": 2000.0},
+                ],
+            )
+
+            self.assertIsNotNone(result)
+            assert result is not None
+            self.assertEqual(20000, result["x_total"])
+            self.assertTrue(result["x_total_estimate"])
 
     def test_summary_eta_uses_cumulative_run_rate_over_noisy_active_rate(self) -> None:
         created_at_str = time.strftime(

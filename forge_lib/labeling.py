@@ -7,6 +7,7 @@ import shutil
 import sqlite3
 import struct
 import sys
+import tarfile
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -17,13 +18,99 @@ from .tasks import task_outputs
 
 
 INVENTORY_SCHEMA = "forge.lc0-inventory.v1"
-STATS_SCHEMA = "enyo.label-stats.v1"
+# v2 is emitted by the current labeler.  Keep v1 readable so completed runs
+# can be finalised after an in-place labeler upgrade.
+STATS_SCHEMAS = {"enyo.label-stats.v1", "enyo.label-stats.v2"}
 RECORD_BYTES = 32
 HASH_CACHE_NAME = "lc0-inventory-hashes.json"
 HASH_CACHE_DB_NAME = "lc0-inventory-cache.db"
 VERIFIED_MARKER_NAME = ".verified.json"
 LC0_V6_RECORD_BYTES = 8356
 SQL_IN_CHUNK_SIZE = 900
+
+
+def _safe_archive_member_path(name: str) -> Path | None:
+    path = Path(name)
+    if path.is_absolute() or ".." in path.parts:
+        return None
+    return path
+
+
+def unpack_lc0_archives(source: Path, *, cache_home: Path) -> Path:
+    """Expose training members inside tar archives as ordinary input files.
+
+    A tar archive is merely a transport container: it can hold orders of
+    magnitude more records than another archive.  Planning label tasks by tar
+    file therefore produces pathological stragglers.  Unpacking preserves the
+    compressed training.*.gz members and lets the normal inventory/task
+    machinery distribute those members independently.
+    """
+    archives = sorted(
+        path
+        for path in source.rglob("*.tar")
+        if path.is_file() and (path.name.startswith("training-") or path.name.startswith("training."))
+    )
+    if not archives:
+        return source
+    direct_files = sorted(
+        path
+        for path in source.rglob("training.*")
+        if path.is_file() and path not in archives
+    )
+    identity = hashlib.sha256()
+    for item in [*archives, *direct_files]:
+        stat = item.stat()
+        identity.update(str(item.relative_to(source)).encode("utf-8"))
+        identity.update(f"\0{stat.st_size}\0{stat.st_mtime_ns}\0".encode("ascii"))
+    digest = identity.hexdigest()
+    root = cache_home / "unpacked-lc0" / digest
+    marker = root / VERIFIED_MARKER_NAME
+    if marker_matches(root, digest):
+        return root
+
+    temporary = root.with_name(f".{root.name}.partial.{os.getpid()}")
+    shutil.rmtree(temporary, ignore_errors=True)
+    temporary.mkdir(parents=True)
+    try:
+        for archive in archives:
+            archive_prefix = archive.relative_to(source).with_suffix("")
+            with tarfile.open(archive, "r") as handle:
+                for member in handle:
+                    if not member.isfile():
+                        continue
+                    member_path = _safe_archive_member_path(member.name)
+                    if member_path is None or not member_path.name.startswith("training."):
+                        continue
+                    output = temporary / archive_prefix / member_path
+                    output.parent.mkdir(parents=True, exist_ok=True)
+                    payload = handle.extractfile(member)
+                    if payload is None:
+                        continue
+                    with payload, output.open("wb") as destination:
+                        shutil.copyfileobj(payload, destination, length=1024 * 1024)
+        for source_file in direct_files:
+            output = temporary / source_file.relative_to(source)
+            output.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                os.link(source_file, output)
+            except OSError:
+                shutil.copy2(source_file, output)
+        if not any(temporary.rglob("training.*")):
+            raise ValueError(f"LC0 archives contain no training.* members: {source}")
+        root.parent.mkdir(parents=True, exist_ok=True)
+        if root.exists():
+            shutil.rmtree(root)
+        temporary.replace(root)
+        write_json(marker, {
+            "schema": INVENTORY_SCHEMA,
+            "digest": digest,
+            "archives": len(archives),
+            "verified_at": now(),
+        })
+    except Exception:
+        shutil.rmtree(temporary, ignore_errors=True)
+        raise
+    return root
 
 
 def canonical_inventory_bytes(files: list[dict[str, Any]]) -> bytes:
@@ -88,6 +175,7 @@ def build_inventory(source: str | Path, *, cache_home: Path | None = None) -> di
         raise SystemExit(f"LC0 source is not a directory: {source_path}")
     cache_home = Path(cache_home) if cache_home else expand_path("~/.cache/forge")
     cache_home.mkdir(parents=True, exist_ok=True)
+    source_path = unpack_lc0_archives(source_path, cache_home=cache_home)
 
     db = _open_inventory_db(cache_home / HASH_CACHE_DB_NAME)
 
@@ -295,19 +383,36 @@ def attach_label_task_inputs(
         with ThreadPoolExecutor(max_workers=n_workers) as pool:
             for path_str, count in pool.map(_read, missing):
                 record_counts[path_str] = count
+    assignments: list[list[dict[str, Any]]]
+    if max_records == 0:
+        # Largest-processing-time scheduling keeps a single large compressed
+        # member from becoming the last multi-hour task in an otherwise idle
+        # worker pool.
+        assignments = [[] for _ in tasks]
+        assignment_bytes = [0 for _ in tasks]
+        for item in sorted(files, key=lambda value: int(value["size"]), reverse=True):
+            target = min(range(task_count), key=lambda position: assignment_bytes[position])
+            assignments[target].append(item)
+            assignment_bytes[target] += int(item["size"])
+    else:
+        assignments = [files[index::task_count] for index in range(task_count)]
     for index, task in enumerate(tasks):
         if not isinstance(task, dict):
             raise ValueError("label manifest task must be an object")
         quota = split_record_limit(max_records, task_count, index)
         selected: list[dict[str, Any]] = []
         selected_records = 0
-        for item in files[index::task_count]:
+        for item in assignments[index]:
             selected.append(item)
             selected_records += record_counts[str(item["path"])]
             if quota > 0 and selected_records >= quota:
                 break
         if not selected:
             raise ValueError(f"{task.get('id', index)}: no LC0 input files assigned")
+        # LPT scheduling above deliberately orders by descending size.  The
+        # labeler consumes inventory paths as an ordered set, so restore the
+        # canonical pathname order before serialising this task's inventory.
+        selected.sort(key=lambda item: str(item["path"]))
         subset = build_inventory_subset(inventory_info, selected, cache_home=cache_home)
         worker_root = f"~/.cache/forge/task-inputs/{subset['digest']}"
         task["inputs"] = [{
@@ -428,7 +533,7 @@ def finalize_labeling(manifest_path: Path, manifest: dict[str, Any]) -> dict[str
         if size % RECORD_BYTES:
             raise ValueError(f"{task['id']}: invalid Bullet shard size {size}")
         stats = json.loads(stats_path.read_text(encoding="utf-8"))
-        if stats.get("schema") != STATS_SCHEMA:
+        if stats.get("schema") not in STATS_SCHEMAS:
             raise ValueError(f"{task['id']}: invalid stats schema")
         written = int(stats.get("written", -1))
         if written != size // RECORD_BYTES:

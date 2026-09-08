@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import re
+import shlex
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +18,19 @@ from .workers import (
 
 TRAIN_FINALIZER = "distributed-train"
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+
+
+def distributed_train_superbatches(params: dict[str, Any]) -> int | None:
+    """Read the local-superbatch target from the staged Bullet build file."""
+    repository = str(params.get("nnue_repo") or "").strip()
+    if not repository:
+        return None
+    try:
+        build = json.loads((expand_path(repository) / "build.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError, json.JSONDecodeError):
+        return None
+    value = build.get("superbatches") if isinstance(build, dict) else None
+    return value if isinstance(value, int) and value > 0 else None
 
 
 def distributed_train_workers_payload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -48,6 +63,8 @@ def prepare_distributed_train_parameters(
     prepared = dict(params)
     workers = worker_records_from_payload(workers_payload, label="distributed train workers")
     hosts = [worker_host(worker) for worker in workers]
+    coordinator = str(params.get("coordinator") or "").strip()
+    coordinator = str(params.get("coordinator") or "").strip()
     coordinator = str(prepared.get("coordinator") or "").strip()
     if coordinator not in hosts:
         raise SystemExit(
@@ -77,12 +94,13 @@ def attach_distributed_train_inputs(
     tasks = manifest.get("tasks")
     if not isinstance(params, dict) or not isinstance(tasks, list):
         raise ValueError("distributed train manifest is missing parameters or tasks")
+    total_superbatches = distributed_train_superbatches(params)
     workers = worker_records_from_payload(workers_payload, label="distributed train workers")
     hosts = [worker_host(worker) for worker in workers]
+    coordinator = str(params.get("coordinator") or "").strip()
     if len(tasks) != len(hosts):
         raise ValueError("distributed train must have exactly one task per selected host")
     shard_dir = expand_path(str(params.get("shard_dir") or "")).resolve()
-    run_name = str(manifest.get("name") or "train")
     requirements = manifest.get("requirements")
     if not isinstance(requirements, dict):
         raise ValueError("distributed train manifest is missing requirements")
@@ -90,12 +108,32 @@ def attach_distributed_train_inputs(
     if not isinstance(inputs, list):
         raise ValueError("distributed train requirements.inputs must be a list")
 
+    run_name = str(manifest.get("name") or "").strip()
+    if not run_name:
+        raise ValueError("distributed train manifest is missing a run name")
+    barrier = f"/tmp/forge-distributed-train-{run_name}"
+    # Setup completes at different times on different machines.  Do not let a
+    # fast rank begin training alone: every host first publishes readiness to
+    # the coordinator, then all ranks cross this gate together.
+    barrier_prefix = (
+        f'BARRIER={shlex.quote(barrier)}; '
+        f'ssh -o BatchMode=yes {shlex.quote(coordinator)} "mkdir -p $BARRIER; touch $BARRIER/$HOST.ready"; '
+        'deadline=$((SECONDS + 1800)); '
+        f'while [ "$(ssh -o BatchMode=yes {shlex.quote(coordinator)} "find $BARRIER -maxdepth 1 -type f | wc -l")" -lt {len(hosts)} ]; do '
+        '[ "$SECONDS" -lt "$deadline" ] || {{ echo "distributed launch barrier timed out" >&2; exit 1; }}; sleep 1; '
+        'done; '
+        f'if [ "$HOST" != {shlex.quote(coordinator)} ]; then sleep 2; fi; '
+    ) if coordinator else ""
+
     for task, host in zip(tasks, hosts):
         shard = shard_dir / f"{host}.bullet"
         if not shard.is_file():
             raise ValueError(f"distributed train shard is missing: {shard}")
         record = file_record(shard)
-        worker_path = f"~/.cache/forge/inputs/train/{run_name}/shards/{host}.bullet"
+        # Training shards are immutable and large. Cache them by content rather
+        # than run name so a retry only verifies the local copy instead of
+        # transferring another full shard to every worker.
+        worker_path = f"~/.cache/forge/inputs/train/shards/{record['sha256']}.bullet"
         inputs.append({
             "name": f"training shard {host}",
             "source": str(shard),
@@ -106,9 +144,21 @@ def attach_distributed_train_inputs(
         })
         task["claim_worker"] = host
         task["strict_claim_worker"] = True
-        task["command"] = str(task.get("command") or "").replace(
+        command = str(task.get("command") or "").replace(
             "{train_shard}", worker_path,
         )
+        if barrier_prefix:
+            task["command"] = command.replace(
+                'HOST="$(hostname -s)";',
+                f'HOST="$(hostname -s)"; {barrier_prefix}',
+                1,
+            )
+        else:
+            task["command"] = command
+        if total_superbatches is not None:
+            progress = task.get("progress")
+            if isinstance(progress, dict) and not isinstance(progress.get("total"), int):
+                progress["total"] = total_superbatches
 
 
 def finalize_distributed_train(

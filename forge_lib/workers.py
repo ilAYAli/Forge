@@ -562,7 +562,9 @@ def worker_cache_dir(worker: dict[str, Any]) -> str:
         return str(worker["cache_dir"])
     if is_local_worker(worker):
         return str(cache_dir())
-    return "/tmp/forge-cache"
+    # Worker inputs and outputs can be tens of gigabytes.  `/tmp` is often a
+    # small tmpfs (notably in WSL), so never use it as the remote default.
+    return "~/.cache/forge"
 
 def worker_cache_dir_shell_preamble(worker: dict[str, Any]) -> str | None:
     """Return a shell assignment for _FORGE_CACHE if the cache dir needs tilde expansion, else None."""
@@ -765,11 +767,15 @@ def bootstrap_worker_runner(
     # Workers receive exact task payloads from the coordinator when claiming.
     # Do not make every slot retain a full copy of a potentially huge task
     # catalog merely to obtain the shared requirements and path mappings.
-    worker_manifest = read_json(manifest_path)
-    worker_manifest = {**worker_manifest, "tasks": []}
+    # Setup commands (doctor and sync-repos) run before a task is claimed, so
+    # the bootstrap manifest must already carry this worker's host selector.
+    # Otherwise host-scoped training shards are incorrectly required on every
+    # worker during setup.
+    active_manifest = worker_manifest(read_json(manifest_path), worker)
+    active_manifest = {**active_manifest, "tasks": []}
     with tempfile.TemporaryDirectory(prefix="forge-worker-manifest-") as tmp:
         worker_manifest_path = Path(tmp) / "manifest.json"
-        write_json(worker_manifest_path, worker_manifest)
+        write_json(worker_manifest_path, active_manifest)
         copy_to_worker(
             worker,
             worker_manifest_path,
@@ -1389,6 +1395,82 @@ def pid_files_kill_script(cache_dir: str, patterns: list[str]) -> str:
 
 def cleanup_run_pid_files_command(cache_dir: str, run_name: str) -> str:
     return pid_files_kill_script(cache_dir, [f"{shlex.quote(run_name)}-*.pid"])
+
+
+def cleanup_worker_run_cache_command(worker: dict[str, Any], run_name: str) -> str:
+    """Return a guarded removal command for one run's worker-local state."""
+    safe_run = validate_run_name(run_name)
+    raw_cache = worker_cache_dir(worker)
+    preamble = worker_cache_dir_shell_preamble(worker)
+    cache_ref = "$_FORGE_CACHE" if preamble else shlex.quote(raw_cache)
+    script = (
+        f"cache_dir={cache_ref}; "
+        f"target=\"$cache_dir/worker-state/{safe_run}\"; "
+        "case \"$target\" in \"$cache_dir\"/worker-state/*) ;; *) exit 2;; esac; "
+        "test -d \"$target\" || exit 0; "
+        "rm -rf -- \"$target\""
+    )
+    return f"{preamble}\n{script}" if preamble else script
+
+
+def cleanup_worker_run_cache(run_dir: Path, *, timeout: float = 30.0) -> dict[str, str]:
+    """Remove only ``worker-state/<run>`` after a completed run.
+
+    Source artefacts, virtual environments, inventories, and task-input caches
+    are intentionally retained: they can be shared by other runs.  Older runs
+    without an explicit remote ``cache_dir`` may have used the historical
+    ``/tmp/forge-cache`` default, so clean that same scoped directory too.
+    """
+    worker_paths = [run_dir / RUN_WORKERS_NAME]
+    try:
+        configured_workers_path = default_workers_path()
+    except SystemExit:
+        configured_workers_path = None
+    if configured_workers_path is not None and configured_workers_path not in worker_paths:
+        worker_paths.append(configured_workers_path)
+    run_name = validate_run_name(run_dir.name)
+    results: dict[str, str] = {}
+    targets: list[tuple[str, dict[str, Any]]] = []
+    seen: set[tuple[bool, str, str]] = set()
+    for workers_path in worker_paths:
+        if not workers_path.exists():
+            continue
+        for worker in load_workers(workers_path):
+            variants = [worker]
+            if not is_local_worker(worker) and not worker.get("cache_dir"):
+                # The run could have started before the safe home-cache default.
+                variants.append({**worker, "cache_dir": "/tmp/forge-cache"})
+            for variant in variants:
+                key = (is_local_worker(variant), str(variant["host"]), worker_cache_dir(variant))
+                if key in seen:
+                    continue
+                seen.add(key)
+                targets.append((str(variant["host"]), variant))
+
+    def clean(target: tuple[str, dict[str, Any]]) -> tuple[str, str]:
+        host, worker = target
+        script = cleanup_worker_run_cache_command(worker, run_name)
+        command = (
+            ["sh", "-lc", script]
+            if is_local_worker(worker)
+            else ["ssh", *SSH_OPTS, host, managed_remote_script(script)]
+        )
+        try:
+            result = subprocess.run(command, capture_output=True, text=True, timeout=timeout)
+        except (subprocess.TimeoutExpired, OSError) as exc:
+            return host, f"error: {exc}"
+        if result.returncode:
+            detail = (result.stderr or result.stdout).strip().replace("\n", " ")
+            return host, f"error: {detail or f'rc={result.returncode}'}"
+        return host, "ok"
+
+    if not targets:
+        return results
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(targets)) as executor:
+        for host, result in executor.map(clean, targets):
+            previous = results.get(host)
+            results[host] = result if previous in {None, "ok"} else previous
+    return results
 
 def worker_pid_glob_suffix(worker_id: str) -> str:
     return re.sub(r"[^A-Za-z0-9_.-]+", "_", worker_id)

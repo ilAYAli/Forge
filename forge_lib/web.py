@@ -379,8 +379,8 @@ _HTML = r"""<!DOCTYPE html>
     }
 
     function etaFromFields(fields) {
-      const f = (fields||[]).find(f=>f.startsWith('eta='));
-      return f ? f.slice(4) : null;
+      const f = (fields||[]).find(f=>/^eta~?=/.test(String(f)));
+      return f ? String(f).replace(/^eta~?=/, '') : null;
     }
 
     function runDescriptionText(description, hasComment) {
@@ -1747,13 +1747,15 @@ _HTML = r"""<!DOCTYPE html>
         || selfplayNames.has('balance')
         || (selfplayNames.has('wins') && selfplayNames.has('losses') && selfplayNames.has('draws'));
       const labelingSeries = isLabelingGraph ? allSeries : [];
+      const isTrainingGraph = ['train', 'distributed-train'].includes(String(run?.kind || '').toLowerCase());
       const primary = eloSeries || allSeries.find(s => graphSeriesName(s.name) !== 'ci') || null;
       if (!primary) return '';
       const overlay = llrSeries && llrSeries !== primary ? llrSeries : null;
       const bandName = primary.band_series || (graphSeriesName(primary) === 'elo' ? 'ci' : '');
       const bandSeries = bandName ? graphSeriesByName(allSeries, bandName) : null;
       const genericSeries = !eloSeries && !llrSeries
-        ? allSeries.filter(s => graphSeriesName(s.name) !== 'ci')
+        ? allSeries.filter(s => graphSeriesName(s.name) !== 'ci'
+          && (!isTrainingGraph || graphSeriesName(s.name) === 'loss'))
         : [primary];
       const balanceSeries = graphSeriesByName(allSeries, 'balance');
       const rows = isSelfplayGraph && balanceSeries
@@ -1926,7 +1928,7 @@ _HTML = r"""<!DOCTYPE html>
       const rId = rbid(r.run);
       const bodyOpen = resolveOpen(rId, isCurrent);
 
-      const nonEtaFields = (display.fields||[]).filter(f=>!f.startsWith('eta='));
+      const nonEtaFields = (display.fields||[]).filter(f=>!/^eta~?=/.test(String(f)));
       const activeFields = display.active_fields || active.fields || [];
       const commentText = r.comment || '';
       const descText = runDescriptionText(display.description, Boolean(commentText));
@@ -2153,9 +2155,15 @@ _HTML = r"""<!DOCTYPE html>
         ? (historyData.runs || []).filter(r => !hiddenRunNames.has(String(r.run || '')))
         : [];
       const parts = activeRuns.map(run => renderRun(run, false));
-      if (statusData.collapsed_failures_count > 0) {
-        const n = statusData.collapsed_failures_count;
-        parts.unshift(`<div class="empty" style="color:var(--red)">failed: ${n} run${n===1?'':'s'} — use forge status --failed</div>`);
+      const collapsedFailures = Array.isArray(statusData.collapsed_failures)
+        ? statusData.collapsed_failures.map(String).filter(Boolean)
+        : [];
+      if (collapsedFailures.length > 0) {
+        const n = collapsedFailures.length;
+        const failedRuns = collapsedFailures.map(run =>
+          `<span><code>${esc(run)}</code> <button class="act del" title="Delete ${attrEsc(run)}" onclick="event.stopPropagation();runCmd('${jsSingle(run)}','del',this)">del</button></span>`
+        ).join(' ');
+        parts.unshift(`<div class="empty" style="color:var(--red)">failed: ${n} run${n===1?'':'s'} — ${failedRuns}</div>`);
       }
       if (showInactiveRuns && historyData.loaded) {
         parts.push(historyNavHtml('top'));
@@ -2307,7 +2315,7 @@ _SPRT_REPORT_HTML = r"""<!DOCTYPE html>
   <header><nav class="top-tabs"><a class="top-tab" href="/">runs</a><a class="top-tab active" href="/reports/sprt">SPRT scores</a></nav><span id="state">loading…</span></header>
   <main>
     <form id="filters">
-      <label>reference net<input id="reference" value="nn-0ee0657fb25e.nnue"></label>
+      <label>reference net<input id="reference" value="nn-1a298aa575a0.nnue"></label>
       <label>candidate<input id="candidate" value="enyo-%"></label>
       <label>engine<input id="engine" placeholder="all"></label>
       <label>min games<input id="min-games" class="small" type="number" min="0" value="1500"></label>
@@ -3259,7 +3267,7 @@ def _api_sprt_score(query: str) -> bytes:
 
     payload = sprt_score_report(
         view=value("view", "ranking"),
-        reference_net=value("reference_net", "nn-0ee0657fb25e.nnue"),
+        reference_net=value("reference_net", "nn-1a298aa575a0.nnue"),
         candidate_net=value("candidate_net", "enyo-%"),
         engine=value("engine", ""),
         min_games=int(value("min_games", "1500")),

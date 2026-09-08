@@ -396,7 +396,7 @@ def build_parser() -> argparse.ArgumentParser:
     report.add_argument("template", choices=("sprt",), help="Template providing the report.")
     report.add_argument("report", nargs="?", default="score", choices=("score",), help="Report name.")
     report.add_argument("--view", choices=SPRT_REPORT_VIEWS, default="ranking", help="Report view.")
-    report.add_argument("--reference-net", "--reference", default="nn-0ee0657fb25e.nnue")
+    report.add_argument("--reference-net", "--reference", default="nn-1a298aa575a0.nnue")
     report.add_argument("--candidate-net", default="enyo-%", help="Candidate name or SQL LIKE pattern.")
     report.add_argument("--engine", default="", help="Exact engine basename.")
     report.add_argument("--min-games", type=int, default=1500)

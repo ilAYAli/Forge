@@ -4,15 +4,15 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from forge_lib.core import write_json
+from forge_lib.core import sha256_file, write_json
 from forge_lib.manifest import input_requirement_items
-from forge_lib.tasks import claim_task
+from forge_lib.tasks import claim_task, worker_execution_manifest
 from forge_lib.training import (
     attach_distributed_train_inputs,
     distributed_train_workers_payload,
     finalize_distributed_train,
 )
-from forge_lib.workers import parse_worker_record, run_worker_shell, worker_resources
+from forge_lib.workers import parse_worker_record, run_worker_shell, worker_cache_dir, worker_resources
 
 
 class DistributedTrainingTests(unittest.TestCase):
@@ -23,6 +23,9 @@ class DistributedTrainingTests(unittest.TestCase):
                 "schema": "forge.workers.v1",
                 "workers": [{"host": "cpu-a"}, {"host": "gpu-b", "resources": ["gpu"]}],
             })
+
+    def test_remote_worker_cache_defaults_to_home_cache_not_tmpfs(self) -> None:
+        self.assertEqual("~/.cache/forge", worker_cache_dir({"host": "remote"}))
 
     def test_worker_environment_is_exported_for_worker_commands(self) -> None:
         worker = parse_worker_record({
@@ -38,6 +41,48 @@ class DistributedTrainingTests(unittest.TestCase):
         self.assertEqual(0, result.returncode)
         with self.assertRaisesRegex(SystemExit, "env variable names"):
             parse_worker_record({"host": "localhost", "env": {"CUDA-PATH": "/usr/lib/cuda"}})
+
+    def test_worker_execution_filters_host_scoped_inputs(self) -> None:
+        manifest = {
+            "name": "train-demo",
+            "requirements": {"inputs": [
+                {"name": "llm shard", "path": "/tmp/llm.bullet", "hosts": ["pwa-llm"]},
+                {"name": "gpu shard", "path": "/tmp/gpu.bullet", "hosts": ["pwa-5090"]},
+            ]},
+            "tasks": [],
+        }
+        local = worker_execution_manifest(
+            manifest,
+            profile=None,
+            worker="pwa-5090",
+            manifest_path=Path("/tmp/manifest.json"),
+        )
+        self.assertEqual(["gpu shard"], [
+            item["name"] for item in input_requirement_items(local)
+        ])
+
+    def test_worker_execution_localizes_legacy_absolute_outputs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            coordinator_output = root / "runs" / "legacy" / "outputs" / "task.bullet"
+            manifest_path = root / "cache" / "manifest.json"
+            manifest = {
+                "name": "legacy-output-paths",
+                "tasks": [{
+                    "id": "task_0000",
+                    "index": 0,
+                    "command": "label --output {output_dir}/task.bullet",
+                    "outputs": [str(coordinator_output)],
+                }],
+            }
+            local = worker_execution_manifest(
+                manifest,
+                profile=None,
+                worker="worker-a",
+                manifest_path=manifest_path,
+            )
+            expected = manifest_path.parent / "worker-state" / "legacy-output-paths" / "outputs" / "task.bullet"
+            self.assertEqual(str(expected), local["tasks"][0]["outputs"][0])
 
     def test_stages_one_shard_per_host_and_pins_each_rank(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -75,13 +120,49 @@ class DistributedTrainingTests(unittest.TestCase):
             for task, item in zip(manifest["tasks"], manifest["requirements"]["inputs"]):
                 host = task["claim_worker"]
                 self.assertEqual([host], item["hosts"])
-                self.assertIn(f"/{host}.bullet", task["command"])
+                shard = shards / f"{host}.bullet"
+                expected_path = f"/train/shards/{sha256_file(shard)}.bullet"
+                self.assertIn(expected_path, task["command"])
+                self.assertIn(expected_path, item["path"])
+            self.assertNotIn("train-demo", item["path"])
+
+            # A training dashboard needs the build target to calculate ETA.
+            # The fixture has no staged build.json, so no progress total is
+            # injected in this case.
+            self.assertTrue(all("progress" not in task for task in manifest["tasks"]))
 
             manifest["_active_worker_host"] = "pwa-5090"
             self.assertEqual(
                 ["training shard pwa-5090"],
                 [item["name"] for item in input_requirement_items(manifest)],
             )
+
+    def test_staged_build_sets_distributed_training_progress_total(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            shards = root / "shards"
+            shards.mkdir()
+            for host in ("pwa-llm", "pwa-5090"):
+                (shards / f"{host}.bullet").write_bytes(host.encode())
+            (root / "build.json").write_text('{"superbatches": 25000}\n', encoding="utf-8")
+            manifest = {
+                "name": "train-demo",
+                "requirements": {"inputs": []},
+                "template": {"parameters": {"shard_dir": str(shards), "nnue_repo": str(root)}},
+                "tasks": [
+                    {"id": "train_0000", "command": "train {train_shard}", "progress": {"unit": "superbatches"}},
+                    {"id": "train_0001", "command": "train {train_shard}", "progress": {"unit": "superbatches"}},
+                ],
+            }
+            workers = {
+                "schema": "forge.workers.v1",
+                "workers": [
+                    {"host": "pwa-llm", "resources": ["gpu"]},
+                    {"host": "pwa-5090", "resources": ["gpu"]},
+                ],
+            }
+            attach_distributed_train_inputs(manifest, distributed_train_workers_payload(workers))
+            self.assertEqual([25000, 25000], [task["progress"]["total"] for task in manifest["tasks"]])
 
     def test_finalizer_requires_matching_quantised_hashes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

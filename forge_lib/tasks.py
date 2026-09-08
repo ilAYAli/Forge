@@ -207,6 +207,15 @@ def format_command(manifest: dict[str, Any], task: dict[str, Any]) -> str:
     command = str(task.get("command") or "")
     if not command:
         raise SystemExit(f"{task['id']}: missing command")
+    if manifest.get("kind") == "distributed-train":
+        command = (
+            'export PYTHON="${{PYTHON:-$HOME/.cache/forge/venvs/bullet-numpy/bin/python}}"; '
+            + command
+        )
+    # Commands are rendered once while creating the manifest and again when a
+    # worker resolves task-local paths.  Preserve shell substitutions left by
+    # the first pass (for example `${ROLE_ARGS[@]}`) during the latter.
+    command = command.replace("${ROLE_ARGS[@]}", "${{ROLE_ARGS[@]}}")
     return command.format(**values)
 
 def task_complete(manifest: dict[str, Any], task: dict[str, Any]) -> bool:
@@ -1190,19 +1199,37 @@ def worker_execution_manifest(
     manifest: dict[str, Any],
     *,
     profile: str | None,
+    worker: str,
     manifest_path: Path,
 ) -> dict[str, Any]:
     local_manifest = apply_profile(copy.deepcopy(manifest), profile)
+    local_manifest["_active_worker_host"] = worker
     run_name = str(manifest.get("name") or manifest_checksum(manifest)[:16])
     local_run_dir = expand_path(manifest_path).parent / "worker-state" / validate_run_name(run_name)
     local_output_dir = local_run_dir / "outputs"
     vars_obj = manifest.get("vars", {})
+    coordinator_output_dir: str | None = None
     if isinstance(vars_obj, dict):
+        configured_output_dir = vars_obj.get("output_dir")
+        if configured_output_dir:
+            coordinator_output_dir = str(configured_output_dir)
+    # Materialized manifests normally have vars.output_dir.  Preserve output
+    # collection for recovered/legacy manifests that instead use absolute task
+    # output paths directly.
+    if not coordinator_output_dir:
+        for candidate_task in manifest.get("tasks") or []:
+            if not isinstance(candidate_task, dict):
+                continue
+            outputs = task_outputs(candidate_task)
+            if outputs:
+                coordinator_output_dir = str(outputs[0].parent)
+                break
+    if coordinator_output_dir:
         path_map = {
             str(value): str(target)
             for value, target in (
-                (vars_obj.get("output_dir"), local_output_dir),
-                (vars_obj.get("run_dir"), local_run_dir),
+                (coordinator_output_dir, local_output_dir),
+                (vars_obj.get("run_dir") if isinstance(vars_obj, dict) else None, local_run_dir),
             )
             if value
         }
@@ -1264,6 +1291,9 @@ def coordinator_result_payload(
         "host": local_payload.get("host"),
         "platform": local_payload.get("platform"),
         "profile_manifest_sha256": manifest_checksum(local_manifest),
+        # Audit-only: since task_execution_checksum() now normalizes away
+        # host-local paths, this legitimately equals task_execution_sha256
+        # above whenever the worker's profile/path_map only changes paths.
         "profile_task_execution_sha256": task_execution_checksum(
             local_manifest,
             local_task,
@@ -1555,9 +1585,24 @@ def heartbeat_loop(
 ) -> None:
     from .status import task_log_progress_data
 
+    def sync_live_log() -> None:
+        """Make active task output available to coordinator-side status views."""
+        source = task_log_path(local_manifest, local_task)
+        if not source.exists():
+            return
+        _host, coordinator_manifest_path = parse_coordinator(coordinator)
+        if not coordinator_manifest_path:
+            return
+        destination = Path(coordinator_manifest_path).parent / "logs" / f"{task_id}.log"
+        try:
+            sync_files_to_coordinator(coordinator, [(source, destination)])
+        except Exception as exc:
+            print(f"{task_id}: live log sync failed: {exc}", file=sys.stderr)
+
     interval = heartbeat_interval_seconds(lease_seconds)
     while not stop.is_set():
         try:
+            sync_live_log()
             response = heartbeat_on_coordinator(
                 coordinator,
                 task_id,
@@ -1687,6 +1732,7 @@ def cmd_work(args: argparse.Namespace) -> int:
     local_manifest = worker_execution_manifest(
         local_manifest_base,
         profile=args.profile,
+        worker=args.worker,
         manifest_path=local_manifest_path,
     )
     check_coordinator_cli(args.coordinator)
@@ -1743,6 +1789,7 @@ def cmd_work(args: argparse.Namespace) -> int:
         local_manifest = worker_execution_manifest(
             coordinator_manifest,
             profile=args.profile,
+            worker=args.worker,
             manifest_path=local_manifest_path,
         )
         coordinator_task = find_task(coordinator_manifest, task_id=task_id, index=None)

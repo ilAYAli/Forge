@@ -912,6 +912,13 @@ def parse_run_options(raw_args: list[str]) -> tuple[argparse.Namespace, list[str
 def apply_template_run_defaults(
     template_name: str, run_options: argparse.Namespace, template: dict[str, Any] | None = None
 ) -> argparse.Namespace:
+    if template_name == "train":
+        # Distributed ranks are one synchronized job, not independent retryable
+        # tasks.  A retry of only one rank corrupts the next sync round.
+        run_options.retry_failed = False
+        run_options.task_attempts = 1
+        run_options.fail_on_fail = True
+        return run_options
     if template_name == "spsa" and getattr(run_options, "resume", False):
         run_options.retry_failed = True
     if template_name == "selfplay":
