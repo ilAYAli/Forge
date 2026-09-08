@@ -234,6 +234,48 @@ class ForgeTests(unittest.TestCase):
             self.assertEqual([10.0, 8.0], [row["elo"] for row in payload["rows"]])
             self.assertEqual([1, 2], [row["rank"] for row in payload["rows"]])
 
+    def test_sprt_score_report_accepts_reference_regex_and_shell_wildcards(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            database = Path(tmp) / "sprt.db"
+            self.make_sprt_report_db(database)
+            connection = sqlite3.connect(database)
+            connection.execute(
+                "UPDATE sprt SET reference_net = CASE id "
+                "WHEN 4 THEN 'nn-0ee0657fb25e.nnue' "
+                "ELSE 'nn-1a298aa575a0.nnue' END"
+            )
+            connection.execute("UPDATE sprt SET engine = 'engine-b' WHERE id = 3")
+            connection.commit()
+            connection.close()
+
+            wildcard = forge.sprt_score_report(
+                reference_net="nn-*.nnue", candidate_net="enyo-", min_games=0,
+                limit=20, db_path=database,
+            )
+            regexp = forge.sprt_score_report(
+                reference_net=r"nn-1a298aa575a0\.nnue", candidate_net="enyo-", min_games=0,
+                limit=20, db_path=database,
+            )
+            all_engines = forge.sprt_score_report(
+                reference_net="nn-*.nnue", candidate_net="*", engine="*", min_games=0,
+                limit=20, db_path=database,
+            )
+            engine_glob = forge.sprt_score_report(
+                reference_net="nn-*.nnue", candidate_net="*", engine="engine-*", min_games=0,
+                limit=20, db_path=database,
+            )
+
+            self.assertEqual(
+                ["enyo-c.nn", "enyo-a.nn", "enyo-b.nn"],
+                [row["candidate_net"] for row in wildcard["rows"]],
+            )
+            self.assertEqual(["enyo-a.nn", "enyo-b.nn"], [row["candidate_net"] for row in regexp["rows"]])
+            self.assertEqual(wildcard["rows"], all_engines["rows"])
+            self.assertEqual(wildcard["rows"], engine_glob["rows"])
+            self.assertEqual("nn-*.nnue", wildcard["filters"]["reference_net"])
+            self.assertEqual("*", all_engines["filters"]["candidate_net"])
+            self.assertEqual("*", all_engines["filters"]["engine"])
+
     def test_sprt_score_report_cli_and_web_share_backend(self) -> None:
         import forge_lib.web as web
 
@@ -257,6 +299,9 @@ class ForgeTests(unittest.TestCase):
             self.assertIn("String(r.kind || '').toLowerCase() === 'sprt'", web._HTML)
             self.assertIn('<a class="top-tab active" href="/">runs</a>', web._HTML)
             self.assertIn('<a class="top-tab active" href="/reports/sprt">SPRT scores</a>', web._SPRT_REPORT_HTML)
+            self.assertIn('id="reference" placeholder="nn-*.nnue" value="nn-1a298aa575a0.nnue"', web._SPRT_REPORT_HTML)
+            self.assertIn('id="candidate" value="*"', web._SPRT_REPORT_HTML)
+            self.assertIn('id="engine" value="*"', web._SPRT_REPORT_HTML)
             self.assertIn('<button data-view="runs">history</button>', web._SPRT_REPORT_HTML)
             self.assertIn("/api/reports/sprt/score", web._SPRT_REPORT_HTML)
             self.assertIn("th.num,td.num { text-align:right", web._SPRT_REPORT_HTML)

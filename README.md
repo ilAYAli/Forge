@@ -198,7 +198,9 @@ template provides ranking and run-history views backed by `logs/sprt.db`:
 ```sh
 forge report sprt score
 forge report sprt score --view runs --min-games 0
-forge report sprt score --reference-net reference.nn --candidate-net 'enyo-%'
+forge report sprt score --reference-net reference.nn --candidate-net 'enyo-*'
+# Reference net filters accept regexes or shell-style '*' wildcards.
+forge report sprt score --reference-net 'nn-*.nnue' --engine '*'
 ```
 
 The same report is available at `/reports/sprt` when `forge web` is running.

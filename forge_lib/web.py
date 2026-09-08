@@ -10,7 +10,7 @@ from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
 from .core import *
-from .reports import sprt_score_report
+from .reports import SPRT_DEFAULT_ENGINE_FILTER, SPRT_DEFAULT_REFERENCE_NET, sprt_score_report
 from .status import PROGRESS_GRAPH_VERSION, configured_coordinator_runs, format_status_values, parse_timestamp_epoch
 from .tasks import parse_coordinator, shell_join
 
@@ -2315,9 +2315,9 @@ _SPRT_REPORT_HTML = r"""<!DOCTYPE html>
   <header><nav class="top-tabs"><a class="top-tab" href="/">runs</a><a class="top-tab active" href="/reports/sprt">SPRT scores</a></nav><span id="state">loading…</span></header>
   <main>
     <form id="filters">
-      <label>reference net<input id="reference" value="nn-1a298aa575a0.nnue"></label>
-      <label>candidate<input id="candidate" value="enyo-%"></label>
-      <label>engine<input id="engine" placeholder="all"></label>
+      <label>reference net regexp<input id="reference" placeholder="nn-*.nnue" value="__FORGE_SPRT_DEFAULT_REFERENCE_NET__"></label>
+      <label>candidate<input id="candidate" value="*"></label>
+      <label>engine<input id="engine" value="__FORGE_SPRT_DEFAULT_ENGINE_FILTER__"></label>
       <label>min games<input id="min-games" class="small" type="number" min="0" value="1500"></label>
       <label>limit<input id="limit" class="small" type="number" min="1" max="1000" value="20"></label>
       <button type="submit">apply</button>
@@ -2391,6 +2391,10 @@ _SPRT_REPORT_HTML = r"""<!DOCTYPE html>
   </script>
 </body>
 </html>"""
+
+_SPRT_REPORT_HTML = _SPRT_REPORT_HTML.replace(
+    "__FORGE_SPRT_DEFAULT_REFERENCE_NET__", SPRT_DEFAULT_REFERENCE_NET,
+).replace("__FORGE_SPRT_DEFAULT_ENGINE_FILTER__", SPRT_DEFAULT_ENGINE_FILTER)
 
 _SPRT_REPORT_HTML_BYTES = _SPRT_REPORT_HTML.encode()
 
@@ -3267,9 +3271,9 @@ def _api_sprt_score(query: str) -> bytes:
 
     payload = sprt_score_report(
         view=value("view", "ranking"),
-        reference_net=value("reference_net", "nn-1a298aa575a0.nnue"),
-        candidate_net=value("candidate_net", "enyo-%"),
-        engine=value("engine", ""),
+        reference_net=value("reference_net", SPRT_DEFAULT_REFERENCE_NET),
+        candidate_net=value("candidate_net", "*"),
+        engine=value("engine", SPRT_DEFAULT_ENGINE_FILTER),
         min_games=int(value("min_games", "1500")),
         limit=int(value("limit", "20")),
     )

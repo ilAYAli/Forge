@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import json
 import os
+import re
 import sqlite3
 from pathlib import Path
 from typing import Any
@@ -11,6 +13,8 @@ from .status import SPRT_DB_PATH
 
 
 SPRT_REPORT_VIEWS = ("ranking", "runs")
+SPRT_DEFAULT_REFERENCE_NET = "nn-1a298aa575a0.nnue"
+SPRT_DEFAULT_ENGINE_FILTER = "*"
 
 
 def sprt_report_db_path() -> Path:
@@ -18,17 +22,61 @@ def sprt_report_db_path() -> Path:
     return Path(override).expanduser() if override else SPRT_DB_PATH
 
 
+def candidate_filter(value: str) -> tuple[str, str]:
+    """Return the displayed candidate filter and its SQL LIKE pattern."""
+    displayed = value.strip() or "*"
+    if "*" in displayed or "?" in displayed:
+        pattern = displayed.replace("*", "%").replace("?", "_")
+    elif "%" in displayed or "_" in displayed:
+        pattern = displayed
+    else:
+        pattern = displayed + "%"
+    return displayed, pattern
+
+
 def candidate_pattern(value: str) -> str:
-    value = value.strip() or "%"
-    return value if "%" in value or "_" in value else value + "%"
+    """Return the SQL LIKE pattern for a candidate filter."""
+    return candidate_filter(value)[1]
+
+
+def engine_filter(value: str) -> tuple[str, str]:
+    """Return the displayed engine filter and its SQL LIKE pattern."""
+    displayed = Path(value.strip()).name if value.strip() else "*"
+    pattern = displayed.replace("*", "%").replace("?", "_")
+    return displayed, pattern
+
+
+def reference_pattern(value: str) -> tuple[str, re.Pattern[str]]:
+    """Return a basename filter and its compiled regular expression.
+
+    Reference filters are regular expressions, with shell-style wildcards
+    accepted as a convenience (for example, ``nn-*.nnue``). Matching is
+    performed against the complete basename stored in the SPRT database.
+    """
+    value = value.strip()
+    pattern = Path(value).name if value else ".*"
+    try:
+        compiled = re.compile(pattern)
+    except re.error as exc:
+        raise ValueError(f"invalid reference net regexp {pattern!r}: {exc}") from exc
+    return pattern, compiled
+
+
+def _reference_net_matches(
+    compiled: re.Pattern[str], shell_pattern: str, value: Any,
+) -> int:
+    if value is None:
+        return 0
+    name = str(value)
+    return int(bool(compiled.search(name) or fnmatch.fnmatchcase(name, shell_pattern)))
 
 
 def sprt_score_report(
     *,
     view: str = "ranking",
-    reference_net: str = "nn-1a298aa575a0.nnue",
-    candidate_net: str = "enyo-%",
-    engine: str = "",
+    reference_net: str = SPRT_DEFAULT_REFERENCE_NET,
+    candidate_net: str = "*",
+    engine: str = SPRT_DEFAULT_ENGINE_FILTER,
     min_games: int = 1500,
     limit: int = 20,
     db_path: Path | None = None,
@@ -43,11 +91,13 @@ def sprt_score_report(
     if not path.is_file():
         raise FileNotFoundError(f"SPRT database not found: {path}")
 
-    where = ["reference_net = ?", "candidate_net LIKE ?"]
-    params: list[Any] = [Path(reference_net).name, candidate_pattern(candidate_net)]
-    if engine:
-        where.append("engine = ?")
-        params.append(Path(engine).name)
+    reference_filter, reference_re = reference_pattern(reference_net)
+    candidate_filter_value, candidate_like = candidate_filter(candidate_net)
+    where = ["reference_net REGEXP ?", "candidate_net LIKE ?"]
+    params: list[Any] = [reference_filter, candidate_like]
+    engine_filter_value, engine_like = engine_filter(engine)
+    where.append("engine LIKE ?")
+    params.append(engine_like)
     if min_games:
         where.append("games >= ?")
         params.append(min_games)
@@ -83,6 +133,11 @@ def sprt_score_report(
 
     connection = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
     connection.row_factory = sqlite3.Row
+    connection.create_function(
+        "REGEXP",
+        2,
+        lambda pattern, value: _reference_net_matches(reference_re, str(pattern), value),
+    )
     try:
         rows = [dict(row) for row in connection.execute(query, params)]
     finally:
@@ -94,9 +149,9 @@ def sprt_score_report(
         "columns": columns,
         "rows": rows,
         "filters": {
-            "reference_net": Path(reference_net).name,
-            "candidate_net": candidate_net,
-            "engine": Path(engine).name if engine else "",
+            "reference_net": reference_filter,
+            "candidate_net": candidate_filter_value,
+            "engine": engine_filter_value,
             "min_games": min_games,
             "limit": limit,
         },
