@@ -90,7 +90,8 @@ size and SHA-256 are skipped. Extra destination files are not deleted.
 
 `forge build` checks out a commit in one worker per compatible OS and
 architecture group, builds the requested CMake target, and synchronizes the
-artifact to the other workers in that group:
+artifact to the other workers in that group. Presets can also request a build
+on each worker for projects that compile native CPU instructions:
 
 ```sh
 forge build '~/code/chess/enyo' 11e57a2 \
@@ -117,8 +118,9 @@ forge build enyo 11e57a2 --reference
 
 Enyo builds default to the candidate variant; `--reference` selects the
 reference build and symlink. Use `--candidate` to select it explicitly. The
-preset can be overridden by a same-named `build_enyo.json` in a configured
-Forge template directory.
+preset builds separately on every worker because Enyo uses `-march=native`.
+It can be overridden by a same-named `build_enyo.json` in a configured Forge
+template directory.
 
 ## One-Shot Shell Commands
 

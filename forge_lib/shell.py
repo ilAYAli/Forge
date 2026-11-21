@@ -173,10 +173,22 @@ def cmd_sh(args: argparse.Namespace) -> int:
     return 0
 
 
-def _build_worker_platform(worker: dict[str, Any], *, timeout: float | None) -> tuple[str, str]:
+def _build_worker_platform(
+    worker: dict[str, Any], *, timeout: float | None, cpu_specific: bool = False
+) -> tuple[str, ...]:
+    command = "printf '%s\\t%s\\n' \"$(uname -s)\" \"$(uname -m)\""
+    if cpu_specific:
+        command = (
+            "system=$(uname -s); machine=$(uname -m); "
+            "if [ \"$system\" = Linux ]; then "
+            "cpu=$(awk -F: '/^model name/{gsub(/^[ \\t]+/,\"\",$2);print $2;exit}' /proc/cpuinfo); "
+            "else cpu=$(sysctl -n machdep.cpu.brand_string 2>/dev/null || sysctl -n hw.model 2>/dev/null || true); fi; "
+            "if [ -z \"$cpu\" ]; then cpu=unknown-$(hostname); fi; "
+            "printf '%s\\t%s\\t%s\\n' \"$system\" \"$machine\" \"$cpu\""
+        )
     result = run_worker_shell(
         worker,
-        "printf '%s\\t%s\\n' \"$(uname -s)\" \"$(uname -m)\"",
+        command,
         timeout=timeout,
         retries=0,
     )
@@ -185,7 +197,8 @@ def _build_worker_platform(worker: dict[str, Any], *, timeout: float | None) -> 
         raise RuntimeError(f"{worker_host(worker)}: could not determine platform: {detail}")
     line = next((line.strip() for line in reversed(result.stdout.splitlines()) if line.strip()), "")
     fields = line.split("\t")
-    if len(fields) != 2 or not all(fields):
+    expected_fields = 3 if cpu_specific else 2
+    if len(fields) != expected_fields or not all(fields):
         raise RuntimeError(f"{worker_host(worker)}: unexpected platform response: {line!r}")
     return fields[0], fields[1]
 
@@ -264,6 +277,8 @@ def cmd_build(args: argparse.Namespace) -> int:
         repo = str(preset.get("repo") or "")
         artifact = args.artifact or preset.get("artifact")
         destination_pattern = args.destination or preset.get("destination")
+        cpu_specific = bool(preset.get("cpu_specific", False))
+        build_per_worker = bool(preset.get("build_per_worker", False))
         if not repo:
             raise SystemExit(f"build preset {args.repo!r}: repo is required")
     else:
@@ -275,6 +290,8 @@ def cmd_build(args: argparse.Namespace) -> int:
         destination_pattern = args.destination
         build_command = args.build_command
         link = args.link
+        cpu_specific = False
+        build_per_worker = False
 
     if not re.fullmatch(r"[0-9a-fA-F]{4,40}", args.commit):
         raise SystemExit("build commit must be a 4-40 character hexadecimal commit hash")
@@ -289,20 +306,22 @@ def cmd_build(args: argparse.Namespace) -> int:
     workers = worker_records_from_payload(selected_payload, label="build workers")
     timeout = bounded_timeout(args.remote_timeout_seconds)
 
-    groups: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    groups: dict[tuple[str, ...], list[dict[str, Any]]] = {}
     for worker in workers:
         try:
-            platform_key = _build_worker_platform(worker, timeout=timeout)
+            platform_key = _build_worker_platform(worker, timeout=timeout, cpu_specific=cpu_specific)
         except (OSError, RuntimeError) as exc:
             print(f"build: {exc}", file=sys.stderr)
             return 1
-        groups.setdefault(platform_key, []).append(worker)
+        group_key = (*platform_key, worker_host(worker)) if build_per_worker else platform_key
+        groups.setdefault(group_key, []).append(worker)
 
     with tempfile.TemporaryDirectory(prefix="forge-build-") as temp_dir:
-        for (os_name, arch), group in groups.items():
+        for group_index, (platform_key, group) in enumerate(groups.items()):
+            os_name, arch = platform_key[:2]
             builder = group[0]
             hosts = [worker_host(worker) for worker in group]
-            label = f"{os_name}/{arch}"
+            label = "/".join(platform_key)
             print(f"build: {label} on {worker_host(builder)}; distribute to {', '.join(hosts)}", flush=True)
 
             repo_expr = (
@@ -374,7 +393,7 @@ def cmd_build(args: argparse.Namespace) -> int:
                 print(f"{worker_host(builder)}: invalid build result: {marker!r}", file=sys.stderr)
                 return 1
             short_hash, remote_artifact = fields[1], fields[2]
-            local_artifact = Path(temp_dir) / f"{short_hash}-{os_name}-{arch}-{Path(remote_artifact).name}"
+            local_artifact = Path(temp_dir) / f"{short_hash}-{group_index}-{os_name}-{arch}-{Path(remote_artifact).name}"
             try:
                 _copy_from_build_worker(builder, remote_artifact, local_artifact, timeout=timeout)
             except (OSError, RuntimeError) as exc:
@@ -384,7 +403,7 @@ def cmd_build(args: argparse.Namespace) -> int:
                 _cleanup_build_artifact_stage(builder, remote_artifact, timeout=timeout)
 
             destination = destination_pattern.replace("{hash}", short_hash)
-            worker_file = Path(temp_dir) / f"workers-{os_name}-{arch}.json"
+            worker_file = Path(temp_dir) / f"workers-{group_index}-{os_name}-{arch}.json"
             worker_file.write_text(json.dumps({"schema": "forge.workers.v1", "workers": group}))
             sync_args = argparse.Namespace(
                 source=str(local_artifact),

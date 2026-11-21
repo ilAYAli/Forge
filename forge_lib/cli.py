@@ -385,7 +385,7 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=ForgeHelpFormatter,
         description=(
             "Build a commit in a detached temporary worktree once for each "
-            "compatible OS and architecture group, then synchronize the artifact "
+            "compatible OS, architecture, and optional CPU group, then synchronize the artifact "
             "to the other workers in that group. A named build preset supplies "
             "project-specific settings; otherwise Forge uses CMake unless "
             "--build-command is provided.\n\n"
