@@ -177,6 +177,7 @@ class ForgeTests(unittest.TestCase):
                 "FORGE_CACHE_DIR": str(Path(self._isolated_env_dir.name) / "cache"),
                 "FORGE_NOTIFY_COMMAND": "",
                 "FORGE_COORDINATOR_HOST": "",
+                "FORGE_DISABLE_COORDINATOR_DISPATCH": "1",
                 "FORGE_WORKERS": "",
             },
             clear=False,

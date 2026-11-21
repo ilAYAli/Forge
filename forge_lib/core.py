@@ -30,6 +30,8 @@ RUNS_DIR_ENV = "FORGE_RUNS_DIR"
 COORDINATOR_RUNS_ENV = "FORGE_COORDINATOR_RUNS"
 COORDINATOR_RUNS_FILE = "coordinator"
 COLOR_ENV = "FORGE_COLOR"
+COORDINATOR_DISPATCH_ENV = "FORGE_COORDINATOR_DISPATCH"
+COORDINATOR_DISABLE_DISPATCH_ENV = "FORGE_DISABLE_COORDINATOR_DISPATCH"
 STATUS_BLUE_SGR = "38;5;004"
 RUN_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 SSH_CONNECT_TIMEOUT_SECONDS = 15
@@ -162,6 +164,8 @@ def runs_dir() -> Path:
     return script_repo() / RUNS_DIR_NAME
 
 def configured_coordinator_runs() -> str | None:
+    if os.environ.get(COORDINATOR_DISPATCH_ENV) == "1":
+        return None
     if COORDINATOR_RUNS_ENV in os.environ:
         value = os.environ[COORDINATOR_RUNS_ENV].strip()
         if value:

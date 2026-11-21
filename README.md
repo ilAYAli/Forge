@@ -86,6 +86,29 @@ destination places the source directory beneath it; the example above writes to
 `~/code/chess/nnue/agents/`. Files whose destination already has the matching
 size and SHA-256 are skipped. Extra destination files are not deleted.
 
+## Build and Distribute a Binary
+
+`forge build` checks out a commit in one worker per compatible OS and
+architecture group, builds the requested CMake target, and synchronizes the
+artifact to the other workers in that group:
+
+```sh
+forge build '~/code/chess/enyo' 11e57a2 \
+    --target enyo \
+    --artifact build/enyo \
+    --destination '~/assets/engines/enyo_{hash}' \
+    --link '~/assets/engines/reference'
+```
+
+The repo path must exist on the selected workers that Forge chooses to build
+for each platform. Forge builds in a detached temporary worktree, preserving
+the existing checkout. Use `--cmake-arg` and `--build-arg` to pass
+project-specific options. `--build-command` replaces the default CMake steps
+for projects with their own build or deployment script; `--link` optionally
+updates a symlink to the distributed artifact. `{hash}` in artifact,
+destination, link, and custom build command values expands to the checked-out
+short commit hash.
+
 ## One-Shot Shell Commands
 
 Run a shell command once selected workers:
@@ -453,15 +476,17 @@ wherever `deploy`/`wait` itself runs — see the coordinator note below).
 ran, which on a remote worker is that worker's own environment, not the
 coordinator's.
 
-**If `coordinator_host` is configured**, `deploy`/`start` delegate to that
-host over SSH — even when it's the same machine you're already on. An SSH
-child does not inherit your shell's environment, so an env-var override like
-`FORGE_NOTIFY_COMMAND` set only in your local shell will not reach the
-delegated process; it falls back to reading `~/.config/forge/config.yml` on
-the coordinator host instead. Configure `notify_command` in that file (or
-pass `--notify-command` explicitly, which *is* forwarded to the delegated
-invocation) rather than relying on an env var alone if a coordinator is
-configured.
+When `coordinator_host` is configured in `~/.config/forge/config.yml`,
+user-facing Forge commands run on that host, so worker selection, configuration,
+run state, builds, and status all use the coordinator's view. `--help`,
+`--version`, and worker-internal commands stay local. `sync` stages a local
+source on the coordinator; `start` and `deploy` stage their manifest and worker
+file when needed. Other file paths must be accessible from the coordinator.
+Set `FORGE_DISABLE_COORDINATOR_DISPATCH=1` to run a command locally for
+debugging or isolated tests.
+An SSH child does not inherit the caller's shell environment, so configure
+settings such as `notify_command` in the coordinator's config file or pass
+supported command options explicitly.
 
 ### Per-task hook
 

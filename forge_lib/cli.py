@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from .core import *
+from .coordinator import dispatch_to_coordinator
 from .config import *
 from .manifest import *
 from .tasks import *
@@ -38,6 +39,7 @@ COMMON_COMMANDS = [
     "spsa",
     "sync",
     "sh",
+    "build",
     "start",
     "del",
     "stop",
@@ -351,7 +353,7 @@ def build_parser() -> argparse.ArgumentParser:
             "Examples:\n"
             "  forge \"pwd\"\n"
             "  forge sh \"cd ~/repo; git pull; cmake --build build\"\n"
-            "  forge sh --workers pwa-llm,pwa-mbp \"hostname && git --version\""
+            "  forge sh --workers worker-a,worker-b \"hostname && git --version\""
         ),
     )
     shell.add_argument("command", nargs="+", help="Shell command and arguments run on each host.")
@@ -376,6 +378,36 @@ def build_parser() -> argparse.ArgumentParser:
     sync.add_argument("--jobs", type=int, default=4, help="Maximum hosts to synchronize concurrently.")
     sync.add_argument("--remote-timeout-seconds", type=float, default=1800.0, help="Timeout for each host.")
     sync.set_defaults(func=cmd_sync)
+
+    build = sub.add_parser(
+        "build",
+        help="Build a CMake target once per platform and distribute its binary.",
+        formatter_class=ForgeHelpFormatter,
+        description=(
+            "Build a commit in a detached temporary worktree once for each "
+            "compatible OS and architecture group, then synchronize the artifact "
+            "to the other workers in that group. By default Forge uses CMake; "
+            "--build-command can supply a project-specific build instead.\n\n"
+            "Example:\n"
+            "  forge build ~/code/chess/enyo 1a2b3c4 --target enyo "
+            "--artifact build/enyo --destination ~/assets/engines/enyo_{hash}"
+        ),
+    )
+    build.add_argument("repo", help="Repository path on the workers.")
+    build.add_argument("commit", help="Commit to check out before building.")
+    build.add_argument("--target", help="CMake target to build (required unless --build-command is used).")
+    build.add_argument("--artifact", required=True, help="Built file path, relative to the repo or absolute; {hash} expands to the checked-out short commit.")
+    build.add_argument("--destination", required=True, help="Worker destination path; {hash} expands to the checked-out short commit.")
+    build.add_argument("--build-dir", default="build", help="CMake build directory, relative to the repo unless absolute.")
+    build.add_argument("--build-type", default="Release", help="CMAKE_BUILD_TYPE used by the default CMake build.")
+    build.add_argument("--cmake-arg", action="append", default=[], help="Additional CMake configure argument; may be repeated.")
+    build.add_argument("--build-arg", action="append", default=[], help="Additional native build tool argument after CMake's --; may be repeated.")
+    build.add_argument("--build-command", help="Custom shell build command run from the repo after checkout; {hash} expands to the checked-out short commit.")
+    build.add_argument("--link", help="Optional worker symlink path pointing to the distributed artifact; {hash} is expanded.")
+    build.add_argument("--workers", help=WORKERS_ARG_HELP_WITH_DEFAULT)
+    build.add_argument("--jobs", type=int, default=4, help="Maximum workers to sync concurrently.")
+    build.add_argument("--remote-timeout-seconds", type=float, default=3600.0, help="Timeout for platform checks, builds, syncs, and link updates.")
+    build.set_defaults(func=cmd_build)
 
     template = sub.add_parser(
         "template",
@@ -1013,6 +1045,9 @@ def main() -> int:
     if getattr(args, "subcommand", None) == "run-task" and args.task is None and args.index is None:
         parser.error("run-task requires --task or --index")
     try:
+        coordinator_result = dispatch_to_coordinator(args, list(sys.argv[1:]))
+        if coordinator_result is not None:
+            return coordinator_result
         return int(args.func(args))
     except KeyboardInterrupt:
         print("interrupted", file=sys.stderr, flush=True)
