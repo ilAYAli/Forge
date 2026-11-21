@@ -109,6 +109,17 @@ updates a symlink to the distributed artifact. `{hash}` in artifact,
 destination, link, and custom build command values expands to the checked-out
 short commit hash.
 
+Forge also includes a named Enyo build preset in `templates/build_enyo.json`:
+
+```sh
+forge build enyo 11e57a2 --reference
+```
+
+Enyo builds default to the candidate variant; `--reference` selects the
+reference build and symlink. Use `--candidate` to select it explicitly. The
+preset can be overridden by a same-named `build_enyo.json` in a configured
+Forge template directory.
+
 ## One-Shot Shell Commands
 
 Run a shell command once selected workers:

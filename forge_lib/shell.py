@@ -4,6 +4,7 @@ import json
 import tempfile
 
 from .core import *
+from .config import config_template_dirs
 from .manifest import SCHEMA
 from .workers import (
     run_worker_shell,
@@ -232,14 +233,56 @@ def _cleanup_build_artifact_stage(worker: dict[str, Any], artifact: str, *, time
         pass
 
 
+def _load_build_preset(name: str) -> dict[str, Any] | None:
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", name):
+        return None
+    for directory in config_template_dirs():
+        path = directory / f"build_{name}.json"
+        if not path.is_file():
+            continue
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise SystemExit(f"{path}: could not read build preset: {exc}") from exc
+        if not isinstance(payload, dict) or payload.get("schema") != "forge.build.v1":
+            raise SystemExit(f"{path}: unsupported build preset schema")
+        return payload
+    return None
+
+
 def cmd_build(args: argparse.Namespace) -> int:
+    preset = _load_build_preset(args.repo)
+    if preset is not None:
+        variant = "reference" if args.reference else "candidate"
+        preset_links = preset.get("links", {})
+        if not isinstance(preset_links, dict):
+            raise SystemExit(f"build preset {args.repo!r}: links must be an object")
+        link = args.link or preset_links.get(variant)
+        build_command = args.build_command or preset.get("build_command")
+        if isinstance(build_command, str):
+            build_command = build_command.replace("{variant}", variant)
+        repo = str(preset.get("repo") or "")
+        artifact = args.artifact or preset.get("artifact")
+        destination_pattern = args.destination or preset.get("destination")
+        if not repo:
+            raise SystemExit(f"build preset {args.repo!r}: repo is required")
+    else:
+        if args.reference or args.candidate:
+            raise SystemExit("--reference and --candidate are available only with a named build preset")
+        variant = ""
+        repo = args.repo
+        artifact = args.artifact
+        destination_pattern = args.destination
+        build_command = args.build_command
+        link = args.link
+
     if not re.fullmatch(r"[0-9a-fA-F]{4,40}", args.commit):
         raise SystemExit("build commit must be a 4-40 character hexadecimal commit hash")
-    if not args.build_command and not args.target:
+    if not build_command and not args.target:
         raise SystemExit("build requires --target when --build-command is not given")
-    if not args.artifact:
+    if not artifact:
         raise SystemExit("build requires --artifact")
-    if not args.destination:
+    if not destination_pattern:
         raise SystemExit("build requires --destination")
 
     selected_payload = one_slot_per_host_payload(args.workers)
@@ -265,10 +308,10 @@ def cmd_build(args: argparse.Namespace) -> int:
             repo_expr = (
                 "$(python3 -c "
                 + shlex.quote("import os,sys; print(os.path.abspath(os.path.expanduser(sys.argv[1])))")
-                + " " + shlex.quote(worker_path_parameter(args.repo)) + ")"
+                + " " + shlex.quote(worker_path_parameter(repo)) + ")"
             )
             build_dir_expr = _build_remote_path("worktree", args.build_dir)
-            artifact_expr = _build_remote_path("worktree", args.artifact, hash_var="short_hash")
+            artifact_expr = _build_remote_path("worktree", artifact, hash_var="short_hash")
             command_lines = [
                 "set -e",
                 f"repo={repo_expr}",
@@ -286,8 +329,8 @@ def cmd_build(args: argparse.Namespace) -> int:
                 "mkdir -p \"$build_dir\"",
                 "cd \"$worktree\"",
             ]
-            if args.build_command:
-                custom_command = args.build_command.replace("{hash}", '"$short_hash"')
+            if build_command:
+                custom_command = build_command.replace("{hash}", '"$short_hash"')
                 command_lines.append(custom_command)
             else:
                 cmake_configure = ["cmake", "-S", '"$repo"', "-B", '"$build_dir"', shlex.quote("-DCMAKE_BUILD_TYPE=" + args.build_type)]
@@ -340,7 +383,7 @@ def cmd_build(args: argparse.Namespace) -> int:
             finally:
                 _cleanup_build_artifact_stage(builder, remote_artifact, timeout=timeout)
 
-            destination = args.destination.replace("{hash}", short_hash)
+            destination = destination_pattern.replace("{hash}", short_hash)
             worker_file = Path(temp_dir) / f"workers-{os_name}-{arch}.json"
             worker_file.write_text(json.dumps({"schema": "forge.workers.v1", "workers": group}))
             sync_args = argparse.Namespace(
@@ -353,8 +396,8 @@ def cmd_build(args: argparse.Namespace) -> int:
             if cmd_sync(sync_args) != 0:
                 return 1
 
-            if args.link:
-                link_path = args.link.replace("{hash}", short_hash)
+            if link:
+                link_path = str(link).replace("{hash}", short_hash)
                 remote_resolve = (
                     "python3 -c "
                     + shlex.quote("import os,sys; print(os.path.abspath(os.path.expanduser(sys.argv[1])))")
