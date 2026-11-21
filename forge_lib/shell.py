@@ -200,7 +200,7 @@ def _build_worker_platform(
     expected_fields = 3 if cpu_specific else 2
     if len(fields) != expected_fields or not all(fields):
         raise RuntimeError(f"{worker_host(worker)}: unexpected platform response: {line!r}")
-    return fields[0], fields[1]
+    return tuple(fields)
 
 
 def _build_remote_path(repo_var: str, value: str, *, hash_var: str | None = None) -> str:
