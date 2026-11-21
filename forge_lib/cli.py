@@ -39,7 +39,6 @@ COMMON_COMMANDS = [
     "spsa",
     "sync",
     "sh",
-    "build",
     "start",
     "del",
     "stop",
@@ -378,41 +377,6 @@ def build_parser() -> argparse.ArgumentParser:
     sync.add_argument("--jobs", type=int, default=4, help="Maximum hosts to synchronize concurrently.")
     sync.add_argument("--remote-timeout-seconds", type=float, default=1800.0, help="Timeout for each host.")
     sync.set_defaults(func=cmd_sync)
-
-    build = sub.add_parser(
-        "build",
-        help="Build and distribute a named build preset or CMake target.",
-        formatter_class=ForgeHelpFormatter,
-        description=(
-            "Build a commit in a detached temporary worktree once for each "
-            "compatible OS, architecture, and optional CPU group, then synchronize the artifact "
-            "to the other workers in that group. A named build preset supplies "
-            "project-specific settings; otherwise Forge uses CMake unless "
-            "--build-command is provided.\n\n"
-            "Example:\n"
-            "  forge build enyo 1a2b3c4 --reference\n"
-            "  forge build '~/code/chess/project' 1a2b3c4 --target app "
-            "--artifact build/app --destination '~/bin/app_{hash}'"
-        ),
-    )
-    build.add_argument("repo", help="Build preset name or repository path on the workers.")
-    build.add_argument("commit", help="Commit to check out before building.")
-    build.add_argument("--target", help="CMake target to build (required unless --build-command is used).")
-    build.add_argument("--artifact", help="Built file path, relative to the repo or absolute; {hash} expands to the checked-out short commit.")
-    build.add_argument("--destination", help="Worker destination path; {hash} expands to the checked-out short commit.")
-    build.add_argument("--build-dir", default="build", help="CMake build directory, relative to the repo unless absolute.")
-    build.add_argument("--build-type", default="Release", help="CMAKE_BUILD_TYPE used by the default CMake build.")
-    build.add_argument("--cmake-arg", action="append", default=[], help="Additional CMake configure argument; may be repeated.")
-    build.add_argument("--build-arg", action="append", default=[], help="Additional native build tool argument after CMake's --; may be repeated.")
-    build.add_argument("--build-command", help="Custom shell build command run from the repo after checkout; {hash} expands to the checked-out short commit.")
-    build.add_argument("--link", help="Optional worker symlink path pointing to the distributed artifact; {hash} is expanded.")
-    build_variant = build.add_mutually_exclusive_group()
-    build_variant.add_argument("--reference", action="store_true", help="Select the preset's reference variant and link.")
-    build_variant.add_argument("--candidate", action="store_true", help="Select the preset's candidate variant and link (the default).")
-    build.add_argument("--workers", help=WORKERS_ARG_HELP_WITH_DEFAULT)
-    build.add_argument("--jobs", type=int, default=4, help="Maximum workers to sync concurrently.")
-    build.add_argument("--remote-timeout-seconds", type=float, default=3600.0, help="Timeout for platform checks, builds, syncs, and link updates.")
-    build.set_defaults(func=cmd_build)
 
     template = sub.add_parser(
         "template",
