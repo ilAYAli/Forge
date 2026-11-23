@@ -255,8 +255,8 @@
           "name": "elo",
           "field": "elo",
           "x": "done",
-          "band_max_fraction": 0.24,
-          "band_scale": 0.35,
+          "band_max_fraction": 0.0,
+          "band_scale": 1.0,
           "band_series": "ci",
           "scale": "linear",
           "smooth": true

@@ -2769,8 +2769,8 @@ console.log(JSON.stringify(runTiming(runs[2], false, Date.parse('2026-07-29T22:0
             }
             fresh = copy.deepcopy(stale)
             fresh["progress_graph"]["series"][1].update({
-                "band_max_fraction": 0.24,
-                "band_scale": 0.35,
+                "band_max_fraction": 0.0,
+                "band_scale": 1.0,
                 "band_series": "ci",
                 "scale": "symmetric",
             })
@@ -2800,8 +2800,8 @@ console.log(JSON.stringify(runTiming(runs[2], false, Date.parse('2026-07-29T22:0
             named.assert_called_once_with("done-run", None)
             series = {item["name"]: item for item in merged["runs"][0]["progress_graph"]["series"]}
             self.assertEqual("ci", series["elo"]["band_series"])
-            self.assertEqual(0.35, series["elo"]["band_scale"])
-            self.assertEqual(0.24, series["elo"]["band_max_fraction"])
+            self.assertEqual(1.0, series["elo"]["band_scale"])
+            self.assertEqual(0.0, series["elo"]["band_max_fraction"])
             self.assertEqual(fresh["progress_graph"], state["lingering_runs"]["done-run"]["progress_graph"])
             self.assertEqual(web._WEB_RUN_SNAPSHOT_VERSION, state["lingering_runs"]["done-run"]["web_snapshot_version"])
 

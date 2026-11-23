@@ -14,7 +14,7 @@ from .tasks import *
 QUEUE_MONITOR_NAME = "queue-monitor.json"
 PROGRESS_HISTORY_NAME = "progress-history.jsonl"
 FINISHED_PROGRESS_CACHE_NAME = "finished-progress.jsonl"
-PROGRESS_GRAPH_VERSION = 8
+PROGRESS_GRAPH_VERSION = 9
 ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 WORKER_REDEPLOY_INTERVAL_SECONDS = 300.0
 SIGNED_PROGRESS_SERIES = {"balance", "elo", "llr"}
@@ -3275,8 +3275,8 @@ def sprt_progress_series_options(field: str) -> dict[str, Any]:
     key = field.lower()
     if key == "elo":
         return {
-            "band_max_fraction": 0.24,
-            "band_scale": 0.35,
+            "band_max_fraction": 0.0,
+            "band_scale": 1.0,
             "band_series": "ci",
             "scale": "linear",
             "smooth": True,
@@ -3293,7 +3293,11 @@ def progress_series_options(item: dict[str, Any], *, kind: str | None = None, fi
         if key in item:
             options[key] = item[key]
     if str(kind or "").lower() == "sprt" and field.lower() == "elo":
-        options["scale"] = "linear"
+        options.update({
+            "band_max_fraction": 0.0,
+            "band_scale": 1.0,
+            "scale": "linear",
+        })
     return options
 
 def graph_series_with_options(name: str, points: list[dict[str, float]], options: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -4067,7 +4071,7 @@ def progress_graph_from_history(
                     continue
                 name = str(item.get("name") or "").strip()
                 if name:
-                    options_by_name[name] = progress_series_options(item)
+                    options_by_name[name] = progress_series_options(item, kind=kind, field=name)
     for entry in history:
         x = parse_float(entry.get("x"))
         if x is None:
