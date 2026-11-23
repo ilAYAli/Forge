@@ -1,17 +1,19 @@
 #!/usr/bin/env bash
 # Build Enyo locally on each selected worker, then atomically install it.
-# Usage: scripts/deploy_enyo.sh <commit> [--workers hosts] [--candidate|--reference]
+# Usage: scripts/deploy_enyo.sh [<commit>] [--workers hosts] [--candidate|--reference]
 set -euo pipefail
 
 usage() {
-    echo "Usage: $0 <commit> [--workers hosts] [--candidate|--reference]" >&2
+    echo "Usage: $0 [<commit>] [--workers hosts] [--candidate|--reference]" >&2
     exit 1
 }
 
-[[ $# -ge 1 ]] || usage
-HASH="$1"
-shift
-[[ "$HASH" =~ ^[0-9a-fA-F]{4,40}$ ]] || { echo "error: '$HASH' is not a commit hash" >&2; exit 1; }
+HASH="HEAD"
+if [[ $# -gt 0 && "$1" != --* ]]; then
+    HASH="$1"
+    shift
+fi
+[[ "$HASH" == "HEAD" || "$HASH" =~ ^[0-9a-fA-F]{4,40}$ ]] || { echo "error: '$HASH' is not a commit hash" >&2; exit 1; }
 
 MODE="candidate"
 MODE_SET=0
@@ -36,7 +38,7 @@ done
 CMD="set -e
 cd ~/code/chess/enyo
 git fetch --quiet
-git reset --hard $HASH
+git reset --hard "$HASH"
 if output=\$(./scripts/deploy.sh --$MODE 2>&1); then rc=0; else rc=\$?; fi
 printf '%s\\n' \"\$output\"
 if [ \"\$rc\" -ne 0 ]; then
