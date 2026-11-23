@@ -1535,6 +1535,13 @@ const done = {state:'done', created_at:'2026-07-02T21:16:00+0200', completed_at:
 console.log(JSON.stringify(runTiming(done, false)));
 console.log(JSON.stringify(runTiming({created_at:done.created_at}, true, Date.parse(done.completed_at) / 1000)));
 console.log(JSON.stringify(runTiming(runs[2], false, Date.parse('2026-07-29T22:00:00+02:00') / 1000)));
+console.log(JSON.stringify(orderDashboardRuns([
+  {run:'done-27', state:'done', created_at:'2026-11-27T12:00:00+00:00'},
+  {run:'live-23', state:'current', created_at:'2026-11-23T12:00:00+00:00'},
+  {run:'stopped-25', state:'stopped', created_at:'2026-11-25T12:00:00+00:00'},
+  {run:'queued-20', state:'queued', created_at:'2026-11-20T12:00:00+00:00'},
+  {run:'done-21', state:'done', created_at:'2026-11-21T12:00:00+00:00'},
+]).map(run => run.run)));
 """
         result = subprocess.run(
             ["node", "-e", probe],
@@ -1551,6 +1558,7 @@ console.log(JSON.stringify(runTiming(runs[2], false, Date.parse('2026-07-29T22:0
                 '{"start":"02 Jul 21:16","elapsed":"3h26m"}',
                 '{"start":"21:16","elapsed":"3h26m"}',
                 '{"start":"29 Jul 21:55","elapsed":"4m"}',
+                '["queued-20","live-23","done-27","stopped-25","done-21"]',
             ],
             result.stdout.splitlines(),
         )
@@ -12617,16 +12625,17 @@ console.log(JSON.stringify(runTiming(runs[2], false, Date.parse('2026-07-29T22:0
                 self.assertEqual(0, one_run.returncode)
                 self.assertIn("tasks=0/1", one_run.stdout)
 
-    def test_status_sorts_done_runs_by_completion_time(self) -> None:
+    def test_status_sorts_done_runs_by_creation_time(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             runs = root / "runs"
 
-            def write_done_run(name: str, completed_epoch: float) -> None:
+            def write_done_run(name: str, created_at: str, completed_epoch: float) -> None:
                 run = runs / name
                 manifest = {
                     "schema": "forge.task.v1",
                     "name": name,
+                    "created_at": created_at,
                     "work_dir": str(run),
                     "state_dir": str(run / "state"),
                     "claim_dir": str(run / "claims"),
@@ -12638,8 +12647,8 @@ console.log(JSON.stringify(runTiming(runs[2], false, Date.parse('2026-07-29T22:0
                 forge.write_json(summary_path, {"event": "run_done", "state": "ok"})
                 os.utime(summary_path, (completed_epoch, completed_epoch))
 
-            write_done_run("aaa-older-done", 100.0)
-            write_done_run("zzz-newer-done", 200.0)
+            write_done_run("aaa-older-done", "2026-11-23T12:00:00+00:00", 200.0)
+            write_done_run("zzz-newer-done", "2026-11-27T12:00:00+00:00", 100.0)
             env = {"FORGE_COORDINATOR_RUNS": "", "FORGE_RUNS_DIR": str(runs)}
 
             result = self.run_cli("status", "--done", "--json", cwd=root, env=env)
@@ -12647,7 +12656,7 @@ console.log(JSON.stringify(runTiming(runs[2], false, Date.parse('2026-07-29T22:0
         self.assertEqual(0, result.returncode)
         payload = json.loads(result.stdout)
         self.assertEqual(["zzz-newer-done", "aaa-older-done"], [run["run"] for run in payload["runs"]])
-        self.assertEqual([200.0, 100.0], [run["completed_epoch"] for run in payload["runs"]])
+        self.assertEqual([100.0, 200.0], [run["completed_epoch"] for run in payload["runs"]])
 
     def test_status_hides_never_started_pending_runs_by_default(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -13014,6 +13023,40 @@ console.log(JSON.stringify(runTiming(runs[2], false, Date.parse('2026-07-29T22:0
 
         self.assertEqual(["sprt-27", "sprt-23"], [run["run"] for run in attention])
         self.assertEqual(["sprt-27", "sprt-23"], [run["run"] for run in all_runs])
+
+    def test_status_orders_queued_then_live_then_other_runs_by_creation(self) -> None:
+        def summary(name: str, day: str, **extra: Any) -> dict[str, Any]:
+            return {
+                "run": name,
+                "created_at": f"2026-11-{day}T12:00:00+00:00",
+                "tasks": 1,
+                "counts": {
+                    "done": 0,
+                    "fail": 0,
+                    "running": 0,
+                    "claimed": 0,
+                    "stale": 0,
+                    "pending": 1,
+                },
+                **extra,
+            }
+
+        summaries = [
+            summary("stopped-27", "27", stop={}),
+            summary("live-23", "23", counts={
+                "done": 0, "fail": 0, "running": 1, "claimed": 0, "stale": 0, "pending": 0,
+            }),
+            summary("queued-new", "29", queue={"requested_epoch": 200.0}),
+            summary("stopped-21", "21", stop={}),
+            summary("queued-old", "20", queue={"requested_epoch": 100.0}),
+        ]
+
+        ordered = sorted(summaries, key=forge.run_start_sort_key)
+
+        self.assertEqual(
+            ["queued-old", "queued-new", "live-23", "stopped-27", "stopped-21"],
+            [run["run"] for run in ordered],
+        )
 
     def test_default_status_prefilters_inactive_runs(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

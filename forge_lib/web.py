@@ -507,6 +507,23 @@ _HTML = r"""<!DOCTYPE html>
       return 0;
     }
 
+    function runDashboardGroup(r) {
+      const state = String(r?.state || '');
+      if (state === 'queued' || state === 'stalled') return 0;
+      if (state === 'current' || state === 'stopping') return 1;
+      return 2;
+    }
+
+    function orderDashboardRuns(runs) {
+      const groups = [[], [], []];
+      for (const run of (runs || [])) groups[runDashboardGroup(run)].push(run);
+      const newestFirst = (a, b) => runSortEpoch(b) - runSortEpoch(a)
+        || String(b?.run || '').localeCompare(String(a?.run || ''));
+      groups[1].sort(newestFirst);
+      groups[2].sort(newestFirst);
+      return groups.flat();
+    }
+
     function runTiming(r, mobile = mobileLayout(), now = Date.now() / 1000) {
       const start = runSortEpoch(r);
       if (!start) return {start:'—', elapsed:'—'};
@@ -2154,7 +2171,19 @@ _HTML = r"""<!DOCTYPE html>
       const historyRuns = showInactiveRuns
         ? (historyData.runs || []).filter(r => !hiddenRunNames.has(String(r.run || '')))
         : [];
-      const parts = activeRuns.map(run => renderRun(run, false));
+      const runsByName = new Map(activeRuns.map(run => [String(run.run || ''), run]));
+      for (const run of historyRuns) {
+        const name = String(run.run || '');
+        if (name && !runsByName.has(name)) runsByName.set(name, run);
+      }
+      const orderedRuns = orderDashboardRuns([...runsByName.values()]);
+      const queuedRuns = orderedRuns.filter(run => runDashboardGroup(run) === 0);
+      const liveRuns = orderedRuns.filter(run => runDashboardGroup(run) === 1);
+      const otherRuns = orderedRuns.filter(run => runDashboardGroup(run) === 2);
+      const parts = [
+        ...queuedRuns.map(run => renderRun(run, false)),
+        ...liveRuns.map(run => renderRun(run, false)),
+      ];
       const collapsedFailures = Array.isArray(statusData.collapsed_failures)
         ? statusData.collapsed_failures.map(String).filter(Boolean)
         : [];
@@ -2167,8 +2196,10 @@ _HTML = r"""<!DOCTYPE html>
       }
       if (showInactiveRuns && historyData.loaded) {
         parts.push(historyNavHtml('top'));
-        parts.push(...historyRuns.map(run => renderRun(run, true)));
+        parts.push(...otherRuns.map(run => renderRun(run, true)));
         if (historyData.pages > 1) parts.push(historyNavHtml('bottom'));
+      } else {
+        parts.push(...otherRuns.map(run => renderRun(run, true)));
       }
       if (!parts.length) {
         parts.push(statusData.loading ? '<div class="empty">loading Forge status...</div>'

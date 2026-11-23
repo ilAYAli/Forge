@@ -780,41 +780,39 @@ def run_completed_sort_key(summary: dict[str, Any]) -> tuple[float, str]:
 
 
 def run_list_sort_key(summary: dict[str, Any]) -> tuple[Any, ...]:
-    state = run_state(summary)
-    if state == "stalled":
-        return (0, *run_queued_sort_key(summary))
-    if state == "queued":
-        return (1, *run_queued_sort_key(summary))
-    if state == "current":
-        return (2, -run_active_count(summary), str(summary.get("run") or ""))
-    if state == "failed":
-        return (3, -int(summary["counts"]["fail"]), str(summary.get("run") or ""))
-    if state == "stopped":
-        return (4, *run_recent_sort_key(summary))
-    if state == "done":
-        return (5, *run_completed_sort_key(summary))
-    return (6, str(summary.get("run") or ""))
+    return run_start_sort_key(summary)
 
 
 def run_attention_sort_key(summary: dict[str, Any]) -> tuple[Any, ...]:
-    active = run_active_count(summary)
-    fail = int(summary["counts"]["fail"])
-    if run_queue_stalled(summary):
-        return (0, *run_queued_sort_key(summary))
+    return run_start_sort_key(summary)
+
+
+def run_start_sort_key(summary: dict[str, Any]) -> tuple[int, float, str]:
     if run_queue_requested(summary):
-        return (1, *run_queued_sort_key(summary))
-    if active > 0 or run_launching(summary):
-        return (2, -active, str(summary["run"]))
-    if fail > 0 or run_launch_stale(summary):
-        return (3, -fail, str(summary["run"]))
-    if run_stopped_incomplete(summary):
-        return (4, *run_recent_sort_key(summary))
-    return (5, 0, str(summary["run"]))
+        queued_epoch, name = run_queued_sort_key(summary)
+        return (0, queued_epoch, name)
+
+    if run_active_count(summary) > 0 or run_launching(summary):
+        group = 1
+    else:
+        group = 2
+    created_epoch = run_start_epoch(summary)
+    return (group, -(created_epoch or 0.0), str(summary.get("run") or ""))
 
 
-def run_recent_sort_key(summary: dict[str, Any]) -> tuple[float, str]:
+def run_start_epoch(summary: dict[str, Any]) -> float | None:
     created_epoch = run_created_epoch(summary)
-    return (-created_epoch if created_epoch is not None else 0.0, str(summary.get("run") or ""))
+    if created_epoch is not None:
+        return created_epoch
+    matches = list(re.finditer(r"(\d{8})-(\d{6})(?!\d)", str(summary.get("run") or "")))
+    if not matches:
+        return None
+    try:
+        return datetime.datetime.strptime(
+            "".join(matches[-1].groups()), "%Y%m%d%H%M%S"
+        ).timestamp()
+    except ValueError:
+        return None
 
 def run_state(summary: dict[str, Any]) -> str:
     if run_queue_stalled(summary):
@@ -851,17 +849,17 @@ def filtered_run_summaries(
     include_started_pending: bool = False,
 ) -> list[dict[str, Any]]:
     if filter_name == "done":
-        return sorted((item for item in summaries if run_done(item)), key=run_completed_sort_key)
+        return sorted((item for item in summaries if run_done(item)), key=run_start_sort_key)
     if filter_name in {None, "current"}:
         filtered = [
             item for item in summaries
             if run_attention(item) or (include_started_pending and run_current(item))
         ]
-        return sorted(filtered, key=run_attention_sort_key)
+        return sorted(filtered, key=run_start_sort_key)
     if filter_name == "all":
-        return sorted(summaries, key=run_list_sort_key)
+        return sorted(summaries, key=run_start_sort_key)
     if filter_name == "failed":
-        return [item for item in summaries if run_failed(item)]
+        return sorted((item for item in summaries if run_failed(item)), key=run_start_sort_key)
     return summaries
 
 def compact_count(value: int) -> str:
