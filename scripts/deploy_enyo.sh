@@ -17,12 +17,14 @@ fi
 
 MODE="candidate"
 MODE_SET=0
+WORKERS_SET=0
 WORKER_ARGS=()
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --workers)
             [[ $# -ge 2 ]] || usage
             WORKER_ARGS+=(--workers "$2")
+            WORKERS_SET=1
             shift 2
             ;;
         --candidate|--reference)
@@ -60,4 +62,7 @@ ln -sfn \"\$destination\" \"\$engines_dir/$MODE\"
 ls -l \"\$engines_dir/$MODE\"
 trap - EXIT"
 
-exec forge sh "${WORKER_ARGS[@]}" --remote-timeout-seconds 3600 "$CMD"
+if [[ "$WORKERS_SET" -eq 1 ]]; then
+    exec forge sh "${WORKER_ARGS[@]}" --remote-timeout-seconds 3600 "$CMD"
+fi
+exec forge sh --remote-timeout-seconds 3600 "$CMD"
