@@ -12989,6 +12989,32 @@ console.log(JSON.stringify(runTiming(runs[2], false, Date.parse('2026-07-29T22:0
         self.assertEqual(["stopped-run"], [run["run"] for run in listed["runs"]])
         self.assertEqual("stopped", listed["runs"][0]["state"])
 
+    def test_status_sorts_stopped_incomplete_runs_newest_first(self) -> None:
+        summaries = [
+            {
+                "run": f"sprt-{day}",
+                "state": "stopped",
+                "tasks": 1,
+                "created_at": f"2026-11-{day}T12:00:00+00:00",
+                "stop": {},
+                "counts": {
+                    "done": 0,
+                    "fail": 0,
+                    "running": 0,
+                    "claimed": 0,
+                    "stale": 0,
+                    "pending": 1,
+                },
+            }
+            for day in ("23", "27")
+        ]
+
+        attention = sorted(summaries, key=forge.run_attention_sort_key)
+        all_runs = sorted(summaries, key=forge.run_list_sort_key)
+
+        self.assertEqual(["sprt-27", "sprt-23"], [run["run"] for run in attention])
+        self.assertEqual(["sprt-27", "sprt-23"], [run["run"] for run in all_runs])
+
     def test_default_status_prefilters_inactive_runs(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

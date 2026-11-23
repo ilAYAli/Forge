@@ -790,7 +790,7 @@ def run_list_sort_key(summary: dict[str, Any]) -> tuple[Any, ...]:
     if state == "failed":
         return (3, -int(summary["counts"]["fail"]), str(summary.get("run") or ""))
     if state == "stopped":
-        return (4, str(summary.get("run") or ""))
+        return (4, *run_recent_sort_key(summary))
     if state == "done":
         return (5, *run_completed_sort_key(summary))
     return (6, str(summary.get("run") or ""))
@@ -808,8 +808,13 @@ def run_attention_sort_key(summary: dict[str, Any]) -> tuple[Any, ...]:
     if fail > 0 or run_launch_stale(summary):
         return (3, -fail, str(summary["run"]))
     if run_stopped_incomplete(summary):
-        return (4, 0, str(summary["run"]))
+        return (4, *run_recent_sort_key(summary))
     return (5, 0, str(summary["run"]))
+
+
+def run_recent_sort_key(summary: dict[str, Any]) -> tuple[float, str]:
+    created_epoch = run_created_epoch(summary)
+    return (-created_epoch if created_epoch is not None else 0.0, str(summary.get("run") or ""))
 
 def run_state(summary: dict[str, Any]) -> str:
     if run_queue_stalled(summary):
