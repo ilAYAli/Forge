@@ -505,16 +505,23 @@ def resolve_worker_path_symlink(path: Path) -> Path:
         return path.resolve(strict=False)
     return path
 
-def worker_path_parameter(value: str, *, directory_executable: str = "") -> str:
+def worker_path_parameter(
+    value: str,
+    *,
+    directory_executable: str = "",
+    preserve_symlink: bool = False,
+) -> str:
     if value and not value.startswith("~") and not Path(value).is_absolute():
         cwd = Path(os.environ.get("PWD") or str(Path.cwd()))
         value = os.path.normpath(str(cwd / value))
     local = Path(os.path.expandvars(value)).expanduser()
     if directory_executable:
         if local.is_dir():
-            local = resolve_worker_path_symlink(local)
+            if not preserve_symlink:
+                local = resolve_worker_path_symlink(local)
             local = local / directory_executable
-    local = resolve_worker_path_symlink(local)
+    if not preserve_symlink:
+        local = resolve_worker_path_symlink(local)
     value = str(local)
     home = str(Path.home())
     if value == home:
@@ -547,7 +554,7 @@ def validate_parameter_path_context(
     if value == "~" or value.startswith("~/"):
         return
     raise SystemExit(
-        f"{template_name}: {template_arg_name(parameter_name)} must resolve beneath "
+        f"{template_name}: {template_arg_name(parameter_name)} must be beneath "
         f"the orchestrator home directory so it can be represented as ~/...: {value}"
     )
 
@@ -677,10 +684,12 @@ def parse_template_parameters_with_unknown(
             continue
         value = values.get(str(name))
         directory_executable = str(spec.get("directory_executable") or "")
+        preserve_symlink = spec.get("path_context") == "shared_home"
         if isinstance(value, str):
             values[str(name)] = worker_path_parameter(
                 value,
                 directory_executable=directory_executable,
+                preserve_symlink=preserve_symlink,
             )
             validate_parameter_path_context(
                 values[str(name)],
@@ -696,7 +705,11 @@ def parse_template_parameters_with_unknown(
             )
         elif isinstance(value, list):
             values[str(name)] = [
-                worker_path_parameter(item, directory_executable=directory_executable)
+                worker_path_parameter(
+                    item,
+                    directory_executable=directory_executable,
+                    preserve_symlink=preserve_symlink,
+                )
                 if isinstance(item, str) else item
                 for item in value
             ]
@@ -804,7 +817,10 @@ def normalize_file_paths(parameters: dict[str, Any], values: dict[str, Any]) -> 
         for item in items:
             name, separator, value = str(item).partition("=")
             if separator and value and name.lower() in file_options:
-                value = worker_path_parameter(value)
+                value = worker_path_parameter(
+                    value,
+                    preserve_symlink=spec.get("path_context") == "shared_home",
+                )
             normalized.append(f"{name}={value}" if separator else name)
         values[key] = normalized
 

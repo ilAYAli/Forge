@@ -3472,6 +3472,28 @@ console.log(JSON.stringify(runTiming(runs[2], false, Date.parse('2026-07-29T22:0
 
         self.assertTrue(params["item"].startswith("~/"))
 
+    def test_shared_home_path_context_preserves_home_relative_symlink(self) -> None:
+        with (
+            tempfile.TemporaryDirectory(dir=Path.home()) as home_tmp,
+            tempfile.TemporaryDirectory() as target_tmp,
+        ):
+            target = Path(target_tmp) / "stockfish"
+            target.write_text("engine\n", encoding="utf-8")
+            alias = Path(home_tmp) / "stockfish"
+            alias.symlink_to(target)
+            template_path = self.write_test_template(Path(home_tmp))
+            template = forge.load_template(template_path)
+            template["parameters"]["item"]["path_context"] = "shared_home"
+
+            params = forge.parse_template_parameters(
+                "demo",
+                template,
+                ["--item", str(alias), "--total", "10"],
+            )
+
+        relative_alias = alias.relative_to(Path.home()).as_posix()
+        self.assertEqual(f"~/{relative_alias}", params["item"])
+
     def test_shared_home_path_context_rejects_path_outside_orchestrator_home(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             template_path = self.write_test_template(Path(tmp))
@@ -3480,7 +3502,7 @@ console.log(JSON.stringify(runTiming(runs[2], false, Date.parse('2026-07-29T22:0
 
             with self.assertRaisesRegex(
                 SystemExit,
-                "must resolve beneath the orchestrator home directory",
+                "must be beneath the orchestrator home directory",
             ):
                 forge.parse_template_parameters(
                     "demo",
