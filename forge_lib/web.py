@@ -3036,7 +3036,7 @@ def _collect_live_status_payload() -> dict[str, Any]:
         run for run in data.get("runs", [])
         if isinstance(run, dict)
         and (
-            _run_payload_state(run) in {"current", "stopping", "queued", "stalled"}
+            _run_payload_state(run) in {"current", "stopping", "queued", "stalled", "stopped"}
             or _payload_active_count(run) > 0
         )
     ]

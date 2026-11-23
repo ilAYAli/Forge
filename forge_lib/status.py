@@ -396,13 +396,36 @@ def run_dir_has_terminal_completion(run_dir: Path) -> bool:
         return False
 
 
+def run_stopped_summary_is_incomplete(run_dir: Path) -> bool:
+    try:
+        summary = read_json(run_dir / RUN_SUMMARY_NAME)
+    except (FileNotFoundError, OSError, TypeError, ValueError):
+        return False
+    if not isinstance(summary, dict) or summary.get("event") != "run_stopped":
+        return False
+    counts = summary.get("counts")
+    if not isinstance(counts, dict):
+        return False
+    try:
+        return not (
+            int(counts.get("done") or 0) == int(summary.get("tasks") or 0)
+            and int(counts.get("fail") or 0) == 0
+            and int(counts.get("running") or 0) == 0
+            and int(counts.get("claimed") or 0) == 0
+            and int(counts.get("stale") or 0) == 0
+            and int(counts.get("pending") or 0) == 0
+        )
+    except (TypeError, ValueError):
+        return False
+
+
 def run_dir_has_attention_state(run_dir: Path) -> bool:
     """Fast attention-state check from directory structure, no manifest load needed."""
     state = run_dir / "state"
     claims = run_dir / "claims"
     try:
         if run_dir_has_terminal_completion(run_dir):
-            return False
+            return run_stopped_summary_is_incomplete(run_dir)
         if (state / "queue.json").exists() or (state / "launch.json").exists() or (state / "stop.json").exists():
             return True
         # Single pass over state dir to check both fail and running markers.
@@ -552,7 +575,7 @@ def run_manifest_has_attention_state(manifest: dict[str, Any]) -> bool:
     try:
         state = state_dir(manifest)
         if run_dir_has_terminal_completion(state.parent):
-            return False
+            return run_stopped_summary_is_incomplete(state.parent)
         if queue_request_path(manifest).exists() or launch_request_path(manifest).exists() or stop_request_path(manifest).exists():
             return True
         if any(state.glob("*.fail.json")) or any(state.glob("*.running.json")):

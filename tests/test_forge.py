@@ -358,7 +358,7 @@ class ForgeTests(unittest.TestCase):
         self.assertIn("@media (orientation: landscape) and (max-height: 560px)", web._HTML)
         self.assertIn(".history-run .run-meta { display:none; }", web._HTML)
 
-    def test_live_status_excludes_completed_history(self) -> None:
+    def test_live_status_includes_stopped_runs_but_excludes_completed_history(self) -> None:
         import forge_lib.web as web
 
         payload = {
@@ -366,6 +366,12 @@ class ForgeTests(unittest.TestCase):
                 {"run": "restarted-old-run", "state": "current", "running": 1},
                 {"run": "queued-first", "state": "queued", "running": 0},
                 {"run": "queued-second", "state": "queued", "running": 0},
+                {
+                    "run": "stopped-incomplete",
+                    "state": "stopped",
+                    "tasks": 2,
+                    "counts": {"done": 1, "fail": 0, "running": 0, "claimed": 0, "stale": 0, "pending": 1},
+                },
                 {"run": "old", "state": "done", "running": 0},
             ]
         }
@@ -376,7 +382,7 @@ class ForgeTests(unittest.TestCase):
             live = web._collect_live_status_payload()
 
         self.assertEqual(
-            ["restarted-old-run", "queued-first", "queued-second"],
+            ["restarted-old-run", "queued-first", "queued-second", "stopped-incomplete"],
             [run["run"] for run in live["runs"]],
         )
         self.assertNotIn("compareRunsByCreated", web._HTML)
@@ -12960,6 +12966,11 @@ console.log(JSON.stringify(runTiming(runs[2], false, Date.parse('2026-07-29T22:0
             forge.write_json(run / "manifest.json", manifest)
             forge.write_json(state / "task_0.done.json", {"task": "task_0", "host": "worker"})
             forge.write_json(forge.stop_request_path(manifest), {"run": "stopped-run"})
+            forge.write_json(run / "summary.json", {
+                "event": "run_stopped",
+                "tasks": 2,
+                "counts": {"done": 1, "fail": 0, "running": 0, "claimed": 0, "stale": 0, "pending": 1},
+            })
             env = {"FORGE_COORDINATOR_RUNS": "", "FORGE_RUNS_DIR": str(root / "runs")}
 
             status = self.run_cli("status", "stopped-run", "--json", cwd=root, env=env)
