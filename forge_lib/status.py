@@ -239,6 +239,23 @@ def state_control_command_args(name: str, args: argparse.Namespace) -> list[str]
 def run_state_control_on_coordinator(name: str, args: argparse.Namespace, coordinator_runs: str) -> int:
     host, runs_path = parse_coordinator(coordinator_runs)
     command = state_control_command_args(name, args)
+    if sys.stdin.isatty() and sys.stdout.isatty():
+        # Interactive: give the coordinator-side command the terminal so its
+        # prompts (for example del's confirmation) work.
+        print(f"coordinator: {coordinator_runs}", flush=True)
+        if host:
+            remote = (
+                "command -v forge >/dev/null 2>&1 || "
+                "{ echo 'forge not found in PATH on coordinator' >&2; exit 127; }; "
+                f"exec env {shlex.quote(COORDINATOR_RUNS_ENV)}= "
+                f"{shlex.quote(RUNS_DIR_ENV)}={shlex.quote(runs_path)} "
+                f"forge {shell_join(command)}"
+            )
+            return subprocess.run(["ssh", "-t", *SSH_OPTS, host, remote], check=False).returncode
+        env = os.environ.copy()
+        env[COORDINATOR_RUNS_ENV] = ""
+        env[RUNS_DIR_ENV] = runs_path
+        return subprocess.run([sys.executable, str(script_path()), *command], check=False, env=env).returncode
     if host:
         remote = (
             "command -v forge >/dev/null 2>&1 || "
