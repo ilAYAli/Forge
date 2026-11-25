@@ -3744,7 +3744,7 @@ def clear_worker_id_drains(manifest: dict[str, Any], worker_ids: set[str]) -> No
     for worker_id in worker_ids:
         worker_drain_path(manifest, worker_id).unlink(missing_ok=True)
 
-def persist_worker_utilization(host: str, utilization: str) -> str:
+def persist_worker_utilization(host: str, utilization: str, *, remember_previous: bool = True) -> str:
     """Save a host's utilization in workers.json so future runs use it too."""
     from .config import config_workers_path
 
@@ -3758,8 +3758,9 @@ def persist_worker_utilization(host: str, utilization: str) -> str:
     for record in records:
         if isinstance(record, dict) and str(record.get("host") or "") == host:
             previous = str(record.get("utilization") or DEFAULT_UTILIZATION)
-            if previous != utilization:
-                # What `worker set <host>:restore` goes back to.
+            if remember_previous and previous != utilization:
+                # What `worker set <host>:restore` goes back to; a restore
+                # itself keeps it, so repeating a restore changes nothing.
                 record["previous_utilization"] = previous
             record["utilization"] = utilization
             record.pop("slots", None)
@@ -3809,7 +3810,8 @@ def cmd_worker_set(args: argparse.Namespace) -> int:
     coordinator_runs = configured_coordinator_runs()
     if coordinator_runs and status_can_delegate(args.run):
         return run_worker_control_on_coordinator("set", args, coordinator_runs)
-    if str(args.worker).endswith(":restore"):
+    restoring = str(args.worker).endswith(":restore")
+    if restoring:
         restore_host = str(args.worker).rsplit(":", 1)[0]
         args = copy.copy(args)
         args.worker = f"{restore_host}:{saved_previous_utilization(restore_host)}"
@@ -3817,7 +3819,7 @@ def cmd_worker_set(args: argparse.Namespace) -> int:
     # future runs (unless --run-only), then apply it to the active run.
     spec_host, _, spec_utilization = parse_inline_worker_spec(str(args.worker))
     if spec_utilization is not None and not bool(getattr(args, "run_only", False)):
-        print(persist_worker_utilization(spec_host, spec_utilization), flush=True)
+        print(persist_worker_utilization(spec_host, spec_utilization, remember_previous=not restoring), flush=True)
     try:
         targets = worker_run_paths(args.run, lease_seconds=args.lease_seconds)
     except SystemExit as exc:

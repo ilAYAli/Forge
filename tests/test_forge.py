@@ -9064,6 +9064,12 @@ console.log(JSON.stringify(orderDashboardRuns([
                     contextlib.redirect_stdout(io.StringIO()):
                 for spec in ("pwa-mbp:0", "pwa-mbp:0", "pwa-mbp:restore"):
                     forge.cmd_worker_set(forge.build_parser().parse_args(["worker", "set", spec]))
+                self.assertEqual("80%", forge.read_json(workers)["workers"][0]["utilization"])
+                # Repeating a restore must not swap back to the value before it.
+                forge.cmd_worker_set(forge.build_parser().parse_args(["worker", "set", "pwa-mbp:restore"]))
+                self.assertEqual("80%", forge.read_json(workers)["workers"][0]["utilization"])
+                forge.cmd_worker_set(forge.build_parser().parse_args(["worker", "set", "pwa-mbp:0", "--force"]))
+                forge.cmd_worker_set(forge.build_parser().parse_args(["worker", "set", "pwa-mbp:restore"]))
             self.assertEqual("80%", forge.read_json(workers)["workers"][0]["utilization"])
 
     def test_worker_set_run_only_does_not_save(self) -> None:
