@@ -241,10 +241,11 @@ forge worker set worker3:0
 `worker set` saves the host's utilization in the coordinator's
 `~/.config/forge/workers.json`, so it also holds for future runs, and applies
 it to the active run (or the named one) if there is one. `--run-only` changes
-only the run. `forge worker get worker3` prints the saved utilization, so a
-program that needs a host for a while (a lichess bot, say) can run
-`forge worker set worker3:0 --force` when it starts and restore the printed
-value when it exits. In the run it updates that host in `<run>/workers.json` and
+only the run. `forge worker get worker3` prints the saved utilization, and
+`forge worker set worker3:restore` goes back to the value before the last
+change, so a program that needs a host for a while (a lichess bot, say) runs
+`forge worker set worker3:0 --force` when it starts and
+`forge worker set worker3:restore` when it exits. In the run it updates that host in `<run>/workers.json` and
 resizes it from its detected hardware (see [Capacity](#capacity)). Missing worker
 processes are started. Lowering the share drains the extra processes: they
 finish their current task, stop claiming, and exit. `--force` kills them

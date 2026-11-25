@@ -3758,6 +3758,9 @@ def persist_worker_utilization(host: str, utilization: str) -> str:
     for record in records:
         if isinstance(record, dict) and str(record.get("host") or "") == host:
             previous = str(record.get("utilization") or DEFAULT_UTILIZATION)
+            if previous != utilization:
+                # What `worker set <host>:restore` goes back to.
+                record["previous_utilization"] = previous
             record["utilization"] = utilization
             record.pop("slots", None)
             write_json(path, payload)
@@ -3779,6 +3782,16 @@ def saved_worker_utilization(host: str) -> str:
             return normalize_utilization(record.get("utilization") or DEFAULT_UTILIZATION, label=host)
     raise SystemExit(f"{host} is not in {path}")
 
+def saved_previous_utilization(host: str) -> str:
+    from .config import config_workers_path
+
+    path = config_workers_path()
+    payload = read_json(path) if path.exists() else {}
+    for record in payload.get("workers") or [] if isinstance(payload, dict) else []:
+        if isinstance(record, dict) and str(record.get("host") or "") == host:
+            return str(record.get("previous_utilization") or DEFAULT_UTILIZATION)
+    return DEFAULT_UTILIZATION
+
 def cmd_worker_get(args: argparse.Namespace) -> int:
     """Print a host's saved utilization (as accepted by worker set)."""
     coordinator_runs = configured_coordinator_runs()
@@ -3796,6 +3809,10 @@ def cmd_worker_set(args: argparse.Namespace) -> int:
     coordinator_runs = configured_coordinator_runs()
     if coordinator_runs and status_can_delegate(args.run):
         return run_worker_control_on_coordinator("set", args, coordinator_runs)
+    if str(args.worker).endswith(":restore"):
+        restore_host = str(args.worker).rsplit(":", 1)[0]
+        args = copy.copy(args)
+        args.worker = f"{restore_host}:{saved_previous_utilization(restore_host)}"
     # The setting is a property of the host, not of one run: keep it for
     # future runs (unless --run-only), then apply it to the active run.
     spec_host, _, spec_utilization = parse_inline_worker_spec(str(args.worker))

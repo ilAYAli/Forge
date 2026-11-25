@@ -9053,6 +9053,19 @@ console.log(JSON.stringify(orderDashboardRuns([
                 with self.assertRaises(SystemExit):
                     forge.cmd_worker_get(forge.build_parser().parse_args(["worker", "get", "nope"]))
 
+    def test_worker_set_restore_returns_to_previous_utilization(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config = Path(tmp) / "config.yml"
+            workers = Path(tmp) / "workers.json"
+            forge.write_json(workers, {"schema": "forge.workers.v1", "workers": [{"host": "pwa-mbp", "utilization": "80%"}]})
+            with mock.patch.dict(os.environ, {"FORGE_CONFIG": str(config)}), \
+                    mock.patch("forge_lib.workers.configured_coordinator_runs", return_value=None), \
+                    mock.patch("forge_lib.workers.single_active_local_run_name", side_effect=SystemExit("no active run")), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                for spec in ("pwa-mbp:0", "pwa-mbp:0", "pwa-mbp:restore"):
+                    forge.cmd_worker_set(forge.build_parser().parse_args(["worker", "set", spec]))
+            self.assertEqual("80%", forge.read_json(workers)["workers"][0]["utilization"])
+
     def test_worker_set_run_only_does_not_save(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             config = Path(tmp) / "config.yml"
