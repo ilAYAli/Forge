@@ -230,16 +230,19 @@ Ctrl+C during setup or `--wait` performs the same cleanup before returning
 status 130. Coordinator temporary files are removed, and the stopped run can be
 continued with `forge resume <run>` without duplicate output.
 
-Change a worker's utilization for an incomplete run:
+Change a worker's utilization:
 
 ```sh
-forge worker set worker3:50% my-run
-forge worker set worker3:max my-run
-forge worker set worker3:0 my-run
+forge worker set worker3:50%
+forge worker set worker3:max
+forge worker set worker3:0
 ```
 
-`worker set` updates only that host in `<run>/workers.json` and resizes it
-from its detected hardware (see [Capacity](#capacity)). Missing worker
+`worker set` saves the host's utilization in the coordinator's
+`~/.config/forge/workers.json`, so it also holds for future runs, and applies
+it to the active run (or the named one) if there is one. `--run-only` changes
+only the run. In the run it updates that host in `<run>/workers.json` and
+resizes it from its detected hardware (see [Capacity](#capacity)). Missing worker
 processes are started. Lowering the share drains the extra processes: they
 finish their current task, stop claiming, and exit. `--force` kills them
 instead, and also allows a thread count above the detected hardware.
@@ -322,7 +325,11 @@ Workers files as JSON:
 ```
 
 Object workers support `host`, `profile`, `python`, `local`, `cache_dir`,
-`utilization`, `resources`, `env`, and `enabled`. `resources` is a non-empty list
+`utilization`, `reserve`, `resources`, `env`, and `enabled`. `reserve` maps a
+program to performance cores Forge keeps free while it runs, for example
+`"reserve": {"lichess-bot": 4}`: as long as a process whose command line
+contains `lichess-bot` runs on that host, timed tasks leave 4 cores alone,
+also while the bot is idle between games. `resources` is a non-empty list
 containing `cpu` and/or `gpu`; omitted workers are CPU-only. `env` maps shell
 variable names to literal string values and is exported for every Forge command
 on that worker (for example, a CUDA toolkit path). Inline entries inherit matching
@@ -361,8 +368,8 @@ A host's `utilization` (default `100%`) is then turned into a slot count:
 the threads or cores in its share, divided by the per-task cost, and capped
 so the tasks fit in 90% of the host's memory share. Any share above zero runs
 at least one task. Precedence is the `--workers host:…` suffix, then the
-`workers.json` `utilization`, then 100%. `forge worker set` changes only the
-active run, never `workers.json`. An old `slots` value in `workers.json` is
+`workers.json` `utilization`, then 100%. `forge worker set` saves the host's
+utilization in `workers.json` and applies it to the active run. An old `slots` value in `workers.json` is
 ignored, with a warning.
 
 Example on a 12-core/24-thread Linux host and a 10P+4E Mac:

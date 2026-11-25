@@ -15,6 +15,9 @@ import os
 # Deterministic worker hardware for capacity resolution; never probe real hosts.
 os.environ["FORGE_HARDWARE"] = '{"threads": 64, "cores": 64, "memory_mb": 262144}'
 os.environ["FORGE_CPU_GATE"] = "0"
+# Never read or write the user's real ~/.config/forge (worker set saves utilization there).
+import tempfile as _tempfile  # noqa: E402
+os.environ["FORGE_CONFIG"] = os.path.join(_tempfile.mkdtemp(prefix="forge-test-config-"), "config.yml")
 from forge_lib.labeling import (
     INVENTORY_SCHEMA,
     build_inventory,

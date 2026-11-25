@@ -29,6 +29,9 @@ sys.path.insert(0, str(ROOT))
 # Deterministic worker hardware for capacity resolution; never probe real hosts.
 os.environ["FORGE_HARDWARE"] = '{"threads": 64, "cores": 64, "memory_mb": 262144}'
 os.environ["FORGE_CPU_GATE"] = "0"
+# Never read or write the user's real ~/.config/forge (worker set saves utilization there).
+import tempfile as _tempfile  # noqa: E402
+os.environ["FORGE_CONFIG"] = os.path.join(_tempfile.mkdtemp(prefix="forge-test-config-"), "config.yml")
 import forge  # noqa: E402
 
 
@@ -9002,6 +9005,47 @@ console.log(JSON.stringify(orderDashboardRuns([
                 self.assertEqual("unknown", unknown["profile"])
                 with self.assertRaises(SystemExit):
                     forge.worker_set_record_from_arg("worker-b")
+
+    def test_worker_set_saves_utilization_for_future_runs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config = Path(tmp) / "config.yml"
+            workers = Path(tmp) / "workers.json"
+            forge.write_json(workers, {
+                "schema": "forge.workers.v1",
+                "workers": [
+                    {"host": "pwa-mbp", "profile": "pwa-mbp", "utilization": "80%"},
+                    {"host": "pwa-wrk", "profile": "linux", "slots": 16},
+                ],
+            })
+            args = forge.build_parser().parse_args(["worker", "set", "pwa-mbp:0"])
+            with mock.patch.dict(os.environ, {"FORGE_CONFIG": str(config)}), \
+                    mock.patch("forge_lib.workers.configured_coordinator_runs", return_value=None), \
+                    mock.patch("forge_lib.workers.single_active_local_run_name", side_effect=SystemExit("no active run")), \
+                    contextlib.redirect_stdout(io.StringIO()) as stdout:
+                self.assertEqual(0, forge.cmd_worker_set(args))
+                self.assertIn("pwa-mbp utilization 80%->0", stdout.getvalue())
+                self.assertIn("applies to the next run", stdout.getvalue())
+                saved = forge.read_json(workers)["workers"]
+                self.assertEqual("0", saved[0]["utilization"])
+                # Legacy slots are replaced by the saved utilization.
+                forge.cmd_worker_set(forge.build_parser().parse_args(["worker", "set", "pwa-wrk:max"]))
+                saved = forge.read_json(workers)["workers"]
+                self.assertEqual({"host": "pwa-wrk", "profile": "linux", "utilization": "100%"}, saved[1])
+
+    def test_worker_set_run_only_does_not_save(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config = Path(tmp) / "config.yml"
+            workers = Path(tmp) / "workers.json"
+            original = {"schema": "forge.workers.v1", "workers": [{"host": "pwa-mbp", "utilization": "80%"}]}
+            forge.write_json(workers, original)
+            args = forge.build_parser().parse_args(["worker", "set", "pwa-mbp:50%", "--run-only"])
+            with mock.patch.dict(os.environ, {"FORGE_CONFIG": str(config)}), \
+                    mock.patch("forge_lib.workers.configured_coordinator_runs", return_value=None), \
+                    mock.patch("forge_lib.workers.single_active_local_run_name", side_effect=SystemExit("no active run")):
+                with self.assertRaises(SystemExit):
+                    forge.cmd_worker_set(args)
+            self.assertEqual(original, forge.read_json(workers))
+            self.assertIn("--run-only", forge.worker_control_command_args("set", args))
 
     def test_worker_set_launch_preserves_all_default_workers(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

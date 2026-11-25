@@ -204,11 +204,16 @@ def add_worker_set_options(parser: argparse.ArgumentParser) -> None:
             "Lowering it drains extra worker processes after their current task."
         ),
     )
-    parser.add_argument("run", nargs="?", help="Run name or run directory. Omit to use the single active run.")
+    parser.add_argument("run", nargs="?", help="Run name or run directory. Omit to use the single active run (if any).")
     parser.add_argument(
         "--force",
         action="store_true",
         help="Allow a thread budget above the detected hardware, and kill excess worker processes instead of draining them.",
+    )
+    parser.add_argument(
+        "--run-only",
+        action="store_true",
+        help="Change only the run; by default the utilization is also saved in workers.json for future runs.",
     )
     parser.add_argument("--jobs", type=int, default=4, help="Maximum workers to prepare concurrently.")
     parser.add_argument("--task-attempts", type=int, default=2, help="Total attempts per task before final failure.")

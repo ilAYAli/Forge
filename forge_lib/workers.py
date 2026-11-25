@@ -12,6 +12,7 @@ from .tasks import *
 from .status import *
 from .labeling import VERIFIED_MARKER_NAME, marker_matches
 from .capacity import (
+    DEFAULT_UTILIZATION,
     manifest_task_resources,
     normalize_utilization,
     resolve_workers_payload,
@@ -351,6 +352,8 @@ def parse_worker_record(item: Any) -> dict[str, Any]:
         record["env"] = worker_environment(item)
     if "resources" in item:
         record["resources"] = sorted(worker_resources(item))
+    if item.get("reserve") is not None:
+        record["reserve"] = parse_cpu_reserve(item["reserve"], label=host)
     if item.get("path_map") is not None:
         path_map = item["path_map"]
         if not isinstance(path_map, dict):
@@ -358,6 +361,19 @@ def parse_worker_record(item: Any) -> dict[str, Any]:
         record["path_map"] = {str(src): str(dst) for src, dst in path_map.items()}
     return record
 
+
+def parse_cpu_reserve(value: Any, *, label: str) -> dict[str, int]:
+    """``{"<command-line substring>": <performance cores>}`` kept free for that program."""
+    if not isinstance(value, dict):
+        raise SystemExit(f"{label}: reserve must map a process name to a core count")
+    reserve: dict[str, int] = {}
+    for pattern, cores in value.items():
+        if not isinstance(pattern, str) or not pattern.strip():
+            raise SystemExit(f"{label}: reserve process names must be non-empty strings")
+        if isinstance(cores, bool) or not isinstance(cores, int) or cores < 0:
+            raise SystemExit(f"{label}: reserve core counts must be non-negative integers")
+        reserve[pattern.strip()] = cores
+    return reserve
 
 def worker_environment(worker: dict[str, Any]) -> dict[str, str]:
     """Return validated environment variables declared for a worker."""
@@ -668,6 +684,9 @@ def run_worker_shell(
     retries: int = 0,
 ) -> subprocess.CompletedProcess[str]:
     environment = worker_environment(worker)
+    if worker.get("reserve"):
+        # Read by the worker's CPU gate (capacity.cpu_gate_acquire).
+        environment["FORGE_CPU_RESERVE"] = json.dumps(worker["reserve"], sort_keys=True)
     if environment:
         exports = " ".join(f"{name}={shlex.quote(value)}" for name, value in sorted(environment.items()))
         script = f"export {exports}; {script}"
@@ -3309,6 +3328,8 @@ def worker_control_command_args(action: str, args: argparse.Namespace) -> list[s
     if action in ("add", "set"):
         if action == "set" and bool(getattr(args, "force", False)):
             command.append("--force")
+        if action == "set" and bool(getattr(args, "run_only", False)):
+            command.append("--run-only")
         if bool(getattr(args, "wait", False)):
             command.append("--wait")
         if getattr(args, "verify", None) is True:
@@ -3355,10 +3376,15 @@ def worker_control_command_args(action: str, args: argparse.Namespace) -> list[s
 def run_worker_control_on_coordinator(action: str, args: argparse.Namespace, coordinator_runs: str) -> int:
     if args.run is None:
         args = copy.copy(args)
-        args.run = single_active_coordinator_run_name(
-            coordinator_runs,
-            lease_seconds=int(args.lease_seconds),
-        )
+        try:
+            args.run = single_active_coordinator_run_name(
+                coordinator_runs,
+                lease_seconds=int(args.lease_seconds),
+            )
+        except SystemExit:
+            # worker set without an active run still saves the utilization.
+            if action != "set":
+                raise
     host, runs_path = parse_coordinator(coordinator_runs)
     command = worker_control_command_args(action, args)
     if host:
@@ -3736,11 +3762,42 @@ def clear_worker_id_drains(manifest: dict[str, Any], worker_ids: set[str]) -> No
     for worker_id in worker_ids:
         worker_drain_path(manifest, worker_id).unlink(missing_ok=True)
 
+def persist_worker_utilization(host: str, utilization: str) -> str:
+    """Save a host's utilization in workers.json so future runs use it too."""
+    from .config import config_workers_path
+
+    path = config_workers_path()
+    if not path.exists():
+        return f"worker set: {path} not found; utilization not saved"
+    payload = read_json(path)
+    records = payload.get("workers") if isinstance(payload, dict) else None
+    if not isinstance(records, list):
+        return f"worker set: {path} has no workers list; utilization not saved"
+    for record in records:
+        if isinstance(record, dict) and str(record.get("host") or "") == host:
+            previous = str(record.get("utilization") or DEFAULT_UTILIZATION)
+            record["utilization"] = utilization
+            record.pop("slots", None)
+            write_json(path, payload)
+            return f"worker set: saved {host} utilization {previous}->{utilization} in {path}"
+    return f"worker set: {host} is not in {path}; utilization not saved"
+
 def cmd_worker_set(args: argparse.Namespace) -> int:
     coordinator_runs = configured_coordinator_runs()
     if coordinator_runs and status_can_delegate(args.run):
         return run_worker_control_on_coordinator("set", args, coordinator_runs)
-    targets = worker_run_paths(args.run, lease_seconds=args.lease_seconds)
+    # The setting is a property of the host, not of one run: keep it for
+    # future runs (unless --run-only), then apply it to the active run.
+    spec_host, _, spec_utilization = parse_inline_worker_spec(str(args.worker))
+    if spec_utilization is not None and not bool(getattr(args, "run_only", False)):
+        print(persist_worker_utilization(spec_host, spec_utilization), flush=True)
+    try:
+        targets = worker_run_paths(args.run, lease_seconds=args.lease_seconds)
+    except SystemExit as exc:
+        if args.run is None and spec_utilization is not None and not bool(getattr(args, "run_only", False)):
+            print(f"worker set: no active run ({exc}); applies to the next run")
+            return 0
+        raise
     failed = 0
     for run_name, manifest_path, workers_path in targets:
         force = bool(getattr(args, "force", False))
