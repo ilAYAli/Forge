@@ -3,6 +3,7 @@ from .config import *
 from .manifest import *
 from .tasks import *
 from .status import *
+from .capacity import *
 from .workers import *
 from .templates import *
 from .shell import *

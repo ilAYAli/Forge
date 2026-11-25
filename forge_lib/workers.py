@@ -11,9 +11,14 @@ from .manifest import *
 from .tasks import *
 from .status import *
 from .labeling import VERIFIED_MARKER_NAME, marker_matches
+from .capacity import (
+    manifest_task_resources,
+    normalize_utilization,
+    resolve_workers_payload,
+    utilization_is_zero,
+)
 
 
-DEFAULT_INLINE_WORKER_SLOTS = 8
 SSH_CONFIG_TIMEOUT_SECONDS = 5.0
 DEPLOY_BOOTSTRAP_TIMEOUT_SECONDS = 60.0
 DEPLOY_STARTUP_TIMEOUT_SECONDS = 20.0
@@ -113,17 +118,13 @@ def worker_arg_looks_like_path(value: str) -> bool:
         or os.path.sep in value
     )
 
-def parse_inline_worker_spec(value: str) -> tuple[str, str | None, int | None]:
+def parse_inline_worker_spec(value: str) -> tuple[str, str | None, str | None]:
+    """Parse ``host[=profile][:utilization]``; utilization is N%, a thread count, or max."""
     spec = value.strip()
-    slots: int | None = None
+    utilization: str | None = None
     if ":" in spec:
-        spec, slot_text = spec.rsplit(":", 1)
-        try:
-            slots = int(slot_text)
-        except ValueError as exc:
-            raise SystemExit(f"{value}: worker slots must be a non-negative integer") from exc
-        if slots < 0:
-            raise SystemExit(f"{value}: worker slots must be a non-negative integer")
+        spec, utilization_text = spec.rsplit(":", 1)
+        utilization = normalize_utilization(utilization_text, label=value)
     if "=" in spec:
         host, profile = spec.split("=", 1)
         profile = profile.strip()
@@ -134,7 +135,7 @@ def parse_inline_worker_spec(value: str) -> tuple[str, str | None, int | None]:
         raise SystemExit("worker host must not be empty")
     if profile is not None and not profile:
         raise SystemExit(f"{host}: worker profile must not be empty")
-    return host, profile, slots
+    return host, profile, utilization
 
 def default_inline_worker_records(path: str | Path | None = None) -> dict[str, dict[str, Any]]:
     if path is None:
@@ -164,7 +165,7 @@ def default_inline_worker_records(path: str | Path | None = None) -> dict[str, d
     return records
 
 def inline_worker_record(entry: str, defaults: dict[str, dict[str, Any]]) -> dict[str, Any]:
-    host, profile, slots = parse_inline_worker_spec(entry)
+    host, profile, utilization = parse_inline_worker_spec(entry)
     base = dict(defaults.get(host, {}))
     record = base if base else {
         "host": host,
@@ -178,14 +179,12 @@ def inline_worker_record(entry: str, defaults: dict[str, dict[str, Any]]) -> dic
         record["profile"] = host
     if "local" not in record:
         record["local"] = host in ("localhost", "127.0.0.1")
-    if slots is None:
-        slots = int(record.get("slots", DEFAULT_INLINE_WORKER_SLOTS if not base else 1))
-    if slots == 0:
-        return {}
-    if slots == 1:
+    if utilization is not None:
+        if utilization_is_zero(utilization):
+            return {}
+        record["utilization"] = utilization
         record.pop("slots", None)
-    else:
-        record["slots"] = slots
+        record.pop("capacity", None)
     return record
 
 def parse_inline_workers(value: str, *, defaults_path: str | Path | None = None) -> dict[str, Any]:
@@ -334,9 +333,16 @@ def parse_worker_record(item: Any) -> dict[str, Any]:
         "profile": profile,
         "local": bool(item.get("local", host in ("localhost", "127.0.0.1"))),
     }
+    if item.get("utilization") is not None:
+        record["utilization"] = normalize_utilization(item["utilization"], label=host)
+    # Run snapshots carry the slot count resolved from utilization (with a
+    # capacity record).  A slots value without capacity is legacy config and
+    # is ignored when the host is resolved again.
     slots = parse_worker_slots(item.get("slots", 1), label=host)
     if slots != 1:
         record["slots"] = slots
+    if isinstance(item.get("capacity"), dict):
+        record["capacity"] = item["capacity"]
     if item.get("cache_dir"):
         record["cache_dir"] = str(item["cache_dir"])
     if item.get("python"):
@@ -464,38 +470,17 @@ def worker_set_record_from_arg(
     value: str,
     *,
     inline_defaults_path: str | Path | None = None,
-    notices: list[str] | None = None,
-    force: bool = False,
 ) -> dict[str, Any]:
+    """Return the unresolved worker record for ``host[=profile]:utilization``."""
     if "," in value:
         raise SystemExit("worker set accepts a single worker spec")
-    spec, separator, slot_text = value.rpartition(":")
-    use_max = bool(separator) and slot_text.strip().lower() == "max"
-    parsed_value = f"{spec}:0" if use_max else value
-    host, profile, slots = parse_inline_worker_spec(parsed_value)
-    if slots is None:
-        raise SystemExit(f"{value}: worker set requires an explicit slot count")
-    current_defaults = default_inline_worker_records()
-    configured_worker = current_defaults.get(host)
-    if use_max:
-        if configured_worker is None:
-            raise SystemExit(
-                f"{host}: cannot use max; worker is not in the current workers config"
-            )
-        slots = worker_record_slots(configured_worker)
-    elif configured_worker is not None and not force:
-        configured_max = worker_record_slots(configured_worker)
-        if slots > configured_max:
-            requested_slots = slots
-            slots = configured_max
-            if notices is not None:
-                notices.append(
-                    f"worker set: {host} requested={requested_slots} capped={configured_max}"
-                )
+    host, profile, utilization = parse_inline_worker_spec(value)
+    if utilization is None:
+        raise SystemExit(f"{value}: worker set requires a utilization (N%, a thread count, or max)")
     # A run snapshot may predate metadata added to the global worker config
     # (for example an explicit Homebrew Python path).  Keep per-run values,
     # but fill fields missing from the snapshot from current defaults.
-    defaults = current_defaults
+    defaults = default_inline_worker_records()
     for default_host, run_record in default_inline_worker_records(inline_defaults_path).items():
         merged = dict(defaults.get(default_host, {}))
         merged.update(run_record)
@@ -513,7 +498,30 @@ def worker_set_record_from_arg(
         record["profile"] = host
     if "local" not in record:
         record["local"] = host in ("localhost", "127.0.0.1")
-    return set_worker_record_slots(record, slots)
+    record["utilization"] = utilization
+    record.pop("capacity", None)
+    record.pop("slots", None)
+    return record
+
+def resolve_worker_set_record(
+    record: dict[str, Any],
+    manifest: dict[str, Any],
+    *,
+    allow_oversubscribe: bool,
+) -> dict[str, Any]:
+    """Resolve a ``worker set`` record into slots; zero utilization means 0 slots."""
+    if utilization_is_zero(record.get("utilization")):
+        return set_worker_record_slots(record, 0)
+    from .capacity import resolve_worker_records
+
+    resolved = resolve_worker_records(
+        [record],
+        manifest_task_resources(manifest),
+        force=True,
+        refresh=True,
+        allow_oversubscribe=allow_oversubscribe,
+    )
+    return resolved[0] if resolved else set_worker_record_slots(record, 0)
 
 def worker_slots_for_host(payload: dict[str, Any], host: str) -> int:
     slots = 0
@@ -2079,6 +2087,10 @@ def prepare_resume_manifest(
         return load_manifest(manifest_path)
     return manifest
 
+def resolve_run_workers_payload(payload: dict[str, Any], manifest: dict[str, Any]) -> dict[str, Any]:
+    """Resolve each host's utilization into slots for this manifest's task cost."""
+    return resolve_workers_payload(payload, manifest_task_resources(manifest))
+
 def materialize_run(
     *,
     template_path: Path,
@@ -2113,7 +2125,7 @@ def materialize_run(
                     inline_defaults_path=inline_worker_defaults,
                 )
             )
-            write_json(workers_snapshot, payload)
+            write_json(workers_snapshot, resolve_run_workers_payload(payload, load_manifest(manifest_path)))
         return run_dir, manifest_path, workers_snapshot
     if resume:
         if not manifest_path.exists():
@@ -2128,7 +2140,7 @@ def materialize_run(
                     inline_defaults_path=inline_worker_defaults,
                 )
             )
-            write_json(workers_snapshot, payload)
+            write_json(workers_snapshot, resolve_run_workers_payload(payload, load_manifest(manifest_path)))
         manifest = load_manifest(manifest_path)
         manifest = prepare_resume_manifest(manifest_path, manifest, label="resume")
         clear_restart_requests(manifest, run_name, label="resume")
@@ -2144,7 +2156,7 @@ def materialize_run(
             )
             write_json(
                 workers_snapshot,
-                payload,
+                resolve_run_workers_payload(payload, manifest),
             )
         return run_dir, manifest_path, workers_snapshot
     if run_dir.exists():
@@ -2182,6 +2194,7 @@ def materialize_run(
             inline_defaults_path=inline_worker_defaults,
         )
     )
+    payload = resolve_run_workers_payload(payload, materialized)
     from .chunking import adaptive_live_rechunk_enabled
 
     if materialized.get("tasks") and not adaptive_live_rechunk_enabled(materialized):
@@ -3703,6 +3716,26 @@ def clear_worker_drains(
         print(f"{label}: cleared drain for {run_name} {host}")
     return cleared
 
+def drain_worker_ids(manifest: dict[str, Any], worker_ids: list[str], *, run_name: str) -> int:
+    """Stop specific worker processes from claiming; they exit once idle."""
+    if not worker_ids:
+        return 0
+    drain_dir(manifest).mkdir(parents=True, exist_ok=True)
+    for worker_id in worker_ids:
+        write_json(worker_drain_path(manifest, worker_id), {
+            "schema": SCHEMA,
+            "run": run_name,
+            "worker_id": worker_id,
+            "requested_at": now(),
+            "requested_epoch": epoch(),
+            "host": socket.gethostname(),
+        })
+    return len(worker_ids)
+
+def clear_worker_id_drains(manifest: dict[str, Any], worker_ids: set[str]) -> None:
+    for worker_id in worker_ids:
+        worker_drain_path(manifest, worker_id).unlink(missing_ok=True)
+
 def cmd_worker_set(args: argparse.Namespace) -> int:
     coordinator_runs = configured_coordinator_runs()
     if coordinator_runs and status_can_delegate(args.run):
@@ -3710,22 +3743,20 @@ def cmd_worker_set(args: argparse.Namespace) -> int:
     targets = worker_run_paths(args.run, lease_seconds=args.lease_seconds)
     failed = 0
     for run_name, manifest_path, workers_path in targets:
-        notices: list[str] = []
-        set_worker = worker_set_record_from_arg(
-            str(args.worker),
-            inline_defaults_path=workers_path,
-            notices=notices,
-            force=bool(getattr(args, "force", False)),
+        force = bool(getattr(args, "force", False))
+        manifest = load_manifest(manifest_path)
+        set_worker = resolve_worker_set_record(
+            worker_set_record_from_arg(str(args.worker), inline_defaults_path=workers_path),
+            manifest,
+            allow_oversubscribe=force,
         )
-        for notice in notices:
-            print(notice)
         host = worker_host(set_worker)
         desired_slots = worker_record_slots(set_worker)
         current_payload = read_json(workers_path)
         current_slots = worker_slots_for_host(current_payload, host)
         next_payload = set_worker_payload_slots(current_payload, set_worker)
         delta = desired_slots - current_slots
-        manifest = load_manifest(manifest_path)
+        clear_worker_id_drains(manifest, desired_worker_process_ids(host, desired_slots))
         pending_tasks = run_pending_task_count(manifest, lease_seconds=int(args.lease_seconds))
         active_worker_ids = run_active_worker_process_ids(
             manifest,
@@ -3802,11 +3833,9 @@ def cmd_worker_set(args: argparse.Namespace) -> int:
                 "requested_epoch": epoch(),
                 "host": socket.gethostname(),
             })
-        # Killing claims (release_worker_claims) only ever unclaims tasks
-        # that haven't started running yet, and does nothing to the worker
-        # processes themselves -- they just loop around and claim something
-        # else. Actually shrinking the worker count means killing the excess
-        # processes directly, the same way `forge stop` does for a whole run.
+        # Lowering a host's share drains its highest-numbered worker
+        # processes: they finish their current task, stop claiming, and exit.
+        # --force keeps the old behaviour of killing them immediately.
         excess_worker_ids = []
         if release_count > 0:
             rows = worker_process_status_rows(manifest, pending=pending_tasks)
@@ -3821,17 +3850,22 @@ def cmd_worker_set(args: argparse.Namespace) -> int:
                 reverse=True,
             )
             excess_worker_ids = host_worker_ids[:release_count]
-        killed = kill_worker_id_processes(set_worker, run_name, excess_worker_ids)
-        released = release_worker_id_claims(
-            manifest,
-            worker_ids=set(excess_worker_ids),
-            lease_seconds=args.lease_seconds,
-        )
         message = f"worker set: {run_name} {host} slots={current_slots}->{desired_slots}"
-        if released:
-            message += f" released={len(released)}"
-        if killed:
-            message += f" killed={killed}"
+        if force:
+            killed = kill_worker_id_processes(set_worker, run_name, excess_worker_ids)
+            released = release_worker_id_claims(
+                manifest,
+                worker_ids=set(excess_worker_ids),
+                lease_seconds=args.lease_seconds,
+            )
+            if released:
+                message += f" released={len(released)}"
+            if killed:
+                message += f" killed={killed}"
+        else:
+            drained = drain_worker_ids(manifest, excess_worker_ids, run_name=run_name)
+            if drained:
+                message += f" draining={drained}"
         print(message)
     return 1 if failed else 0
 

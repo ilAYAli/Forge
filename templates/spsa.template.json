@@ -3,6 +3,11 @@
   "name": "spsa",
   "kind": "spsa",
   "description": "Tune UCI parameters with distributed fixed-game SPSA matches",
+  "resources": {
+    "timing": "timed",
+    "threads": "{threads}*{concurrency}",
+    "memory_mb": "2*({hash}+64)*{concurrency}+128"
+  },
   "run_name": "spsa-{engine_stem}-{iterations}-{timestamp}",
   "work_dir": "~",
   "materialize_inputs": true,

@@ -4,6 +4,11 @@
   "hidden": true,
   "kind": "label",
   "description": "Label positions from training.* records or PGNs using zero-search engine eval",
+  "resources": {
+    "timing": "fixed",
+    "threads": "{threads}",
+    "memory_mb": "{hash}+320"
+  },
   "run_name": "label-static-{input_stem}-{timestamp}",
   "work_dir": "{labeler}",
   "path_maps": {
@@ -120,6 +125,9 @@
     ]
   },
   "task": {
+    "resume": {
+      "strategy": "checkpoint"
+    },
     "split": {
       "total": "max_records",
       "count": "shards",

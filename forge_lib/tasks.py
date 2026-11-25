@@ -7,6 +7,15 @@ from contextlib import contextmanager
 from .core import *
 from .manifest import *
 from .config import default_task_complete_command
+from .capacity import (
+    OOM_SCORE_ADJ_NEW,
+    OOM_SCORE_ADJ_STEP_SECONDS,
+    manifest_task_resources,
+    memory_gate_shortfall,
+    oom_score_adj_for_age,
+    set_process_group_oom_score_adj,
+    task_preexec,
+)
 
 
 @contextmanager
@@ -199,6 +208,94 @@ def task_resume_strategy(task: dict[str, Any]) -> str:
 
 def task_preserves_partial_outputs(task: dict[str, Any]) -> bool:
     return task_resume_strategy(task) == "split-progress"
+
+CHECKPOINT_SUFFIXES = (".partial", ".partial.json")
+
+def task_checkpoint_paths(task: dict[str, Any], manifest: dict[str, Any] | None = None) -> list[Path]:
+    """Checkpoint files of a ``resume.strategy == "checkpoint"`` task.
+
+    The task's tool streams each output into ``<output>.partial`` and records
+    its progress in ``<output>.partial.json``; Forge moves both between hosts
+    so a failed (for example OOM-killed) task resumes wherever it is retried.
+    """
+    paths: list[Path] = []
+    if task_resume_strategy(task) == "checkpoint":
+        paths.extend(
+            output.with_name(output.name + suffix)
+            for output in task_outputs(task, manifest)
+            for suffix in CHECKPOINT_SUFFIXES
+        )
+    # Tools with their own resume state (for example sprt's <name>.resume.json)
+    # list it explicitly; paths are resolved like outputs.
+    extra = task_resume_config(task).get("checkpoint_files")
+    if isinstance(extra, list) and extra:
+        paths.extend(task_outputs({"id": task["id"], "outputs": [str(item) for item in extra]}, manifest_for_task(task, manifest)))
+    return paths
+
+def manifest_for_task(task: dict[str, Any], manifest: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Resolve per-task template values (for example {task_name}) like outputs do."""
+    if manifest is None:
+        return None
+    return {**manifest, "tasks": manifest.get("tasks") or [task]}
+
+def task_checkpoint_pairs(
+    local_task: dict[str, Any],
+    local_manifest: dict[str, Any],
+    coordinator_task: dict[str, Any],
+    coordinator_manifest: dict[str, Any],
+) -> list[tuple[Path, Path]]:
+    return list(zip(
+        task_checkpoint_paths(local_task, local_manifest),
+        task_checkpoint_paths(coordinator_task, coordinator_manifest),
+    ))
+
+def fetch_task_checkpoint(coordinator: str, pairs: list[tuple[Path, Path]]) -> int:
+    """Copy a task's checkpoint files from the coordinator; returns files fetched."""
+    if not pairs:
+        return 0
+    host, _ = parse_coordinator(coordinator)
+    if not host:
+        fetched = 0
+        for local, remote in pairs:
+            if remote.is_file() and local.resolve() != remote.resolve():
+                local.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(remote, local)
+                fetched += 1
+            elif remote.is_file():
+                fetched += 1
+        return fetched
+    listing = " ".join(shlex.quote(str(remote)) for _, remote in pairs)
+    result = run_process_command_with_retries(
+        ["ssh", *SSH_OPTS, host, f"for f in {listing}; do [ -f \"$f\" ] && printf '%s\\n' \"$f\"; done; true"],
+        retries=SSH_TRANSIENT_RETRY_COUNT,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.strip() or f"failed to list checkpoint files on {host}")
+    present = set(result.stdout.splitlines())
+    fetched = 0
+    for local, remote in pairs:
+        if str(remote) not in present:
+            continue
+        local.parent.mkdir(parents=True, exist_ok=True)
+        copied = run_process_command_with_retries(
+            ["rsync", "-a", "-e", RSYNC_SSH, f"{host}:{remote}", str(local)],
+            retries=SSH_TRANSIENT_RETRY_COUNT,
+        )
+        if copied.returncode != 0:
+            raise RuntimeError(copied.stderr.strip() or f"rsync failed for {remote}")
+        fetched += 1
+    return fetched
+
+def remove_coordinator_files(coordinator: str, paths: list[Path]) -> None:
+    if not paths:
+        return
+    host, _ = parse_coordinator(coordinator)
+    if not host:
+        for path in paths:
+            path.unlink(missing_ok=True)
+        return
+    quoted = " ".join(shlex.quote(str(path)) for path in paths)
+    run_process_command_with_retries(["ssh", *SSH_OPTS, host, f"rm -f {quoted}"], retries=SSH_TRANSIENT_RETRY_COUNT)
 
 def format_command(manifest: dict[str, Any], task: dict[str, Any]) -> str:
     outputs = task_outputs(task, manifest)
@@ -487,6 +584,7 @@ def run_task(
     with log_path.open("w", encoding="utf-8") as log:
         log.write(f"{started_at} start {task['id']}: {command}\n")
         log.flush()
+        resources = manifest_task_resources(manifest)
         proc = subprocess.Popen(
             ["bash", "-lc", command],
             cwd=work_dir(manifest),
@@ -494,7 +592,21 @@ def run_task(
             stderr=subprocess.STDOUT,
             text=True,
             start_new_session=True,
+            preexec_fn=task_preexec(resources),
         )
+        oom_adj = OOM_SCORE_ADJ_NEW
+        oom_checked = time.monotonic()
+
+        def age_oom_score() -> None:
+            nonlocal oom_adj, oom_checked
+            current = time.monotonic()
+            if current - oom_checked < OOM_SCORE_ADJ_STEP_SECONDS:
+                return
+            oom_checked = current
+            target = oom_score_adj_for_age(current - start)
+            if target != oom_adj:
+                oom_adj = target
+                set_process_group_oom_score_adj(proc.pid, target)
         running = {
             "task": task["id"],
             "host": socket.gethostname(),
@@ -546,6 +658,7 @@ def run_task(
                         rc = proc.wait(timeout=wait_timeout)
                         break
                     except subprocess.TimeoutExpired:
+                        age_oom_score()
                         continue
         except TaskSignalInterrupt as exc:
             terminate_process_group(proc, log, f"signal {exc.signum}")
@@ -621,7 +734,7 @@ def claim_task(
             manifest = load_manifest(manifest_path)
             if stop_requested(manifest):
                 return None
-            if worker_drained(manifest, worker):
+            if worker_drained(manifest, worker) or (worker_id and worker_drained(manifest, worker_id)):
                 return None
             scheduler_id = worker_id or worker
             if live_rechunk and adaptive_rechunk_due(manifest, scheduler_id):
@@ -726,7 +839,7 @@ def claim_task(
 
     if stop_requested(manifest):
         return None
-    if worker_drained(manifest, worker):
+    if worker_drained(manifest, worker) or (worker_id and worker_drained(manifest, worker_id)):
         return None
     claim_dir(manifest).mkdir(parents=True, exist_ok=True)
     digest = manifest_sha256 or (
@@ -1368,6 +1481,10 @@ def sync_task_result(
         task_log_path(local_manifest, local_task),
         task_log_path(coordinator_manifest, coordinator_task),
     ))
+    checkpoint_pairs = task_checkpoint_pairs(local_task, local_manifest, coordinator_task, coordinator_manifest)
+    if state == "fail":
+        # Keep the failed attempt's progress where the retry can find it.
+        transfers.extend((local, remote) for local, remote in checkpoint_pairs if local.is_file())
 
     payload, coordinator_state_path = coordinator_result_payload(
         coordinator_manifest=coordinator_manifest,
@@ -1385,6 +1502,12 @@ def sync_task_result(
     transfers.append((sync_payload_path, coordinator_state_path))
 
     sync_files_to_coordinator(coordinator, transfers)
+    if state == "done" and checkpoint_pairs:
+        # Finished (or cancelled because the run was decided): no attempt will
+        # resume this task, so drop its checkpoint everywhere.
+        remove_coordinator_files(coordinator, [remote for _, remote in checkpoint_pairs])
+        for local, _ in checkpoint_pairs:
+            local.unlink(missing_ok=True)
     heartbeat_on_coordinator(coordinator, str(coordinator_task["id"]), worker, claim_id)
 
 def cmd_run(args: argparse.Namespace) -> int:
@@ -1407,7 +1530,11 @@ def cmd_claim(args: argparse.Namespace) -> int:
         manifest_sha256=manifest_checksum_for_path(manifest_path, manifest),
     )
     if args.json:
-        print(json.dumps(result or {"task": None}, sort_keys=True))
+        if result is None:
+            worker_id = str(getattr(args, "worker_id", None) or "")
+            drained = bool(worker_id) and worker_id != args.worker and worker_drained(manifest, worker_id)
+            result = {"task": None, "drained": True} if drained else {"task": None}
+        print(json.dumps(result, sort_keys=True))
     elif result:
         print(result["task"])
     else:
@@ -1470,7 +1597,7 @@ def claim_from_coordinator(args: argparse.Namespace) -> dict[str, Any] | None:
         raise SystemExit(result.stderr.strip() or result.stdout.strip() or "coordinator claim failed")
     payload = json.loads(result.stdout)
     if not payload.get("task"):
-        return None
+        return {"drained": True} if payload.get("drained") else None
     return payload
 
 def coordinator_status_summary(coordinator: str, *, lease_seconds: int) -> dict[str, Any] | None:
@@ -1492,6 +1619,13 @@ def coordinator_status_summary(coordinator: str, *, lease_seconds: int) -> dict[
     except json.JSONDecodeError:
         return None
     return payload if isinstance(payload, dict) else None
+
+def stop_requested_on_coordinator(coordinator: str, *, lease_seconds: int) -> bool:
+    try:
+        summary = coordinator_status_summary(coordinator, lease_seconds=lease_seconds)
+    except Exception:  # noqa: BLE001 - keep waiting on transient failures
+        return False
+    return isinstance(summary, dict) and isinstance(summary.get("stop"), dict)
 
 def coordinator_has_claimable_or_active_work(coordinator: str, *, lease_seconds: int) -> bool:
     summary = coordinator_status_summary(coordinator, lease_seconds=lease_seconds)
@@ -1722,6 +1856,24 @@ def cleanup_task_input_dirs(
             print(f"cleanup task input {path}: {exc}", file=sys.stderr)
 
 
+def acquire_worker_id_lock(manifest_path: Path, run_name: str, worker_id: str) -> Any | None:
+    """Hold an exclusive per-(run, worker ID) lock for this process's lifetime."""
+    # Inside the run's worker-state directory, which `forge del` removes.
+    lock_dir = manifest_path.parent / "worker-state" / (run_name or "unnamed") / "locks"
+    lock_dir.mkdir(parents=True, exist_ok=True)
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "_", f"{run_name}--{worker_id}")
+    handle = (lock_dir / f"{safe}.lock").open("a+")
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        handle.close()
+        return None
+    handle.seek(0)
+    handle.truncate()
+    handle.write(f"{os.getpid()}\n")
+    handle.flush()
+    return handle
+
 def cmd_work(args: argparse.Namespace) -> int:
     os.environ["FORGE_COORDINATOR"] = str(args.coordinator)
     os.environ["FORGE_RUNNER"] = str(script_path())
@@ -1735,12 +1887,22 @@ def cmd_work(args: argparse.Namespace) -> int:
         worker=args.worker,
         manifest_path=local_manifest_path,
     )
+    worker_id = str(getattr(args, "worker_id", "") or args.worker)
+    # One process per worker ID and run on this host.  The coordinator may
+    # relaunch a worker whose heartbeat went stale while the original is still
+    # alive (an overloaded host or dropped SSH connections); without this lock
+    # both would claim tasks and the host would be oversubscribed.
+    work_lock = acquire_worker_id_lock(local_manifest_path, str(local_manifest_base.get("name") or ""), worker_id)
+    if work_lock is None:
+        print(f"{worker_id}: another worker process with this ID is running; exiting", flush=True)
+        return 0
     check_coordinator_cli(args.coordinator)
     check_requirements(local_manifest)
-    worker_id = str(getattr(args, "worker_id", "") or args.worker)
     completed = 0
     failed = 0
     idle_deadline: float | None = None
+    task_resources = manifest_task_resources(local_manifest)
+    memory_waiting = False
 
     while args.max_tasks <= 0 or completed < args.max_tasks:
         try:
@@ -1754,7 +1916,26 @@ def cmd_work(args: argparse.Namespace) -> int:
             )
         except Exception as exc:
             print(f"{worker_id}: process heartbeat failed: {exc}", file=sys.stderr)
+        shortfall = memory_gate_shortfall(task_resources)
+        if shortfall is not None:
+            if not memory_waiting:
+                print(
+                    f"{worker_id}: waiting for memory: available={shortfall[0]} MiB "
+                    f"required={shortfall[1]} MiB",
+                    flush=True,
+                )
+                memory_waiting = True
+            if stop_requested_on_coordinator(args.coordinator, lease_seconds=args.lease_seconds):
+                break
+            time.sleep(WORK_IDLE_POLL_SECONDS)
+            continue
+        if memory_waiting:
+            print(f"{worker_id}: memory available; resuming claims", flush=True)
+            memory_waiting = False
         claim = claim_from_coordinator(args)
+        if claim is not None and claim.get("drained"):
+            print(f"{worker_id}: drained; exiting", flush=True)
+            break
         if claim is None:
             idle_seconds = max(0.0, float(args.idle_seconds))
             if idle_seconds <= 0.0:
@@ -1836,6 +2017,12 @@ def cmd_work(args: argparse.Namespace) -> int:
             )
             if synced_inputs:
                 print(f"{task_id}: fetched {synced_inputs} task input bundle(s)", flush=True)
+            checkpoint_files = fetch_task_checkpoint(
+                args.coordinator,
+                task_checkpoint_pairs(local_task, local_manifest, coordinator_task, coordinator_manifest),
+            )
+            if checkpoint_files:
+                print(f"{task_id}: resuming from checkpoint ({checkpoint_files} file(s))", flush=True)
             rc = run_task(
                 local_manifest,
                 local_task,

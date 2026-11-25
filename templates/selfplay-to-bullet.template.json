@@ -4,6 +4,11 @@
   "hidden": true,
   "kind": "selfplay-to-bullet",
   "description": "Convert self-play PGNs with existing labels into BulletFormat",
+  "resources": {
+    "timing": "fixed",
+    "threads": "1",
+    "memory_mb": "384"
+  },
   "run_name": "selfplay-to-bullet-{pgn_dir_stem}-{timestamp}",
   "work_dir": "{nnue_repo}",
   "materialize_inputs": true,

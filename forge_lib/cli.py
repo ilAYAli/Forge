@@ -196,9 +196,20 @@ class ForgeArgumentParser(argparse.ArgumentParser):
 
 
 def add_worker_set_options(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("worker", help="Inline worker spec; worker-a:5 sets the total slot count to five.")
+    parser.add_argument(
+        "worker",
+        help=(
+            "Worker utilization: host:50%% uses half of the detected host, host:4 a "
+            "four-thread budget, host:max the whole host, host:0 stops new claims. "
+            "Lowering it drains extra worker processes after their current task."
+        ),
+    )
     parser.add_argument("run", nargs="?", help="Run name or run directory. Omit to use the single active run.")
-    parser.add_argument("--force", action="store_true", help="Allow slots above the configured worker maximum.")
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Allow a thread budget above the detected hardware, and kill excess worker processes instead of draining them.",
+    )
     parser.add_argument("--jobs", type=int, default=4, help="Maximum workers to prepare concurrently.")
     parser.add_argument("--task-attempts", type=int, default=2, help="Total attempts per task before final failure.")
     parser.add_argument("--coordinator-host", help="Coordinator hostname workers should SSH back to.")
@@ -745,14 +756,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     worker = sub.add_parser(
         "worker",
-        help="Set or drain worker slots for a materialized run.",
+        help="Set or drain worker utilization for a materialized run.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     worker_sub = worker.add_subparsers(dest="worker_command", metavar="command", required=True)
 
     worker_set = worker_sub.add_parser(
         "set",
-        help="Set and enforce total worker slots for a materialized run.",
+        help="Set a worker's utilization for a materialized run.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     add_worker_set_options(worker_set)

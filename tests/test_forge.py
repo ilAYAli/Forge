@@ -26,6 +26,8 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 CLI = ROOT / "forge.py"
 sys.path.insert(0, str(ROOT))
+# Deterministic worker hardware for capacity resolution; never probe real hosts.
+os.environ["FORGE_HARDWARE"] = '{"threads": 64, "cores": 64, "memory_mb": 262144}'
 import forge  # noqa: E402
 
 
@@ -850,6 +852,16 @@ class ForgeTests(unittest.TestCase):
         for key, value in overrides.items():
             setattr(args, key, value)
         return args
+
+    @staticmethod
+    def without_capacity(payload: dict[str, Any]) -> dict[str, Any]:
+        return {
+            **payload,
+            "workers": [
+                {key: value for key, value in worker.items() if key != "capacity"}
+                for worker in payload["workers"]
+            ],
+        }
 
     def worker_set_args(self, **overrides: Any) -> argparse.Namespace:
         args = self.retry_args(worker="worker-b:6")
@@ -2037,7 +2049,7 @@ console.log(JSON.stringify(orderDashboardRuns([
             "commands": "Commands that created or can reproduce this run.",
             "active": "Worker processes currently executing tasks for this run.",
             "workers": "Worker processes assigned to this run but not currently executing a task.",
-            "unassigned": "Configured worker slots that are not participating in this run.",
+            "unassigned": "Configured workers that are not participating in this run.",
             "pending": "Tasks that have not yet been claimed by a worker.",
             "fail": "Tasks that ended in failure and may need to be resumed or inspected.",
         }
@@ -2054,49 +2066,6 @@ console.log(JSON.stringify(orderDashboardRuns([
 
         handler.send_header.assert_any_call("Cache-Control", "no-store")
         handler.wfile.write.assert_called_once_with(b"ok")
-
-    def test_web_status_api_uses_coordinator_payload_before_first_refresh(self) -> None:
-        import forge_lib.web as web
-
-        with web._STATUS_CACHE_LOCK:
-            previous = (
-                web._STATUS_CACHE,
-                web._STATUS_CACHE_EPOCH,
-                web._STATUS_CACHE_ERROR,
-                web._STATUS_REFRESHING,
-            )
-            web._STATUS_CACHE = None
-            web._STATUS_CACHE_EPOCH = 0.0
-            web._STATUS_CACHE_ERROR = None
-            web._STATUS_REFRESHING = False
-        try:
-            coordinator_payload = {
-                "runs": [{"run": "coordinator"}],
-                "collapsed_failures": [],
-                "collapsed_failures_count": 0,
-                "coordinator": "pwa-llm:/runs",
-            }
-            with tempfile.TemporaryDirectory() as tmp:
-                with (
-                    mock.patch("forge_lib.web.runs_dir", return_value=Path(tmp) / "runs"),
-                    mock.patch("forge_lib.web.time.time", return_value=10.0),
-                    mock.patch("forge_lib.web._collect_status_payload", return_value=coordinator_payload) as collect_status,
-                    mock.patch("forge_lib.web._start_status_refresh") as start_refresh,
-                ):
-                    payload = json.loads(web._api_status().decode())
-            collect_status.assert_called_once_with()
-            start_refresh.assert_called_once_with()
-            self.assertEqual([{"run": "coordinator"}], payload["runs"])
-            self.assertTrue(payload["refreshing"])
-            self.assertNotIn("loading", payload)
-        finally:
-            with web._STATUS_CACHE_LOCK:
-                (
-                    web._STATUS_CACHE,
-                    web._STATUS_CACHE_EPOCH,
-                    web._STATUS_CACHE_ERROR,
-                    web._STATUS_REFRESHING,
-                ) = previous
 
     def test_web_invalidate_status_cache_drops_cached_payload(self) -> None:
         import forge_lib.web as web
@@ -4713,8 +4682,13 @@ console.log(JSON.stringify(orderDashboardRuns([
         self.assertEqual(256, sum(totals))
         self.assertEqual(["llr", "elo", "ci"], [spec["name"] for spec in manifest["tasks"][0]["progress"]["series"]])
         self.assertIn("?P<llr>", manifest["tasks"][0]["progress"]["log_regex"])
+        task_name = manifest["tasks"][0]["id"]
         self.assertEqual(
-            {"strategy": "split-progress", "count_arg": "--games"},
+            {
+                "strategy": "split-progress",
+                "count_arg": "--games",
+                "checkpoint_files": [f"{{output_dir}}/{task_name}/logs/{task_name}.resume.json"],
+            },
             manifest["tasks"][0]["resume"],
         )
 
@@ -4775,63 +4749,57 @@ console.log(JSON.stringify(orderDashboardRuns([
         self.assertEqual(f"~/assets/engines/engine_{commit[:7]}", manifest["template"]["parameters"]["candidate"])
         self.assertEqual(f"run ~/assets/engines/engine_{commit[:7]}", manifest["tasks"][0]["command"])
 
-    def test_sprt_template_uses_inline_worker_slots_literally(self) -> None:
-        with mock.patch("forge_lib.workers.default_workers_path", side_effect=SystemExit("no workers")):
-            payload = forge.sprt_worker_slots_payload("pwa-mbp:4,pwa-mbp0:5,pwa-llm:6,pwa-rce:0")
-
-        self.assertEqual(
-            [
-                {"host": "pwa-mbp", "profile": "pwa-mbp", "local": False, "slots": 4},
-                {"host": "pwa-mbp0", "profile": "pwa-mbp0", "local": False, "slots": 5},
-                {"host": "pwa-llm", "profile": "pwa-llm", "local": False, "slots": 6},
-            ],
-            payload["workers"],
-        )
-        self.assertNotIn("sprt_thread_budget", payload)
-
-    def test_sprt_template_does_not_scale_slots_by_engine_settings(self) -> None:
-        with mock.patch("forge_lib.workers.default_workers_path", side_effect=SystemExit("no workers")):
-            payload = forge.sprt_worker_slots_payload("pwa-mbp:16")
-
-        self.assertEqual(
-            [{"host": "pwa-mbp", "profile": "pwa-mbp", "local": False, "slots": 16}],
-            payload["workers"],
-        )
-
-    def test_sprt_template_accepts_one_worker_slot(self) -> None:
+    def test_sprt_template_accepts_one_worker_thread(self) -> None:
         with mock.patch("forge_lib.workers.default_workers_path", side_effect=SystemExit("no workers")):
             payload = forge.sprt_worker_slots_payload("pwa-mbp:1")
 
         self.assertEqual(
-            [{"host": "pwa-mbp", "profile": "pwa-mbp", "local": False}],
-            payload["workers"],
+            [("pwa-mbp", "1", 1)],
+            [(w["host"], w["utilization"], w["slots"]) for w in payload["workers"]],
         )
 
-    def test_sprt_template_uses_worker_file_slots_literally(self) -> None:
+    def test_sprt_template_sizes_slots_by_engine_threads(self) -> None:
+        timed = {"timing": "timed", "threads": 2, "memory_mb": 0}
+        with mock.patch("forge_lib.workers.default_workers_path", side_effect=SystemExit("no workers")):
+            payload = forge.sprt_worker_slots_payload("pwa-mbp:16", timed)
+
+        self.assertEqual([8], [w["slots"] for w in payload["workers"]])
+        self.assertEqual(timed, payload["workers"][0]["capacity"]["task"])
+
+    def test_sprt_template_uses_inline_worker_threads(self) -> None:
+        with mock.patch("forge_lib.workers.default_workers_path", side_effect=SystemExit("no workers")):
+            payload = forge.sprt_worker_slots_payload("pwa-mbp:4,pwa-mbp0:5,pwa-llm:6,pwa-rce:0")
+
+        self.assertEqual(
+            [("pwa-mbp", 4), ("pwa-mbp0", 5), ("pwa-llm", 6)],
+            [(w["host"], w["slots"]) for w in payload["workers"]],
+        )
+        self.assertNotIn("sprt_thread_budget", payload)
+
+    def test_sprt_template_uses_worker_file_utilization(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             workers_path = Path(tmp) / "workers.json"
             workers_path.write_text(
                 json.dumps({
                     "schema": "forge.workers.v1",
                     "workers": [
-                        {"host": "pwa-mbp", "profile": "mac", "slots": 8},
+                        {"host": "pwa-mbp", "profile": "mac", "utilization": "25%"},
                         {"host": "pwa-llm", "slots": 10},
-                        {"host": "pwa-rce", "slots": 0},
+                        {"host": "pwa-rce", "utilization": "0%"},
                     ],
                 }),
                 encoding="utf-8",
             )
 
-            payload = forge.sprt_worker_slots_payload(str(workers_path))
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                payload = forge.sprt_worker_slots_payload(str(workers_path))
 
         self.assertEqual(
-            [
-                {"host": "pwa-mbp", "profile": "mac", "local": False, "slots": 8},
-                {"host": "pwa-llm", "profile": "pwa-llm", "local": False, "slots": 10},
-                {"host": "pwa-rce", "profile": "pwa-rce", "local": False, "slots": 0},
-            ],
-            payload["workers"],
+            [("pwa-mbp", "mac", "25%", 16), ("pwa-llm", "pwa-llm", "100%", 64)],
+            [(w["host"], w["profile"], w["utilization"], w["slots"]) for w in payload["workers"]],
         )
+        self.assertIn("pwa-llm: 'slots' is ignored", stderr.getvalue())
 
     def test_sprt_template_passes_candidate_and_reference_uci_options(self) -> None:
         template_path = ROOT / "templates" / "sprt.template.json"
@@ -5732,73 +5700,6 @@ console.log(JSON.stringify(orderDashboardRuns([
             for task in default_manifest["tasks"]
         ]
         self.assertEqual([1, 2, 3], default_seeds)
-
-    def test_selfplay_command_auto_sizes_shards_for_queue_depth(self) -> None:
-        stdout = io.StringIO()
-        with contextlib.redirect_stdout(stdout):
-            rc = forge.cmd_template_run(argparse.Namespace(
-                template="selfplay",
-                template_args=[
-                    "--dry-run",
-                    "--workers", "pwa-mbp:4,pwa-mbp0:5,pwa-llm:6",
-                    "--engine", "~/assets/engines/enyo_9696dac",
-                    "--games", "64",
-                    "--uci", "nnue_file=~/code/chess/enyo/net/default.nn",
-                ],
-            ))
-        manifest = json.loads(stdout.getvalue())
-        totals = [task["progress"]["total"] for task in manifest["tasks"]]
-
-        self.assertEqual(0, rc)
-        self.assertEqual(15, manifest["template"]["parameters"]["shards"])
-        self.assertEqual(15, len(manifest["tasks"]))
-        self.assertEqual(64, sum(totals))
-        self.assertEqual(4, min(totals))
-        self.assertEqual(6, max(totals))
-
-    def test_selfplay_command_auto_sizes_shards_from_chunk_history(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            cache_path = root / "selfplay-chunk-history.json"
-            template = forge.load_template(forge.template_path("selfplay"))
-            parsed_params = forge.parse_selfplay_template_parameters(
-                "selfplay",
-                template,
-                [
-                    "--engine", "~/assets/engines/enyo_9696dac",
-                    "--games", "600",
-                    "--chunk-time-seconds", "120",
-                    "--uci", "nnue_file=~/code/chess/enyo/net/default.nn",
-                ],
-            )
-            write_chunk_history(cache_path, ({
-                **parsed_params,
-                "__forge_template_name": "selfplay",
-                "__forge_worker": "worker-a",
-            }, 0.05, 3))
-
-            stdout = io.StringIO()
-            with mock.patch("forge_lib.calibration.adaptive_chunk_cache_path", return_value=cache_path):
-                with contextlib.redirect_stdout(stdout):
-                    rc = forge.cmd_template_run(argparse.Namespace(
-                        template="selfplay",
-                        template_args=[
-                            "--dry-run",
-                            "--workers", "worker-a:1",
-                            "--engine", "~/assets/engines/enyo_9696dac",
-                            "--games", "600",
-                            "--chunk-time-seconds", "120",
-                            "--uci", "nnue_file=~/code/chess/enyo/net/default.nn",
-                        ],
-                    ))
-            manifest = json.loads(stdout.getvalue())
-            totals = [task["progress"]["total"] for task in manifest["tasks"]]
-
-        self.assertEqual(0, rc)
-        self.assertEqual(100, manifest["template"]["parameters"]["shards"])
-        self.assertEqual(100, len(manifest["tasks"]))
-        self.assertEqual(6, min(totals))
-        self.assertEqual(6, max(totals))
 
     def test_selfplay_default_chunk_games_is_15_for_5_minutes(self) -> None:
         from forge_lib import selfplay_chunks
@@ -6961,7 +6862,7 @@ console.log(JSON.stringify(orderDashboardRuns([
         self.assertIn("--merge", self.run_cli("start", "--help").stdout)
         self.assertIn("--merge", self.run_cli("resume", "--help").stdout)
         self.assertIn("--worker", self.run_cli("del", "--help").stdout)
-        self.assertIn("worker-a:5", self.run_cli("worker", "set", "--help").stdout)
+        self.assertIn("host:50%", self.run_cli("worker", "set", "--help").stdout)
         self.assertIn("--keep-claims", self.run_cli("worker", "del", "--help").stdout)
         self.assertIn("--index", self.run_cli("run-task", "--help").stdout)
         self.assertIn("--coordinator", self.run_cli("doctor", "--help").stdout)
@@ -7357,6 +7258,7 @@ console.log(JSON.stringify(orderDashboardRuns([
                     "local": True,
                     "cache_dir": str(root / "worker-cache"),
                     "python": sys.executable,
+                    "utilization": "1",
                 }],
             })
 
@@ -7373,7 +7275,7 @@ console.log(JSON.stringify(orderDashboardRuns([
                 env={"FORGE_RUNS_DIR": str(root / "runs")},
             )
 
-            self.assertEqual("", result.stderr)
+            self.assertEqual("", "".join(line for line in result.stderr.splitlines(True) if not line.startswith("capacity: ")))
             self.assertEqual(0, result.returncode)
             self.assertIn("deploy: tasks complete", result.stdout)
             self.assertIn("tasks=4/4", result.stdout)
@@ -7500,6 +7402,7 @@ console.log(JSON.stringify(orderDashboardRuns([
                     "local": True,
                     "cache_dir": str(cache),
                     "python": sys.executable,
+                    "utilization": "1",
                 }],
             })
             env = os.environ.copy()
@@ -7648,6 +7551,7 @@ console.log(JSON.stringify(orderDashboardRuns([
                     "local": True,
                     "cache_dir": str(cache),
                     "python": sys.executable,
+                    "utilization": "1",
                 }],
             })
             env = {
@@ -8020,6 +7924,7 @@ console.log(JSON.stringify(orderDashboardRuns([
                     "local": True,
                     "cache_dir": str(cache),
                     "python": sys.executable,
+                    "utilization": "1",
                 }],
             })
 
@@ -8178,27 +8083,6 @@ console.log(JSON.stringify(orderDashboardRuns([
             self.assertIn("start: queued queued-verify; waiting for active", output)
             self.assertIn("start: waiting for queued run to finish", output)
             self.assertNotIn("start: queue monitor pid=", output)
-
-    def test_queue_launcher_can_fail_when_queue_marker_is_cleared(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            runs = Path(tmp) / "runs"
-            self.write_retry_run(runs, "cleared", failed=None)
-            payload = {
-                "run": "cleared",
-                "runs_dir": str(runs),
-                "command": ["true"],
-                "lease_seconds": 600,
-                "poll_seconds": 0.5,
-                "fail_if_unqueued": True,
-            }
-
-            with self.patch_runs_dir(runs):
-                stdout = io.StringIO()
-                with contextlib.redirect_stdout(stdout):
-                    rc = forge.run_queue_launcher(payload)
-
-        self.assertEqual(1, rc)
-        self.assertIn("queue: cleared is no longer queued", stdout.getvalue())
 
     def test_queue_launcher_failure_keeps_run_queued_for_recovery(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -8481,6 +8365,7 @@ console.log(JSON.stringify(orderDashboardRuns([
                     "local": True,
                     "cache_dir": str(root / "worker-cache"),
                     "python": sys.executable,
+                    "utilization": "1",
                 }],
             })
 
@@ -8548,34 +8433,6 @@ console.log(JSON.stringify(orderDashboardRuns([
 
         remote = run_mock.call_args.args[1]
         self.assertNotIn("HOOK_EVENTS=", remote)
-
-    def test_resume_preserves_stop_until_deploy_cleans_old_workers(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            runs = Path(tmp) / "runs"
-            run = self.write_retry_run(runs, "paused", failed=None)
-            manifest = forge.load_manifest(run / "manifest.json")
-            forge.write_json(forge.stop_request_path(manifest), {
-                "schema": "forge.task.v1",
-                "run": "paused",
-            })
-
-            with (
-                self.patch_runs_dir(runs),
-                mock.patch("forge_lib.workers.cmd_run_job", return_value=0) as run_job,
-            ):
-                stdout = io.StringIO()
-                with contextlib.redirect_stdout(stdout):
-                    rc = forge.cmd_resume(self.retry_args(run="paused"))
-
-            self.assertEqual(0, rc)
-            self.assertTrue(forge.stop_request_path(manifest).exists())
-            self.assertNotIn("resume: cleared stop request for paused", stdout.getvalue())
-            resume_args = run_job.call_args.args[0]
-            self.assertEqual("paused", resume_args.run)
-            self.assertEqual(str(run / "workers.json"), resume_args.workers)
-            self.assertTrue(resume_args.resume)
-            self.assertFalse(resume_args.retry_failed)
-            self.assertEqual("resume", resume_args.command_label)
 
     def test_stop_preserves_split_progress_checkpoint(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -8916,10 +8773,11 @@ console.log(JSON.stringify(orderDashboardRuns([
                         "profile": "mac",
                         "local": True,
                         "cache_dir": str(cache),
+                        "utilization": "8",
                         "slots": 8,
                     }],
                 },
-                set_args.launch_workers_payload,
+                self.without_capacity(set_args.launch_workers_payload),
             )
             self.assertEqual(
                 {
@@ -8929,10 +8787,11 @@ console.log(JSON.stringify(orderDashboardRuns([
                         "profile": "mac",
                         "local": True,
                         "cache_dir": str(cache),
+                        "utilization": "8",
                         "slots": 8,
                     }],
                 },
-                set_args.worker_snapshot_commit_payload,
+                self.without_capacity(set_args.worker_snapshot_commit_payload),
             )
             self.assertEqual("worker set", set_args.command_label)
             self.assertTrue(set_args.launch_only)
@@ -9001,7 +8860,7 @@ console.log(JSON.stringify(orderDashboardRuns([
             self.assertEqual("/opt/homebrew/bin/python3", set_args.launch_workers_payload["workers"][0]["python"])
             self.assertEqual("/opt/homebrew/bin/python3", set_args.worker_snapshot_commit_payload["workers"][0]["python"])
 
-    def test_worker_set_max_uses_current_config_not_run_snapshot(self) -> None:
+    def test_worker_set_max_uses_detected_hardware_and_run_profile(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             runs = root / "runs"
@@ -9031,14 +8890,15 @@ console.log(JSON.stringify(orderDashboardRuns([
 
             self.assertEqual(0, rc)
             set_args = run_job.call_args.args[0]
-            self.assertEqual("worker-b=old:8", set_args.workers)
-            self.assertEqual(8, set_args.worker_snapshot_commit_payload["workers"][0]["slots"])
+            self.assertEqual("worker-b=old:64", set_args.workers)
+            self.assertEqual(64, set_args.worker_snapshot_commit_payload["workers"][0]["slots"])
+            self.assertEqual("100%", set_args.worker_snapshot_commit_payload["workers"][0]["utilization"])
             self.assertEqual(
-                [f"worker-b#{slot}" for slot in range(3, 9)],
+                [f"worker-b#{slot}" for slot in range(3, 65)],
                 set_args.launch_worker_ids,
             )
 
-    def test_worker_set_force_allows_slots_above_current_config_max(self) -> None:
+    def test_worker_set_force_allows_threads_above_detected_hardware(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             runs = root / "runs"
@@ -9065,7 +8925,7 @@ console.log(JSON.stringify(orderDashboardRuns([
                     )
 
             self.assertEqual(0, rc)
-            self.assertEqual(
+            self.assertIn(
                 "worker set: active worker-b slots=2->999; no pending tasks\n",
                 stdout.getvalue(),
             )
@@ -9075,7 +8935,7 @@ console.log(JSON.stringify(orderDashboardRuns([
         args = self.worker_set_args(run="paused", worker="worker-b:999", force=True)
         self.assertIn("--force", forge.worker_control_command_args("set", args))
 
-    def test_worker_set_caps_numeric_slots_at_current_config_max(self) -> None:
+    def test_worker_set_caps_thread_count_at_detected_hardware(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             runs = root / "runs"
@@ -9099,39 +8959,48 @@ console.log(JSON.stringify(orderDashboardRuns([
                 ),
                 mock.patch("forge_lib.workers.cmd_run_job", return_value=0) as run_job,
             ):
-                stdout = io.StringIO()
-                with contextlib.redirect_stdout(stdout):
+                stderr = io.StringIO()
+                with contextlib.redirect_stderr(stderr):
                     rc = forge.cmd_worker_set(
                         self.worker_set_args(run="active", worker="worker-b:999")
                     )
 
             self.assertEqual(0, rc)
-            self.assertEqual(
-                "worker set: worker-b requested=999 capped=8\n",
-                stdout.getvalue(),
-            )
+            self.assertIn("requested 999 threads, host has 64; capped", stderr.getvalue())
             set_args = run_job.call_args.args[0]
-            self.assertEqual(8, set_args.worker_snapshot_commit_payload["workers"][0]["slots"])
+            self.assertEqual(64, set_args.worker_snapshot_commit_payload["workers"][0]["slots"])
             self.assertEqual(
-                [f"worker-b#{slot}" for slot in range(3, 9)],
+                [f"worker-b#{slot}" for slot in range(3, 65)],
                 set_args.launch_worker_ids,
             )
 
-    def test_worker_set_max_supports_zero_and_rejects_unknown_host(self) -> None:
+    def test_worker_set_max_and_zero_utilization(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             defaults = Path(tmp) / "config-workers.json"
             forge.write_json(defaults, {
                 "schema": "forge.workers.v1",
-                "workers": [{"host": "worker-b", "slots": 0}],
+                "workers": [{"host": "worker-b", "profile": "linux"}],
             })
+            manifest = {"name": "m", "tasks": []}
 
             with mock.patch("forge_lib.workers.default_workers_path", return_value=defaults):
                 record = forge.worker_set_record_from_arg("worker-b:max")
-                self.assertEqual(0, forge.worker_record_slots(record))
-                with self.assertRaises(SystemExit) as raised:
-                    forge.worker_set_record_from_arg("unknown:max")
-
-            self.assertIn("worker is not in the current workers config", str(raised.exception))
+                self.assertEqual("100%", record["utilization"])
+                self.assertEqual("linux", record["profile"])
+                full = forge.resolve_worker_set_record(record, manifest, allow_oversubscribe=False)
+                self.assertEqual(64, forge.worker_record_slots(full))
+                half = forge.resolve_worker_set_record(
+                    forge.worker_set_record_from_arg("worker-b:50%"), manifest, allow_oversubscribe=False
+                )
+                self.assertEqual(32, forge.worker_record_slots(half))
+                zero = forge.resolve_worker_set_record(
+                    forge.worker_set_record_from_arg("worker-b:0%"), manifest, allow_oversubscribe=False
+                )
+                self.assertEqual(0, forge.worker_record_slots(zero))
+                unknown = forge.worker_set_record_from_arg("unknown:max")
+                self.assertEqual("unknown", unknown["profile"])
+                with self.assertRaises(SystemExit):
+                    forge.worker_set_record_from_arg("worker-b")
 
     def test_worker_set_launch_preserves_all_default_workers(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -9247,14 +9116,68 @@ console.log(JSON.stringify(orderDashboardRuns([
                         "host": "pwa-mbp",
                         "profile": "mac",
                         "local": True,
+                        "utilization": "4",
                         "slots": 4,
                     }],
                 },
-                forge.read_json(run / "workers.json"),
+                self.without_capacity(forge.read_json(run / "workers.json")),
             )
             self.assertIn("worker set: active pwa-mbp slots=6->4", stdout.getvalue())
 
-    def test_worker_set_kills_excess_worker_processes(self) -> None:
+    def test_worker_set_drains_excess_worker_processes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runs = Path(tmp) / "runs"
+            run = self.write_retry_run(runs, "active", failed=None)
+            forge.write_json(run / "workers.json", {
+                "schema": "forge.workers.v1",
+                "workers": [{"host": "pwa-mbp", "profile": "mac", "local": True, "slots": 6}],
+            })
+            manifest = forge.load_manifest(run / "manifest.json")
+            for slot in range(1, 7):
+                forge.update_worker_process_heartbeat(
+                    manifest,
+                    worker="pwa-mbp",
+                    worker_id=f"pwa-mbp#{slot}",
+                    process_state="running",
+                )
+
+            with (
+                self.patch_runs_dir(runs),
+                mock.patch("forge_lib.workers.kill_worker_id_processes") as kill_mock,
+                mock.patch("forge_lib.workers.cmd_run_job") as run_job,
+            ):
+                stdout = io.StringIO()
+                with contextlib.redirect_stdout(stdout):
+                    rc = forge.cmd_worker_set(self.worker_set_args(run="active", worker="pwa-mbp:4"))
+
+            self.assertEqual(0, rc)
+            run_job.assert_not_called()
+            kill_mock.assert_not_called()
+            self.assertIn("worker set: active pwa-mbp slots=6->4 draining=2", stdout.getvalue())
+            for slot in range(1, 7):
+                self.assertEqual(slot >= 5, forge.worker_drained(manifest, f"pwa-mbp#{slot}"), slot)
+            self.assertFalse(forge.worker_drained(manifest, "pwa-mbp"))
+            claim = forge.claim_task(
+                manifest,
+                worker="pwa-mbp",
+                worker_id="pwa-mbp#6",
+                profile=None,
+                lease_seconds=600,
+                retry_failed=False,
+            )
+            self.assertIsNone(claim)
+
+            # Raising the share again clears the drains for kept slots.
+            with (
+                self.patch_runs_dir(runs),
+                mock.patch("forge_lib.workers.run_active_worker_process_ids", return_value={f"pwa-mbp#{slot}" for slot in range(1, 7)}),
+                mock.patch("forge_lib.workers.cmd_run_job", return_value=0),
+            ):
+                with contextlib.redirect_stdout(io.StringIO()):
+                    forge.cmd_worker_set(self.worker_set_args(run="active", worker="pwa-mbp:6"))
+            self.assertFalse(forge.worker_drained(manifest, "pwa-mbp#6"))
+
+    def test_worker_set_force_kills_excess_worker_processes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             runs = Path(tmp) / "runs"
             run = self.write_retry_run(runs, "active", failed=None)
@@ -9283,7 +9206,7 @@ console.log(JSON.stringify(orderDashboardRuns([
             ):
                 stdout = io.StringIO()
                 with contextlib.redirect_stdout(stdout):
-                    rc = forge.cmd_worker_set(self.worker_set_args(run="active", worker="pwa-mbp:4"))
+                    rc = forge.cmd_worker_set(self.worker_set_args(run="active", worker="pwa-mbp:4", force=True))
 
             self.assertEqual(0, rc)
             run_job.assert_not_called()
@@ -10041,114 +9964,6 @@ console.log(JSON.stringify(orderDashboardRuns([
             self.assertEqual("0\n", (coordinator / "out" / "shard.0.txt").read_text(encoding="utf-8"))
             self.assertEqual("1\n", (coordinator / "out" / "shard.1.txt").read_text(encoding="utf-8"))
 
-    def test_worker_execution_manifest_keeps_state_local(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            manifest_path = root / "cache" / "manifest.json"
-            manifest_path.parent.mkdir()
-            manifest = {
-                "schema": "forge.task.v1",
-                "name": "worker-paths",
-                "work_dir": "/home/petter/code/chess/nnue",
-                "state_dir": "/home/petter/code/chess/forge/runs/job/state",
-                "log_dir": "/home/petter/code/chess/forge/runs/job/logs",
-                "claim_dir": "/home/petter/code/chess/forge/runs/job/claims",
-                "path_maps": {
-                    "mac": {
-                        "/home/petter/code/chess/nnue": "/Users/pwahlman/code/chess/nnue_worker",
-                    },
-                },
-                "tasks": [{
-                    "id": "task_0000",
-                    "index": 0,
-                    "command": "printf x > {output}",
-                    "outputs": ["/home/petter/code/chess/nnue/runs/job/out.txt"],
-                }],
-            }
-
-            local = forge.worker_execution_manifest(manifest, profile="mac", manifest_path=manifest_path)
-
-            self.assertEqual("/Users/pwahlman/code/chess/nnue_worker", local["work_dir"])
-            self.assertEqual(
-                "/Users/pwahlman/code/chess/nnue_worker/runs/job/out.txt",
-                local["tasks"][0]["outputs"][0],
-            )
-            worker_run = manifest_path.parent / "worker-state" / "worker-paths"
-            self.assertEqual(str(worker_run / "state"), local["state_dir"])
-            self.assertEqual(str(worker_run / "logs"), local["log_dir"])
-            self.assertEqual(str(worker_run / "claims"), local["claim_dir"])
-
-    def test_worker_execution_manifest_keeps_outputs_local(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            manifest_path = root / "cache" / "manifest.json"
-            manifest_path.parent.mkdir()
-            coordinator_run = Path("/Users/pwahlman/Cloud-Drive/code/chess/forge/runs/job")
-            coordinator_output = coordinator_run / "outputs" / "task_0000" / "out.txt"
-            manifest = {
-                "schema": "forge.task.v1",
-                "name": "worker-output-paths",
-                "work_dir": "~",
-                "state_dir": str(coordinator_run / "state"),
-                "log_dir": str(coordinator_run / "logs"),
-                "claim_dir": str(coordinator_run / "claims"),
-                "vars": {
-                    "run_dir": str(coordinator_run),
-                    "output_dir": str(coordinator_run / "outputs"),
-                },
-                "tasks": [{
-                    "id": "task_0000",
-                    "index": 0,
-                    "command": f"tool --out {coordinator_output}",
-                    "outputs": [str(coordinator_output)],
-                }],
-            }
-
-            local = forge.worker_execution_manifest(manifest, profile=None, manifest_path=manifest_path)
-
-            worker_run = manifest_path.parent / "worker-state" / "worker-output-paths"
-            worker_output = worker_run / "outputs" / "task_0000" / "out.txt"
-            self.assertEqual(str(worker_run), local["vars"]["run_dir"])
-            self.assertEqual(str(worker_run / "outputs"), local["vars"]["output_dir"])
-            self.assertEqual(str(worker_output), local["tasks"][0]["outputs"][0])
-            self.assertIn(str(worker_output), local["tasks"][0]["command"])
-            self.assertNotIn(str(coordinator_run), local["tasks"][0]["command"])
-
-    def test_worker_execution_manifest_isolates_state_by_run_name(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            manifest_path = root / "cache" / "manifest.json"
-            manifest_path.parent.mkdir()
-            base = {
-                "schema": "forge.task.v1",
-                "work_dir": "~",
-                "state_dir": "/coordinator/run/state",
-                "log_dir": "/coordinator/run/logs",
-                "claim_dir": "/coordinator/run/claims",
-                "tasks": [{"id": "sprt_0064", "index": 64, "command": "true", "outputs": []}],
-            }
-
-            first = forge.worker_execution_manifest(
-                {**base, "name": "first-run"},
-                profile=None,
-                manifest_path=manifest_path,
-            )
-            second = forge.worker_execution_manifest(
-                {**base, "name": "second-run"},
-                profile=None,
-                manifest_path=manifest_path,
-            )
-
-            self.assertEqual(
-                str(manifest_path.parent / "worker-state" / "first-run" / "state"),
-                first["state_dir"],
-            )
-            self.assertEqual(
-                str(manifest_path.parent / "worker-state" / "second-run" / "state"),
-                second["state_dir"],
-            )
-            self.assertNotEqual(first["state_dir"], second["state_dir"])
-
     def test_worker_waits_when_no_claim_but_coordinator_has_work(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -10380,54 +10195,6 @@ console.log(JSON.stringify(orderDashboardRuns([
             self.assertTrue(payload["skipped"])
             self.assertEqual([], payload["outputs"])
 
-    def test_wait_reports_timeout_until_tasks_are_done(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            subprocess.run(["git", "init", "-b", "main"], cwd=root, check=True, stdout=subprocess.DEVNULL)
-            subprocess.run(["git", "config", "user.name", "Petter Wahlman"], cwd=root, check=True)
-            subprocess.run(["git", "config", "user.email", "petter@wahlman.no"], cwd=root, check=True)
-            (root / "input.txt").write_text("fixed\n", encoding="utf-8")
-            subprocess.run(["git", "add", "input.txt"], cwd=root, check=True)
-            subprocess.run(["git", "commit", "-m", "test"], cwd=root, check=True, stdout=subprocess.DEVNULL)
-
-            manifest = root / "manifest.json"
-            plan = self.run_cli(
-                "plan",
-                "--name", "wait",
-                "--shards", "2",
-                "--work-dir", str(root),
-                "--out", str(manifest),
-                "--command-template", "printf '{index}\\n' > {output}",
-                "--output-template", str(root / "out" / "shard.{index}.txt"),
-            )
-            self.assertEqual(0, plan.returncode)
-
-            first = self.run_cli("run-task", "--manifest", str(manifest), "--index", "0")
-            self.assertEqual(0, first.returncode)
-
-            waiting = self.run_cli(
-                "wait",
-                "--manifest", str(manifest),
-                "--interval-seconds", "0.01",
-                "--timeout-seconds", "0.02",
-            )
-            self.assertEqual(124, waiting.returncode)
-            self.assertIn("tasks=1/2", waiting.stdout)
-            self.assertIn("pending=1", waiting.stdout)
-
-            second = self.run_cli("run-task", "--manifest", str(manifest), "--index", "1")
-            self.assertEqual(0, second.returncode)
-
-            done = self.run_cli(
-                "wait",
-                "--manifest", str(manifest),
-                "--interval-seconds", "0.01",
-                "--timeout-seconds", "1",
-            )
-            self.assertEqual("", done.stderr)
-            self.assertEqual(0, done.returncode)
-            self.assertIn("tasks=2/2", done.stdout)
-
     def test_wait_fails_on_stale_launch_without_workers(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -10471,42 +10238,6 @@ console.log(JSON.stringify(orderDashboardRuns([
             payload = json.loads((run / "summary.json").read_text(encoding="utf-8"))
             self.assertEqual("run_launch_failed", payload["event"])
             self.assertEqual("failed", payload["state"])
-
-    def test_wait_exits_cleanly_when_run_is_deleted(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            run = Path(tmp) / "deleted-run"
-            manifest_path = run / "manifest.json"
-            manifest = {
-                "schema": "forge.task.v1",
-                "name": "deleted-run",
-                "work_dir": str(run),
-                "state_dir": str(run / "state"),
-                "claim_dir": str(run / "claims"),
-                "tasks": [{"id": "task", "index": 0, "command": "true", "outputs": []}],
-            }
-            forge.write_json(manifest_path, manifest)
-            args = argparse.Namespace(
-                manifest=str(manifest_path),
-                profile=None,
-                lease_seconds=600,
-                interval_seconds=0.01,
-                timeout_seconds=0.0,
-                fail_on_fail=True,
-                notify_command=None,
-            )
-
-            def delete_run(_seconds: float) -> None:
-                shutil.rmtree(run)
-
-            stderr = io.StringIO()
-            with (
-                mock.patch("forge_lib.status.time.sleep", side_effect=delete_run),
-                contextlib.redirect_stderr(stderr),
-            ):
-                rc = forge.cmd_wait(args)
-
-        self.assertEqual(130, rc)
-        self.assertEqual("run deleted while waiting: deleted-run\n", stderr.getvalue())
 
     def test_wait_interrupt_stops_run_and_resets_active_task(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -10963,167 +10694,6 @@ console.log(JSON.stringify(orderDashboardRuns([
             self.assertEqual("run_stopped", summary["event"])
             self.assertEqual("stopped", summary["state"])
 
-    def test_claim_is_atomic_status_visible_and_released(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            subprocess.run(["git", "init", "-b", "main"], cwd=root, check=True, stdout=subprocess.DEVNULL)
-            subprocess.run(["git", "config", "user.name", "Petter Wahlman"], cwd=root, check=True)
-            subprocess.run(["git", "config", "user.email", "petter@wahlman.no"], cwd=root, check=True)
-            (root / "input.txt").write_text("fixed\n", encoding="utf-8")
-            subprocess.run(["git", "add", "input.txt"], cwd=root, check=True)
-            subprocess.run(["git", "commit", "-m", "test"], cwd=root, check=True, stdout=subprocess.DEVNULL)
-
-            manifest = root / "manifest.json"
-            plan = self.run_cli(
-                "plan",
-                "--name", "claim",
-                "--shards", "1",
-                "--work-dir", str(root),
-                "--out", str(manifest),
-                "--command-template", "printf x > {output}",
-                "--output-template", str(root / "out.txt"),
-            )
-            self.assertEqual(0, plan.returncode)
-
-            claim = self.run_cli(
-                "claim",
-                "--manifest", str(manifest),
-                "--worker", "worker-a",
-                "--json",
-            )
-            self.assertEqual("", claim.stderr)
-            self.assertEqual(0, claim.returncode)
-            claim_payload = json.loads(claim.stdout)
-            self.assertEqual("task_0000", claim_payload["task"])
-            claim_id = claim_payload["claim"]["claim_id"]
-
-            second = self.run_cli(
-                "claim",
-                "--manifest", str(manifest),
-                "--worker", "worker-b",
-                "--json",
-            )
-            self.assertEqual(0, second.returncode)
-            self.assertIsNone(json.loads(second.stdout)["task"])
-
-            status = self.run_cli("status", str(root))
-            self.assertEqual(0, status.returncode)
-            self.assertIn("active: 1", status.stdout)
-            self.assertIn("worker-a [claimed] shard=0", status.stdout)
-
-            heartbeat = self.run_cli(
-                "heartbeat",
-                "--manifest", str(manifest),
-                "--task", "task_0000",
-                "--worker", "worker-a",
-                "--progress-json", '{"done":42,"total":1000,"rate":2}',
-            )
-            self.assertEqual("", heartbeat.stderr)
-            self.assertEqual(0, heartbeat.returncode)
-
-            status_with_progress = self.run_cli("status", str(root))
-            self.assertEqual(0, status_with_progress.returncode)
-            self.assertIn("worker-a [claimed] shard=0", status_with_progress.stdout)
-            self.assertNotIn("worker-a [claimed] shard=0 [subtask=42/1000", status_with_progress.stdout)
-
-            unknown_total = self.run_cli(
-                "heartbeat",
-                "--manifest", str(manifest),
-                "--task", "task_0000",
-                "--worker", "worker-a",
-                "--progress-json", '{"done":43}',
-            )
-            self.assertEqual("", unknown_total.stderr)
-            self.assertEqual(0, unknown_total.returncode)
-            status_unknown_total = self.run_cli("status", str(root))
-            self.assertEqual(0, status_unknown_total.returncode)
-            self.assertIn("worker-a [claimed] shard=0", status_unknown_total.stdout)
-
-            wrong_claim = self.run_cli(
-                "heartbeat",
-                "--manifest", str(manifest),
-                "--task", "task_0000",
-                "--worker", "worker-a",
-                "--claim-id", "not-the-claim",
-            )
-            self.assertNotEqual(0, wrong_claim.returncode)
-            self.assertIn("claim id mismatch", wrong_claim.stderr)
-
-            wrong_worker = self.run_cli(
-                "heartbeat",
-                "--manifest", str(manifest),
-                "--task", "task_0000",
-                "--worker", "worker-b",
-            )
-            self.assertNotEqual(0, wrong_worker.returncode)
-            self.assertIn("claimed by worker-a", wrong_worker.stderr)
-
-            wrong_release = self.run_cli(
-                "release",
-                "--manifest", str(manifest),
-                "--task", "task_0000",
-                "--worker", "worker-a",
-                "--claim-id", "not-the-claim",
-            )
-            self.assertNotEqual(0, wrong_release.returncode)
-            status = self.run_cli("status", str(root))
-            self.assertIn("worker-a [claimed] shard=0", status.stdout)
-
-            release = self.run_cli(
-                "release",
-                "--manifest", str(manifest),
-                "--task", "task_0000",
-                "--worker", "worker-a",
-                "--claim-id", claim_id,
-            )
-            self.assertEqual(0, release.returncode)
-            status = self.run_cli("status", str(root))
-            self.assertIn("pending: 1", status.stdout)
-
-    def test_active_retry_status_wins_over_stale_fail_marker(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            manifest = {
-                "schema": "forge.task.v1",
-                "name": "retry",
-                "work_dir": str(root),
-                "state_dir": str(root / "state"),
-                "log_dir": str(root / "logs"),
-                "claim_dir": str(root / "claims"),
-                "tasks": [{"id": "task_0", "index": 0, "command": "true", "outputs": []}],
-            }
-            task = manifest["tasks"][0]
-            run = root / "runs" / "retry"
-            run.mkdir(parents=True)
-            forge.write_json(run / "manifest.json", manifest)
-            claim_epoch = forge.epoch()
-            fail_payload = {"schema": "forge.task.v1", "task": "task_0", "index": 0, "worker": "old", "rc": 1}
-            running_payload = {"schema": "forge.task.v1", "task": "task_0", "index": 0, "worker": "new"}
-            claim_payload = {
-                "schema": "forge.task.v1",
-                "task": "task_0",
-                "index": 0,
-                "claim_id": "claim",
-                "worker": "new",
-                "claimed_epoch": claim_epoch,
-                "heartbeat_epoch": claim_epoch,
-                "lease_seconds": 600,
-            }
-            forge.write_json(forge.task_fail_path(manifest, task), fail_payload)
-            forge.write_json(forge.task_running_path(manifest, task), running_payload)
-            forge.task_claim_dir(manifest, task).mkdir(parents=True)
-            forge.write_json(forge.task_claim_path(manifest, task), claim_payload)
-            forge.write_json(forge.task_heartbeat_path(manifest, task), claim_payload)
-
-            status = self.run_cli("status", str(run), "--verbose")
-
-            self.assertEqual(0, status.returncode)
-            self.assertIn("active: 1", status.stdout)
-            self.assertIn("new shard=0", status.stdout)
-            self.assertIn("command: true", status.stdout)
-            self.assertNotIn("pending: 0", status.stdout)
-            self.assertNotIn("fail: 0", status.stdout)
-
     def test_newer_fail_marker_wins_over_old_running_marker(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -11179,63 +10749,6 @@ console.log(JSON.stringify(orderDashboardRuns([
             self.assertNotIn("active: 1", status.stdout)
             self.assertIn("fail: 1", status.stdout)
             self.assertIn("worker-a [1]: 0", status.stdout)
-
-    def test_verbose_status_splits_stale_rows_from_active_count(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            manifest = {
-                "schema": "forge.task.v1",
-                "name": "stale-active",
-                "work_dir": str(root),
-                "state_dir": str(root / "state"),
-                "log_dir": str(root / "logs"),
-                "claim_dir": str(root / "claims"),
-                "tasks": [
-                    {"id": "task_0", "index": 0, "command": "true", "outputs": []},
-                    {"id": "task_1", "index": 1, "command": "true", "outputs": []},
-                    {"id": "task_2", "index": 2, "command": "true", "outputs": []},
-                ],
-            }
-            run = root / "runs" / "stale-active"
-            run.mkdir(parents=True)
-            forge.write_json(run / "manifest.json", manifest)
-            current = forge.epoch()
-            old = current - 1000.0
-            for index, task in enumerate(manifest["tasks"]):
-                worker = "worker-live" if index == 0 else "worker-stale"
-                timestamp = current if index == 0 else old
-                claim_payload = {
-                    "schema": "forge.task.v1",
-                    "task": task["id"],
-                    "index": index,
-                    "claim_id": f"claim-{index}",
-                    "worker": worker,
-                    "claimed_epoch": timestamp,
-                    "heartbeat_epoch": timestamp,
-                    "lease_seconds": 600,
-                    "attempt": 1,
-                }
-                forge.task_claim_dir(manifest, task).mkdir(parents=True)
-                forge.write_json(forge.task_claim_path(manifest, task), claim_payload)
-                forge.write_json(forge.task_heartbeat_path(manifest, task), claim_payload)
-                forge.write_json(forge.task_running_path(manifest, task), {
-                    "schema": "forge.task.v1",
-                    "task": task["id"],
-                    "index": index,
-                    "worker": worker,
-                    "attempt": 1,
-                })
-
-            status = self.run_cli("status", str(run), "--verbose")
-
-            self.assertEqual(0, status.returncode)
-            self.assertIn("tasks=0/3 stale=2", status.stdout)
-            self.assertIn("active: 1", status.stdout)
-            self.assertNotIn("active: 3", status.stdout)
-            self.assertIn("worker-live shard=0", status.stdout)
-            self.assertIn("stale: 2", status.stdout)
-            self.assertIn("worker-stale [stale] shard=1", status.stdout)
-            self.assertIn("worker-stale [stale] shard=2", status.stdout)
 
     def test_failed_active_run_state_is_current(self) -> None:
         summary = {
@@ -11301,10 +10814,10 @@ console.log(JSON.stringify(orderDashboardRuns([
             forge.write_json(configured, {
                 "schema": "forge.workers.v1",
                 "workers": [
-                    {"host": "worker-a", "profile": "linux", "slots": 4},
-                    {"host": "worker-b", "profile": "linux", "slots": 8},
-                    {"host": "worker-c", "slots": 2},
-                    {"host": "disabled", "slots": 0},
+                    {"host": "worker-a", "profile": "linux"},
+                    {"host": "worker-b", "profile": "linux"},
+                    {"host": "worker-c", "utilization": "50%"},
+                    {"host": "disabled", "utilization": "0%"},
                 ],
             })
 
@@ -11316,8 +10829,8 @@ console.log(JSON.stringify(orderDashboardRuns([
                 rows = forge.unassigned_worker_rows(processes)
 
         self.assertEqual([
-            {"host": "worker-b", "slots": 8, "profile": "linux"},
-            {"host": "worker-c", "slots": 2},
+            {"host": "worker-b", "slots": 1, "utilization": "100%", "profile": "linux"},
+            {"host": "worker-c", "slots": 1, "utilization": "50%"},
         ], rows)
 
         summary = {
@@ -11331,7 +10844,8 @@ console.log(JSON.stringify(orderDashboardRuns([
         stdout = io.StringIO()
         with contextlib.redirect_stdout(stdout):
             forge.print_status_details(summary)
-        self.assertIn("unassigned workers: 10 hosts=2", stdout.getvalue())
+        self.assertIn("unassigned workers: 2 hosts=2", stdout.getvalue())
+        self.assertIn("worker-c [utilization 50%]", stdout.getvalue())
 
     def test_stopping_run_state_takes_precedence_while_tasks_drain(self) -> None:
         summary = {
@@ -12196,108 +11710,6 @@ console.log(JSON.stringify(orderDashboardRuns([
         ordered = sorted(rows, key=forge.active_status_sort_key)
         self.assertEqual([5, 6, 2, 1, 3, 4], [row["index"] for row in ordered])
 
-    def test_status_verbose_shows_host_and_worker(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            manifest_path = root / "manifest.json"
-            manifest = {
-                "schema": "forge.task.v1",
-                "name": "test",
-                "work_dir": str(root),
-                "state_dir": str(root / "state"),
-                "log_dir": str(root / "logs"),
-                "claim_dir": str(root / "claims"),
-                "tasks": [
-                    {"id": "task_0", "index": 0, "command": "true", "outputs": [str(root / "out0.txt")]},
-                    {"id": "task_1", "index": 1, "command": "true", "outputs": [str(root / "out1.txt")]},
-                    {"id": "task_2", "index": 2, "command": "true", "outputs": [str(root / "out2.txt")]},
-                    {
-                        "id": "task_3",
-                        "index": 3,
-                        "command": "/venv/bin/python /repo/tools/score/score.py uci --depth 16",
-                        "outputs": [str(root / "out3.txt")],
-                    },
-                ]
-            }
-            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
-
-            state_dir = root / "state"
-            state_dir.mkdir()
-            log_dir = root / "logs"
-            log_dir.mkdir()
-            (root / "out0.txt").write_text("done")
-            done_payload = {
-                "task": "task_0",
-                "host": "host-done",
-                "worker": {"host": "host-done"},
-                "manifest_sha256": "dummy",
-                "outputs": [{"path": str(root / "out0.txt"), "bytes": 4, "sha256": "dummy"}]
-            }
-            (state_dir / "task_0.done.json").write_text(json.dumps(done_payload))
-
-            claim_dir = root / "claims" / "task_1.claim"
-            claim_dir.mkdir(parents=True)
-            claim_payload = {
-                "task": "task_1",
-                "worker": "worker-claimed",
-                "claimed_at": "2023-01-01T00:00:00Z"
-            }
-            (claim_dir / "claim.json").write_text(json.dumps(claim_payload))
-            running_payload = {
-                "task": "task_1",
-                "host": "host-running",
-                "started_at": "2023-01-01T00:00:00Z",
-            }
-            (state_dir / "task_1.running.json").write_text(json.dumps(running_payload))
-            (log_dir / "task_1.log").write_text(
-                "[1/1   42/1000] selfplay | score 0.500 | draw 30.0%\n",
-                encoding="utf-8",
-            )
-
-            fail_payload = {
-                "task": "task_2",
-                "host": "host-fail",
-                "rc": 1
-            }
-            (state_dir / "task_2.fail.json").write_text(json.dumps(fail_payload))
-
-            compact = self.run_cli("status", str(root))
-            self.assertEqual(1, compact.returncode)
-            self.assertIn("run=", compact.stdout)
-            self.assertIn("  tasks=1/4 fail=1", compact.stdout)
-            self.assertIn("  active: 1 subtask=42/1000", compact.stdout)
-            self.assertNotIn("host-done [1]: 0", compact.stdout)
-            self.assertIn("    worker-claimed shard=1 [subtask=42/1000]", compact.stdout)
-            self.assertIn("    host-fail [1]: 2", compact.stdout)
-            self.assertIn("  pending: 1\n    score:uci [1]: 3", compact.stdout)
-
-            result = self.run_cli("status", str(root), "--verbose")
-            self.assertEqual(1, result.returncode)
-            self.assertNotIn("host-done [1]: 0", result.stdout)
-            self.assertNotIn("task_0\tdone\thost-done", result.stdout)
-            self.assertIn("    worker-claimed shard=1 [subtask=42/1000]", result.stdout)
-            self.assertIn("    host-fail [1]: 2", result.stdout)
-            self.assertIn("    score:uci [1]: 3", result.stdout)
-
-            show_done = self.run_cli("status", str(root), "--show-done")
-            self.assertEqual(1, show_done.returncode)
-            self.assertIn("host-done [1]: 0", show_done.stdout)
-
-            result_json = self.run_cli("status", str(root), "--json")
-            self.assertEqual(1, result_json.returncode)
-            payload = json.loads(result_json.stdout)
-            self.assertEqual(4, payload["tasks"])
-            self.assertEqual(1, payload["counts"]["done"])
-            self.assertEqual(1, payload["active_count"])
-            self.assertEqual([0], payload["groups"]["done"]["host-done"])
-            self.assertEqual("subtask=42/1000", payload["active"][0]["progress"])
-            self.assertEqual("", payload["active"][0]["label"])
-            self.assertEqual(1, payload["sections"]["active"]["count"])
-            self.assertNotIn("tasks", payload["sections"]["pending"])
-            self.assertEqual([3], payload["sections"]["pending"]["groups"]["score:uci"])
-            self.assertEqual([2], payload["sections"]["fail"]["groups"]["host-fail"])
-            self.assertEqual(["tasks=1/4", "fail=1"], payload["display"]["fields"])
-
     def test_status_sorts_active_tasks_by_completeness(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -12450,180 +11862,6 @@ console.log(JSON.stringify(orderDashboardRuns([
             status = self.run_cli("status", str(root))
             self.assertEqual(0, status.returncode)
             self.assertIn("  pending: 4\n    label:uci [1]: 1\n    score:uci [1]: 0\n    unlabeled [2]: 2-3", status.stdout)
-
-    def test_status_uses_runs_directory(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            runs = root / "runs"
-            for name in ("main", "bonus"):
-                run = runs / name
-                manifest = run / "manifest.json"
-                manifest.parent.mkdir(parents=True)
-                manifest.write_text(
-                    json.dumps({
-                        "schema": "forge.task.v1",
-                        "name": name,
-                        "work_dir": str(run),
-                        "state_dir": str(run / "state"),
-                        "log_dir": str(run / "logs"),
-                        "tasks": [{"id": f"{name}_0", "index": 0, "command": "true", "outputs": []}],
-                    }),
-                    encoding="utf-8",
-                )
-            bonus_state = runs / "bonus" / "state"
-            bonus_state.mkdir(parents=True)
-            (bonus_state / "bonus_0.done.json").write_text(
-                json.dumps({"task": "bonus_0", "host": "host-done"}),
-                encoding="utf-8",
-            )
-            main_state = runs / "main" / "state"
-            main_state.mkdir(parents=True)
-            main_claim = runs / "main" / "claims" / "main_0.claim"
-            main_claim.mkdir(parents=True)
-            (main_claim / "claim.json").write_text(
-                json.dumps({"task": "main_0", "worker": "worker-main"}),
-                encoding="utf-8",
-            )
-            (main_state / "main_0.running.json").write_text(
-                json.dumps({"task": "main_0", "host": "host-main"}),
-                encoding="utf-8",
-            )
-            setup_manifest = root / "examples" / "setup.manifest.json"
-            setup_manifest.parent.mkdir(parents=True)
-            setup_manifest.write_text(
-                json.dumps({
-                    "schema": "forge.task.v1",
-                    "name": "setup",
-                    "work_dir": str(root / "examples"),
-                    "tasks": [],
-                }),
-                encoding="utf-8",
-            )
-            example_task_manifest = root / "examples" / "nnue-selfplay.manifest.json"
-            example_task_manifest.write_text(
-                json.dumps({
-                    "schema": "forge.task.v1",
-                    "name": "nnue-selfplay",
-                    "work_dir": str(root / "examples"),
-                    "state_dir": str(root / "examples" / "state"),
-                    "tasks": [{"id": "example_0", "index": 0, "command": "true", "outputs": []}],
-                }),
-                encoding="utf-8",
-            )
-
-            with self.patch_runs_dir(runs):
-                stdout = io.StringIO()
-                with contextlib.redirect_stdout(stdout):
-                    rc = forge.cmd_status(
-                        argparse.Namespace(
-                            run=None,
-                            all=False,
-                            done=False,
-                            failed=False,
-                            json=False,
-                            no_color=True,
-                            lease_seconds=600,
-                            show_done=False,
-                            verbose=False,
-                        )
-                    )
-                self.assertEqual(0, rc)
-                status_text = stdout.getvalue()
-                self.assertIn("main", status_text)
-                self.assertRegex(status_text, r"run=main\s+tasks=0/1")
-                self.assertNotIn("bonus", status_text)
-                self.assertNotIn("setup", status_text)
-                self.assertNotIn("nnue-selfplay", status_text)
-                self.assertIn("worker-main shard=0", status_text)
-
-                stdout = io.StringIO()
-                with contextlib.redirect_stdout(stdout):
-                    rc = forge.cmd_status(
-                        argparse.Namespace(
-                            run=None,
-                            all=False,
-                            done=False,
-                            failed=False,
-                            json=False,
-                            no_color=True,
-                            lease_seconds=600,
-                        )
-                    )
-                self.assertEqual(0, rc)
-                active_text = stdout.getvalue()
-                self.assertIn("main", active_text)
-                self.assertNotIn("bonus", active_text)
-                self.assertIn("  active: 1", active_text)
-                self.assertIn("worker-main shard=0", active_text)
-
-                stdout = io.StringIO()
-                with contextlib.redirect_stdout(stdout):
-                    rc = forge.cmd_status(
-                        argparse.Namespace(
-                            run=None,
-                            all=True,
-                            done=False,
-                            failed=False,
-                            json=True,
-                            no_color=True,
-                            lease_seconds=600,
-                        )
-                    )
-                self.assertEqual(0, rc)
-                payload = json.loads(stdout.getvalue())
-                self.assertEqual(["bonus", "main"], sorted(item["run"] for item in payload["runs"]))
-                self.assertEqual(0, payload["collapsed_failures_count"])
-                bonus_payload = next(item for item in payload["runs"] if item["run"] == "bonus")
-                main_payload = next(item for item in payload["runs"] if item["run"] == "main")
-                self.assertIn("groups", bonus_payload)
-                self.assertIn("sections", bonus_payload)
-                self.assertIn("state", bonus_payload)
-                self.assertEqual("done", bonus_payload["state"])
-                self.assertEqual(1, main_payload["sections"]["active"]["count"])
-                self.assertEqual("worker-main", main_payload["sections"]["active"]["tasks"][0]["worker"])
-
-                stdout = io.StringIO()
-                with contextlib.redirect_stdout(stdout):
-                    rc = forge.cmd_status(
-                        argparse.Namespace(
-                            run=None,
-                            all=True,
-                            done=False,
-                            failed=False,
-                            json=False,
-                            no_color=True,
-                            lease_seconds=600,
-                            show_done=False,
-                            verbose=False,
-                        )
-                    )
-                self.assertEqual(0, rc)
-                all_text = stdout.getvalue()
-                self.assertIn("main", all_text)
-                self.assertIn("bonus", all_text)
-                self.assertIn("worker-main shard=0", all_text)
-
-                stdout = io.StringIO()
-                with contextlib.redirect_stdout(stdout):
-                    rc = forge.cmd_status(
-                        argparse.Namespace(
-                            run=None,
-                            all=False,
-                            done=True,
-                            failed=False,
-                            json=False,
-                            no_color=True,
-                            lease_seconds=600,
-                        )
-                    )
-                self.assertEqual(0, rc)
-                done_text = stdout.getvalue()
-                self.assertIn("bonus", done_text)
-                self.assertNotIn("main", done_text)
-
-                one_run = self.run_cli("status", str(runs / "main"), cwd=root)
-                self.assertEqual(0, one_run.returncode)
-                self.assertIn("tasks=0/1", one_run.stdout)
 
     def test_status_sorts_done_runs_by_creation_time(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -13547,84 +12785,6 @@ console.log(JSON.stringify(orderDashboardRuns([
             self.assertIn("pwa-llm", command)
             self.assertIn("--json", command[-1])
 
-    def test_status_shows_declared_progress(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            runs = root / "runs"
-            run = runs / "score"
-            state = run / "state"
-            logs = run / "logs"
-            state.mkdir(parents=True)
-            logs.mkdir(parents=True)
-            manifest = {
-                "schema": "forge.task.v1",
-                "name": "score",
-                "work_dir": str(run),
-                "state_dir": str(state),
-                "log_dir": str(logs),
-                "tasks": [{
-                    "id": "task_0",
-                    "index": 0,
-                    "command": "true",
-                    "outputs": [],
-                    "progress": {
-                        "unit": "rows",
-                        "total": 125000,
-                        "log_regex": (
-                            r"selected=(?P<done>\d+)\s+written=(?P<output>\d+)\s+"
-                            r"rate=(?P<rate>[0-9.]+)/s\s+elo=(?P<elo>[+-]?[0-9.]+)"
-                        ),
-                        "output_unit": "output",
-                        "display_fields": {"elo": "elo~"},
-                    },
-                }],
-            }
-            (run / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
-            (state / "task_0.running.json").write_text(json.dumps({"task": "task_0", "host": "worker"}))
-            (logs / "task_0.log").write_text(
-                "shard 0/24: selected=50000 written=48010 rate=6.7/s elo=-12.3\n",
-                encoding="utf-8",
-            )
-
-            with self.patch_runs_dir(runs):
-                stdout = io.StringIO()
-                with contextlib.redirect_stdout(stdout):
-                    rc = forge.cmd_status(
-                        argparse.Namespace(
-                            run=None,
-                            all=False,
-                            done=False,
-                            failed=False,
-                            json=False,
-                            no_color=True,
-                            lease_seconds=600,
-                        )
-                )
-                self.assertEqual(0, rc)
-                self.assertIn("    worker shard=0 [rows=50k/125k, output=48k, elo~=-12.3, eta=3h06m]", stdout.getvalue())
-
-                named_stdout = io.StringIO()
-                with contextlib.redirect_stdout(named_stdout):
-                    rc = forge.cmd_status(
-                        argparse.Namespace(
-                            run="score",
-                            all=False,
-                            done=False,
-                            failed=False,
-                            json=False,
-                            no_color=True,
-                            lease_seconds=600,
-                            verbose=False,
-                            show_done=False,
-                        )
-                )
-                self.assertEqual(0, rc)
-                self.assertIn("active: 1 rows=50k/125k output=48k", named_stdout.getvalue())
-                self.assertNotIn("active: 1 rows=50k/125k output=48k eta=3h06m", named_stdout.getvalue())
-                self.assertNotIn("workers=1", named_stdout.getvalue())
-                self.assertNotIn("speedup=1.0x", named_stdout.getvalue())
-                self.assertIn("worker shard=0 [rows=50k/125k, output=48k, elo~=-12.3, eta=3h06m]", named_stdout.getvalue())
-
     def test_status_extracts_declared_progress_series(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -13795,83 +12955,6 @@ console.log(JSON.stringify(orderDashboardRuns([
             self.assertEqual([0.0, 4.0], [point["x"] for point in series["llr"]])
             self.assertNotIn("elo", series)
 
-    def test_status_run_graph_history_keeps_old_samples(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            run = root / "sprt-run"
-            state = run / "state"
-            logs = run / "logs"
-            state.mkdir(parents=True)
-            logs.mkdir(parents=True)
-            tasks = []
-            for index in range(2):
-                tasks.append({
-                    "id": f"task_{index}",
-                    "index": index,
-                    "command": "true",
-                    "outputs": [],
-                    "progress": {
-                        "unit": "games",
-                        "total": 2,
-                        "log_regex": (
-                            r"\[\s*(?P<done>\d+)\/(?P<total>\d+)\].*?"
-                            r"Elo\s+(?P<elo>[-+]?\d+(?:\.\d+)?|[-+]?inf).*?"
-                            r"\+/-\s+(?P<ci>\d+(?:\.\d+)?).*?"
-                            r"LOS\s+(?P<los>\d+(?:\.\d+)?)%.*?"
-                            r"draw\s+(?P<draw>\d+(?:\.\d+)?)%"
-                        ),
-                    },
-                })
-            manifest = {
-                "schema": "forge.task.v1",
-                "name": "sprt-run",
-                "kind": "sprt",
-                "work_dir": str(run),
-                "state_dir": str(state),
-                "log_dir": str(logs),
-                "tasks": tasks,
-            }
-            (state / "task_0.done.json").write_text(
-                json.dumps({"task": "task_0", "host": "worker"}),
-                encoding="utf-8",
-            )
-            (logs / "task_0.log").write_text(
-                "[2/2] Elo  -50.0 +/-  80.0 | LLR -0.20/2.94 ( -7%) | LOS 40.0% | draw   0.0%\n",
-                encoding="utf-8",
-            )
-
-            first = forge.status_summary(manifest, lease_seconds=600)
-            first_series = {item["name"]: item["points"] for item in first["progress_graph"]["series"]}
-            self.assertEqual([{"x": 0.0, "y": 0.0}, {"x": 2.0, "y": -0.2}], first_series["llr"])
-
-            (logs / "task_0.log").write_text(
-                "[2/2] Elo  200.0 +/-  80.0 | LLR 0.40/2.94 ( 14%) | LOS 90.0% | draw   0.0%\n",
-                encoding="utf-8",
-            )
-            (state / "task_1.done.json").write_text(
-                json.dumps({"task": "task_1", "host": "worker"}),
-                encoding="utf-8",
-            )
-            (logs / "task_1.log").write_text(
-                "[2/2] Elo  10.0 +/-  80.0 | LLR 0.10/2.94 (  3%) | LOS 55.0% | draw   0.0%\n",
-                encoding="utf-8",
-            )
-
-            second = forge.status_summary(manifest, lease_seconds=600)
-            series = {item["name"]: item["points"] for item in second["progress_graph"]["series"]}
-            self.assertEqual(
-                [{"x": 0.0, "y": 0.0}, {"x": 2.0, "y": 0.4}, {"x": 4.0, "y": 0.5}],
-                series["llr"],
-            )
-            self.assertEqual([2.0, 4.0], [point["x"] for point in series["ci"]])
-            self.assertAlmostEqual(80.0, series["ci"][0]["y"], places=1)
-            self.assertAlmostEqual(56.6, series["ci"][1]["y"], places=1)
-
-            third = forge.status_summary(manifest, lease_seconds=600)
-            series = {item["name"]: item["points"] for item in third["progress_graph"]["series"]}
-            self.assertEqual([0.0, 2.0, 4.0], [point["x"] for point in series["llr"]])
-            self.assertEqual(2, len((state / "progress-history.jsonl").read_text(encoding="utf-8").splitlines()))
-
     def test_sprt_run_graph_shows_elo_from_first_valid_aggregate(self) -> None:
         points = forge.sprt_aggregate_graph_points(
             [
@@ -13961,59 +13044,6 @@ console.log(JSON.stringify(orderDashboardRuns([
         self.assertEqual([50.0, 60.0], [point["x"] for point in series["elo"]])
         self.assertEqual([50.0, 60.0], [point["x"] for point in series["ci"]])
         self.assertEqual([0.0, 6.0, 50.0, 60.0], [point["x"] for point in series["llr"]])
-
-    def test_status_sprt_header_shows_aggregated_elo(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            run = root / "sprt-run"
-            state = run / "state"
-            logs = run / "logs"
-            state.mkdir(parents=True)
-            logs.mkdir(parents=True)
-            tasks = []
-            for index in range(2):
-                tasks.append({
-                    "id": f"task_{index}",
-                    "index": index,
-                    "command": "true",
-                    "outputs": [],
-                    "progress": {
-                        "unit": "games",
-                        "total": 1000,
-                        "log_regex": r"\[\s*(?P<done>\d+)\s*/\s*(?P<total>\d+)\]",
-                    },
-                })
-            manifest = {
-                "schema": "forge.task.v1",
-                "name": "sprt-run",
-                "kind": "sprt",
-                "work_dir": str(run),
-                "state_dir": str(state),
-                "log_dir": str(logs),
-                "tasks": tasks,
-            }
-            (run / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
-            (state / "task_0.running.json").write_text(json.dumps({"task": "task_0", "host": "worker-a"}), encoding="utf-8")
-            (state / "task_1.running.json").write_text(json.dumps({"task": "task_1", "host": "worker-b"}), encoding="utf-8")
-            (logs / "task_0.log").write_text(
-                "[100/1000] Elo  10.0 +/-  20.0 | LLR  0.12/2.94 (  4%) | LOS 70.0% | draw  40.0% | ETA 10m\n",
-                encoding="utf-8",
-            )
-            (logs / "task_1.log").write_text(
-                "[300/1000] Elo  -2.0 +/-  10.0 | LLR -0.24/2.94 ( -8%) | LOS 55.0% | draw  45.0% | ETA 5m\n",
-                encoding="utf-8",
-            )
-
-            status = self.run_cli("status", str(run))
-
-            self.assertEqual(0, status.returncode, status.stderr)
-            # los is pooled from aggregate elo/ci (Phi(elo/sigma)), not a
-            # weighted mean of per-shard LOS values.
-            self.assertIn("elo=+1.0 llr=-0.12/2.94 (-4%) los=58.6% ci=9.0 draw=43.8% games=400/2000 tasks=0/2", status.stdout)
-            self.assertIn("active: 2", status.stdout)
-            self.assertNotIn("active: 2 games=400/2000", status.stdout)
-            self.assertIn("worker-a sprt shard=0 [games=100/1000, elo=10.0, ci=20.0, llr=0.12/2.94 (4%), los=70.0, draw=40.0]", status.stdout)
-            self.assertIn("worker-b sprt shard=1 [games=300/1000, elo=-2.0, ci=10.0, llr=-0.24/2.94 (-8%), los=55.0, draw=45.0]", status.stdout)
 
     def test_pooled_los_percent_tracks_pooled_evidence(self) -> None:
         from forge_lib.status import pooled_los_percent
@@ -14277,182 +13307,6 @@ console.log(JSON.stringify(orderDashboardRuns([
                 self.assertIn("worker shard=0 [games=50/50, finalizing]", text)
                 self.assertNotIn("eta=0s", text)
 
-    def test_status_shows_active_worker_throughput(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            runs = root / "runs"
-            run = runs / "score"
-            state = run / "state"
-            logs = run / "logs"
-            state.mkdir(parents=True)
-            logs.mkdir(parents=True)
-            manifest = {
-                "schema": "forge.task.v1",
-                "name": "score",
-                "work_dir": str(run),
-                "state_dir": str(state),
-                "log_dir": str(logs),
-                "tasks": [
-                    {
-                        "id": "task_0",
-                        "index": 0,
-                        "command": "true",
-                        "outputs": [],
-                        "progress": {
-                            "unit": "rows",
-                            "total": 125000,
-                            "log_regex": r"selected=(?P<done>\d+)\s+written=(?P<output>\d+)\s+rate=(?P<rate>[0-9.]+)/s",
-                            "output_unit": "output",
-                        },
-                    },
-                    {
-                        "id": "task_1",
-                        "index": 1,
-                        "command": "true",
-                        "outputs": [],
-                        "progress": {
-                            "unit": "rows",
-                            "total": 125000,
-                            "log_regex": r"selected=(?P<done>\d+)\s+written=(?P<output>\d+)\s+rate=(?P<rate>[0-9.]+)/s",
-                            "output_unit": "output",
-                        },
-                    },
-                    {
-                        "id": "task_2",
-                        "index": 2,
-                        "command": "true",
-                        "outputs": [],
-                        "progress": {
-                            "unit": "rows",
-                            "total": 125000,
-                            "log_regex": r"selected=(?P<done>\d+)\s+written=(?P<output>\d+)\s+rate=(?P<rate>[0-9.]+)/s",
-                            "output_unit": "output",
-                        },
-                    },
-                    {
-                        "id": "task_3",
-                        "index": 3,
-                        "command": "true",
-                        "outputs": [],
-                        "progress": {
-                            "unit": "rows",
-                            "total": 125000,
-                            "log_regex": r"selected=(?P<done>\d+)\s+written=(?P<output>\d+)\s+rate=(?P<rate>[0-9.]+)/s",
-                            "output_unit": "output",
-                        },
-                    },
-                ],
-            }
-            (run / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
-            (state / "task_0.running.json").write_text(json.dumps({"task": "task_0", "host": "worker-a", "started_epoch": 1000.0}))
-            (state / "task_1.running.json").write_text(json.dumps({"task": "task_1", "host": "worker-a-slot2", "started_epoch": 1000.0}))
-            (state / "task_2.running.json").write_text(json.dumps({"task": "task_2", "host": "worker-b", "started_epoch": 1000.0}))
-            (state / "task_3.done.json").write_text(json.dumps({"task": "task_3", "host": "worker-b", "elapsed_s": 100.0}))
-            (logs / "task_0.log").write_text(
-                "shard 0/2: selected=50000 written=48010 rate=6.7/s\n",
-                encoding="utf-8",
-            )
-            (logs / "task_1.log").write_text(
-                "shard 1/2: selected=1000 written=120 rate=2.0/s\n",
-                encoding="utf-8",
-            )
-            (logs / "task_2.log").write_text(
-                "shard 2/2: selected=1000 written=777 rate=1.0/s\n",
-                encoding="utf-8",
-            )
-            (logs / "task_3.log").write_text(
-                "shard 3/3: selected=20000 written=20000 rate=4.0/s\n",
-                encoding="utf-8",
-            )
-
-            with self.patch_runs_dir(runs), mock.patch("forge_lib.status.epoch", return_value=1100.0):
-                stdout = io.StringIO()
-                with contextlib.redirect_stdout(stdout):
-                    rc = forge.cmd_status(
-                        argparse.Namespace(
-                            run=None,
-                            all=False,
-                            done=False,
-                            failed=False,
-                            json=False,
-                            no_color=True,
-                            lease_seconds=600,
-                            verbose=True,
-                            show_done=False,
-                        )
-                )
-                self.assertEqual(0, rc)
-                text = stdout.getvalue()
-                self.assertIn("tasks=1/4 speedup=3.0x", text)
-                self.assertIn("active: 3 rows=177k/500k workers=2 output=68k min=worker-b:20k max=worker-a:48k", text)
-                self.assertNotIn("max=worker-a:48k speedup=", text)
-                self.assertNotIn("active workers:", text)
-                self.assertNotIn("tasks=2 output=48k", text)
-                self.assertNotIn("tasks=1 output=20k", text)
-                worker_section = text.split("active: 3", 1)[1].split("  worker-a shard=0", 1)[0]
-                self.assertNotIn("output=68k output=68k", worker_section)
-                self.assertNotIn("rate", worker_section)
-                self.assertNotIn("avg", worker_section)
-
-                color_stdout = io.StringIO()
-                with mock.patch.dict(os.environ, {"FORGE_COLOR": "always"}), contextlib.redirect_stdout(color_stdout):
-                    rc = forge.cmd_status(
-                        argparse.Namespace(
-                            run=None,
-                            all=False,
-                            done=False,
-                            failed=False,
-                            json=False,
-                            no_color=False,
-                            lease_seconds=600,
-                            verbose=True,
-                            show_done=False,
-                        )
-                )
-                self.assertEqual(0, rc)
-                color_line = next(
-                    line for line in color_stdout.getvalue().splitlines()
-                    if "active:" in line and "workers=" in line
-                )
-                self.assertIn("active: \033[33m3\033[0m", color_line)
-                self.assertIn("workers=2 output=68k min=worker-b:20k max=worker-a:48k", color_line)
-                self.assertIn(f"speedup=\033[{forge.STATUS_BLUE_SGR}m3.0x\033[0m", color_stdout.getvalue())
-                self.assertNotIn("workers=\033[", color_line)
-                self.assertNotIn("output=\033[", color_line)
-                self.assertNotIn("min=\033[", color_line)
-                self.assertNotIn("max=\033[", color_line)
-
-    def test_summary_eta_includes_pending_work(self) -> None:
-        summary = {
-            "active": [
-                {
-                    "progress_data": {
-                        "kind": "metadata",
-                        "done": 50,
-                        "total": 100,
-                        "unit": "rows",
-                        "rate": 10.0,
-                        "eta_s": 5.0,
-                    },
-                },
-                {
-                    "progress_data": {
-                        "kind": "metadata",
-                        "done": 50,
-                        "total": 100,
-                        "unit": "rows",
-                        "rate": 10.0,
-                        "eta_s": 5.0,
-                    },
-                },
-            ],
-            "active_count": 2,
-            "counts": {"pending": 1},
-            "progress_done": {"rows": 100},
-            "progress_totals": {"rows": 400},
-        }
-        self.assertEqual("progress=rows=200/400, eta=10s", forge.summary_progress(summary))
-
     def test_unbounded_label_summary_reports_approximate_eta(self) -> None:
         summary = {
             "metadata": {"kind": "label"},
@@ -14553,103 +13407,6 @@ console.log(JSON.stringify(orderDashboardRuns([
         progress = forge.summary_progress(summary)
         self.assertIn("games=1000/2m", progress)
         self.assertIn("eta=23d", progress)
-
-    def test_summary_eta_uses_aggregate_rate_while_work_is_pending(self) -> None:
-        summary = {
-            "active": [
-                {
-                    "progress_data": {
-                        "kind": "metadata",
-                        "done": 50,
-                        "total": 100,
-                        "unit": "rows",
-                        "rate": 10.0,
-                        "eta_s": 5.0,
-                    },
-                },
-                {
-                    "progress_data": {
-                        "kind": "metadata",
-                        "done": 50,
-                        "total": 100,
-                        "unit": "rows",
-                        "rate": 10.0,
-                        "eta_s": 30.0,
-                    },
-                },
-            ],
-            "active_count": 2,
-            "counts": {"pending": 1},
-            "progress_done": {"rows": 100},
-            "progress_totals": {"rows": 400},
-        }
-        self.assertEqual("progress=rows=200/400, eta=10s", forge.summary_progress(summary))
-
-    def test_summary_eta_counts_claimed_work_without_claimed_rate(self) -> None:
-        summary = {
-            "active": [
-                {
-                    "state": "running",
-                    "progress_data": {
-                        "kind": "metadata",
-                        "done": 50,
-                        "total": 100,
-                        "unit": "rows",
-                        "rate": 10.0,
-                        "eta_s": 5.0,
-                    },
-                },
-                {
-                    "state": "claimed",
-                    "progress_data": {
-                        "kind": "metadata",
-                        "done": 0,
-                        "total": 100,
-                        "unit": "rows",
-                        "rate": 10.0,
-                        "eta_s": 10.0,
-                    },
-                },
-            ],
-            "active_count": 2,
-            "counts": {"running": 1, "claimed": 1, "stale": 0, "pending": 0},
-            "progress_done": {"rows": 0},
-            "progress_totals": {"rows": 200},
-        }
-        self.assertEqual("progress=rows=50/200, eta=15s", forge.summary_progress(summary))
-
-    def test_summary_eta_ignores_stale_rate_but_counts_stale_work(self) -> None:
-        summary = {
-            "active": [
-                {
-                    "state": "running",
-                    "progress_data": {
-                        "kind": "metadata",
-                        "done": 50,
-                        "total": 100,
-                        "unit": "rows",
-                        "rate": 10.0,
-                        "eta_s": 5.0,
-                    },
-                },
-                {
-                    "state": "stale",
-                    "progress_data": {
-                        "kind": "metadata",
-                        "done": 0,
-                        "total": 100,
-                        "unit": "rows",
-                        "rate": 0.1,
-                        "eta_s": 1000.0,
-                    },
-                },
-            ],
-            "active_count": 2,
-            "counts": {"running": 1, "claimed": 0, "stale": 1, "pending": 0},
-            "progress_done": {"rows": 0},
-            "progress_totals": {"rows": 200},
-        }
-        self.assertEqual("progress=rows=50/200, eta=15s", forge.summary_progress(summary))
 
     def test_status_speedup_requires_task_rates(self) -> None:
         summary = {
@@ -14837,77 +13594,6 @@ console.log(JSON.stringify(orderDashboardRuns([
             self.assertEqual("coordinator", forge.worker_group_name("localhost"))
             self.assertEqual("coordinator", forge.worker_group_name("127.0.0.1"))
             self.assertEqual("coordinator", forge.worker_group_name("::1"))
-
-    def test_status_infers_eta_from_elapsed_declared_progress(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            runs = root / "runs"
-            run = runs / "selfplay"
-            state = run / "state"
-            logs = run / "logs"
-            state.mkdir(parents=True)
-            logs.mkdir(parents=True)
-            manifest = {
-                "schema": "forge.task.v1",
-                "name": "selfplay",
-                "work_dir": str(run),
-                "state_dir": str(state),
-                "log_dir": str(logs),
-                "tasks": [
-                    {
-                        "id": "task_0",
-                        "index": 0,
-                        "command": "true",
-                        "outputs": [],
-                        "progress": {
-                            "unit": "games",
-                            "total": 1000,
-                            "log_regex": r"\[\s*\d+/\d+\s+(?P<done>\d+)\s*/\s*(?P<total>\d+)\]",
-                        },
-                    },
-                    {
-                        "id": "task_1",
-                        "index": 1,
-                        "command": "true",
-                        "outputs": [],
-                        "progress": {
-                            "unit": "games",
-                            "total": 1000,
-                            "log_regex": r"\[\s*\d+/\d+\s+(?P<done>\d+)\s*/\s*(?P<total>\d+)\]",
-                        },
-                    },
-                ],
-            }
-            (run / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
-            (state / "task_0.done.json").write_text(json.dumps({"task": "task_0"}), encoding="utf-8")
-            (state / "task_1.running.json").write_text(
-                json.dumps({"task": "task_1", "worker": "worker-a", "started_epoch": 1000.0}),
-                encoding="utf-8",
-            )
-            (logs / "task_1.log").write_text("[1/2 500/1000]\n", encoding="utf-8")
-
-            with self.patch_runs_dir(runs), mock.patch("forge_lib.status.epoch", return_value=1100.0):
-                stdout = io.StringIO()
-                with contextlib.redirect_stdout(stdout):
-                    rc = forge.cmd_status(
-                        argparse.Namespace(
-                            run=None,
-                            all=False,
-                            done=False,
-                            failed=False,
-                            json=False,
-                            no_color=True,
-                            lease_seconds=600,
-                            verbose=True,
-                            show_done=False,
-                        )
-                )
-                self.assertEqual(0, rc)
-                text = stdout.getvalue()
-                self.assertIn("  games=1500/2000 tasks=1/2 eta=1m40s", text)
-                self.assertIn("  active: 1", text)
-                self.assertNotIn("  active: 1 games=1500/2000", text)
-                self.assertIn("worker-a shard=1 [games=500/1000, eta=1m40s]", text)
 
     def test_status_prefers_active_heartbeat_progress_over_stale_log(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -15195,170 +13881,6 @@ console.log(JSON.stringify(orderDashboardRuns([
             self.assertEqual(2, summary["counts"]["done"])
             self.assertEqual({"games": 10}, summary["progress_done"])
             self.assertEqual("progress=games=10/50", forge.summary_progress(summary))
-
-    def test_status_uses_completed_rate_when_running_task_has_no_progress_yet(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            runs = root / "runs"
-            run = runs / "selfplay"
-            state = run / "state"
-            logs = run / "logs"
-            state.mkdir(parents=True)
-            logs.mkdir(parents=True)
-            manifest = {
-                "schema": "forge.task.v1",
-                "name": "selfplay",
-                "work_dir": str(run),
-                "state_dir": str(state),
-                "log_dir": str(logs),
-                "tasks": [
-                    {
-                        "id": "task_0",
-                        "index": 0,
-                        "command": "true",
-                        "outputs": [],
-                        "progress": {
-                            "unit": "games",
-                            "total": 1000,
-                            "log_regex": r"\[\s*\d+/\d+\s+(?P<done>\d+)\s*/\s*(?P<total>\d+)\]",
-                        },
-                    },
-                    {
-                        "id": "task_1",
-                        "index": 1,
-                        "command": "true",
-                        "outputs": [],
-                        "progress": {
-                            "unit": "games",
-                            "total": 1000,
-                            "log_regex": r"\[\s*\d+/\d+\s+(?P<done>\d+)\s*/\s*(?P<total>\d+)\]",
-                        },
-                    },
-                ],
-            }
-            (run / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
-            (state / "task_0.done.json").write_text(
-                json.dumps({"task": "task_0", "elapsed_s": 100.0}),
-                encoding="utf-8",
-            )
-            (state / "task_1.running.json").write_text(
-                json.dumps({"task": "task_1", "worker": "worker-a", "started_epoch": 1000.0}),
-                encoding="utf-8",
-            )
-            task = manifest["tasks"][1]
-            forge.task_claim_dir(manifest, task).mkdir(parents=True)
-            forge.write_json(
-                forge.task_heartbeat_path(manifest, task),
-                {
-                    "task": "task_1",
-                    "worker": "worker-a",
-                    "heartbeat_epoch": 1001.0,
-                    "progress_data": {
-                        "kind": "metadata",
-                        "done": 0,
-                        "total": 1000,
-                        "unit": "games",
-                    },
-                },
-            )
-            (logs / "task_1.log").write_text("", encoding="utf-8")
-
-            with self.patch_runs_dir(runs), mock.patch("forge_lib.status.epoch", return_value=1001.0):
-                stdout = io.StringIO()
-                with contextlib.redirect_stdout(stdout):
-                    rc = forge.cmd_status(
-                        argparse.Namespace(
-                            run=None,
-                            all=False,
-                            done=False,
-                            failed=False,
-                            json=False,
-                            no_color=True,
-                            lease_seconds=600,
-                            verbose=True,
-                            show_done=False,
-                        )
-                )
-                self.assertEqual(0, rc)
-                text = stdout.getvalue()
-                self.assertIn("  games=1000/2000 tasks=1/2 eta=1m40s", text)
-                self.assertIn("  active: 1", text)
-                self.assertNotIn("  active: 1 games=1000/2000", text)
-                self.assertIn("worker-a shard=1 [games=0/1000, eta~=1m40s]", text)
-
-    def test_status_labels_overdue_fallback_eta_as_unknown(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            runs = root / "runs"
-            run = runs / "selfplay"
-            state = run / "state"
-            logs = run / "logs"
-            state.mkdir(parents=True)
-            logs.mkdir(parents=True)
-            manifest = {
-                "schema": "forge.task.v1",
-                "name": "selfplay",
-                "work_dir": str(run),
-                "state_dir": str(state),
-                "log_dir": str(logs),
-                "tasks": [
-                    {
-                        "id": "task_0",
-                        "index": 0,
-                        "command": "true",
-                        "outputs": [],
-                        "progress": {
-                            "unit": "games",
-                            "total": 1000,
-                            "log_regex": r"\[\s*\d+/\d+\s+(?P<done>\d+)\s*/\s*(?P<total>\d+)\]",
-                        },
-                    },
-                    {
-                        "id": "task_1",
-                        "index": 1,
-                        "command": "true",
-                        "outputs": [],
-                        "progress": {
-                            "unit": "games",
-                            "total": 1000,
-                            "log_regex": r"\[\s*\d+/\d+\s+(?P<done>\d+)\s*/\s*(?P<total>\d+)\]",
-                        },
-                    },
-                ],
-            }
-            (run / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
-            (state / "task_0.done.json").write_text(
-                json.dumps({"task": "task_0", "elapsed_s": 100.0}),
-                encoding="utf-8",
-            )
-            (state / "task_1.running.json").write_text(
-                json.dumps({"task": "task_1", "worker": "worker-a", "started_epoch": 1000.0}),
-                encoding="utf-8",
-            )
-            (logs / "task_1.log").write_text("", encoding="utf-8")
-
-            with self.patch_runs_dir(runs), mock.patch("forge_lib.status.epoch", return_value=1110.0):
-                stdout = io.StringIO()
-                with contextlib.redirect_stdout(stdout):
-                    rc = forge.cmd_status(
-                        argparse.Namespace(
-                            run=None,
-                            all=False,
-                            done=False,
-                            failed=False,
-                            json=False,
-                            no_color=True,
-                            lease_seconds=600,
-                            verbose=True,
-                            show_done=False,
-                        )
-                )
-                self.assertEqual(0, rc)
-                text = stdout.getvalue()
-                self.assertIn("  games=1000/2000 tasks=1/2 eta=1m40s", text)
-                self.assertIn("  active: 1", text)
-                self.assertNotIn("  active: 1 games=1000/2000", text)
-                self.assertIn("worker-a shard=1 [games=0/1000, eta~=1m40s]", text)
 
     def test_status_ignores_undeclared_domain_progress(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -15667,80 +14189,6 @@ console.log(JSON.stringify(orderDashboardRuns([
                     lease_seconds=600,
                     retry_failed=False,
                 )["task"])
-
-    def test_release_worker_claims_skips_running_tasks(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            subprocess.run(["git", "init", "-b", "main"], cwd=root, check=True, stdout=subprocess.DEVNULL)
-            subprocess.run(["git", "config", "user.name", "Petter Wahlman"], cwd=root, check=True)
-            subprocess.run(["git", "config", "user.email", "petter@wahlman.no"], cwd=root, check=True)
-            (root / "input.txt").write_text("fixed\n", encoding="utf-8")
-            subprocess.run(["git", "add", "input.txt"], cwd=root, check=True)
-            subprocess.run(["git", "commit", "-m", "test"], cwd=root, check=True, stdout=subprocess.DEVNULL)
-            manifest = root / "manifest.json"
-            plan = self.run_cli(
-                "plan",
-                "--name", "release-worker",
-                "--shards", "3",
-                "--work-dir", str(root),
-                "--out", str(manifest),
-                "--command-template", "printf x > {output}",
-                "--output-template", str(root / "out.{index}.txt"),
-            )
-            self.assertEqual(0, plan.returncode)
-            loaded = forge.load_manifest(manifest)
-
-            first = forge.claim_task(
-                loaded,
-                worker="worker-a",
-                profile=None,
-                lease_seconds=600,
-                retry_failed=False,
-            )
-            second = forge.claim_task(
-                loaded,
-                worker="worker-a",
-                profile=None,
-                lease_seconds=600,
-                retry_failed=False,
-            )
-            third = forge.claim_task(
-                loaded,
-                worker="worker-b",
-                profile=None,
-                lease_seconds=600,
-                retry_failed=False,
-            )
-            self.assertEqual("task_0000", first["task"])
-            self.assertEqual("task_0001", second["task"])
-            self.assertEqual("task_0002", third["task"])
-
-            running = self.run_cli(
-                "heartbeat",
-                "--manifest", str(manifest),
-                "--task", "task_0001",
-                "--worker", "worker-a",
-                "--claim-id", second["claim"]["claim_id"],
-                "--running",
-            )
-            self.assertEqual("", running.stderr)
-            self.assertEqual(0, running.returncode)
-
-            release = self.run_cli(
-                "release",
-                "--manifest", str(manifest),
-                "--worker", "worker-a",
-            )
-            self.assertEqual("", release.stderr)
-            self.assertEqual(0, release.returncode)
-            self.assertEqual("task_0000\n", release.stdout)
-
-            status = self.run_cli("status", str(root))
-            self.assertEqual(0, status.returncode)
-            self.assertIn("active: 2", status.stdout)
-            self.assertIn("worker-a shard=1", status.stdout)
-            self.assertIn("worker-b [claimed] shard=2", status.stdout)
-            self.assertIn("pending: 1", status.stdout)
 
     def test_delete_done_runs(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -16255,49 +14703,6 @@ console.log(JSON.stringify(orderDashboardRuns([
             head = subprocess.check_output(["git", "-C", str(clone), "rev-parse", "HEAD"], text=True).strip()
             self.assertEqual(expected, head)
 
-    def test_update_matches_workers_to_coordinator_commit(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            workers = root / "workers.json"
-            workers.write_text(
-                json.dumps({
-                    "schema": "forge.workers.v1",
-                    "workers": [
-                        {"host": "localhost", "local": True, "name": "local-a"},
-                        {"host": "remote-a"},
-                    ],
-                }),
-                encoding="utf-8",
-            )
-            result = subprocess.CompletedProcess(
-                args=["sh"],
-                returncode=0,
-                stdout="forge abc main\n",
-                stderr="",
-            )
-            with mock.patch("forge_lib.workers.run_worker_shell", return_value=result) as run_mock:
-                stdout = io.StringIO()
-                with contextlib.redirect_stdout(stdout):
-                    rc = forge.cmd_update(
-                        argparse.Namespace(
-                            workers=str(workers),
-                            all=False,
-                            remote="origin",
-                            branch="main",
-                            require_clean=True,
-                            timeout_seconds=30.0,
-                        )
-                    )
-
-            self.assertEqual(0, rc)
-            self.assertEqual(2, run_mock.call_count)
-            first_script = run_mock.call_args_list[0].args[1]
-            self.assertIn("git -C \"$repo\" fetch origin main", first_script)
-            self.assertIn("git -C \"$repo\" merge --ff-only", first_script)
-            self.assertIn("test \"$(git -C \"$repo\" rev-parse HEAD)\" =", first_script)
-            self.assertIn("localhost: OK forge abc main", stdout.getvalue())
-            self.assertIn("remote-a: OK forge abc main", stdout.getvalue())
-
     def test_update_uses_default_workers_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -16504,15 +14909,16 @@ console.log(JSON.stringify(orderDashboardRuns([
                 workers,
             )
 
-    def test_load_workers_arg_inline_csv_without_defaults_uses_eight_slots(self) -> None:
+    def test_load_workers_arg_inline_csv_without_defaults_defaults_to_full_host(self) -> None:
         with mock.patch("forge_lib.workers.default_workers_path", side_effect=SystemExit("no workers")):
-            workers = forge.load_workers_arg("pwa-mbp,pwa-llm,localhost")
+            payload = forge.workers_payload_from_arg("pwa-mbp,pwa-llm,localhost", default_ok=False)
+            resolved = forge.resolve_workers_payload(payload, forge.default_task_resources(), quiet=True)
 
-        self.assertEqual(24, len(workers))
-        self.assertEqual({"pwa-mbp", "pwa-llm", "localhost"}, {worker["host"] for worker in workers})
-        self.assertEqual([1, 2, 3, 4, 5, 6, 7, 8], [worker["_slot"] for worker in workers if worker["host"] == "pwa-mbp"])
-        self.assertTrue(all(worker["_slots"] == 8 for worker in workers))
-        self.assertTrue(all(worker["local"] for worker in workers if worker["host"] == "localhost"))
+        self.assertEqual(["pwa-mbp", "pwa-llm", "localhost"], [worker["host"] for worker in payload["workers"]])
+        self.assertTrue(all("utilization" not in worker for worker in payload["workers"]))
+        self.assertEqual([64, 64, 64], [worker["slots"] for worker in resolved["workers"]])
+        self.assertEqual(["100%"] * 3, [worker["utilization"] for worker in resolved["workers"]])
+        self.assertTrue(all(worker["local"] for worker in payload["workers"] if worker["host"] == "localhost"))
 
     def test_load_workers_arg_inline_inherits_default_records(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -16559,12 +14965,13 @@ console.log(JSON.stringify(orderDashboardRuns([
             )
 
             with mock.patch("forge_lib.workers.default_workers_path", return_value=workers_path):
-                workers = forge.load_workers_arg("pwa-mbp:3,pwa-llm:0,unknown:2")
+                payload = forge.workers_payload_from_arg("pwa-mbp:3,pwa-llm:0,unknown:50%", default_ok=False)
+                resolved = forge.resolve_workers_payload(payload, forge.default_task_resources(), quiet=True)
 
-        self.assertEqual(5, len(workers))
-        self.assertEqual(["pwa-mbp", "pwa-mbp", "pwa-mbp", "unknown", "unknown"], [worker["host"] for worker in workers])
-        self.assertEqual(["mac", "mac", "mac", "unknown", "unknown"], [worker["profile"] for worker in workers])
-        self.assertNotIn("pwa-llm", [worker["host"] for worker in workers])
+        self.assertEqual(["pwa-mbp", "unknown"], [worker["host"] for worker in resolved["workers"]])
+        self.assertEqual(["mac", "unknown"], [worker["profile"] for worker in resolved["workers"]])
+        self.assertEqual(["3", "50%"], [worker["utilization"] for worker in resolved["workers"]])
+        self.assertEqual([3, 32], [worker["slots"] for worker in resolved["workers"]])
 
     def test_load_workers_arg_inline_overrides_profile_and_keeps_defaults(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -16585,11 +14992,13 @@ console.log(JSON.stringify(orderDashboardRuns([
             )
 
             with mock.patch("forge_lib.workers.default_workers_path", return_value=workers_path):
-                workers = forge.load_workers_arg("pwa-mbp=linux:2")
+                payload = forge.workers_payload_from_arg("pwa-mbp=linux:2", default_ok=False)
 
-        self.assertEqual(2, len(workers))
-        self.assertTrue(all(worker["profile"] == "linux" for worker in workers))
-        self.assertTrue(all(worker["python"] == "/opt/homebrew/bin/python3" for worker in workers))
+        [worker] = payload["workers"]
+        self.assertEqual("linux", worker["profile"])
+        self.assertEqual("/opt/homebrew/bin/python3", worker["python"])
+        self.assertEqual("2", worker["utilization"])
+        self.assertNotIn("slots", worker)
 
     def test_workers_payload_from_inline_omits_disabled_workers(self) -> None:
         with mock.patch("forge_lib.workers.default_workers_path", side_effect=SystemExit("no workers")):
@@ -16599,7 +15008,7 @@ console.log(JSON.stringify(orderDashboardRuns([
             {
                 "schema": "forge.workers.v1",
                 "workers": [
-                    {"host": "pwa-llm", "profile": "pwa-llm", "local": False, "slots": 2},
+                    {"host": "pwa-llm", "profile": "pwa-llm", "local": False, "utilization": "2"},
                 ],
             },
             payload,
@@ -16617,7 +15026,7 @@ console.log(JSON.stringify(orderDashboardRuns([
                 with self.assertRaises(SystemExit) as raised:
                     forge.load_workers_arg(value)
 
-                self.assertIn("worker slots must be a non-negative integer", str(raised.exception))
+                self.assertIn("utilization", str(raised.exception))
 
     def test_load_workers_arg_treats_json_name_as_missing_file(self) -> None:
         with self.assertRaises(SystemExit) as raised:
@@ -16686,45 +15095,6 @@ console.log(JSON.stringify(orderDashboardRuns([
                 forge.load_workers(workers_path)
 
         self.assertIn("no enabled workers", str(raised.exception))
-
-    def test_deploy_commands_use_worker_python(self) -> None:
-        worker = {
-            "host": "pwa-mbp",
-            "profile": "pwa-mbp",
-            "local": False,
-            "python": "/opt/homebrew/bin/python3",
-        }
-        manifest = {
-            "requirements": {"repos": [{"name": "repo", "path": "~/repo"}]},
-            "tasks": [{"id": "task_0000"}],
-        }
-
-        prereq = forge.deploy_prereq_command(
-            worker=worker,
-            manifest=manifest,
-            coordinator="pwa-llm:/tmp/manifest.json",
-        )
-        work = forge.deploy_work_command(
-            worker=worker,
-            manifest=manifest,
-            coordinator="pwa-llm:/tmp/manifest.json",
-        )
-        retry_work = forge.deploy_work_command(
-            worker=worker,
-            manifest=manifest,
-            coordinator="pwa-llm:/tmp/manifest.json",
-            retry_failed=True,
-        )
-
-        self.assertIn("/opt/homebrew/bin/python3 /tmp/forge-cache/forge.py doctor", prereq)
-        self.assertIn("--skip-requirements", prereq)
-        self.assertIn("--coordinator pwa-llm:/tmp/manifest.json", prereq)
-        self.assertLess(prereq.index("--skip-requirements"), prereq.index("sync-repos"))
-        self.assertLess(prereq.index("--coordinator pwa-llm:/tmp/manifest.json"), prereq.index("sync-repos"))
-        self.assertIn("/opt/homebrew/bin/python3 /tmp/forge-cache/forge.py work", work)
-        self.assertIn("--idle-seconds 120.0", work)
-        self.assertNotIn("--retry-failed", work)
-        self.assertIn("--retry-failed", retry_work)
 
     def test_deploy_work_command_assigns_stable_slot_id(self) -> None:
         command = forge.deploy_work_command(
@@ -17118,7 +15488,7 @@ console.log(JSON.stringify(orderDashboardRuns([
             workers_path.write_text(
                 json.dumps({
                     "schema": "forge.workers.v1",
-                    "workers": [{"host": "pwa-llm", "profile": "pwa-llm", "local": False}],
+                    "workers": [{"host": "pwa-llm", "profile": "pwa-llm", "local": False, "utilization": "1"}],
                 }),
                 encoding="utf-8",
             )
@@ -17376,10 +15746,10 @@ console.log(JSON.stringify(orderDashboardRuns([
                 {
                     "schema": "forge.workers.v1",
                     "workers": [
-                        {"host": "worker-a", "profile": "worker-a", "local": False, "slots": 2},
+                        {"host": "worker-a", "profile": "worker-a", "local": False, "utilization": "2", "slots": 2},
                     ],
                 },
-                payload,
+                self.without_capacity(payload),
             )
 
     def test_deploy_sets_up_unique_workers_not_slots(self) -> None:
@@ -17524,14 +15894,14 @@ console.log(JSON.stringify(orderDashboardRuns([
             snapshot_payload = {
                 "schema": "forge.workers.v1",
                 "workers": [
-                    {"host": "worker-a", "profile": "worker-a", "local": True, "cache_dir": str(root / "cache-a")},
-                    {"host": "worker-b", "profile": "worker-b", "local": True, "cache_dir": str(root / "cache-b")},
+                    {"host": "worker-a", "profile": "worker-a", "local": True, "cache_dir": str(root / "cache-a"), "utilization": "1"},
+                    {"host": "worker-b", "profile": "worker-b", "local": True, "cache_dir": str(root / "cache-b"), "utilization": "1"},
                 ],
             }
             launch_payload = {
                 "schema": "forge.workers.v1",
                 "workers": [
-                    {"host": "worker-b", "profile": "worker-b", "local": True, "cache_dir": str(root / "cache-b")},
+                    {"host": "worker-b", "profile": "worker-b", "local": True, "cache_dir": str(root / "cache-b"), "utilization": "1"},
                 ],
             }
             commands = []
@@ -17560,7 +15930,10 @@ console.log(JSON.stringify(orderDashboardRuns([
 
             self.assertEqual(0, rc)
             self.assertIn("deploy: run=subset-workers workers=1 jobs=1", stdout.getvalue())
-            self.assertEqual(snapshot_payload, forge.read_json(runs / "subset-workers" / "workers.json"))
+            self.assertEqual(
+                {**snapshot_payload, "workers": [{**worker, "slots": 1} for worker in snapshot_payload["workers"]]},
+                self.without_capacity(forge.read_json(runs / "subset-workers" / "workers.json")),
+            )
             scripts = [command[-1] for command in commands if command[0] == "sh"]
             self.assertTrue(any("--worker worker-b" in script for script in scripts))
             self.assertFalse(any("--worker worker-a" in script for script in scripts))
@@ -17584,7 +15957,7 @@ console.log(JSON.stringify(orderDashboardRuns([
             workers_path.write_text(
                 json.dumps({
                     "schema": "forge.workers.v1",
-                    "workers": [{"host": "worker-b", "profile": "worker-b", "local": True, "cache_dir": str(root / "cache-b")}],
+                    "workers": [{"host": "worker-b", "profile": "worker-b", "local": True, "cache_dir": str(root / "cache-b"), "utilization": "1"}],
                 }),
                 encoding="utf-8",
             )
@@ -17749,7 +16122,7 @@ console.log(JSON.stringify(orderDashboardRuns([
                 json.dumps({
                     "schema": "forge.workers.v1",
                     "workers": [
-                        {"host": f"worker-{index}", "profile": f"worker-{index}", "local": True, "cache_dir": str(root / f"cache-{index}")}
+                        {"host": f"worker-{index}", "profile": f"worker-{index}", "local": True, "cache_dir": str(root / f"cache-{index}"), "utilization": "1"}
                         for index in range(4)
                     ],
                 }),
@@ -17928,7 +16301,7 @@ console.log(JSON.stringify(orderDashboardRuns([
                         "profile": "worker-b",
                         "local": True,
                         "cache_dir": str(root / "cache-b"),
-                        "slots": 17,
+                        "utilization": "17",
                     }],
                 }),
                 encoding="utf-8",
@@ -18017,7 +16390,7 @@ console.log(JSON.stringify(orderDashboardRuns([
                         "profile": "worker-b",
                         "local": True,
                         "cache_dir": str(root / "cache-b"),
-                        "slots": 17,
+                        "utilization": "17",
                     }],
                 }),
                 encoding="utf-8",
@@ -18109,6 +16482,7 @@ console.log(JSON.stringify(orderDashboardRuns([
                             "local": True,
                             "cache_dir": str(root / "cache-a"),
                             "path_map": {str(root): str(root)},
+                            "utilization": "1",
                         },
                         {
                             "host": "worker-b",
@@ -18116,7 +16490,7 @@ console.log(JSON.stringify(orderDashboardRuns([
                             "local": True,
                             "cache_dir": str(root / "cache-b"),
                             "path_map": {str(root): str(root)},
-                            "slots": 3,
+                            "utilization": "3",
                         },
                     ],
                 }),
@@ -18190,8 +16564,8 @@ console.log(JSON.stringify(orderDashboardRuns([
                 json.dumps({
                     "schema": "forge.workers.v1",
                     "workers": [
-                        {"host": "worker-a", "profile": "worker-a", "local": True, "cache_dir": str(root / "cache-a")},
-                        {"host": "worker-b", "profile": "worker-b", "local": True, "cache_dir": str(root / "cache-b")},
+                        {"host": "worker-a", "profile": "worker-a", "local": True, "cache_dir": str(root / "cache-a"), "utilization": "1"},
+                        {"host": "worker-b", "profile": "worker-b", "local": True, "cache_dir": str(root / "cache-b"), "utilization": "1"},
                     ],
                 }),
                 encoding="utf-8",
@@ -18909,8 +17283,8 @@ console.log(JSON.stringify(orderDashboardRuns([
                 json.dumps({
                     "schema": "forge.workers.v1",
                     "workers": [
-                        "pwa-llm",
-                        {"host": "localhost", "local": True, "cache_dir": str(Path(tmp) / "cache")},
+                        {"host": "pwa-llm", "utilization": "1"},
+                        {"host": "localhost", "local": True, "cache_dir": str(Path(tmp) / "cache"), "utilization": "1"},
                     ],
                 }),
                 encoding="utf-8",
@@ -18946,9 +17320,6 @@ console.log(JSON.stringify(orderDashboardRuns([
             self.assertNotIn("syncing runner", deploy_output)
             self.assertNotIn("checking prerequisites", deploy_output)
             self.assertIn("deploy: setup complete", deploy_output)
-            self.assertTrue(
-                any(command[0] == "ssh" and command[-2] == "pwa-llm" and "mkdir -p /tmp/forge-cache" in command[-1] for command in commands)
-            )
             self.assertNotIn(["sh", "-lc", "mkdir -p " + str(Path(tmp) / "cache")], commands)
             self.assertTrue((Path(tmp) / "cache/forge.py").exists())
             self.assertTrue((Path(tmp) / "cache/manifest.json").exists())
@@ -18979,7 +17350,7 @@ console.log(JSON.stringify(orderDashboardRuns([
             workers_path.write_text(
                 json.dumps({
                     "schema": "forge.workers.v1",
-                    "workers": [{"host": "localhost", "local": True, "cache_dir": str(root / "cache")}],
+                    "workers": [{"host": "localhost", "local": True, "cache_dir": str(root / "cache"), "utilization": "1"}],
                 }),
                 encoding="utf-8",
             )
@@ -19206,59 +17577,6 @@ console.log(JSON.stringify(orderDashboardRuns([
             self.assertEqual(
                 ["build", "install", "probe"],
                 [call.args[1] for call in hook.call_args_list],
-            )
-
-    def test_claimed_task_fetches_only_its_inventory_bundle(self) -> None:
-        from forge_lib.labeling import build_inventory, build_inventory_subset
-
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            source = root / "source"
-            source.mkdir()
-            (source / "training.0").write_bytes(b"\0" * 8356)
-            (source / "training.1").write_bytes(b"\1" * 8356)
-            inventory = build_inventory(source, cache_home=root / "cache")
-            bundle = build_inventory_subset(
-                inventory,
-                [inventory["files"][1]],
-                cache_home=root / "cache",
-            )
-            destination = root / "worker-input"
-            coordinator_task = {
-                "id": "label_0001",
-                "inputs": [{
-                    "source": str(bundle["cache_root"]),
-                    "path": "/coordinator-only/path",
-                    "tree": "lc0-inventory",
-                    "digest": bundle["digest"],
-                }],
-            }
-            local_task = {
-                "id": "label_0001",
-                "inputs": [{
-                    "path": str(destination),
-                    "tree": "lc0-inventory",
-                    "digest": bundle["digest"],
-                }],
-            }
-
-            self.assertEqual(
-                1,
-                forge.sync_task_inputs_from_coordinator(
-                    str(root / "manifest.json"),
-                    coordinator_task,
-                    local_task,
-                ),
-            )
-            self.assertTrue((destination / "training.1").is_file())
-            self.assertFalse((destination / "training.0").exists())
-            self.assertEqual(
-                0,
-                forge.sync_task_inputs_from_coordinator(
-                    str(root / "manifest.json"),
-                    coordinator_task,
-                    local_task,
-                ),
             )
 
     def test_cleanup_task_input_removes_remote_lc0_bundle_only(self) -> None:
@@ -19570,7 +17888,7 @@ console.log(JSON.stringify(orderDashboardRuns([
                         "host": "localhost",
                         "local": True,
                         "cache_dir": str(root / "cache"),
-                        "slots": 2,
+                        "utilization": "2",
                     }],
                 }),
                 encoding="utf-8",

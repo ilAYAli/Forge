@@ -12,6 +12,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+# Deterministic worker hardware for capacity resolution; never probe real hosts.
+os.environ["FORGE_HARDWARE"] = '{"threads": 64, "cores": 64, "memory_mb": 262144}'
 import forge
 
 

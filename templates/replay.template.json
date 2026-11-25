@@ -3,6 +3,11 @@
   "name": "replay",
   "kind": "replay",
   "description": "Run distributed candidate vs reference replay comparison over logged games",
+  "resources": {
+    "timing": "fixed",
+    "threads": "{threads}*{jobs}",
+    "memory_mb": "3*({hash}+64)*{jobs}+128"
+  },
   "run_name": "replay-{candidate_net_stem}-vs-{reference_net_stem}-{games}-{timestamp}",
   "work_dir": "~",
   "materialize_inputs": true,

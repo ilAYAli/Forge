@@ -2496,6 +2496,13 @@ def prepare_run_resume(manifest_path: Path, manifest: dict[str, Any]) -> dict[st
             ]
             if any(old == new for old, new in zip(task.get("outputs", []), continuation["outputs"])):
                 raise SystemExit(f"resume: {task_id} output path does not contain its task id")
+            continuation_resume = continuation.get("resume")
+            if isinstance(continuation_resume, dict) and isinstance(continuation_resume.get("checkpoint_files"), list):
+                # The continuation is a new shard with its own resume state.
+                continuation_resume["checkpoint_files"] = [
+                    str(path).replace(task_id, continuation_id)
+                    for path in continuation_resume["checkpoint_files"]
+                ]
             continuation_progress = continuation.get("progress")
             if not isinstance(continuation_progress, dict):
                 raise SystemExit(f"resume: {task_id} has no progress configuration")
@@ -2519,6 +2526,9 @@ def prepare_run_resume(manifest_path: Path, manifest: dict[str, Any]) -> dict[st
             "continued_by": continuation_id,
         }
         sealed.append((task, done))
+        # A sealed shard never runs again; drop its tool resume state.
+        for checkpoint in task_checkpoint_paths(task, updated):
+            checkpoint.unlink(missing_ok=True)
 
     validate_manifest_payload(updated, label=f"resume {manifest_path.parent.name}")
     write_json(manifest_path, updated)
@@ -2864,7 +2874,18 @@ def cmd_del(args: argparse.Namespace) -> int:
             print(f"kept active: {', '.join(kept)}")
         return 0
     confirm_delete(targets, force=bool(args.force))
+    from .workers import cleanup_worker_run_cache
+
     for path in targets:
+        # Stopped runs leave worker-local state (resume checkpoints, locks,
+        # partial outputs) on every worker; remove it with the run.
+        try:
+            cleanup = cleanup_worker_run_cache(path)
+        except (OSError, SystemExit, ValueError) as exc:
+            cleanup = {"workers": str(exc)}
+        for host, detail in sorted(cleanup.items()):
+            if detail != "ok":
+                print(f"{path.name}: worker cleanup {host}: {detail}", file=sys.stderr)
         shutil.rmtree(path)
         mark_deleted_run_for_web(path.name)
         print(f"deleted: {path.name}")
@@ -3074,10 +3095,10 @@ def unassigned_worker_rows(worker_processes: list[dict[str, Any]]) -> list[dict[
         host = str(worker.get("host") or "").strip()
         if not host or host in participating_hosts:
             continue
-        slots = configured_worker_slots(worker)
-        if slots <= 0:
+        utilization = str(worker.get("utilization") or "100%").strip()
+        if utilization in {"0", "0%"}:
             continue
-        row = {"host": host, "slots": slots}
+        row = {"host": host, "slots": 1, "utilization": utilization}
         profile = str(worker.get("profile") or "").strip()
         if profile:
             row["profile"] = profile
@@ -5326,10 +5347,10 @@ def print_status_details(
         print(f"{indent}{title} hosts={len(unassigned_rows)}")
         for worker in unassigned_rows:
             host = str(worker.get("host") or "unknown")
-            slots = int(worker.get("slots") or 0)
+            utilization = str(worker.get("utilization") or "100%")
             profile = str(worker.get("profile") or "").strip()
             profile_text = f" profile={profile}" if profile else ""
-            print(f"{indent}  {host} [{slots} slots]{profile_text}")
+            print(f"{indent}  {host} [utilization {utilization}]{profile_text}")
     print_pending_status(summary, color_enabled=color_enabled, show_empty=show_empty, indent=indent)
     print_status_group("fail", summary["groups"]["fail"], color_enabled=color_enabled, show_empty=show_empty, indent=indent)
     for item in summary.get("failure_reasons", []):

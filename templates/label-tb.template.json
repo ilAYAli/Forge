@@ -4,6 +4,11 @@
   "hidden": true,
   "kind": "label-tb",
   "description": "Convert self-play PGNs to BulletFormat, applying Syzygy WDL to <=6-piece positions",
+  "resources": {
+    "timing": "fixed",
+    "threads": "1",
+    "memory_mb": "512"
+  },
   "run_name": "label-tb-{input_stem}-{timestamp}",
   "work_dir": "{nnue_repo}",
   "materialize_inputs": true,

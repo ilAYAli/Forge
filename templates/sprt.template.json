@@ -3,6 +3,11 @@
   "name": "sprt",
   "kind": "sprt",
   "description": "Run distributed SPRT game shards",
+  "resources": {
+    "timing": "timed",
+    "threads": "{threads}*{concurrency}",
+    "memory_mb": "2*({hash}+64)*{concurrency}+64"
+  },
   "comment": "{candidate_net_name} vs {reference_net_name}",
   "reports": [
     {
@@ -236,7 +241,8 @@
     },
     "resume": {
       "strategy": "split-progress",
-      "count_arg": "--games"
+      "count_arg": "--games",
+      "checkpoint_files": ["{output_dir}/{task_name}/logs/{task_name}.resume.json"]
     },
     "label": "sprt:{shard}",
     "output": "{output_dir}/{task_name}/logs/{task_name}.log",

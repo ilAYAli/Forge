@@ -38,8 +38,9 @@ forge deploy examples/workers.json examples/nnue-selfplay.manifest.json \
 forge status nnue-selfplay
 ```
 
-Use workers with few slots for this. Each self-play shard already runs several
-engine games concurrently.
+Each self-play shard already runs several engine games concurrently; the
+manifest's `resources.threads` (`{threads}*{concurrency}`) makes Forge start
+correspondingly fewer shards per host.
 
 ## NNUE Stockfish Labeling
 
@@ -55,8 +56,9 @@ forge merge \
   --output runs/nnue-label-stockfish/outputs/labeled.jsonl
 ```
 
-Use worker `slots` for labeling. Each shard owns one Stockfish process, so
-multiple slots can use idle CPU cores on the same host.
+Each shard owns one single-thread Stockfish process and is fixed-depth work, so
+Forge runs one shard per hardware thread (including SMT siblings) at low CPU
+priority. Lower a host's `utilization` to keep part of it free.
 
 ## NNUE SPRT
 
@@ -71,7 +73,8 @@ forge status nnue-sprt --verbose
 
 The manifest pins and installs the `sprt` wrapper from Git, then probes the
 exact option used by the task command before any games are started.
-Use worker `slots` for parallelism. Keep each SPRT task at low internal
+SPRT is timed work, so Forge gives each engine thread its own physical core
+(performance cores only on Apple Silicon). Keep each SPRT task at low internal
 concurrency, usually `--concurrency 1`, and create more shards than total
 worker slots. Shards of 50-100 games are usually small enough to avoid a slow
 tail while still keeping startup overhead reasonable.

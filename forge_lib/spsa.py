@@ -270,16 +270,12 @@ def attach_spsa_manifest_config(manifest: dict[str, Any], params: dict[str, Any]
             template_data["parameters"].pop(key, None)
 
 
-def spsa_worker_slots_payload(workers_arg: str) -> dict[str, Any]:
-    from .workers import (
-        worker_records_from_payload,
-        workers_payload_from_arg,
-        workers_payload_from_records,
-    )
+def spsa_worker_slots_payload(workers_arg: str, resources: dict[str, Any] | None = None) -> dict[str, Any]:
+    from .capacity import default_task_resources, resolve_workers_payload
+    from .workers import workers_payload_from_arg
 
     payload = workers_payload_from_arg(workers_arg, default_ok=False)
-    records = worker_records_from_payload(payload, label=workers_arg)
-    payload = workers_payload_from_records(records)
+    payload = resolve_workers_payload(payload, resources or default_task_resources())
     if spsa_worker_slot_count(payload) <= 0:
         raise SystemExit("SPSA workers resolve to zero task slots")
     return payload

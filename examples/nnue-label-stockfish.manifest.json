@@ -2,6 +2,11 @@
   "schema": "forge.task.v1",
   "name": "nnue-label-stockfish",
   "work_dir": "~/code/chess/nnue",
+  "resources": {
+    "timing": "fixed",
+    "threads": "{threads}",
+    "memory_mb": "{hash}+256"
+  },
   "requirements": {
     "python_min": "3.11",
     "git_min": "2.38",

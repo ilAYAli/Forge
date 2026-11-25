@@ -837,7 +837,7 @@ _HTML = r"""<!DOCTYPE html>
         commands: 'Commands that created or can reproduce this run.',
         active: 'Worker processes currently executing tasks for this run.',
         workers: 'Worker processes assigned to this run but not currently executing a task.',
-        unassigned: 'Configured worker slots that are not participating in this run.',
+        unassigned: 'Configured workers that are not participating in this run.',
         pending: 'Tasks that have not yet been claimed by a worker.',
         fail: 'Tasks that ended in failure and may need to be resumed or inspected.',
       }[section] || '';
@@ -1818,9 +1818,9 @@ _HTML = r"""<!DOCTYPE html>
 
     function renderUnassignedWorkers(workers) {
       return (workers || []).map(worker => {
-        const slots = Number(worker.slots || 0);
+        const utilization = String(worker.utilization || '100%');
         const profile = worker.profile ? ` profile=${worker.profile}` : '';
-        return `<div class="group-row" onclick="selectElementText(this)">${esc(worker.host || '?')} [${slots} slots]${esc(profile)}</div>`;
+        return `<div class="group-row" onclick="selectElementText(this)">${esc(worker.host || '?')} [utilization ${esc(utilization)}]${esc(profile)}</div>`;
       }).join('');
     }
 

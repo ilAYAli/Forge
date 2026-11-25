@@ -39,19 +39,17 @@ The name of the respective workers should likely be a hostname rather than worke
     {
       "host": "worker1",
       "profile": "worker1",
-      "resources": ["cpu"],
-      "slots": 11
+      "resources": ["cpu"]
     },
     {
       "host": "worker2",
       "profile": "worker2",
       "python": "/opt/homebrew/bin/python3",
-      "slots": 5
+      "utilization": "50%"
     },
     {
       "host": "worker3",
-      "profile": "linux",
-      "slots": 8
+      "profile": "linux"
     }
   ]
 }
@@ -65,11 +63,11 @@ forge "cd ~/repo; git pull; cmake --build build"
 forge sync ~/code/chess/enyo/net/default.net
 forge sync /tmp/foo ~/bar
 forge sync "$PWD/.codex/agents" ~/code/chess/nnue/
-forge start manifest.json --workers worker1,worker2:4
+forge start manifest.json --workers worker1,worker2:50%
 forge stop my-run
 forge resume my-run
 forge retry
-forge worker set worker3:4
+forge worker set worker3:50%
 forge del --worker worker3
 forge status
 watch 'forge status --verbose'
@@ -232,18 +230,19 @@ Ctrl+C during setup or `--wait` performs the same cleanup before returning
 status 130. Coordinator temporary files are removed, and the stopped run can be
 continued with `forge resume <run>` without duplicate output.
 
-Set worker slots for an incomplete run:
+Change a worker's utilization for an incomplete run:
 
 ```sh
-forge worker set worker3:4 my-run
+forge worker set worker3:50% my-run
+forge worker set worker3:max my-run
+forge worker set worker3:0 my-run
 ```
 
-`worker set worker3:4` seeds `<run>/workers.json` from the configured defaults
-when absent, then updates or adds only `worker3`. Missing workers are started;
-existing workers keep running.
-
-Configured worker limits cap numeric requests by default. Use `--force` to
-override that cap, for example `forge worker set worker3:8 --force my-run`.
+`worker set` updates only that host in `<run>/workers.json` and resizes it
+from its detected hardware (see [Capacity](#capacity)). Missing worker
+processes are started. Lowering the share drains the extra processes: they
+finish their current task, stop claiming, and exit. `--force` kills them
+instead, and also allows a thread count above the detected hardware.
 
 Drain a worker from a run:
 
@@ -286,13 +285,14 @@ forge release --manifest runs/my-run/manifest.json --worker worker-name
 
 ## Workers
 
-Inline workers are comma-separated. `:N` sets slots for that invocation. `:0`
-omits a host.
+Inline workers are comma-separated. A `:` suffix sets the host's utilization
+for that invocation: `:50%` is a share of the host, `:8` a hardware-thread
+budget, `:max` the whole host, and `:0` omits the host.
 
 ```sh
 forge start manifest.json --workers worker1,worker2
-forge start manifest.json --workers worker1:8,worker2:4
-forge start manifest.json --workers worker1=linux:8,worker2=mac:4
+forge start manifest.json --workers worker1:50%,worker2:8
+forge start manifest.json --workers worker1=linux:max,worker2=mac:25%
 forge start manifest.json --workers worker1:0,worker2
 ```
 
@@ -311,7 +311,7 @@ Workers files as JSON:
       "host": "worker3",
       "profile": "mac",
       "python": "/opt/homebrew/bin/python3",
-      "slots": 2
+      "utilization": "50%"
     },
     {
       "host": "worker4",
@@ -322,11 +322,67 @@ Workers files as JSON:
 ```
 
 Object workers support `host`, `profile`, `python`, `local`, `cache_dir`,
-`slots`, `resources`, `env`, and `enabled`. `resources` is a non-empty list
+`utilization`, `resources`, `env`, and `enabled`. `resources` is a non-empty list
 containing `cpu` and/or `gpu`; omitted workers are CPU-only. `env` maps shell
 variable names to literal string values and is exported for every Forge command
 on that worker (for example, a CUDA toolkit path). Inline entries inherit matching
 worker-file defaults.
+
+## Capacity
+
+Forge sizes each host from its own hardware, and nothing about the hardware
+goes in `workers.json`. When a run starts, every worker reports its hardware
+threads, physical cores, performance cores, and memory: `lscpu`,
+`/sys/devices/cpu_core/cpus` (Intel hybrid), cgroup v2 limits and
+`/proc/meminfo` on Linux, `sysctl` on macOS. Results are cached for
+ten minutes in `~/.cache/forge/hardware/`.
+
+Each manifest declares what one task costs:
+
+```json
+"resources": {
+  "timing": "timed",
+  "threads": "{threads}*{concurrency}",
+  "memory_mb": "2*({hash}+64)*{concurrency}+64"
+}
+```
+
+- `timing: "timed"` (SPRT, SPSA): every engine thread needs a whole physical
+  core, so on an SMT host it costs two hardware threads, and on hybrid CPUs
+  (Apple Silicon, Intel Core Ultra) only performance cores count.
+- `timing: "fixed"` (labeling, datagen, fixed-node selfplay): every engine
+  thread costs one hardware thread. `"timed_unless": ["nodes", "depth"]`
+  treats the task as fixed when either limit is set.
+- `threads` and `memory_mb` are arithmetic expressions over the manifest's
+  variables (`+ - * / //` and parentheses only). A manifest without
+  `resources` costs one fixed thread and declares no memory.
+
+A host's `utilization` (default `100%`) is then turned into a slot count:
+the threads or cores in its share, divided by the per-task cost, and capped
+so the tasks fit in 90% of the host's memory share. Any share above zero runs
+at least one task. Precedence is the `--workers host:…` suffix, then the
+`workers.json` `utilization`, then 100%. `forge worker set` changes only the
+active run, never `workers.json`. An old `slots` value in `workers.json` is
+ignored, with a warning.
+
+Example on a 12-core/24-thread Linux host and a 10P+4E Mac:
+
+| Utilization | Labeling (fixed x1) | SPRT (timed x1) |
+|---|---|---|
+| Linux `100%` | 24 | 12 |
+| Linux `50%` | 12 | 6 |
+| Mac `100%` | 14 | 10 |
+
+While a run is active, each worker also:
+
+- waits before claiming a task when free memory is less than the task's
+  `memory_mb` plus a reserve (5% of RAM, at least 512 MiB);
+- starts fixed tasks at the lowest CPU priority (`nice 19`, plus `SCHED_IDLE`
+  on Linux), so they give way to other work on the host; timed tasks keep
+  normal priority because CPU contention would change their results;
+- on Linux, marks every task as the OOM killer's first choice
+  (`oom_score_adj` 1000), lowering the score by 10 per minute of runtime down
+  to 500, so a kill hits the task with the least completed work.
 
 ## Manifests
 

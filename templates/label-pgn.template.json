@@ -4,6 +4,11 @@
   "kind": "label-pgn",
   "hidden": true,
   "description": "Internal PGN labeling backend",
+  "resources": {
+    "timing": "fixed",
+    "threads": "1",
+    "memory_mb": "{hash}+320"
+  },
   "run_name": "label-{mode}-{pgn_dir_stem}-{timestamp}",
   "work_dir": "{nnue_repo}",
   "materialize_inputs": true,

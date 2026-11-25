@@ -1327,10 +1327,23 @@ def expand_template(
         if not isinstance(finalizer, dict):
             raise SystemExit(f"{template_name}: finalize must be an object")
         manifest["finalize"] = safe_format(finalizer, values)
+    if template.get("resources") is not None:
+        manifest["resources"] = template_resources(template, values)
     if template_name == "spsa":
         attach_spsa_manifest_config(manifest, params)
     validate_manifest_payload(manifest, label=f"template {template_name}")
     return manifest
+
+
+def template_resources(template: dict[str, Any], values: dict[str, Any]) -> dict[str, Any]:
+    """Return the evaluated per-task cost a template declares."""
+    from .capacity import evaluate_resources
+
+    return evaluate_resources(
+        template.get("resources"),
+        values,
+        label=f"template {template.get('name') or 'template'}",
+    )
 
 
 def resolved_workers_arg(
@@ -1352,21 +1365,17 @@ def resolved_workers_arg(
     if not workers:
         raise SystemExit(
             "forge run: missing --workers and no default workers file; "
-            "pass --workers HOST[:SLOTS],... or create ~/.config/forge/workers.json"
+            "pass --workers HOST[:UTILIZATION],... or create ~/.config/forge/workers.json"
         )
     return workers
 
 
-def sprt_worker_slots_payload(workers_arg: str) -> dict[str, Any]:
-    from .workers import (
-        worker_records_from_payload,
-        workers_payload_from_arg,
-        workers_payload_from_records,
-    )
+def sprt_worker_slots_payload(workers_arg: str, resources: dict[str, Any] | None = None) -> dict[str, Any]:
+    from .capacity import default_task_resources, resolve_workers_payload
+    from .workers import workers_payload_from_arg
 
     payload = workers_payload_from_arg(workers_arg, default_ok=False)
-    records = worker_records_from_payload(payload, label=workers_arg)
-    payload = workers_payload_from_records(records)
+    payload = resolve_workers_payload(payload, resources or default_task_resources())
     if sprt_worker_slot_count(payload) <= 0:
         raise SystemExit("SPRT workers resolve to zero task slots")
     return payload
@@ -1681,6 +1690,7 @@ def cmd_template_run(args: argparse.Namespace) -> int:
     selfplay_workers_payload: dict[str, Any] | None = None
     spsa_workers_payload: dict[str, Any] | None = None
     train_workers_payload: dict[str, Any] | None = None
+    generic_workers_payload: dict[str, Any] | None = None
     if template_name == "train":
         from .workers import workers_payload_from_arg
 
@@ -1699,7 +1709,7 @@ def cmd_template_run(args: argparse.Namespace) -> int:
         )
         if needs_workers:
             workers_arg = resolved_workers_arg(run_options, config)
-            sprt_workers_payload = sprt_worker_slots_payload(workers_arg)
+            sprt_workers_payload = sprt_worker_slots_payload(workers_arg, template_resources(template, params))
         if not shards_supplied:
             params = dict(params)
             chunking = template.get("chunking")
@@ -1728,7 +1738,7 @@ def cmd_template_run(args: argparse.Namespace) -> int:
         )
         if needs_workers:
             workers_arg = resolved_workers_arg(run_options, config)
-            selfplay_workers_payload = sprt_worker_slots_payload(workers_arg)
+            selfplay_workers_payload = sprt_worker_slots_payload(workers_arg, template_resources(template, params))
         if not shards_supplied:
             params = dict(params)
             params["shards"] = auto_selfplay_shards(
@@ -1745,7 +1755,7 @@ def cmd_template_run(args: argparse.Namespace) -> int:
         )
         if needs_workers:
             workers_arg = resolved_workers_arg(run_options, config)
-            spsa_workers_payload = spsa_worker_slots_payload(workers_arg)
+            spsa_workers_payload = spsa_worker_slots_payload(workers_arg, template_resources(template, params))
         if not shards_supplied:
             params = dict(params)
             cold_shards = auto_spsa_shards(params, spsa_workers_payload or {})
@@ -1780,7 +1790,7 @@ def cmd_template_run(args: argparse.Namespace) -> int:
             )
             if needs_workers:
                 generic_workers_arg = resolved_workers_arg(run_options, config)
-                generic_workers_payload = sprt_worker_slots_payload(generic_workers_arg)
+                generic_workers_payload = sprt_worker_slots_payload(generic_workers_arg, template_resources(template, params))
             if not shards_supplied and total_key:
                 params = dict(params)
                 total = as_int(params.get(total_key), label=f"{template_name}.{total_key}")
@@ -1864,16 +1874,22 @@ def cmd_template_run(args: argparse.Namespace) -> int:
         if template_name in {"sprt", "selfplay", "spsa", "train"}:
             workers_path = Path(tmp) / "workers.json"
             if template_name == "spsa":
-                worker_payload = spsa_workers_payload or spsa_worker_slots_payload(workers_arg)
+                worker_payload = spsa_workers_payload or spsa_worker_slots_payload(workers_arg, template_resources(template, params))
             elif template_name == "train":
                 worker_payload = train_workers_payload
             else:
                 worker_payload = (
                     sprt_workers_payload
                     or selfplay_workers_payload
-                    or sprt_worker_slots_payload(workers_arg)
+                    or sprt_worker_slots_payload(workers_arg, template_resources(template, params))
                 )
             write_json(workers_path, worker_payload)
+            workers_arg = str(workers_path)
+        elif generic_workers_payload is not None:
+            # Already resolved against this template's task cost; reuse it so
+            # hosts are not probed and sized a second time.
+            workers_path = Path(tmp) / "workers.json"
+            write_json(workers_path, generic_workers_payload)
             workers_arg = str(workers_path)
         from .workers import cmd_run_job
 

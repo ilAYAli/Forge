@@ -3,6 +3,15 @@
   "name": "selfplay",
   "kind": "selfplay",
   "description": "Generate distributed UCI-engine self-play PGNs",
+  "resources": {
+    "timing": "fixed",
+    "timed_unless": [
+      "nodes",
+      "depth"
+    ],
+    "threads": "{threads}*{concurrency}",
+    "memory_mb": "2*({hash}+64)*{concurrency}+64"
+  },
   "run_name": "selfplay-{engine_stem}-{games}-{timestamp}",
   "work_dir": "~",
   "materialize_inputs": true,
