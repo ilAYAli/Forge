@@ -855,34 +855,6 @@ def measure_foreign_cpu_cores(sample_seconds: float = CPU_GATE_SAMPLE_SECONDS) -
     return total
 
 
-CPU_RESERVE_ENV = "FORGE_CPU_RESERVE"
-
-
-def declared_reserve() -> dict[str, int]:
-    """Programs this host keeps cores for (workers.json ``reserve``)."""
-    import json
-
-    try:
-        value = json.loads(os.environ.get(CPU_RESERVE_ENV) or "{}")
-    except ValueError:
-        return {}
-    if not isinstance(value, dict):
-        return {}
-    return {str(k): int(v) for k, v in value.items() if isinstance(v, int) and not isinstance(v, bool) and v > 0}
-
-
-def reserved_cores_for_running_programs(reserve: dict[str, int]) -> int:
-    """Cores held for declared programs that are running, busy or idle.
-
-    A lichess bot idles between games; holding its cores while the program
-    runs keeps Forge from filling the host just before the next game starts.
-    """
-    if not reserve:
-        return 0
-    commands = [args for pid, (_, _, args) in process_cpu_snapshot().items() if pid != os.getpid()]
-    return sum(cores for pattern, cores in reserve.items() if any(pattern in args for args in commands))
-
-
 def _pid_alive(pid: int) -> bool:
     try:
         os.kill(pid, 0)
@@ -956,15 +928,11 @@ def cpu_gate_acquire(resources: dict[str, Any]) -> dict[str, Any] | None:
             # Round so a single busy engine thread counts as a core, while
             # fractional background noise does not.
             foreign_cores = int(math.floor(foreign + 0.5))
-            # Declared programs hold their cores even while idle; their actual
-            # use is already part of the measured load, so take the larger.
-            held = reserved_cores_for_running_programs(declared_reserve())
-            foreign_cores = max(foreign_cores, held)
             reserved = cpu_gate_reserved_threads(directory)
             if foreign_cores + reserved + needed <= capacity:
                 write_json(directory / "reservations" / f"{os.getpid()}.json", {"threads": needed, "epoch": epoch()})
                 return None
-            return {"foreign": max(foreign, float(held)), "reserved": reserved, "needed": needed, "capacity": capacity}
+            return {"foreign": foreign, "reserved": reserved, "needed": needed, "capacity": capacity}
         finally:
             fcntl.flock(lock, fcntl.LOCK_UN)
 

@@ -352,8 +352,6 @@ def parse_worker_record(item: Any) -> dict[str, Any]:
         record["env"] = worker_environment(item)
     if "resources" in item:
         record["resources"] = sorted(worker_resources(item))
-    if item.get("reserve") is not None:
-        record["reserve"] = parse_cpu_reserve(item["reserve"], label=host)
     if item.get("path_map") is not None:
         path_map = item["path_map"]
         if not isinstance(path_map, dict):
@@ -361,19 +359,6 @@ def parse_worker_record(item: Any) -> dict[str, Any]:
         record["path_map"] = {str(src): str(dst) for src, dst in path_map.items()}
     return record
 
-
-def parse_cpu_reserve(value: Any, *, label: str) -> dict[str, int]:
-    """``{"<command-line substring>": <performance cores>}`` kept free for that program."""
-    if not isinstance(value, dict):
-        raise SystemExit(f"{label}: reserve must map a process name to a core count")
-    reserve: dict[str, int] = {}
-    for pattern, cores in value.items():
-        if not isinstance(pattern, str) or not pattern.strip():
-            raise SystemExit(f"{label}: reserve process names must be non-empty strings")
-        if isinstance(cores, bool) or not isinstance(cores, int) or cores < 0:
-            raise SystemExit(f"{label}: reserve core counts must be non-negative integers")
-        reserve[pattern.strip()] = cores
-    return reserve
 
 def worker_environment(worker: dict[str, Any]) -> dict[str, str]:
     """Return validated environment variables declared for a worker."""
@@ -684,9 +669,6 @@ def run_worker_shell(
     retries: int = 0,
 ) -> subprocess.CompletedProcess[str]:
     environment = worker_environment(worker)
-    if worker.get("reserve"):
-        # Read by the worker's CPU gate (capacity.cpu_gate_acquire).
-        environment["FORGE_CPU_RESERVE"] = json.dumps(worker["reserve"], sort_keys=True)
     if environment:
         exports = " ".join(f"{name}={shlex.quote(value)}" for name, value in sorted(environment.items()))
         script = f"export {exports}; {script}"
@@ -3781,6 +3763,34 @@ def persist_worker_utilization(host: str, utilization: str) -> str:
             write_json(path, payload)
             return f"worker set: saved {host} utilization {previous}->{utilization} in {path}"
     return f"worker set: {host} is not in {path}; utilization not saved"
+
+def saved_worker_utilization(host: str) -> str:
+    from .config import config_workers_path
+
+    path = config_workers_path()
+    if not path.exists():
+        raise SystemExit(f"{path} not found")
+    payload = read_json(path)
+    records = payload.get("workers") if isinstance(payload, dict) else None
+    for record in records if isinstance(records, list) else []:
+        if isinstance(record, dict) and str(record.get("host") or "") == host:
+            if not bool(record.get("enabled", True)):
+                return "0"
+            return normalize_utilization(record.get("utilization") or DEFAULT_UTILIZATION, label=host)
+    raise SystemExit(f"{host} is not in {path}")
+
+def cmd_worker_get(args: argparse.Namespace) -> int:
+    """Print a host's saved utilization (as accepted by worker set)."""
+    coordinator_runs = configured_coordinator_runs()
+    if coordinator_runs:
+        result = run_coordinator_command(coordinator_runs, ["worker", "get", str(args.worker)])
+        if result.stdout:
+            print(result.stdout, end="")
+        if result.stderr:
+            print(result.stderr, end="", file=sys.stderr)
+        return result.returncode
+    print(saved_worker_utilization(str(args.worker)))
+    return 0
 
 def cmd_worker_set(args: argparse.Namespace) -> int:
     coordinator_runs = configured_coordinator_runs()

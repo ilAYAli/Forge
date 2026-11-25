@@ -9032,6 +9032,27 @@ console.log(JSON.stringify(orderDashboardRuns([
                 saved = forge.read_json(workers)["workers"]
                 self.assertEqual({"host": "pwa-wrk", "profile": "linux", "utilization": "100%"}, saved[1])
 
+    def test_worker_get_prints_saved_utilization(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config = Path(tmp) / "config.yml"
+            forge.write_json(Path(tmp) / "workers.json", {
+                "schema": "forge.workers.v1",
+                "workers": [
+                    {"host": "pwa-mbp", "utilization": "80%"},
+                    {"host": "pwa-wrk"},
+                    {"host": "pwa-old", "enabled": False},
+                ],
+            })
+            with mock.patch.dict(os.environ, {"FORGE_CONFIG": str(config)}), \
+                    mock.patch("forge_lib.workers.configured_coordinator_runs", return_value=None):
+                for host, expected in (("pwa-mbp", "80%"), ("pwa-wrk", "100%"), ("pwa-old", "0")):
+                    args = forge.build_parser().parse_args(["worker", "get", host])
+                    with contextlib.redirect_stdout(io.StringIO()) as stdout:
+                        self.assertEqual(0, args.func(args))
+                    self.assertEqual(expected + "\n", stdout.getvalue())
+                with self.assertRaises(SystemExit):
+                    forge.cmd_worker_get(forge.build_parser().parse_args(["worker", "get", "nope"]))
+
     def test_worker_set_run_only_does_not_save(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             config = Path(tmp) / "config.yml"

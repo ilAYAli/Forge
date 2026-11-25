@@ -774,6 +774,14 @@ def build_parser() -> argparse.ArgumentParser:
     add_worker_set_options(worker_set)
     worker_set.set_defaults(func=cmd_worker_set)
 
+    worker_get = worker_sub.add_parser(
+        "get",
+        help="Print a worker's saved utilization (to restore it later with worker set).",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    worker_get.add_argument("worker", help="Worker host as named in workers.json.")
+    worker_get.set_defaults(func=cmd_worker_get)
+
     worker_del = worker_sub.add_parser(
         "del",
         help="Drain a worker from a materialized run.",
