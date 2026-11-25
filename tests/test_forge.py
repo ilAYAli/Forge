@@ -14244,7 +14244,8 @@ console.log(JSON.stringify(orderDashboardRuns([
             for state in states[4:]:
                 self.assertTrue((root / state).exists())
             self.assertEqual(states[:4], [call.args[0] for call in mark_deleted.call_args_list])
-            self.assertIn("kept active: current, queued, stalled", stdout.getvalue())
+            for state in ("current", "queued", "stalled"):
+                self.assertIn(f"kept: {state} ({state})", stdout.getvalue())
 
     def test_delete_named_run_delegates_to_coordinator(self) -> None:
         remote_result = subprocess.CompletedProcess(

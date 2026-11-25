@@ -2834,16 +2834,6 @@ def cmd_drain(args: argparse.Namespace) -> int:
         print(f"no drains {action}")
     return 0
 
-def confirm_delete(paths: list[Path], *, force: bool) -> None:
-    if force:
-        return
-    if not sys.stdin.isatty():
-        raise SystemExit("pass --force to delete runs non-interactively")
-    names = ", ".join(path.name for path in paths)
-    answer = input(f"delete Forge run(s) {names}? type 'yes' to confirm: ")
-    if answer != "yes":
-        raise SystemExit("delete cancelled")
-
 def mark_deleted_run_for_web(run: str) -> None:
     try:
         from .web import _delete_web_run
@@ -2874,8 +2864,9 @@ def cmd_del(args: argparse.Namespace) -> int:
     if delete_all:
         for item in summaries:
             path = Path(item["manifest"]).parent
-            if run_state(item) in {"current", "queued", "stalled"}:
-                kept.append(path.name)
+            state = run_state(item)
+            if state in {"current", "queued", "stalled"}:
+                kept.append(f"{path.name} ({state})")
             else:
                 targets.append(path)
     elif delete_done:
@@ -2887,10 +2878,9 @@ def cmd_del(args: argparse.Namespace) -> int:
         targets = [Path(summary["manifest"]).parent]
     if not targets:
         print("no inactive runs matched" if delete_all else "no runs matched")
-        if kept:
-            print(f"kept active: {', '.join(kept)}")
+        for name in kept:
+            print(f"kept: {name}")
         return 0
-    confirm_delete(targets, force=bool(args.force))
     from .workers import cleanup_worker_run_cache
 
     for path in targets:
@@ -2906,8 +2896,8 @@ def cmd_del(args: argparse.Namespace) -> int:
         shutil.rmtree(path)
         mark_deleted_run_for_web(path.name)
         print(f"deleted: {path.name}")
-    if kept:
-        print(f"kept active: {', '.join(kept)}")
+    for name in kept:
+        print(f"kept: {name}")
     return 0
 
 def format_manifest_path(path: Path) -> str:

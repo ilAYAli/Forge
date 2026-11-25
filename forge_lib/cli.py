@@ -791,7 +791,7 @@ def build_parser() -> argparse.ArgumentParser:
     delete_scope = delete.add_mutually_exclusive_group()
     delete_scope.add_argument("--done", action="store_true", help="Delete all completed runs.")
     delete_scope.add_argument("--all", action="store_true", help="Delete all inactive runs.")
-    delete.add_argument("--force", action="store_true", help="Do not prompt before deleting.")
+    delete.add_argument("--force", action="store_true", help="Also delete a named run that is still active.")
     delete.add_argument(
         "--lease-seconds",
         type=int,
