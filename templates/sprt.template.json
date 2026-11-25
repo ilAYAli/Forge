@@ -164,9 +164,9 @@
       {
         "name": "sprt",
         "url": "git@github.com:ilAYAli/sprt.git",
-        "path": "~/.cache/forge/tools/sprt/a99f574a670e30f3e0699fae891c679de6db5560",
+        "path": "~/.cache/forge/tools/sprt/f908ef0c415788687870fc4b865bc135ba9949a2",
         "remote": "origin",
-        "commit": "a99f574a670e30f3e0699fae891c679de6db5560",
+        "commit": "f908ef0c415788687870fc4b865bc135ba9949a2",
         "allow_untracked": true,
         "probe": [
           "./sprt --help | grep -- '--no-ntfy'"
@@ -193,8 +193,8 @@
     "commands": [
       {
         "name": "sprt",
-        "path": "~/.cache/forge/tools/sprt/a99f574a670e30f3e0699fae891c679de6db5560/sprt",
-        "command": "~/.cache/forge/tools/sprt/a99f574a670e30f3e0699fae891c679de6db5560/sprt --help",
+        "path": "~/.cache/forge/tools/sprt/f908ef0c415788687870fc4b865bc135ba9949a2/sprt",
+        "command": "~/.cache/forge/tools/sprt/f908ef0c415788687870fc4b865bc135ba9949a2/sprt --help",
         "contains": "--no-ntfy",
         "timeout_s": 20
       },
@@ -246,7 +246,7 @@
     },
     "label": "sprt:{shard}",
     "output": "{output_dir}/{task_name}/logs/{task_name}.log",
-    "command": "~/.cache/forge/tools/sprt/a99f574a670e30f3e0699fae891c679de6db5560/sprt --candidate-uci Hash={hash} --candidate-uci nnue_file={candidate_net_shell} --reference-uci Hash={hash} --reference-uci nnue_file={reference_net_shell} {sprt_args} --games {shard} --srand {seed} --book-offset {book_offset} --fastchess ~/.cache/forge/tools/fastchess/3de44228aec904e688a4ad71c554eb9d461a5a2a/fastchess --log-dir {output_dir}/{task_name}/logs --name {task_name} --no-ntfy --no-eta",
+    "command": "~/.cache/forge/tools/sprt/f908ef0c415788687870fc4b865bc135ba9949a2/sprt --candidate-uci Hash={hash} --candidate-uci nnue_file={candidate_net_shell} --reference-uci Hash={hash} --reference-uci nnue_file={reference_net_shell} {sprt_args} --games {shard} --srand {seed} --book-offset {book_offset} --fastchess ~/.cache/forge/tools/fastchess/3de44228aec904e688a4ad71c554eb9d461a5a2a/fastchess --log-dir {output_dir}/{task_name}/logs --name {task_name} --no-ntfy --no-eta",
     "progress": {
       "unit": "games",
       "log_regex": "\\[\\s*(?P<done>\\d+)\\/(?P<total>\\d+)\\].*?Elo\\s+(?P<elo>[-+]?(?:\\d+(?:\\.\\d+)?|inf|nan))\\s+\\+/-\\s+(?P<ci>[-+]?(?:\\d+(?:\\.\\d+)?|inf|nan))\\s+\\|\\s+LLR\\s+(?P<llr>[+-]?\\d+(?:\\.\\d+)?/[+-]?(?:\\d+(?:\\.\\d+)?|inf|nan)\\s+\\(\\s*[+-]?\\d+(?:\\.\\d+)?%\\))\\s+\\|\\s+LOS\\s+(?P<los>[-+]?(?:\\d+(?:\\.\\d+)?|inf|nan))%(?:\\s+\\|\\s+WDL\\s+(?P<wdl>\\d+/\\d+/\\d+)\\s+\\|\\s+Ptnml\\s+(?P<pentanomial>\\d+-\\d+-\\d+-\\d+-\\d+))?\\s+\\|\\s+draw\\s+(?P<draw>[-+]?(?:\\d+(?:\\.\\d+)?|inf|nan))%(?:.*?ETA\\s+(?P<eta>\\S+))?",
