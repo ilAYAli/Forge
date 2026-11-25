@@ -236,8 +236,16 @@ def state_control_command_args(name: str, args: argparse.Namespace) -> list[str]
     command.extend(["--lease-seconds", str(args.lease_seconds)])
     return command
 
+def coordinator_host_is_local(host: str) -> bool:
+    name = host.rsplit("@", 1)[-1].lower()
+    local = socket.gethostname().lower()
+    return name in {"localhost", "127.0.0.1", "::1", local, local.split(".")[0], socket.getfqdn().lower()}
+
 def run_state_control_on_coordinator(name: str, args: argparse.Namespace, coordinator_runs: str) -> int:
     host, runs_path = parse_coordinator(coordinator_runs)
+    if host and coordinator_host_is_local(host):
+        # Already on the coordinator: run the command here, not over ssh.
+        host = None
     command = state_control_command_args(name, args)
     if sys.stdin.isatty() and sys.stdout.isatty():
         # Interactive: give the coordinator-side command the terminal so its
@@ -251,7 +259,7 @@ def run_state_control_on_coordinator(name: str, args: argparse.Namespace, coordi
                 f"{shlex.quote(RUNS_DIR_ENV)}={shlex.quote(runs_path)} "
                 f"forge {shell_join(command)}"
             )
-            return subprocess.run(["ssh", "-t", *SSH_OPTS, host, remote], check=False).returncode
+            return subprocess.run(["ssh", "-t", "-q", *SSH_OPTS, host, remote], check=False).returncode
         env = os.environ.copy()
         env[COORDINATOR_RUNS_ENV] = ""
         env[RUNS_DIR_ENV] = runs_path
