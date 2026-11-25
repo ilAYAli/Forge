@@ -7,6 +7,7 @@ from pathlib import Path
 import os
 # Deterministic worker hardware for capacity resolution; never probe real hosts.
 os.environ["FORGE_HARDWARE"] = '{"threads": 64, "cores": 64, "memory_mb": 262144}'
+os.environ["FORGE_CPU_GATE"] = "0"
 from forge_lib.core import sha256_file, write_json
 from forge_lib.manifest import input_requirement_items
 from forge_lib.tasks import claim_task, worker_execution_manifest

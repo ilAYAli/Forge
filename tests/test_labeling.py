@@ -14,6 +14,7 @@ from unittest import mock
 import os
 # Deterministic worker hardware for capacity resolution; never probe real hosts.
 os.environ["FORGE_HARDWARE"] = '{"threads": 64, "cores": 64, "memory_mb": 262144}'
+os.environ["FORGE_CPU_GATE"] = "0"
 from forge_lib.labeling import (
     INVENTORY_SCHEMA,
     build_inventory,

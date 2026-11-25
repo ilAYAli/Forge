@@ -11,6 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 # Deterministic worker hardware for capacity resolution; never probe real hosts.
 os.environ["FORGE_HARDWARE"] = '{"threads": 64, "cores": 64, "memory_mb": 262144}'
+os.environ["FORGE_CPU_GATE"] = "0"
 
 from forge_lib import capacity  # noqa: E402
 
@@ -416,3 +417,98 @@ class CheckpointTransferTests(unittest.TestCase):
                 [Path(tmp) / "worker-state" / "run-a" / "locks" / "run-a--w_1.lock"],
                 list((Path(tmp) / "worker-state").rglob("*.lock")),
             )
+
+
+class CpuGateTests(unittest.TestCase):
+    """Timed tasks wait while non-Forge work occupies the performance cores."""
+
+    TIMED = {"timing": "timed", "threads": 1}
+
+    def setUp(self) -> None:
+        import tempfile
+
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        patches = mock.patch.dict(os.environ, {
+            "FORGE_CPU_GATE": "1",
+            "FORGE_CPU_GATE_DIR": self.tmp.name,
+            "FORGE_HARDWARE": json.dumps(MBP),
+        })
+        patches.start()
+        self.addCleanup(patches.stop)
+        self.addCleanup(capacity.cpu_gate_release)
+
+    def reserve_for(self, pid: int, threads: int = 1) -> None:
+        directory = Path(self.tmp.name) / "reservations"
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / f"{pid}.json").write_text(json.dumps({"threads": threads}))
+
+    def test_fixed_tasks_are_never_gated(self) -> None:
+        with mock.patch.object(capacity, "measure_foreign_cpu_cores", return_value=14.0) as measure:
+            self.assertIsNone(capacity.cpu_gate_acquire({"timing": "fixed", "threads": 1}))
+        measure.assert_not_called()
+
+    def test_idle_host_reserves_a_core(self) -> None:
+        with mock.patch.object(capacity, "measure_foreign_cpu_cores", return_value=0.3):
+            self.assertIsNone(capacity.cpu_gate_acquire(self.TIMED))
+        self.assertTrue((Path(self.tmp.name) / "reservations" / f"{os.getpid()}.json").exists())
+        capacity.cpu_gate_release()
+        self.assertFalse((Path(self.tmp.name) / "reservations" / f"{os.getpid()}.json").exists())
+
+    def test_waits_when_other_load_and_forge_fill_perf_cores(self) -> None:
+        # A lichess engine on 2 cores plus 8 running Forge games fills 10 P-cores.
+        directory = Path(self.tmp.name) / "reservations"
+        directory.mkdir(parents=True, exist_ok=True)
+        with mock.patch.object(capacity, "_pid_alive", return_value=True):
+            for index in range(8):
+                (directory / f"{900000 + index}.json").write_text(json.dumps({"threads": 1}))
+            with mock.patch.object(capacity, "measure_foreign_cpu_cores", return_value=2.0):
+                busy = capacity.cpu_gate_acquire(self.TIMED)
+            self.assertEqual({"foreign": 2.0, "reserved": 8, "needed": 1, "capacity": 10}, busy)
+            (directory / "900007.json").unlink()
+            # Seven Forge games + 2 cores of other load leave one P-core.
+            self.assertIsNone(capacity.cpu_gate_acquire(self.TIMED))
+
+    def test_peak_load_in_window_counts(self) -> None:
+        # The engine idles on the opponent's move; the earlier busy sample counts.
+        history = Path(self.tmp.name) / "foreign.json"
+        Path(self.tmp.name).mkdir(parents=True, exist_ok=True)
+        import time
+
+        history.write_text(json.dumps({"samples": [[time.time() - 30, 10.0], [time.time() - 10, 0.1]]}))
+        with mock.patch.object(capacity, "measure_foreign_cpu_cores", return_value=0.0):
+            busy = capacity.cpu_gate_acquire(self.TIMED)
+        self.assertIsNotNone(busy)
+        self.assertEqual(10.0, busy["foreign"])
+
+    def test_dead_worker_reservations_are_dropped(self) -> None:
+        self.reserve_for(999999, 10)
+        with mock.patch.object(capacity, "measure_foreign_cpu_cores", return_value=0.0), \
+                mock.patch.object(capacity, "_pid_alive", return_value=False):
+            self.assertIsNone(capacity.cpu_gate_acquire(self.TIMED))
+        self.assertFalse((Path(self.tmp.name) / "reservations" / "999999.json").exists())
+
+    def test_disabled_gate_allows(self) -> None:
+        with mock.patch.dict(os.environ, {"FORGE_CPU_GATE": "0"}), \
+                mock.patch.object(capacity, "measure_foreign_cpu_cores", return_value=14.0):
+            self.assertIsNone(capacity.cpu_gate_acquire(self.TIMED))
+
+    def test_forge_process_trees_are_excluded(self) -> None:
+        snapshot = {
+            10: (1, 5.0, "/usr/bin/python3 /home/u/.cache/forge/run/forge.py work --manifest m.json"),
+            11: (10, 5.0, "bash -c sprt ..."),
+            12: (11, 5.0, "fastchess -engine ..."),
+            20: (1, 5.0, "python3 lichess-bot.py"),
+            21: (20, 5.0, "enyo"),
+            30: (1, 5.0, "python3 /x/forge.py web --port 9000"),
+        }
+        self.assertEqual({10, 11, 12}, capacity.forge_process_ids(snapshot))
+
+    def test_ps_time_parsing(self) -> None:
+        self.assertAlmostEqual(1.5, capacity._parse_ps_time("0:01.50"))
+        self.assertAlmostEqual(3723.0, capacity._parse_ps_time("01:02:03"))
+        self.assertAlmostEqual(90061.0, capacity._parse_ps_time("1-01:01:01"))
+
+    def test_real_snapshot_measures(self) -> None:
+        self.assertGreater(len(capacity.process_cpu_snapshot()), 1)
+        self.assertGreaterEqual(capacity.measure_foreign_cpu_cores(0.2), 0.0)

@@ -12,6 +12,8 @@ from .capacity import (
     OOM_SCORE_ADJ_STEP_SECONDS,
     manifest_task_resources,
     memory_gate_shortfall,
+    cpu_gate_acquire,
+    cpu_gate_release,
     oom_score_adj_for_age,
     set_process_group_oom_score_adj,
     task_preexec,
@@ -1903,6 +1905,8 @@ def cmd_work(args: argparse.Namespace) -> int:
     idle_deadline: float | None = None
     task_resources = manifest_task_resources(local_manifest)
     memory_waiting = False
+    # Reservations are per worker PID; an exited worker's is ignored.
+    cpu_waiting = False
 
     while args.max_tasks <= 0 or completed < args.max_tasks:
         try:
@@ -1932,11 +1936,31 @@ def cmd_work(args: argparse.Namespace) -> int:
         if memory_waiting:
             print(f"{worker_id}: memory available; resuming claims", flush=True)
             memory_waiting = False
+        # Timed games need free performance cores: wait while other work on
+        # this host (not Forge) is using the cores a new task would need.
+        cpu_gate_release()
+        busy = cpu_gate_acquire(task_resources)
+        if busy is not None:
+            if not cpu_waiting:
+                print(
+                    f"{worker_id}: waiting for free cores: other load={busy['foreign']:.1f} "
+                    f"forge={busy['reserved']} need={busy['needed']} perf_cores={busy['capacity']}",
+                    flush=True,
+                )
+                cpu_waiting = True
+            if stop_requested_on_coordinator(args.coordinator, lease_seconds=args.lease_seconds):
+                break
+            time.sleep(WORK_IDLE_POLL_SECONDS)
+            continue
+        if cpu_waiting:
+            print(f"{worker_id}: cores available; resuming claims", flush=True)
+            cpu_waiting = False
         claim = claim_from_coordinator(args)
         if claim is not None and claim.get("drained"):
             print(f"{worker_id}: drained; exiting", flush=True)
             break
         if claim is None:
+            cpu_gate_release()
             idle_seconds = max(0.0, float(args.idle_seconds))
             if idle_seconds <= 0.0:
                 break
@@ -2104,6 +2128,7 @@ def cmd_work(args: argparse.Namespace) -> int:
         )
     except Exception as exc:
         print(f"{worker_id}: process heartbeat failed: {exc}", file=sys.stderr)
+    cpu_gate_release()
     print(f"worker={worker_id} completed={completed} failed={failed}")
     return 0 if failed == 0 else 1
 

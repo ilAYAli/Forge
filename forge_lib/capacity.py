@@ -705,3 +705,237 @@ def set_process_group_oom_score_adj(pgid: int, value: int) -> None:
                 handle.write(str(value))
         except (OSError, ValueError, IndexError):
             continue
+
+
+# --- CPU gate for timed tasks ------------------------------------------------
+#
+# Timed tasks (SPRT/SPSA games) need a free performance core per engine thread.
+# Utilization caps how many a run may use; the gate additionally keeps Forge
+# off cores that other work on the host (for example a lichess bot) is using.
+# Before each claim a worker measures non-Forge CPU use, takes the peak over a
+# short window (an engine idles on the opponent's move), and claims only when
+# that load, Forge's running tasks and the new task fit on the performance
+# cores.  Running tasks are never interrupted; the host adapts as games end.
+
+CPU_GATE_ENV = "FORGE_CPU_GATE"
+CPU_GATE_WINDOW_SECONDS = 60.0
+CPU_GATE_SAMPLE_SECONDS = 1.0
+CPU_GATE_SAMPLE_REUSE_SECONDS = 5.0
+# Processes below this many cores (idle apps, EDR, shells) are background noise.
+CPU_GATE_MIN_PROCESS_CORES = 0.25
+
+_LOCAL_HARDWARE: dict[str, Any] | None = None
+
+
+def cpu_gate_enabled() -> bool:
+    return os.environ.get(CPU_GATE_ENV, "1").strip().lower() not in {"0", "off", "false", "no"}
+
+
+def cpu_gate_dir() -> "Path":
+    from pathlib import Path
+
+    return Path(os.environ.get("FORGE_CPU_GATE_DIR") or Path.home() / ".cache" / "forge" / "cpu-gate")
+
+
+def local_hardware() -> dict[str, Any] | None:
+    """This host's hardware (probed once per process)."""
+    global _LOCAL_HARDWARE
+    override = hardware_override()
+    if override is not None:
+        return override
+    if _LOCAL_HARDWARE is None:
+        import subprocess
+
+        try:
+            result = subprocess.run(
+                ["bash", "-c", HARDWARE_PROBE_SCRIPT],
+                capture_output=True,
+                text=True,
+                timeout=HARDWARE_PROBE_TIMEOUT_SECONDS,
+            )
+            _LOCAL_HARDWARE = parse_hardware_probe(result.stdout)
+        except (OSError, ValueError, Exception):
+            return None
+    return _LOCAL_HARDWARE
+
+
+def _parse_ps_time(text: str) -> float:
+    """Parse ps cumulative CPU time: ``[[dd-]hh:]mm:ss[.cc]``."""
+    days = 0
+    if "-" in text:
+        day_text, text = text.split("-", 1)
+        days = int(day_text)
+    seconds = 0.0
+    for part in text.split(":"):
+        seconds = seconds * 60 + float(part)
+    return days * 86400 + seconds
+
+
+def process_cpu_snapshot() -> dict[int, tuple[int, float, str]]:
+    """Return ``pid -> (ppid, cumulative CPU seconds, command line)``."""
+    snapshot: dict[int, tuple[int, float, str]] = {}
+    if sys.platform.startswith("linux"):
+        ticks = os.sysconf("SC_CLK_TCK") if hasattr(os, "sysconf") else 100
+        for entry in os.listdir("/proc"):
+            if not entry.isdigit():
+                continue
+            try:
+                with open(f"/proc/{entry}/stat", encoding="ascii", errors="replace") as handle:
+                    stat = handle.read()
+                with open(f"/proc/{entry}/cmdline", "rb") as handle:
+                    cmdline = handle.read().replace(b"\0", b" ").decode(errors="replace").strip()
+            except OSError:
+                continue
+            fields = stat[stat.rfind(")") + 2:].split()
+            try:
+                ppid = int(fields[1])
+                cpu = (int(fields[11]) + int(fields[12])) / ticks
+            except (IndexError, ValueError):
+                continue
+            snapshot[int(entry)] = (ppid, cpu, cmdline)
+        return snapshot
+    import subprocess
+
+    try:
+        output = subprocess.run(
+            ["ps", "-A", "-o", "pid=,ppid=,time=,args="],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return snapshot
+    for line in output.splitlines():
+        parts = line.split(None, 3)
+        if len(parts) < 3:
+            continue
+        try:
+            snapshot[int(parts[0])] = (int(parts[1]), _parse_ps_time(parts[2]), parts[3] if len(parts) > 3 else "")
+        except ValueError:
+            continue
+    return snapshot
+
+
+FORGE_WORKER_RE = re.compile(r"\bforge(?:\.py)?\s+(?:\S+\s+)*?work\b")
+
+
+def forge_process_ids(snapshot: dict[int, tuple[int, float, str]]) -> set[int]:
+    """Forge worker processes and everything they started (tasks, engines)."""
+    children: dict[int, list[int]] = {}
+    for pid, (ppid, _, _) in snapshot.items():
+        children.setdefault(ppid, []).append(pid)
+    pending = [pid for pid, (_, _, args) in snapshot.items() if FORGE_WORKER_RE.search(args)]
+    found: set[int] = set()
+    while pending:
+        pid = pending.pop()
+        if pid in found:
+            continue
+        found.add(pid)
+        pending.extend(children.get(pid, ()))
+    return found
+
+
+def measure_foreign_cpu_cores(sample_seconds: float = CPU_GATE_SAMPLE_SECONDS) -> float:
+    """CPU cores used by processes outside Forge over a short sample."""
+    import time
+
+    first = process_cpu_snapshot()
+    start = time.monotonic()
+    time.sleep(sample_seconds)
+    second = process_cpu_snapshot()
+    elapsed = max(1e-3, time.monotonic() - start)
+    forge = forge_process_ids(second) | forge_process_ids(first) | {os.getpid()}
+    total = 0.0
+    for pid, (_, cpu, _) in second.items():
+        if pid in forge or pid not in first:
+            continue
+        cores = max(0.0, cpu - first[pid][1]) / elapsed
+        if cores >= CPU_GATE_MIN_PROCESS_CORES:
+            total += cores
+    return total
+
+
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def cpu_gate_reserved_threads(directory: "Path") -> int:
+    """Engine threads reserved by live Forge workers on this host."""
+    total = 0
+    for path in (directory / "reservations").glob("*.json"):
+        try:
+            pid = int(path.stem)
+            payload = read_json(path)
+        except (ValueError, OSError, SystemExit):
+            path.unlink(missing_ok=True)
+            continue
+        if pid == os.getpid():
+            continue
+        if not _pid_alive(pid):
+            path.unlink(missing_ok=True)
+            continue
+        total += int(payload.get("threads") or 0) if isinstance(payload, dict) else 0
+    return total
+
+
+def _foreign_peak(directory: "Path", now: float) -> float:
+    """Peak foreign load over the window, sampling when the last is stale."""
+    history_path = directory / "foreign.json"
+    try:
+        payload = read_json(history_path) if history_path.exists() else {}
+    except (OSError, ValueError, SystemExit):
+        payload = {}
+    history = payload.get("samples") if isinstance(payload, dict) else None
+    if not isinstance(history, list):
+        history = []
+    history = [item for item in history if isinstance(item, list) and len(item) == 2 and now - float(item[0]) <= CPU_GATE_WINDOW_SECONDS]
+    if not history or now - float(history[-1][0]) > CPU_GATE_SAMPLE_REUSE_SECONDS:
+        history.append([now, round(measure_foreign_cpu_cores(), 3)])
+        write_json(history_path, {"samples": history})
+    return max(float(item[1]) for item in history)
+
+
+def cpu_gate_acquire(resources: dict[str, Any]) -> dict[str, Any] | None:
+    """Reserve cores for one timed task; return why not when the host is busy.
+
+    Returns ``None`` when the task may start (a reservation for this process is
+    recorded until :func:`cpu_gate_release`), or a dict describing the load.
+    """
+    if resources.get("timing") != TIMING_TIMED or not cpu_gate_enabled():
+        return None
+    hardware = local_hardware()
+    if not hardware:
+        return None
+    capacity = int(hardware.get("perf_cores") or hardware.get("cores") or 0)
+    needed = max(1, int(math.ceil(float(resources.get("threads") or 1))))
+    if capacity <= 0:
+        return None
+    import fcntl
+    import time
+
+    directory = cpu_gate_dir()
+    (directory / "reservations").mkdir(parents=True, exist_ok=True)
+    with open(directory / "lock", "a+") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            foreign = _foreign_peak(directory, time.time())
+            # Round so a single busy engine thread counts as a core, while
+            # fractional background noise does not.
+            foreign_cores = int(math.floor(foreign + 0.5))
+            reserved = cpu_gate_reserved_threads(directory)
+            if foreign_cores + reserved + needed <= capacity:
+                write_json(directory / "reservations" / f"{os.getpid()}.json", {"threads": needed, "epoch": epoch()})
+                return None
+            return {"foreign": foreign, "reserved": reserved, "needed": needed, "capacity": capacity}
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN)
+
+
+def cpu_gate_release() -> None:
+    (cpu_gate_dir() / "reservations" / f"{os.getpid()}.json").unlink(missing_ok=True)

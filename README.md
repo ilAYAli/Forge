@@ -380,6 +380,13 @@ While a run is active, each worker also:
 - starts fixed tasks at the lowest CPU priority (`nice 19`, plus `SCHED_IDLE`
   on Linux), so they give way to other work on the host; timed tasks keep
   normal priority because CPU contention would change their results;
+- before claiming a timed task (SPRT/SPSA games), waits until the host's
+  performance cores have room for it: CPU used by non-Forge processes (peak
+  over the last minute, ignoring processes under a quarter core), plus the
+  Forge games already running there, plus the new task. Playing a lichess game
+  on a worker therefore shrinks Forge's share as its current games finish, and
+  Forge takes the cores back when the host is idle again. Utilization stays the
+  upper limit. `FORGE_CPU_GATE=0` disables the check;
 - on Linux, marks every task as the OOM killer's first choice
   (`oom_score_adj` 1000), lowering the score by 10 per minute of runtime down
   to 500, so a kill hits the task with the least completed work.
