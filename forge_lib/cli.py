@@ -417,7 +417,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     report.add_argument("template", choices=("sprt",), help="Template providing the report.")
     report.add_argument("report", nargs="?", default="score", choices=("score",), help="Report name.")
-    report.add_argument("--runs", action="store_true", help="Add a column with each result's run name.")
+    report.add_argument("-v", "--verbose", action="store_true", help="Add a column with each result's run name.")
     report.add_argument(
         "--reference-net", "--reference", default=SPRT_DEFAULT_REFERENCE_NET,
         help="Reference net basename regexp; shell '*' wildcards are also accepted.",

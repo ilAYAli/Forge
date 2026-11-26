@@ -183,7 +183,7 @@ def cmd_report(args: argparse.Namespace) -> int:
     if args.template != "sprt" or args.report != "score":
         raise SystemExit(f"unknown report: {args.template} {args.report}")
     payload = sprt_score_report(
-        show_run=bool(args.runs),
+        show_run=bool(args.verbose),
         reference_net=args.reference_net,
         candidate_net=args.candidate_net,
         engine=args.engine or "",

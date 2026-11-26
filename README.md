@@ -197,7 +197,7 @@ candidate (engine and net) and reference engine, by default against
 
 ```sh
 forge report sprt score
-forge report sprt score --runs --min-games 0          # add each result's run name
+forge report sprt score --verbose                     # add each result's run name
 forge report sprt score --reference-engine '*'
 forge report sprt score --reference-net reference.nn --candidate-net 'enyo-*'
 # Reference net filters accept regexes or shell-style '*' wildcards.

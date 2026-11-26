@@ -2345,7 +2345,8 @@ _SPRT_REPORT_HTML = r"""<!DOCTYPE html>
     form { display:flex; align-items:end; gap:9px; flex-wrap:wrap; padding:10px;
       border:1px solid var(--border); border-radius:6px; background:var(--bg2); }
     label { display:grid; gap:3px; color:var(--dim); font-size:11px; }
-    label.check { display:flex; align-items:center; gap:5px; align-self:end; padding-bottom:6px; }
+    .verbose { display:flex; align-items:center; gap:5px; margin-left:14px; color:var(--dim); font-size:12px; cursor:pointer; }
+    .verbose input { width:auto; margin:0; padding:0; }
     input,button { font:12px var(--font); color:var(--text); background:var(--bg3);
       border:1px solid var(--border); border-radius:4px; padding:5px 7px; }
     input { width:190px; } input.small { width:85px; }
@@ -2365,16 +2366,13 @@ _SPRT_REPORT_HTML = r"""<!DOCTYPE html>
   </style>
 </head>
 <body>
-  <header><nav class="top-tabs"><a class="top-tab" href="/">runs</a><a class="top-tab active" href="/reports/sprt">SPRT scores</a></nav><span id="state">loading…</span></header>
+  <header><nav class="top-tabs"><a class="top-tab" href="/">runs</a><a class="top-tab active" href="/reports/sprt">SPRT scores</a></nav><span id="state">loading…</span><label class="verbose"><input id="show-runs" type="checkbox">verbose</label></header>
   <main>
     <form id="filters">
+      <label>candidate<input id="engine" value="__FORGE_SPRT_DEFAULT_ENGINE_FILTER__"></label>
+      <label>candidate net<input id="candidate" value="*"></label>
+      <label>reference<input id="reference-engine" value="__FORGE_SPRT_DEFAULT_REFERENCE_ENGINE__"></label>
       <label>reference net regexp<input id="reference" placeholder="nn-*.nnue" value="__FORGE_SPRT_DEFAULT_REFERENCE_NET__"></label>
-      <label>candidate<input id="candidate" value="*"></label>
-      <label>engine<input id="engine" value="__FORGE_SPRT_DEFAULT_ENGINE_FILTER__"></label>
-      <label>reference engine<input id="reference-engine" value="__FORGE_SPRT_DEFAULT_REFERENCE_ENGINE__"></label>
-      <label>min games<input id="min-games" class="small" type="number" min="0" value="1500"></label>
-      <label>limit<input id="limit" class="small" type="number" min="1" max="1000" value="20"></label>
-      <label class="check"><input id="show-runs" type="checkbox">run names</label>
       <button type="submit">apply</button>
     </form>
     <div class="table-wrap"><table><thead></thead><tbody></tbody></table></div>
@@ -2389,9 +2387,8 @@ _SPRT_REPORT_HTML = r"""<!DOCTYPE html>
         candidate_net:document.querySelector('#candidate').value,
         engine:document.querySelector('#engine').value,
         reference_engine:document.querySelector('#reference-engine').value,
-        min_games:document.querySelector('#min-games').value,
-        limit:document.querySelector('#limit').value});
-      if (document.querySelector('#show-runs').checked) p.set('runs','1');
+        limit:'1000'});
+      if (document.querySelector('#show-runs').checked) p.set('verbose','1');
       return p;
     }
     function valueText(column,value) {
@@ -2438,9 +2435,9 @@ _SPRT_REPORT_HTML = r"""<!DOCTYPE html>
     document.querySelector('#filters').onsubmit=event=>{event.preventDefault();load();};
     document.querySelector('#show-runs').onchange=()=>{history.replaceState(null,'',`?${params()}`); render();};
     const initial=new URLSearchParams(location.search);
-    for (const [key,id] of [['reference_net','reference'],['candidate_net','candidate'],['engine','engine'],['reference_engine','reference-engine'],['min_games','min-games'],['limit','limit']])
+    for (const [key,id] of [['reference_net','reference'],['candidate_net','candidate'],['engine','engine'],['reference_engine','reference-engine']])
       if(initial.has(key)) document.querySelector(`#${id}`).value=initial.get(key);
-    document.querySelector('#show-runs').checked=initial.get('runs')==='1';
+    document.querySelector('#show-runs').checked=initial.get('verbose')==='1';
     load();
   </script>
 </body>
