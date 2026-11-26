@@ -38,7 +38,7 @@ def print_holds() -> None:
 
     holds = active_holds()
     if holds:
-        print("holds: " + "; ".join(describe_hold(host, hold) for host, hold in sorted(holds.items())))
+        print("host limits: " + "; ".join(describe_hold(host, hold) for host, hold in sorted(holds.items())))
 
 def cmd_status(args: argparse.Namespace) -> int:
     color_enabled = status_color_enabled(args)
