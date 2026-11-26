@@ -44,8 +44,7 @@ The name of the respective workers should likely be a hostname rather than worke
     {
       "host": "worker2",
       "profile": "worker2",
-      "python": "/opt/homebrew/bin/python3",
-      "utilization": "50%"
+      "python": "/opt/homebrew/bin/python3"
     },
     {
       "host": "worker3",
@@ -68,6 +67,8 @@ forge stop my-run
 forge resume my-run
 forge retry
 forge worker set worker3:50%
+forge worker hold worker3 0 --reason lichess
+forge worker release worker3
 forge del --worker worker3
 forge status
 watch 'forge status --verbose'
@@ -230,7 +231,7 @@ Ctrl+C during setup or `--wait` performs the same cleanup before returning
 status 130. Coordinator temporary files are removed, and the stopped run can be
 continued with `forge resume <run>` without duplicate output.
 
-Change a worker's utilization:
+Change a host's utilization in the active run (or a named one):
 
 ```sh
 forge worker set worker3:50%
@@ -238,18 +239,26 @@ forge worker set worker3:max
 forge worker set worker3:0
 ```
 
-`worker set` saves the host's utilization in the coordinator's
-`~/.config/forge/workers.json`, so it also holds for future runs, and applies
-it to the active run (or the named one) if there is one. `--run-only` changes
-only the run. `forge worker get worker3` prints the saved utilization, and
-`forge worker set worker3:restore` goes back to the value before the last
-change, so a program that needs a host for a while (a lichess bot, say) runs
-`forge worker set worker3:0 --force` when it starts and
-`forge worker set worker3:restore` when it exits. In the run it updates that host in `<run>/workers.json` and
-resizes it from its detected hardware (see [Capacity](#capacity)). Missing worker
-processes are started. Lowering the share drains the extra processes: they
-finish their current task, stop claiming, and exit. `--force` kills them
+`worker set` changes only that run: it updates the host in `<run>/workers.json`
+and resizes it from its detected hardware (see [Capacity](#capacity)). Missing
+worker processes are started. Lowering the share drains the extra processes:
+they finish their current task, stop claiming, and exit. `--force` kills them
 instead, and also allows a thread count above the detected hardware.
+
+Take a host out of Forge for a while, for every run:
+
+```sh
+forge worker hold worker3 0 --reason lichess --force
+forge worker hold worker3 50% --for 3h
+forge worker release worker3
+```
+
+A hold is a temporary maximum for the host. It is kept on the coordinator,
+applies to the active run at once and to every run started while it lasts,
+and ends with `forge worker release` or when its `--for` time runs out (the
+run's wait monitor releases it). `--force` kills the host's excess tasks
+instead of letting them finish. `forge status` lists active holds. A lichess
+bot, say, holds its host at 0 when it starts and releases it when it exits.
 
 Drain a worker from a run:
 
@@ -317,8 +326,7 @@ Workers files as JSON:
     {
       "host": "worker3",
       "profile": "mac",
-      "python": "/opt/homebrew/bin/python3",
-      "utilization": "50%"
+      "python": "/opt/homebrew/bin/python3"
     },
     {
       "host": "worker4",
@@ -329,7 +337,9 @@ Workers files as JSON:
 ```
 
 Object workers support `host`, `profile`, `python`, `local`, `cache_dir`,
-`utilization`, `resources`, `env`, and `enabled`. `resources` is a non-empty list
+`resources`, `env`, and `enabled`. The file lists the pool's hosts and how to
+reach them; it holds no capacity numbers (Forge measures each host, and
+`utilization` or `slots` values in it are ignored with a warning). `resources` is a non-empty list
 containing `cpu` and/or `gpu`; omitted workers are CPU-only. `env` maps shell
 variable names to literal string values and is exported for every Forge command
 on that worker (for example, a CUDA toolkit path). Inline entries inherit matching
@@ -364,13 +374,11 @@ Each manifest declares what one task costs:
   variables (`+ - * / //` and parentheses only). A manifest without
   `resources` costs one fixed thread and declares no memory.
 
-A host's `utilization` (default `100%`) is then turned into a slot count:
-the threads or cores in its share, divided by the per-task cost, and capped
-so the tasks fit in 90% of the host's memory share. Any share above zero runs
-at least one task. Precedence is the `--workers host:…` suffix, then the
-`workers.json` `utilization`, then 100%. `forge worker set` saves the host's
-utilization in `workers.json` and applies it to the active run. An old `slots` value in `workers.json` is
-ignored, with a warning.
+A host's share (100% unless a run's `--workers host:…` suffix or
+`forge worker set` says otherwise) is then turned into a slot count: the
+threads or cores in that share, divided by the per-task cost, and capped so
+the tasks fit in 90% of the host's memory share. A hold (`forge worker hold`)
+caps it further. Any share above zero runs at least one task.
 
 Example on a 12-core/24-thread Linux host and a 10P+4E Mac:
 

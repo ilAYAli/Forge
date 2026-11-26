@@ -9006,86 +9006,86 @@ console.log(JSON.stringify(orderDashboardRuns([
                 with self.assertRaises(SystemExit):
                     forge.worker_set_record_from_arg("worker-b")
 
-    def test_worker_set_saves_utilization_for_future_runs(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            config = Path(tmp) / "config.yml"
-            workers = Path(tmp) / "workers.json"
-            forge.write_json(workers, {
-                "schema": "forge.workers.v1",
-                "workers": [
-                    {"host": "pwa-mbp", "profile": "pwa-mbp", "utilization": "80%"},
-                    {"host": "pwa-wrk", "profile": "linux", "slots": 16},
-                ],
-            })
-            args = forge.build_parser().parse_args(["worker", "set", "pwa-mbp:0"])
-            with mock.patch.dict(os.environ, {"FORGE_CONFIG": str(config)}), \
-                    mock.patch("forge_lib.workers.configured_coordinator_runs", return_value=None), \
-                    mock.patch("forge_lib.workers.single_active_local_run_name", side_effect=SystemExit("no active run")), \
-                    contextlib.redirect_stdout(io.StringIO()) as stdout:
-                self.assertEqual(0, forge.cmd_worker_set(args))
-                self.assertIn("pwa-mbp utilization 80%->0", stdout.getvalue())
-                self.assertIn("applies to the next run", stdout.getvalue())
-                saved = forge.read_json(workers)["workers"]
-                self.assertEqual("0", saved[0]["utilization"])
-                # Legacy slots are replaced by the saved utilization.
-                forge.cmd_worker_set(forge.build_parser().parse_args(["worker", "set", "pwa-wrk:max"]))
-                saved = forge.read_json(workers)["workers"]
-                self.assertEqual({"host": "pwa-wrk", "profile": "linux", "utilization": "100%"}, saved[1])
-
-    def test_worker_get_prints_saved_utilization(self) -> None:
+    def test_config_workers_utilization_is_ignored(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             config = Path(tmp) / "config.yml"
             forge.write_json(Path(tmp) / "workers.json", {
                 "schema": "forge.workers.v1",
-                "workers": [
-                    {"host": "pwa-mbp", "utilization": "80%"},
-                    {"host": "pwa-wrk"},
-                    {"host": "pwa-old", "enabled": False},
-                ],
+                "workers": [{"host": "pwa-mbp", "utilization": "8", "previous_utilization": "80%"}, {"host": "pwa-wrk", "slots": 16}],
             })
             with mock.patch.dict(os.environ, {"FORGE_CONFIG": str(config)}), \
-                    mock.patch("forge_lib.workers.configured_coordinator_runs", return_value=None):
-                for host, expected in (("pwa-mbp", "80%"), ("pwa-wrk", "100%"), ("pwa-old", "0")):
-                    args = forge.build_parser().parse_args(["worker", "get", host])
-                    with contextlib.redirect_stdout(io.StringIO()) as stdout:
-                        self.assertEqual(0, args.func(args))
-                    self.assertEqual(expected + "\n", stdout.getvalue())
-                with self.assertRaises(SystemExit):
-                    forge.cmd_worker_get(forge.build_parser().parse_args(["worker", "get", "nope"]))
+                    contextlib.redirect_stderr(io.StringIO()) as stderr:
+                payload = forge.workers_payload_from_arg(None, default_ok=True)
+            self.assertEqual([{"host": "pwa-mbp"}, {"host": "pwa-wrk"}], payload["workers"])
+            self.assertIn("capacity comes from the hardware", stderr.getvalue())
 
-    def test_worker_set_restore_returns_to_previous_utilization(self) -> None:
+    def test_hold_caps_capacity_until_released_or_expired(self) -> None:
+        from forge_lib import holds
+
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch.dict(os.environ, {"FORGE_RUNS_DIR": tmp, "FORGE_HARDWARE": json.dumps(
+                    {"threads": 14, "cores": 14, "perf_cores": 10, "memory_mb": 24576})}):
+            timed = {"timing": "timed", "threads": 1}
+            records = [{"host": "pwa-mbp", "profile": "pwa-mbp"}]
+            def slots() -> list[int]:
+                return [r["slots"] for r in forge.resolve_worker_records(records, timed, quiet=True)]
+            self.assertEqual([10], slots())
+            holds.set_hold("pwa-mbp", "50%", reason="lichess", seconds=None)
+            self.assertEqual([5], slots())
+            holds.set_hold("pwa-mbp", "0", reason="lichess", seconds=None)
+            self.assertEqual([], slots())
+            self.assertIn("pwa-mbp max 0 (lichess)", holds.describe_hold("pwa-mbp", holds.active_holds()["pwa-mbp"]))
+            holds.clear_hold("pwa-mbp")
+            self.assertEqual([10], slots())
+            holds.set_hold("pwa-mbp", "0", reason=None, seconds=60)
+            self.assertEqual([], slots())
+            self.assertEqual([], holds.expire_holds())
+            self.assertEqual(["pwa-mbp"], holds.expire_holds(now=time.time() + 61))
+            self.assertEqual([10], slots())
+            self.assertEqual(5400.0, holds.parse_duration("90m"))
+            self.assertEqual(10800.0, holds.parse_duration("3h"))
+            with self.assertRaises(SystemExit):
+                holds.parse_duration("soon")
+
+    def test_worker_hold_and_release_apply_to_the_active_run(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             config = Path(tmp) / "config.yml"
-            workers = Path(tmp) / "workers.json"
-            forge.write_json(workers, {"schema": "forge.workers.v1", "workers": [{"host": "pwa-mbp", "utilization": "80%"}]})
-            with mock.patch.dict(os.environ, {"FORGE_CONFIG": str(config)}), \
+            forge.write_json(Path(tmp) / "workers.json", {"schema": "forge.workers.v1", "workers": [{"host": "pwa-mbp"}]})
+            runs = Path(tmp) / "runs"
+            run_dir = runs / "sprt-x"
+            run_dir.mkdir(parents=True)
+            forge.write_json(run_dir / "manifest.json", {"name": "sprt-x", "tasks": []})
+            forge.write_json(run_dir / "workers.json", {"schema": "forge.workers.v1", "workers": [{"host": "pwa-mbp", "utilization": "100%", "slots": 10}]})
+            env = {"FORGE_CONFIG": str(config), "FORGE_RUNS_DIR": str(runs)}
+            with mock.patch.dict(os.environ, env), \
                     mock.patch("forge_lib.workers.configured_coordinator_runs", return_value=None), \
-                    mock.patch("forge_lib.workers.single_active_local_run_name", side_effect=SystemExit("no active run")), \
-                    contextlib.redirect_stdout(io.StringIO()):
-                for spec in ("pwa-mbp:0", "pwa-mbp:0", "pwa-mbp:restore"):
-                    forge.cmd_worker_set(forge.build_parser().parse_args(["worker", "set", spec]))
-                self.assertEqual("80%", forge.read_json(workers)["workers"][0]["utilization"])
-                # Repeating a restore must not swap back to the value before it.
-                forge.cmd_worker_set(forge.build_parser().parse_args(["worker", "set", "pwa-mbp:restore"]))
-                self.assertEqual("80%", forge.read_json(workers)["workers"][0]["utilization"])
-                forge.cmd_worker_set(forge.build_parser().parse_args(["worker", "set", "pwa-mbp:0", "--force"]))
-                forge.cmd_worker_set(forge.build_parser().parse_args(["worker", "set", "pwa-mbp:restore"]))
-            self.assertEqual("80%", forge.read_json(workers)["workers"][0]["utilization"])
+                    mock.patch("forge_lib.workers.single_active_local_run_name", return_value="sprt-x"), \
+                    mock.patch("forge_lib.workers.subprocess.run", return_value=subprocess.CompletedProcess([], 0)) as run, \
+                    contextlib.redirect_stdout(io.StringIO()) as stdout:
+                hold = forge.build_parser().parse_args(["worker", "hold", "pwa-mbp", "0", "--reason", "lichess", "--force"])
+                self.assertEqual(0, hold.func(hold))
+                self.assertEqual(["worker", "set", "pwa-mbp:100%", "sprt-x", "--no-notify", "--force"], run.call_args.args[0][2:])
+                self.assertIn("pwa-mbp max 0 (lichess)", stdout.getvalue())
+                # The hold removed the host from the run; release adds it back.
+                forge.write_json(run_dir / "workers.json", {"schema": "forge.workers.v1", "workers": []})
+                release = forge.build_parser().parse_args(["worker", "release", "pwa-mbp"])
+                self.assertEqual(0, release.func(release))
+                self.assertEqual(["worker", "set", "pwa-mbp:100%", "sprt-x", "--no-notify"], run.call_args.args[0][2:])
+                self.assertEqual({}, __import__("forge_lib.holds", fromlist=["x"]).active_holds())
 
-    def test_worker_set_run_only_does_not_save(self) -> None:
+    def test_worker_set_changes_only_the_run(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             config = Path(tmp) / "config.yml"
             workers = Path(tmp) / "workers.json"
-            original = {"schema": "forge.workers.v1", "workers": [{"host": "pwa-mbp", "utilization": "80%"}]}
+            original = {"schema": "forge.workers.v1", "workers": [{"host": "pwa-mbp"}]}
             forge.write_json(workers, original)
-            args = forge.build_parser().parse_args(["worker", "set", "pwa-mbp:50%", "--run-only"])
+            args = forge.build_parser().parse_args(["worker", "set", "pwa-mbp:50%"])
             with mock.patch.dict(os.environ, {"FORGE_CONFIG": str(config)}), \
                     mock.patch("forge_lib.workers.configured_coordinator_runs", return_value=None), \
                     mock.patch("forge_lib.workers.single_active_local_run_name", side_effect=SystemExit("no active run")):
                 with self.assertRaises(SystemExit):
                     forge.cmd_worker_set(args)
             self.assertEqual(original, forge.read_json(workers))
-            self.assertIn("--run-only", forge.worker_control_command_args("set", args))
 
     def test_worker_set_launch_preserves_all_default_workers(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -15570,7 +15570,7 @@ console.log(JSON.stringify(orderDashboardRuns([
                 }),
                 encoding="utf-8",
             )
-            workers_path = root / "workers.json"
+            workers_path = root / "run-workers.json"
             workers_path.write_text(
                 json.dumps({
                     "schema": "forge.workers.v1",

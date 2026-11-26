@@ -33,6 +33,13 @@ PROGRESS_GRAPH_SERIES_OPTION_KEYS = {
 }
 
 
+def print_holds() -> None:
+    from .holds import active_holds, describe_hold
+
+    holds = active_holds()
+    if holds:
+        print("holds: " + "; ".join(describe_hold(host, hold) for host, hold in sorted(holds.items())))
+
 def cmd_status(args: argparse.Namespace) -> int:
     color_enabled = status_color_enabled(args)
     selected = [name for name in ("all", "done", "failed") if bool(getattr(args, name))]
@@ -85,6 +92,8 @@ def cmd_status(args: argparse.Namespace) -> int:
             attention_only=bool(filter_name is None and not getattr(args, "verbose", False)),
             include_completed_progress=include_completed_progress,
         )
+        if not args.json:
+            print_holds()
         return print_run_status(
             summaries,
             color_enabled=color_enabled,
@@ -5547,6 +5556,12 @@ def _cmd_wait(args: argparse.Namespace) -> int:
                 counts = summary["counts"]
         if counts["done"] == total:
             return finish("run_done", "ok", 0, manifest)
+        try:
+            from .workers import release_expired_holds
+
+            release_expired_holds(lease_seconds=args.lease_seconds)
+        except Exception as exc:  # a broken holds file must not stop the run
+            print(f"wait: hold expiry failed: {exc}", file=sys.stderr)
         active = counts["running"] + counts["claimed"] + counts["stale"]
         if run_launch_stale(summary) and active == 0 and counts["pending"] > 0:
             print("launch failed: no active workers and launch request is stale", file=sys.stderr)

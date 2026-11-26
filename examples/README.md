@@ -58,7 +58,7 @@ forge merge \
 
 Each shard owns one single-thread Stockfish process and is fixed-depth work, so
 Forge runs one shard per hardware thread (including SMT siblings) at low CPU
-priority. Lower a host's `utilization` to keep part of it free.
+priority. Use `forge worker hold <host> <max>` to keep part of a host free for a while.
 
 ## NNUE SPRT
 

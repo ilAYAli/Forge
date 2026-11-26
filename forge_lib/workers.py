@@ -104,6 +104,38 @@ def update_workers_from_arg(value: str | None, *, default_ok: bool) -> list[dict
         unique.append(deduped)
     return unique
 
+CONFIG_ONLY_IGNORED_KEYS = ("utilization", "previous_utilization", "slots")
+_WARNED_CONFIG_PATHS: set[str] = set()
+
+def read_config_workers(path: Path) -> dict[str, Any]:
+    """Read a workers file; the global config's capacity numbers are ignored.
+
+    ``~/.config/forge/workers.json`` only lists the pool's hosts.  Capacity
+    comes from each host's hardware, and temporary limits are holds
+    (``forge worker hold``), so stored utilization/slots values are dropped.
+    """
+    payload = read_json(path)
+    try:
+        is_config = expand_path(str(path)).resolve() == config_workers_path().resolve()
+    except OSError:
+        is_config = False
+    if not is_config or not isinstance(payload.get("workers"), list):
+        return payload
+    ignored = []
+    for record in payload["workers"]:
+        if isinstance(record, dict) and any(key in record for key in CONFIG_ONLY_IGNORED_KEYS):
+            ignored.append(str(record.get("host") or "?"))
+            for key in CONFIG_ONLY_IGNORED_KEYS:
+                record.pop(key, None)
+    if ignored and str(path) not in _WARNED_CONFIG_PATHS:
+        _WARNED_CONFIG_PATHS.add(str(path))
+        print(
+            f"warning: {path}: ignoring utilization/slots for {', '.join(ignored)}; "
+            "capacity comes from the hardware (use forge worker hold for a temporary limit)",
+            file=sys.stderr,
+        )
+    return payload
+
 def default_workers_path() -> Path:
     path = config_workers_path()
     if path.exists():
@@ -148,7 +180,7 @@ def default_inline_worker_records(path: str | Path | None = None) -> dict[str, d
         path = expand_path(str(path))
         if not path.exists():
             return {}
-    payload = read_json(path)
+    payload = read_config_workers(path)
     if payload.get("schema") is not None and not schema_matches(payload.get("schema"), "workers"):
         return {}
     raw_workers = payload.get("workers")
@@ -208,10 +240,10 @@ def workers_payload_from_arg(
     if value is None:
         if not default_ok:
             raise SystemExit("workers are required")
-        return read_json(default_workers_path())
+        return read_config_workers(default_workers_path())
     path = expand_path(value)
     if path.exists():
-        return read_json(path)
+        return read_config_workers(path)
     if worker_arg_looks_like_path(value):
         raise SystemExit(f"workers file not found: {value}")
     return parse_inline_workers(value, defaults_path=inline_defaults_path)
@@ -3310,8 +3342,6 @@ def worker_control_command_args(action: str, args: argparse.Namespace) -> list[s
     if action in ("add", "set"):
         if action == "set" and bool(getattr(args, "force", False)):
             command.append("--force")
-        if action == "set" and bool(getattr(args, "run_only", False)):
-            command.append("--run-only")
         if bool(getattr(args, "wait", False)):
             command.append("--wait")
         if getattr(args, "verify", None) is True:
@@ -3358,15 +3388,10 @@ def worker_control_command_args(action: str, args: argparse.Namespace) -> list[s
 def run_worker_control_on_coordinator(action: str, args: argparse.Namespace, coordinator_runs: str) -> int:
     if args.run is None:
         args = copy.copy(args)
-        try:
-            args.run = single_active_coordinator_run_name(
-                coordinator_runs,
-                lease_seconds=int(args.lease_seconds),
-            )
-        except SystemExit:
-            # worker set without an active run still saves the utilization.
-            if action != "set":
-                raise
+        args.run = single_active_coordinator_run_name(
+            coordinator_runs,
+            lease_seconds=int(args.lease_seconds),
+        )
     host, runs_path = parse_coordinator(coordinator_runs)
     command = worker_control_command_args(action, args)
     if host:
@@ -3744,89 +3769,90 @@ def clear_worker_id_drains(manifest: dict[str, Any], worker_ids: set[str]) -> No
     for worker_id in worker_ids:
         worker_drain_path(manifest, worker_id).unlink(missing_ok=True)
 
-def persist_worker_utilization(host: str, utilization: str, *, remember_previous: bool = True) -> str:
-    """Save a host's utilization in workers.json so future runs use it too."""
-    from .config import config_workers_path
-
-    path = config_workers_path()
-    if not path.exists():
-        return f"worker set: {path} not found; utilization not saved"
-    payload = read_json(path)
-    records = payload.get("workers") if isinstance(payload, dict) else None
-    if not isinstance(records, list):
-        return f"worker set: {path} has no workers list; utilization not saved"
+def run_host_utilization(workers_path: Path, host: str) -> str | None:
+    """The utilization a run uses for a host, or None if the host is not in it."""
+    records = worker_records_from_payload(read_json(workers_path), label=str(workers_path), allow_empty=True)
     for record in records:
-        if isinstance(record, dict) and str(record.get("host") or "") == host:
-            previous = str(record.get("utilization") or DEFAULT_UTILIZATION)
-            if remember_previous and previous != utilization:
-                # What `worker set <host>:restore` goes back to; a restore
-                # itself keeps it, so repeating a restore changes nothing.
-                record["previous_utilization"] = previous
-            record["utilization"] = utilization
-            record.pop("slots", None)
-            write_json(path, payload)
-            return f"worker set: saved {host} utilization {previous}->{utilization} in {path}"
-    return f"worker set: {host} is not in {path}; utilization not saved"
+        if worker_host(record) == host:
+            return str(record.get("utilization") or DEFAULT_UTILIZATION)
+    return None
 
-def saved_worker_utilization(host: str) -> str:
-    from .config import config_workers_path
+def apply_hold_to_active_run(host: str, *, force: bool, lease_seconds: int, label: str) -> int:
+    """Re-resolve a host in the active run so a new or released hold takes effect."""
+    try:
+        run_name = single_active_local_run_name(lease_seconds=lease_seconds)
+    except SystemExit:
+        print(f"{label}: no active run; applies to the next run")
+        return 0
+    _, _, workers_path = materialized_run_paths(run_dir_for_name(run_name), label=run_name)
+    utilization = run_host_utilization(workers_path, host)
+    if utilization is None:
+        # A hold at 0 removed the host from the run, or the run started
+        # during the hold: give it back if it is one of the pool's hosts.
+        if host not in {worker_host(record) for record in load_workers(default_workers_path())}:
+            print(f"{label}: {host} is not in {run_name}")
+            return 0
+        utilization = DEFAULT_UTILIZATION
+    command = [
+        sys.executable, str(script_path()), "worker", "set", f"{host}:{utilization}", run_name, "--no-notify",
+    ]
+    if force:
+        command.append("--force")
+    return subprocess.run(command, stdin=subprocess.DEVNULL, check=False).returncode
 
-    path = config_workers_path()
-    if not path.exists():
-        raise SystemExit(f"{path} not found")
-    payload = read_json(path)
-    records = payload.get("workers") if isinstance(payload, dict) else None
-    for record in records if isinstance(records, list) else []:
-        if isinstance(record, dict) and str(record.get("host") or "") == host:
-            if not bool(record.get("enabled", True)):
-                return "0"
-            return normalize_utilization(record.get("utilization") or DEFAULT_UTILIZATION, label=host)
-    raise SystemExit(f"{host} is not in {path}")
-
-def saved_previous_utilization(host: str) -> str:
-    from .config import config_workers_path
-
-    path = config_workers_path()
-    payload = read_json(path) if path.exists() else {}
-    for record in payload.get("workers") or [] if isinstance(payload, dict) else []:
-        if isinstance(record, dict) and str(record.get("host") or "") == host:
-            return str(record.get("previous_utilization") or DEFAULT_UTILIZATION)
-    return DEFAULT_UTILIZATION
-
-def cmd_worker_get(args: argparse.Namespace) -> int:
-    """Print a host's saved utilization (as accepted by worker set)."""
+def forward_to_coordinator(command: list[str]) -> int | None:
     coordinator_runs = configured_coordinator_runs()
-    if coordinator_runs:
-        result = run_coordinator_command(coordinator_runs, ["worker", "get", str(args.worker)])
-        if result.stdout:
-            print(result.stdout, end="")
-        if result.stderr:
-            print(result.stderr, end="", file=sys.stderr)
-        return result.returncode
-    print(saved_worker_utilization(str(args.worker)))
-    return 0
+    if not coordinator_runs:
+        return None
+    result = run_coordinator_command(coordinator_runs, command)
+    if result.stdout:
+        print(result.stdout, end="")
+    if result.stderr:
+        print(result.stderr, end="", file=sys.stderr)
+    return result.returncode
+
+def cmd_worker_hold(args: argparse.Namespace) -> int:
+    from .holds import describe_hold, parse_duration, set_hold
+
+    seconds = parse_duration(args.duration) if args.duration else None
+    command = ["worker", "hold", str(args.worker), str(args.limit)]
+    if args.reason:
+        command.extend(["--reason", str(args.reason)])
+    if args.duration:
+        command.extend(["--for", str(args.duration)])
+    if args.force:
+        command.append("--force")
+    forwarded = forward_to_coordinator(command)
+    if forwarded is not None:
+        return forwarded
+    hold = set_hold(str(args.worker), str(args.limit), reason=args.reason, seconds=seconds)
+    print(f"worker hold: {describe_hold(str(args.worker), hold)}", flush=True)
+    return apply_hold_to_active_run(str(args.worker), force=bool(args.force), lease_seconds=args.lease_seconds, label="worker hold")
+
+def cmd_worker_release(args: argparse.Namespace) -> int:
+    from .holds import clear_hold
+
+    forwarded = forward_to_coordinator(["worker", "release", str(args.worker)])
+    if forwarded is not None:
+        return forwarded
+    if clear_hold(str(args.worker)) is None:
+        print(f"worker release: {args.worker} has no hold")
+        return 0
+    print(f"worker release: {args.worker} back to full capacity", flush=True)
+    return apply_hold_to_active_run(str(args.worker), force=False, lease_seconds=args.lease_seconds, label="worker release")
+
+def release_expired_holds(*, lease_seconds: int) -> None:
+    from .holds import expire_holds
+
+    for host in expire_holds():
+        print(f"worker release: {host} hold expired", flush=True)
+        apply_hold_to_active_run(host, force=False, lease_seconds=lease_seconds, label="worker release")
 
 def cmd_worker_set(args: argparse.Namespace) -> int:
     coordinator_runs = configured_coordinator_runs()
     if coordinator_runs and status_can_delegate(args.run):
         return run_worker_control_on_coordinator("set", args, coordinator_runs)
-    restoring = str(args.worker).endswith(":restore")
-    if restoring:
-        restore_host = str(args.worker).rsplit(":", 1)[0]
-        args = copy.copy(args)
-        args.worker = f"{restore_host}:{saved_previous_utilization(restore_host)}"
-    # The setting is a property of the host, not of one run: keep it for
-    # future runs (unless --run-only), then apply it to the active run.
-    spec_host, _, spec_utilization = parse_inline_worker_spec(str(args.worker))
-    if spec_utilization is not None and not bool(getattr(args, "run_only", False)):
-        print(persist_worker_utilization(spec_host, spec_utilization, remember_previous=not restoring), flush=True)
-    try:
-        targets = worker_run_paths(args.run, lease_seconds=args.lease_seconds)
-    except SystemExit as exc:
-        if args.run is None and spec_utilization is not None and not bool(getattr(args, "run_only", False)):
-            print(f"worker set: no active run ({exc}); applies to the next run")
-            return 0
-        raise
+    targets = worker_run_paths(args.run, lease_seconds=args.lease_seconds)
     failed = 0
     for run_name, manifest_path, workers_path in targets:
         force = bool(getattr(args, "force", False))

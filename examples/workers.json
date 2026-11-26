@@ -10,8 +10,7 @@
     {
       "host": "worker-mac",
       "profile": "macos-arm64",
-      "python": "/opt/homebrew/bin/python3",
-      "utilization": "50%"
+      "python": "/opt/homebrew/bin/python3"
     },
     {
       "host": "worker-mac-2",

@@ -204,16 +204,11 @@ def add_worker_set_options(parser: argparse.ArgumentParser) -> None:
             "Lowering it drains extra worker processes after their current task."
         ),
     )
-    parser.add_argument("run", nargs="?", help="Run name or run directory. Omit to use the single active run (if any).")
+    parser.add_argument("run", nargs="?", help="Run name or run directory. Omit to use the single active run.")
     parser.add_argument(
         "--force",
         action="store_true",
         help="Allow a thread budget above the detected hardware, and kill excess worker processes instead of draining them.",
-    )
-    parser.add_argument(
-        "--run-only",
-        action="store_true",
-        help="Change only the run; by default the utilization is also saved in workers.json for future runs.",
     )
     parser.add_argument("--jobs", type=int, default=4, help="Maximum workers to prepare concurrently.")
     parser.add_argument("--task-attempts", type=int, default=2, help="Total attempts per task before final failure.")
@@ -761,7 +756,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     worker = sub.add_parser(
         "worker",
-        help="Set or drain worker utilization for a materialized run.",
+        help="Set a run's worker utilization, hold or release a host, or drain a worker.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     worker_sub = worker.add_subparsers(dest="worker_command", metavar="command", required=True)
@@ -774,13 +769,27 @@ def build_parser() -> argparse.ArgumentParser:
     add_worker_set_options(worker_set)
     worker_set.set_defaults(func=cmd_worker_set)
 
-    worker_get = worker_sub.add_parser(
-        "get",
-        help="Print a worker's saved utilization (to restore it later with worker set).",
+    worker_hold = worker_sub.add_parser(
+        "hold",
+        help="Temporarily cap a host (for example while a lichess bot plays on it).",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    worker_get.add_argument("worker", help="Worker host as named in workers.json.")
-    worker_get.set_defaults(func=cmd_worker_get)
+    worker_hold.add_argument("worker", help="Worker host as named in workers.json.")
+    worker_hold.add_argument("limit", help="Maximum share while held: 0, N%%, or a thread count.")
+    worker_hold.add_argument("--reason", help="Shown in forge status.")
+    worker_hold.add_argument("--for", dest="duration", help="End the hold automatically after this long (30m, 3h, 1d).")
+    worker_hold.add_argument("--force", action="store_true", help="Kill the host's excess tasks now instead of letting them finish.")
+    worker_hold.add_argument("--lease-seconds", type=int, default=600, help="Claim lease duration before stale.")
+    worker_hold.set_defaults(func=cmd_worker_hold)
+
+    worker_release = worker_sub.add_parser(
+        "release",
+        help="End a host's hold; it goes back to its full detected capacity.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    worker_release.add_argument("worker", help="Worker host as named in workers.json.")
+    worker_release.add_argument("--lease-seconds", type=int, default=600, help="Claim lease duration before stale.")
+    worker_release.set_defaults(func=cmd_worker_release)
 
     worker_del = worker_sub.add_parser(
         "del",

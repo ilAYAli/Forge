@@ -467,6 +467,15 @@ def record_utilization(record: dict[str, Any]) -> str:
     return normalize_utilization(value if value is not None else DEFAULT_UTILIZATION, label=str(record.get("host") or "worker"))
 
 
+def host_hold_limit(host: str) -> str | None:
+    """The temporary cap on a host (``forge worker hold``), if any."""
+    try:
+        from .holds import host_hold_limit as limit
+        return limit(host)
+    except SystemExit:
+        return None
+
+
 def resolve_worker_records(
     records: list[dict[str, Any]],
     resources: dict[str, Any],
@@ -510,9 +519,11 @@ def resolve_worker_records(
             warn_legacy_worker_slots(host)
         utilization = record_utilization(record)
         record["utilization"] = utilization
-        if utilization_is_zero(utilization):
+        hold = host_hold_limit(host)
+        if utilization_is_zero(utilization) or (hold is not None and utilization_is_zero(hold)):
             if not quiet:
-                print(f"capacity: {host} utilization=0%; excluded", file=sys.stderr)
+                reason = f"held at {hold}" if hold is not None and utilization_is_zero(hold) else "utilization=0%"
+                print(f"capacity: {host} {reason}; excluded", file=sys.stderr)
             continue
         hardware = hardware_by_index[index]
         if hardware is None:
@@ -528,6 +539,11 @@ def resolve_worker_records(
                 resources,
                 allow_oversubscribe=allow_oversubscribe,
             )
+            if hold is not None:
+                held_slots, _ = resolve_slots(hardware, hold, resources, allow_oversubscribe=False)
+                if held_slots < slots:
+                    slots = held_slots
+                    notes = [*notes, f"held at {hold}"]
             hardware_summary = {
                 key: hardware.get(key)
                 for key in ("os", "threads", "cores", "perf_cores", "memory_mb")
