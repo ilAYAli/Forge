@@ -10310,6 +10310,17 @@ console.log(JSON.stringify(orderDashboardRuns([
             self.assertFalse(forge.task_running_path(manifest, task).exists())
             log = forge.task_log_path(manifest, task).read_text(encoding="utf-8")
             self.assertIn("terminate signal", log)
+            # A signalled task is a preemption, not a failure: the worker hands
+            # it back (checkpoint uploaded, no fail record) when the run goes on.
+            self.assertTrue(forge.read_json(forge.task_fail_path(manifest, task))["preempted"])
+            self.assertTrue(forge.task_preempted(manifest, task))
+            with mock.patch("forge_lib.tasks.sync_files_to_coordinator") as sync:
+                forge.return_preempted_task(
+                    coordinator="", local_manifest=manifest, local_task=task,
+                    coordinator_manifest=manifest, coordinator_task=task,
+                )
+            sync.assert_not_called()  # this task declares no checkpoint files
+            self.assertFalse(forge.task_fail_path(manifest, task).exists())
 
     def test_run_task_soft_cancel_writes_done_without_outputs(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

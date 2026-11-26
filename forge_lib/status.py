@@ -220,6 +220,11 @@ def run_status_on_coordinator(args: argparse.Namespace, coordinator_runs: str) -
             print(result.stderr, end="", file=sys.stderr)
         return result.returncode
     print(f"coordinator: {coordinator_runs}")
+    host_limits = payload.get("host_limits") if isinstance(payload, dict) else None
+    if isinstance(host_limits, list) and host_limits:
+        print(f"host limits: {len(host_limits)}")
+        for text in host_limits:
+            print(f"  {text}")
     rc = print_delegated_status_payload(args, payload, runs_label=coordinator_runs)
     if result.stderr:
         print(result.stderr, end="", file=sys.stderr)
@@ -5377,9 +5382,15 @@ def print_status_details(
     indent: str = "",
 ) -> None:
     show_empty = False
-    if run_current(summary):
-        for line in run_limit_lines(summary):
-            print(f"{indent}{line}")
+    limits = summary.get("limits")
+    if limits is None:
+        # Holds live on the coordinator: compute limits only for a run whose
+        # manifest is local; a delegated status carries them in its JSON.
+        manifest = summary.get("manifest")
+        if manifest and Path(str(manifest)).exists() and isinstance(summary.get("counts"), dict) and run_current(summary):
+            limits = [line.removeprefix("limited: ") for line in run_limit_lines(summary)]
+    for text in limits or []:
+        print(f"{indent}limited: {text}")
     if show_done:
         print_status_group("done", summary["groups"]["done"], color_enabled=color_enabled, show_empty=show_empty, indent=indent)
     active_rows = [row for row in summary["active"] if row.get("state") != "stale"]

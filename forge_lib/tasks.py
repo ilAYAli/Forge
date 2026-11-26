@@ -288,6 +288,32 @@ def fetch_task_checkpoint(coordinator: str, pairs: list[tuple[Path, Path]]) -> i
         fetched += 1
     return fetched
 
+def task_preempted(manifest: dict[str, Any], task: dict[str, Any]) -> bool:
+    path = task_fail_path(manifest, task)
+    try:
+        payload = read_json(path) if path.exists() else {}
+    except (OSError, ValueError, SystemExit):
+        return False
+    return bool(isinstance(payload, dict) and payload.get("preempted"))
+
+def return_preempted_task(
+    *,
+    coordinator: str,
+    local_manifest: dict[str, Any],
+    local_task: dict[str, Any],
+    coordinator_manifest: dict[str, Any],
+    coordinator_task: dict[str, Any],
+) -> None:
+    """Hand a preempted task back: keep its checkpoint, record no failure.
+
+    The caller's ``finally`` releases the claim, so the task is pending again.
+    """
+    pairs = task_checkpoint_pairs(local_task, local_manifest, coordinator_task, coordinator_manifest)
+    transfers = [(local, remote) for local, remote in pairs if local.is_file()]
+    if transfers:
+        sync_files_to_coordinator(coordinator, transfers)
+    task_fail_path(local_manifest, local_task).unlink(missing_ok=True)
+
 def remove_coordinator_files(coordinator: str, paths: list[Path]) -> None:
     if not paths:
         return
@@ -625,6 +651,7 @@ def run_task(
         write_json(task_running_path(manifest, task), running)
 
         previous_handlers: dict[int, Any] = {}
+        preempted_signal: int | None = None
 
         def handle_task_signal(signum: int, _frame: Any) -> None:
             raise TaskSignalInterrupt(signum)
@@ -665,6 +692,7 @@ def run_task(
         except TaskSignalInterrupt as exc:
             terminate_process_group(proc, log, f"signal {exc.signum}")
             rc = 128 + exc.signum
+            preempted_signal = exc.signum
         except subprocess.TimeoutExpired:
             terminate_process_group(proc, log, "timeout")
             rc = 124
@@ -698,6 +726,11 @@ def run_task(
     }
     if max_attempts > 0:
         payload["max_attempts"] = max_attempts
+    if preempted_signal is not None:
+        # The worker was told to stop (worker set --force, forge stop, a host
+        # shutting down): not a task failure.  cmd_work returns it to the queue.
+        payload["preempted"] = True
+        payload["signal"] = preempted_signal
     if soft_cancel is not None:
         payload["soft_cancel"] = True
         payload["skipped"] = True
@@ -2019,6 +2052,7 @@ def cmd_work(args: argparse.Namespace) -> int:
         )
         heartbeat.start()
         sync_failed = False
+        preempted = False
         error_rc = 1
         try:
             response = heartbeat_on_coordinator(
@@ -2055,26 +2089,42 @@ def cmd_work(args: argparse.Namespace) -> int:
                 max_attempts=task_attempts,
                 cancel_event=cancel_task,
             )
-            run_task_complete_command(
-                local_manifest,
-                local_task,
-                rc=rc,
-                command_text=getattr(args, "task_complete_command", None) or default_task_complete_command(),
-                sync=bool(getattr(args, "task_complete_sync", False)),
-            )
-            sync_task_result(
-                coordinator=args.coordinator,
-                coordinator_manifest=coordinator_manifest,
-                local_manifest=local_manifest,
-                coordinator_task=coordinator_task,
-                local_task=local_task,
-                worker=args.worker,
-                worker_id=worker_id,
-                claim_id=claim_id,
-                coordinator_manifest_sha256=str(
-                    claim_payload.get("manifest_sha256") or ""
-                ) or None,
-            )
+            if task_preempted(local_manifest, local_task) and not stop_requested_on_coordinator(
+                args.coordinator, lease_seconds=args.lease_seconds,
+            ):
+                # Only this worker was stopped (worker set --force, a host
+                # limit): the run goes on, so hand the task back.  A stopped
+                # run reports it as usual, which keeps its progress for resume.
+                preempted = True
+                return_preempted_task(
+                    coordinator=args.coordinator,
+                    local_manifest=local_manifest,
+                    local_task=local_task,
+                    coordinator_manifest=coordinator_manifest,
+                    coordinator_task=coordinator_task,
+                )
+                print(f"{task_id}: preempted; returned to the queue", flush=True)
+            else:
+                run_task_complete_command(
+                    local_manifest,
+                    local_task,
+                    rc=rc,
+                    command_text=getattr(args, "task_complete_command", None) or default_task_complete_command(),
+                    sync=bool(getattr(args, "task_complete_sync", False)),
+                )
+                sync_task_result(
+                    coordinator=args.coordinator,
+                    coordinator_manifest=coordinator_manifest,
+                    local_manifest=local_manifest,
+                    coordinator_task=coordinator_task,
+                    local_task=local_task,
+                    worker=args.worker,
+                    worker_id=worker_id,
+                    claim_id=claim_id,
+                    coordinator_manifest_sha256=str(
+                        claim_payload.get("manifest_sha256") or ""
+                    ) or None,
+                )
         except SystemExit as exc:
             sync_failed = True
             failed += 1
@@ -2098,6 +2148,10 @@ def cmd_work(args: argparse.Namespace) -> int:
                 )
             except Exception as exc:
                 print(f"{task_id}: release failed: {exc}", file=sys.stderr)
+        if preempted:
+            # Told to stop mid-task: the claim is released, so the task runs
+            # again elsewhere (resuming from its checkpoint); do not claim more.
+            break
         if sync_failed:
             if args.max_tasks > 0:
                 return error_rc
