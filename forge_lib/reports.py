@@ -183,7 +183,7 @@ def report_text(payload: dict[str, Any]) -> str:
         return str(value)
 
     values = [[text_value(row.get(column)) for column in columns] for row in rows if isinstance(row, dict)]
-    widths = [max(len(column), *(len(row[index]) for row in values)) for index, column in enumerate(columns)]
+    widths = [max([len(column), *(len(row[index]) for row in values)]) for index, column in enumerate(columns)]
     line = "  ".join(column.ljust(widths[index]) for index, column in enumerate(columns))
     rule = "  ".join("-" * width for width in widths)
     body = ["  ".join(value.ljust(widths[index]) for index, value in enumerate(row)) for row in values]
