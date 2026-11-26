@@ -2195,7 +2195,7 @@ def run_display_fields(summary: dict[str, Any]) -> list[str]:
     eta = [field for field in progress if is_eta_field(field)]
     remaining = [field for field in progress if not is_eta_field(field)]
     ordered: list[str] = []
-    for key in ("elo", "llr", "los", "ci", "draw", "games"):
+    for key in ("elo", "ci", "llr", "los", "draw", "games"):
         matches = [
             field for field in remaining
             if field.split("=", 1)[0].removesuffix("~") == key

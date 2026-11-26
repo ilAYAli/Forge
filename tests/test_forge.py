@@ -13300,7 +13300,7 @@ console.log(JSON.stringify(orderDashboardRuns([
             self.assertEqual(0, status.returncode, status.stderr)
             # Aggregate los is derived from pooled elo/ci, so it can differ
             # slightly from the shard's own W/L-based LOS (34.1%).
-            self.assertIn("elo=-18.3 llr=-0.09/2.94 (-3%) los=34.5% ci=89.8 draw=36.8% games=38/50 tasks=0/1", status.stdout)
+            self.assertIn("elo=-18.3 ci=89.8 llr=-0.09/2.94 (-3%) los=34.5% draw=36.8% games=38/50 tasks=0/1", status.stdout)
             self.assertIn("worker-a sprt shard=0 [games=38/50, elo=-18.3, ci=89.8, llr=-0.09/2.94 (-3%), los=34.1, draw=36.8]", status.stdout)
 
     def test_status_header_shows_games_before_tasks(self) -> None:
