@@ -112,7 +112,7 @@ def read_config_workers(path: Path) -> dict[str, Any]:
 
     ``~/.config/forge/workers.json`` only lists the pool's hosts.  Capacity
     comes from each host's hardware, and temporary limits are holds
-    (``forge worker hold``), so stored utilization/slots values are dropped.
+    (``forge worker set host:N``), so stored utilization/slots values are dropped.
     """
     payload = read_json(path)
     try:
@@ -131,7 +131,7 @@ def read_config_workers(path: Path) -> dict[str, Any]:
         _WARNED_CONFIG_PATHS.add(str(path))
         print(
             f"warning: {path}: ignoring utilization/slots for {', '.join(ignored)}; "
-            "capacity comes from the hardware (use forge worker hold for a temporary limit)",
+            "capacity comes from the hardware (use forge worker set host:N for a temporary limit)",
             file=sys.stderr,
         )
     return payload
@@ -3342,6 +3342,10 @@ def worker_control_command_args(action: str, args: argparse.Namespace) -> list[s
     if action in ("add", "set"):
         if action == "set" and bool(getattr(args, "force", False)):
             command.append("--force")
+        if action == "set" and getattr(args, "reason", None):
+            command.extend(["--reason", str(args.reason)])
+        if action == "set" and getattr(args, "duration", None):
+            command.extend(["--for", str(args.duration)])
         if bool(getattr(args, "wait", False)):
             command.append("--wait")
         if getattr(args, "verify", None) is True:
@@ -3386,7 +3390,7 @@ def worker_control_command_args(action: str, args: argparse.Namespace) -> list[s
     return command
 
 def run_worker_control_on_coordinator(action: str, args: argparse.Namespace, coordinator_runs: str) -> int:
-    if args.run is None:
+    if args.run is None and action != "set":
         args = copy.copy(args)
         args.run = single_active_coordinator_run_name(
             coordinator_runs,
@@ -3814,51 +3818,40 @@ def forward_to_coordinator(command: list[str]) -> int | None:
         print(result.stderr, end="", file=sys.stderr)
     return result.returncode
 
-def cmd_worker_hold(args: argparse.Namespace) -> int:
-    from .holds import describe_hold, parse_duration, set_hold
-
-    seconds = parse_duration(args.duration) if args.duration else None
-    command = ["worker", "hold", str(args.worker), str(args.limit)]
-    if args.reason:
-        command.extend(["--reason", str(args.reason)])
-    if args.duration:
-        command.extend(["--for", str(args.duration)])
-    if args.force:
-        command.append("--force")
-    forwarded = forward_to_coordinator(command)
-    if forwarded is not None:
-        return forwarded
-    hold = set_hold(str(args.worker), str(args.limit), reason=args.reason, seconds=seconds)
-    print(f"worker hold: {describe_hold(str(args.worker), hold)}", flush=True)
-    return apply_hold_to_active_run(
-        str(args.worker), force=bool(args.force), lease_seconds=args.lease_seconds, label="worker hold", add_missing=False,
-    )
-
-def cmd_worker_release(args: argparse.Namespace) -> int:
-    from .holds import clear_hold
-
-    forwarded = forward_to_coordinator(["worker", "release", str(args.worker)])
-    if forwarded is not None:
-        return forwarded
-    if clear_hold(str(args.worker)) is None:
-        print(f"worker release: {args.worker} has no hold")
-        return 0
-    print(f"worker release: {args.worker} back to full capacity", flush=True)
-    return apply_hold_to_active_run(
-        str(args.worker), force=False, lease_seconds=args.lease_seconds, label="worker release", add_missing=True,
-    )
-
 def release_expired_holds(*, lease_seconds: int) -> None:
     from .holds import expire_holds
 
     for host in expire_holds():
-        print(f"worker release: {host} hold expired", flush=True)
-        apply_hold_to_active_run(host, force=False, lease_seconds=lease_seconds, label="worker release", add_missing=True)
+        print(f"worker set: {host} limit expired; full capacity", flush=True)
+        apply_hold_to_active_run(host, force=False, lease_seconds=lease_seconds, label="worker set", add_missing=True)
+
+def set_host_limit(args: argparse.Namespace) -> int:
+    """``worker set host:N`` without a run: the host's limit for every run.
+
+    Stored as a hold on the coordinator; ``host:max`` (100%) clears it.
+    """
+    from .holds import clear_hold, describe_hold, parse_duration, set_hold
+
+    host, _, utilization = parse_inline_worker_spec(str(args.worker))
+    if utilization is None:
+        raise SystemExit(f"{args.worker}: worker set requires a utilization (N%, a thread count, or max)")
+    if utilization == DEFAULT_UTILIZATION:
+        cleared = clear_hold(host)
+        print(f"worker set: {host} full capacity" + ("" if cleared else " (no limit was set)"), flush=True)
+        return apply_hold_to_active_run(host, force=False, lease_seconds=args.lease_seconds,
+                                        label="worker set", add_missing=True)
+    seconds = parse_duration(args.duration) if getattr(args, "duration", None) else None
+    hold = set_hold(host, utilization, reason=getattr(args, "reason", None), seconds=seconds)
+    print(f"worker set: {describe_hold(host, hold)}", flush=True)
+    return apply_hold_to_active_run(host, force=bool(getattr(args, "force", False)), lease_seconds=args.lease_seconds,
+                                    label="worker set", add_missing=False)
 
 def cmd_worker_set(args: argparse.Namespace) -> int:
     coordinator_runs = configured_coordinator_runs()
     if coordinator_runs and status_can_delegate(args.run):
         return run_worker_control_on_coordinator("set", args, coordinator_runs)
+    if args.run is None:
+        return set_host_limit(args)
     targets = worker_run_paths(args.run, lease_seconds=args.lease_seconds)
     failed = 0
     for run_name, manifest_path, workers_path in targets:

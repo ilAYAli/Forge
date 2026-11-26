@@ -468,7 +468,7 @@ def record_utilization(record: dict[str, Any]) -> str:
 
 
 def host_hold_limit(host: str) -> str | None:
-    """The temporary cap on a host (``forge worker hold``), if any."""
+    """The temporary cap on a host (``forge worker set host:N`` without a run), if any."""
     try:
         from .holds import host_hold_limit as limit
         return limit(host)

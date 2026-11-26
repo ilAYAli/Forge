@@ -200,11 +200,20 @@ def add_worker_set_options(parser: argparse.ArgumentParser) -> None:
         "worker",
         help=(
             "Worker utilization: host:50%% uses half of the detected host, host:4 a "
-            "four-thread budget, host:max the whole host, host:0 stops new claims. "
+            "four-thread budget, host:max the whole host, host:0 takes it out of Forge. "
             "Lowering it drains extra worker processes after their current task."
         ),
     )
-    parser.add_argument("run", nargs="?", help="Run name or run directory. Omit to use the single active run.")
+    parser.add_argument(
+        "run",
+        nargs="?",
+        help=(
+            "Change only this run. Without it the value is the host's limit for the active run and every new run "
+            "until changed; host:max clears the limit."
+        ),
+    )
+    parser.add_argument("--reason", help="Without a run: why the host is limited (shown in forge status).")
+    parser.add_argument("--for", dest="duration", help="Without a run: clear the limit automatically after this long (30m, 3h, 1d).")
     parser.add_argument(
         "--force",
         action="store_true",
@@ -756,7 +765,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     worker = sub.add_parser(
         "worker",
-        help="Set a run's worker utilization, hold or release a host, or drain a worker.",
+        help="Set a host's utilization (for all runs, or one run) or drain a worker.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     worker_sub = worker.add_subparsers(dest="worker_command", metavar="command", required=True)
@@ -769,27 +778,6 @@ def build_parser() -> argparse.ArgumentParser:
     add_worker_set_options(worker_set)
     worker_set.set_defaults(func=cmd_worker_set)
 
-    worker_hold = worker_sub.add_parser(
-        "hold",
-        help="Temporarily cap a host (for example while a lichess bot plays on it).",
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
-    )
-    worker_hold.add_argument("worker", help="Worker host as named in workers.json.")
-    worker_hold.add_argument("limit", help="Maximum share while held: 0, N%%, or a thread count.")
-    worker_hold.add_argument("--reason", help="Shown in forge status.")
-    worker_hold.add_argument("--for", dest="duration", help="End the hold automatically after this long (30m, 3h, 1d).")
-    worker_hold.add_argument("--force", action="store_true", help="Kill the host's excess tasks now instead of letting them finish.")
-    worker_hold.add_argument("--lease-seconds", type=int, default=600, help="Claim lease duration before stale.")
-    worker_hold.set_defaults(func=cmd_worker_hold)
-
-    worker_release = worker_sub.add_parser(
-        "release",
-        help="End a host's hold; it goes back to its full detected capacity.",
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
-    )
-    worker_release.add_argument("worker", help="Worker host as named in workers.json.")
-    worker_release.add_argument("--lease-seconds", type=int, default=600, help="Claim lease duration before stale.")
-    worker_release.set_defaults(func=cmd_worker_release)
 
     worker_del = worker_sub.add_parser(
         "del",

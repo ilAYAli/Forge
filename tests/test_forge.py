@@ -9047,7 +9047,7 @@ console.log(JSON.stringify(orderDashboardRuns([
             with self.assertRaises(SystemExit):
                 holds.parse_duration("soon")
 
-    def test_worker_hold_and_release_apply_to_the_active_run(self) -> None:
+    def test_worker_set_without_run_limits_the_host_everywhere(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             config = Path(tmp) / "config.yml"
             forge.write_json(Path(tmp) / "workers.json", {"schema": "forge.workers.v1", "workers": [{"host": "pwa-mbp"}]})
@@ -9062,34 +9062,41 @@ console.log(JSON.stringify(orderDashboardRuns([
                     mock.patch("forge_lib.workers.single_active_local_run_name", return_value="sprt-x"), \
                     mock.patch("forge_lib.workers.subprocess.run", return_value=subprocess.CompletedProcess([], 0)) as run, \
                     contextlib.redirect_stdout(io.StringIO()) as stdout:
-                hold = forge.build_parser().parse_args(["worker", "hold", "pwa-mbp", "0", "--reason", "lichess", "--force"])
+                hold = forge.build_parser().parse_args(["worker", "set", "pwa-mbp:0", "--reason", "lichess", "--force"])
                 self.assertEqual(0, hold.func(hold))
                 self.assertEqual(["worker", "set", "pwa-mbp:100%", "sprt-x", "--no-notify", "--force"], run.call_args.args[0][2:])
                 self.assertIn("pwa-mbp max 0 (lichess)", stdout.getvalue())
                 # The hold removed the host from the run; release adds it back.
                 forge.write_json(run_dir / "workers.json", {"schema": "forge.workers.v1", "workers": []})
-                release = forge.build_parser().parse_args(["worker", "release", "pwa-mbp"])
+                release = forge.build_parser().parse_args(["worker", "set", "pwa-mbp:max"])
                 self.assertEqual(0, release.func(release))
                 self.assertEqual(["worker", "set", "pwa-mbp:100%", "sprt-x", "--no-notify"], run.call_args.args[0][2:])
                 self.assertEqual({}, __import__("forge_lib.holds", fromlist=["x"]).active_holds())
                 # Holding a host that is not in the run must not add it.
                 run.reset_mock()
-                hold = forge.build_parser().parse_args(["worker", "hold", "pwa-mbp", "0"])
+                hold = forge.build_parser().parse_args(["worker", "set", "pwa-mbp:0"])
                 self.assertEqual(0, hold.func(hold))
                 run.assert_not_called()
+                forge.build_parser().parse_args(["worker", "set", "pwa-mbp:max"]).func(
+                    forge.build_parser().parse_args(["worker", "set", "pwa-mbp:max"]))
+            # The coordinator gets the host-wide form, not the active run's name.
+            args = forge.build_parser().parse_args(["worker", "set", "pwa-mbp:0", "--reason", "lichess", "--for", "3h"])
+            self.assertEqual(["worker", "set", "pwa-mbp:0", "--reason", "lichess", "--for", "3h"],
+                             forge.worker_control_command_args("set", args)[:7])
 
-    def test_worker_set_changes_only_the_run(self) -> None:
+    def test_worker_set_never_writes_workers_json(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             config = Path(tmp) / "config.yml"
             workers = Path(tmp) / "workers.json"
             original = {"schema": "forge.workers.v1", "workers": [{"host": "pwa-mbp"}]}
             forge.write_json(workers, original)
-            args = forge.build_parser().parse_args(["worker", "set", "pwa-mbp:50%"])
-            with mock.patch.dict(os.environ, {"FORGE_CONFIG": str(config)}), \
+            with mock.patch.dict(os.environ, {"FORGE_CONFIG": str(config), "FORGE_RUNS_DIR": str(Path(tmp) / "runs")}), \
                     mock.patch("forge_lib.workers.configured_coordinator_runs", return_value=None), \
-                    mock.patch("forge_lib.workers.single_active_local_run_name", side_effect=SystemExit("no active run")):
-                with self.assertRaises(SystemExit):
-                    forge.cmd_worker_set(args)
+                    mock.patch("forge_lib.workers.single_active_local_run_name", side_effect=SystemExit("no active run")), \
+                    contextlib.redirect_stdout(io.StringIO()) as stdout:
+                args = forge.build_parser().parse_args(["worker", "set", "pwa-mbp:50%"])
+                self.assertEqual(0, forge.cmd_worker_set(args))
+            self.assertIn("applies to the next run", stdout.getvalue())
             self.assertEqual(original, forge.read_json(workers))
 
     def test_worker_set_launch_preserves_all_default_workers(self) -> None:

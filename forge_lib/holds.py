@@ -1,10 +1,11 @@
 """Temporary per-host capacity limits ("holds").
 
-A host's capacity always comes from its detected hardware.  A hold caps it for
-a while, for example while a lichess bot plays on that host: ``forge worker
-hold pwa-mbp 0 --reason lichess``.  Holds live on the coordinator, apply to
-the active run at once and to every run started while they last, and end with
-``forge worker release`` or when their ``--for`` duration runs out.
+A host's capacity always comes from its detected hardware.  ``forge worker set
+host:N`` without a run caps it for a while, for example while a lichess bot
+plays on that host: ``forge worker set pwa-mbp:0 --reason lichess``.  The cap
+is a hold kept on the coordinator; it applies to the active run at once and to
+every run started while it lasts, and ends with ``forge worker set host:max``
+or when its ``--for`` duration runs out.
 """
 
 from __future__ import annotations
