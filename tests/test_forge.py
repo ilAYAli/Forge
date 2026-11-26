@@ -295,7 +295,7 @@ class ForgeTests(unittest.TestCase):
             connection.close()
 
             def candidates(**kwargs) -> list[str]:
-                payload = forge.sprt_score_report(view="runs", min_games=0, limit=20, db_path=database, **kwargs)
+                payload = forge.sprt_score_report(view="runs", reference_net=".*", min_games=0, limit=20, db_path=database, **kwargs)
                 return [row["candidate_net"] for row in payload["rows"]]
 
             self.assertEqual(["enyo-a.nn", "enyo-a.nn"], candidates())
@@ -306,10 +306,10 @@ class ForgeTests(unittest.TestCase):
             connection.execute("UPDATE sprt SET engine = 'engine-b' WHERE id = 1")
             connection.commit()
             connection.close()
-            ranked = forge.sprt_score_report(min_games=0, db_path=database)
+            ranked = forge.sprt_score_report(reference_net=".*", min_games=0, db_path=database)
             self.assertEqual([("enyo-a.nn", "engine-b"), ("enyo-a.nn", "engine-a")],
                              [(row["candidate_net"], row["engine"]) for row in ranked["rows"]])
-            payload = forge.sprt_score_report(min_games=0, db_path=database)
+            payload = forge.sprt_score_report(reference_net=".*", min_games=0, db_path=database)
             self.assertIn("reference_engine", payload["columns"])
             self.assertEqual("stockfish", payload["rows"][0]["reference_engine"])
             self.assertEqual("stockfish", payload["filters"]["reference_engine"])
@@ -337,7 +337,7 @@ class ForgeTests(unittest.TestCase):
             self.assertIn("String(r.kind || '').toLowerCase() === 'sprt'", web._HTML)
             self.assertIn('<a class="top-tab active" href="/">runs</a>', web._HTML)
             self.assertIn('<a class="top-tab active" href="/reports/sprt">SPRT scores</a>', web._SPRT_REPORT_HTML)
-            self.assertIn('id="reference" placeholder="nn-*.nnue" value=".*"', web._SPRT_REPORT_HTML)
+            self.assertIn('id="reference" placeholder="nn-*.nnue" value="nn-1a298aa575a0.nnue"', web._SPRT_REPORT_HTML)
             self.assertIn('id="reference-engine" value="stockfish"', web._SPRT_REPORT_HTML)
             self.assertIn('id="candidate" value="*"', web._SPRT_REPORT_HTML)
             self.assertIn('id="engine" value="*"', web._SPRT_REPORT_HTML)
