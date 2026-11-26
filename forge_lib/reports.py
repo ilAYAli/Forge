@@ -119,7 +119,8 @@ def sprt_score_report(
                    candidate_net, elo, ci, engine, reference_engine, games, date
             FROM (
                 SELECT *, ROW_NUMBER() OVER (
-                    PARTITION BY candidate_net
+                    -- One row per candidate (engine + net) and reference engine.
+                    PARTITION BY engine, candidate_net, reference_engine
                     ORDER BY date DESC, id DESC
                 ) AS candidate_rank
                 FROM sprt

@@ -301,6 +301,14 @@ class ForgeTests(unittest.TestCase):
             self.assertEqual(["enyo-a.nn", "enyo-a.nn"], candidates())
             self.assertEqual(["enyo-b.nn"], candidates(reference_engine="enyo_*"))
             self.assertEqual(["enyo-c.nn", "enyo-b.nn", "enyo-a.nn", "enyo-a.nn"], candidates(reference_engine="*"))
+            # Gauges of different engines with the same net are separate candidates.
+            connection = sqlite3.connect(database)
+            connection.execute("UPDATE sprt SET engine = 'engine-b' WHERE id = 1")
+            connection.commit()
+            connection.close()
+            ranked = forge.sprt_score_report(min_games=0, db_path=database)
+            self.assertEqual([("enyo-a.nn", "engine-b"), ("enyo-a.nn", "engine-a")],
+                             [(row["candidate_net"], row["engine"]) for row in ranked["rows"]])
             payload = forge.sprt_score_report(min_games=0, db_path=database)
             self.assertIn("reference_engine", payload["columns"])
             self.assertEqual("stockfish", payload["rows"][0]["reference_engine"])
