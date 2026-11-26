@@ -5308,6 +5308,52 @@ def active_status_sort_key(row: dict[str, Any]) -> tuple[int, float, tuple[bool,
             return (2, -(done / total), status_value_key(row["index"]))
     return (3, 0.0, status_value_key(row["index"]))
 
+def run_limit_lines(summary: dict[str, Any]) -> list[str]:
+    """``limited:`` lines for host limits that affect an active run.
+
+    Shows the host's slots in this run against its full capacity for the
+    run's task, so a slow run explains itself.
+    """
+    from .capacity import read_cached_hardware, resolve_slots
+    from .holds import active_holds
+    from .workers import worker_records_from_payload
+
+    holds = active_holds()
+    manifest = summary.get("manifest")
+    if not holds or not manifest:
+        return []
+    snapshot = Path(str(manifest)).parent / RUN_WORKERS_NAME
+    try:
+        records = worker_records_from_payload(read_json(snapshot), label=str(snapshot), allow_empty=True)
+    except (OSError, ValueError, SystemExit):
+        return []
+    by_host = {str(record.get("host")): record for record in records}
+    task = next(
+        (record["capacity"].get("task") for record in records if isinstance(record.get("capacity"), dict)),
+        None,
+    )
+    lines = []
+    for host, hold in sorted(holds.items()):
+        record = by_host.get(host, {})
+        slots = int(record.get("slots") or 0) if record else 0
+        capacity = record.get("capacity") if isinstance(record.get("capacity"), dict) else {}
+        hardware = capacity.get("hardware") or read_cached_hardware(host, max_age=None)
+        full = None
+        if hardware and isinstance(task, dict):
+            try:
+                full = resolve_slots(hardware, "100%", task)[0]
+            except (SystemExit, ValueError, TypeError):
+                full = None
+        if full is not None and slots >= full:
+            continue
+        detail = f"host limit {hold.get('limit')}"
+        if hold.get("reason"):
+            detail += f": {hold['reason']}"
+        if hold.get("until_epoch") is not None:
+            detail += f", ends {time.strftime('%H:%M', time.localtime(float(hold['until_epoch'])))}"
+        lines.append(f"limited: {host} {slots}" + (f" of {full}" if full is not None else "") + f" ({detail})")
+    return lines
+
 def print_status_details(
     summary: dict[str, Any],
     *,
@@ -5317,6 +5363,9 @@ def print_status_details(
     indent: str = "",
 ) -> None:
     show_empty = False
+    if run_current(summary):
+        for line in run_limit_lines(summary):
+            print(f"{indent}{line}")
     if show_done:
         print_status_group("done", summary["groups"]["done"], color_enabled=color_enabled, show_empty=show_empty, indent=indent)
     active_rows = [row for row in summary["active"] if row.get("state") != "stale"]

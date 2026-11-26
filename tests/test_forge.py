@@ -9030,6 +9030,7 @@ console.log(JSON.stringify(orderDashboardRuns([
             def slots() -> list[int]:
                 return [r["slots"] for r in forge.resolve_worker_records(records, timed, quiet=True)]
             self.assertEqual([10], slots())
+            self.addCleanup(holds.clear_hold, "pwa-mbp")
             holds.set_hold("pwa-mbp", "50%", reason="lichess", seconds=None)
             self.assertEqual([5], slots())
             holds.set_hold("pwa-mbp", "0", reason="lichess", seconds=None)
@@ -9083,6 +9084,28 @@ console.log(JSON.stringify(orderDashboardRuns([
             args = forge.build_parser().parse_args(["worker", "set", "pwa-mbp:0", "--reason", "lichess", "--for", "3h"])
             self.assertEqual(["worker", "set", "pwa-mbp:0", "--reason", "lichess", "--for", "3h"],
                              forge.worker_control_command_args("set", args)[:7])
+
+    def test_status_shows_host_limits_affecting_a_run(self) -> None:
+        from forge_lib import holds, status
+
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, {"FORGE_RUNS_DIR": tmp}):
+            run_dir = Path(tmp) / "sprt-x"
+            run_dir.mkdir()
+            task = {"timing": "timed", "threads": 1}
+            hardware = {"threads": 32, "cores": 16, "perf_cores": 16, "memory_mb": 65536}
+            forge.write_json(run_dir / "workers.json", {"schema": "forge.workers.v1", "workers": [
+                {"host": "pwa-wrk", "slots": 4, "utilization": "100%", "capacity": {"hardware": hardware, "task": task}},
+                {"host": "pwa-rce", "slots": 8, "utilization": "100%", "capacity": {"hardware": {"threads": 8, "cores": 8, "memory_mb": 32768}, "task": task}},
+            ]})
+            summary = {"manifest": str(run_dir / "manifest.json")}
+            self.assertEqual([], status.run_limit_lines(summary))
+            holds.set_hold("pwa-wrk", "25%", reason="SPSA on pwa-wrk", seconds=3600)
+            holds.set_hold("pwa-rce", "max", reason=None, seconds=None)
+            self.addCleanup(holds.clear_hold, "pwa-wrk")
+            self.addCleanup(holds.clear_hold, "pwa-rce")
+            lines = status.run_limit_lines(summary)
+            self.assertEqual(1, len(lines))
+            self.assertTrue(lines[0].startswith("limited: pwa-wrk 4 of 16 (host limit 25%: SPSA on pwa-wrk, ends "), lines[0])
 
     def test_worker_set_never_writes_workers_json(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
