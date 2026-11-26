@@ -1818,10 +1818,15 @@ _HTML = r"""<!DOCTYPE html>
 
     function renderUnassignedWorkers(workers) {
       return (workers || []).map(worker => {
-        const utilization = String(worker.utilization || '100%');
         const profile = worker.profile ? ` profile=${worker.profile}` : '';
-        return `<div class="group-row" onclick="selectElementText(this)">${esc(worker.host || '?')} [utilization ${esc(utilization)}]${esc(profile)}</div>`;
+        return `<div class="group-row" onclick="selectElementText(this)">${esc(worker.host || '?')}${esc(profile)}</div>`;
       }).join('');
+    }
+
+    function renderLimits(limits) {
+      return (limits || []).map(text =>
+        `<div class="group-row" onclick="selectElementText(this)">${esc(text)}</div>`
+      ).join('');
     }
 
     function commandDisplayText(command) {
@@ -2032,6 +2037,13 @@ _HTML = r"""<!DOCTYPE html>
         ));
       }
 
+      if ((r.limits || []).length > 0) {
+        sections.push(makeSection(r.run, 'limits',
+          `limited: <b>${r.limits.length}</b>`, 'yel',
+          renderLimits(r.limits), true
+        ));
+      }
+
       if (unassigned.count > 0) {
         sections.push(makeSection(r.run, 'unassigned',
           `unassigned workers: <b>${unassigned.count}</b>`, 'dim',
@@ -2187,6 +2199,10 @@ _HTML = r"""<!DOCTYPE html>
       const collapsedFailures = Array.isArray(statusData.collapsed_failures)
         ? statusData.collapsed_failures.map(String).filter(Boolean)
         : [];
+      const hostLimits = Array.isArray(statusData.host_limits) ? statusData.host_limits.map(String) : [];
+      if (hostLimits.length > 0) {
+        parts.unshift(`<div class="empty" style="color:var(--yel)">host limits: ${hostLimits.map(text => esc(text)).join(' · ')}</div>`);
+      }
       if (collapsedFailures.length > 0) {
         const n = collapsedFailures.length;
         const failedRuns = collapsedFailures.map(run =>
@@ -3116,6 +3132,7 @@ def _empty_status_payload(*, loading: bool, error: str | None) -> dict[str, Any]
 
 _WEB_API_RUN_FIELDS = {
     "commands",
+    "limits",
     "comment",
     "completed_at",
     "created_at",

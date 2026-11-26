@@ -33,6 +33,11 @@ PROGRESS_GRAPH_SERIES_OPTION_KEYS = {
 }
 
 
+def host_limit_texts() -> list[str]:
+    from .holds import active_holds, describe_hold
+
+    return [describe_hold(host, hold) for host, hold in sorted(active_holds().items())]
+
 def print_holds() -> None:
     from .holds import active_holds, describe_hold
 
@@ -2269,10 +2274,19 @@ def print_run_status(
             summary for summary in filtered
             if collapse_inactive_failures and run_failed(summary) and run_active_count(summary) == 0
         ]
+        runs_payload = []
+        for item in filtered:
+            run_payload = run_status_payload(item)
+            if run_current(item):
+                limits = run_limit_lines(item)
+                if limits:
+                    run_payload["limits"] = [line.removeprefix("limited: ") for line in limits]
+            runs_payload.append(run_payload)
         payload = {
-            "runs": [run_status_payload(item) for item in filtered],
+            "runs": runs_payload,
             "collapsed_failures": [str(item["run"]) for item in collapsed_failures],
             "collapsed_failures_count": len(collapsed_failures),
+            "host_limits": host_limit_texts(),
         }
         print(json.dumps(payload, sort_keys=True))
         return 0 if all(not run_failed(item) for item in filtered) else 1
