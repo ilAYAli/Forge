@@ -113,10 +113,10 @@ def sprt_score_report(
     predicate = " AND ".join(where)
 
     if view == "ranking":
-        columns = ["rank", "candidate_net", "elo", "ci", "engine", "reference_engine", "games", "date"]
+        columns = ["rank", "elo", "candidate", "candidate_net", "reference", "reference_net", "games", "date"]
         query = f"""
             SELECT ROW_NUMBER() OVER (ORDER BY elo DESC) AS rank,
-                   candidate_net, elo, ci, engine, reference_engine, games, date
+                   elo, engine AS candidate, candidate_net, reference_engine AS reference, reference_net, games, date
             FROM (
                 SELECT *, ROW_NUMBER() OVER (
                     -- One row per candidate (engine + net) and reference engine.
@@ -131,9 +131,10 @@ def sprt_score_report(
             LIMIT ?
         """
     else:
-        columns = ["date", "candidate_net", "reference_net", "elo", "ci", "llr", "engine", "reference_engine", "games", "run"]
+        columns = ["date", "elo", "ci", "llr", "candidate", "candidate_net", "reference", "reference_net", "games", "run"]
         query = f"""
-            SELECT date, candidate_net, reference_net, elo, ci, llr, engine, reference_engine, games, run
+            SELECT date, elo, ci, llr, engine AS candidate, candidate_net, reference_engine AS reference,
+                   reference_net, games, run
             FROM sprt
             WHERE {predicate}
             ORDER BY date DESC, id DESC

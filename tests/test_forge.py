@@ -308,10 +308,12 @@ class ForgeTests(unittest.TestCase):
             connection.close()
             ranked = forge.sprt_score_report(reference_net=".*", min_games=0, db_path=database)
             self.assertEqual([("enyo-a.nn", "engine-b"), ("enyo-a.nn", "engine-a")],
-                             [(row["candidate_net"], row["engine"]) for row in ranked["rows"]])
+                             [(row["candidate_net"], row["candidate"]) for row in ranked["rows"]])
+            self.assertEqual(["rank", "elo", "candidate", "candidate_net", "reference", "reference_net", "games", "date"],
+                             ranked["columns"])
             payload = forge.sprt_score_report(reference_net=".*", min_games=0, db_path=database)
-            self.assertIn("reference_engine", payload["columns"])
-            self.assertEqual("stockfish", payload["rows"][0]["reference_engine"])
+            self.assertIn("reference", payload["columns"])
+            self.assertEqual("stockfish", payload["rows"][0]["reference"])
             self.assertEqual("stockfish", payload["filters"]["reference_engine"])
 
     def test_sprt_score_report_cli_and_web_share_backend(self) -> None:
