@@ -2373,7 +2373,6 @@ _SPRT_REPORT_HTML = r"""<!DOCTYPE html>
       <label>candidate net<input id="candidate" value="*"></label>
       <label>reference<input id="reference-engine" value="__FORGE_SPRT_DEFAULT_REFERENCE_ENGINE__"></label>
       <label>reference net regexp<input id="reference" placeholder="nn-*.nnue" value="__FORGE_SPRT_DEFAULT_REFERENCE_NET__"></label>
-      <button type="submit">apply</button>
     </form>
     <div class="table-wrap"><table><thead></thead><tbody></tbody></table></div>
   </main>
@@ -2433,6 +2432,10 @@ _SPRT_REPORT_HTML = r"""<!DOCTYPE html>
       } catch(error) { document.querySelector('#state').textContent=error.message; }
     }
     document.querySelector('#filters').onsubmit=event=>{event.preventDefault();load();};
+    let typingTimer=null;
+    document.querySelectorAll('#filters input').forEach(input=>input.oninput=()=>{
+      clearTimeout(typingTimer); typingTimer=setTimeout(load,300);
+    });
     document.querySelector('#show-runs').onchange=()=>{history.replaceState(null,'',`?${params()}`); render();};
     const initial=new URLSearchParams(location.search);
     for (const [key,id] of [['reference_net','reference'],['candidate_net','candidate'],['engine','engine'],['reference_engine','reference-engine']])
