@@ -56,6 +56,8 @@ def cmd_status(args: argparse.Namespace) -> int:
                 include_completed_progress=include_completed_progress,
             )
             if any(run_failed(summary) for summary in summaries):
+                if not args.json:
+                    print_holds()
                 return print_run_status(
                     summaries,
                     color_enabled=color_enabled,
@@ -74,6 +76,8 @@ def cmd_status(args: argparse.Namespace) -> int:
                 include_completed_progress=include_completed_progress,
             )
             if any(run_current(summary) for summary in summaries):
+                if not args.json:
+                    print_holds()
                 return print_run_status(
                     summaries,
                     color_enabled=color_enabled,
