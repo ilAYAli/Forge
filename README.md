@@ -191,11 +191,14 @@ overrides `runs/coordinator`.
 ## Reports
 
 Templates may declare reports alongside their run configuration. The SPRT
-template provides ranking and run-history views backed by `logs/sprt.db`:
+template provides a ranking backed by `logs/sprt.db`: the latest result per
+candidate (engine and net) and reference engine, by default against
+`stockfish` with reference net `nn-1a298aa575a0.nnue`:
 
 ```sh
 forge report sprt score
-forge report sprt score --view runs --min-games 0
+forge report sprt score --runs --min-games 0          # add each result's run name
+forge report sprt score --reference-engine '*'
 forge report sprt score --reference-net reference.nn --candidate-net 'enyo-*'
 # Reference net filters accept regexes or shell-style '*' wildcards.
 forge report sprt score --reference-net 'nn-*.nnue' --engine '*'

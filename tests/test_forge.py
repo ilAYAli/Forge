@@ -295,12 +295,15 @@ class ForgeTests(unittest.TestCase):
             connection.close()
 
             def candidates(**kwargs) -> list[str]:
-                payload = forge.sprt_score_report(view="runs", reference_net=".*", min_games=0, limit=20, db_path=database, **kwargs)
+                payload = forge.sprt_score_report(reference_net=".*", min_games=0, limit=20, db_path=database, **kwargs)
                 return [row["candidate_net"] for row in payload["rows"]]
 
-            self.assertEqual(["enyo-a.nn", "enyo-a.nn"], candidates())
+            self.assertEqual(["enyo-a.nn"], candidates())
             self.assertEqual(["enyo-b.nn"], candidates(reference_engine="enyo_*"))
-            self.assertEqual(["enyo-c.nn", "enyo-b.nn", "enyo-a.nn", "enyo-a.nn"], candidates(reference_engine="*"))
+            self.assertEqual(["enyo-c.nn", "enyo-a.nn", "enyo-b.nn"], candidates(reference_engine="*"))
+            with_runs = forge.sprt_score_report(reference_net=".*", min_games=0, show_run=True, db_path=database)
+            self.assertEqual("run", with_runs["columns"][-1])
+            self.assertEqual("run-a-short", with_runs["rows"][0]["run"])
             # Gauges of different engines with the same net are separate candidates.
             connection = sqlite3.connect(database)
             connection.execute("UPDATE sprt SET engine = 'engine-b' WHERE id = 1")
@@ -343,7 +346,8 @@ class ForgeTests(unittest.TestCase):
             self.assertIn('id="reference-engine" value="stockfish"', web._SPRT_REPORT_HTML)
             self.assertIn('id="candidate" value="*"', web._SPRT_REPORT_HTML)
             self.assertIn('id="engine" value="*"', web._SPRT_REPORT_HTML)
-            self.assertIn('<button data-view="runs">history</button>', web._SPRT_REPORT_HTML)
+            self.assertNotIn('data-view="runs"', web._SPRT_REPORT_HTML)
+            self.assertIn('id="show-runs" type="checkbox"', web._SPRT_REPORT_HTML)
             self.assertIn("/api/reports/sprt/score", web._SPRT_REPORT_HTML)
             self.assertIn("th.num,td.num { text-align:right", web._SPRT_REPORT_HTML)
             self.assertIn("table { width:max-content", web._SPRT_REPORT_HTML)

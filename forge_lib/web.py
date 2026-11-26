@@ -2345,6 +2345,7 @@ _SPRT_REPORT_HTML = r"""<!DOCTYPE html>
     form { display:flex; align-items:end; gap:9px; flex-wrap:wrap; padding:10px;
       border:1px solid var(--border); border-radius:6px; background:var(--bg2); }
     label { display:grid; gap:3px; color:var(--dim); font-size:11px; }
+    label.check { display:flex; align-items:center; gap:5px; align-self:end; padding-bottom:6px; }
     input,button { font:12px var(--font); color:var(--text); background:var(--bg3);
       border:1px solid var(--border); border-radius:4px; padding:5px 7px; }
     input { width:190px; } input.small { width:85px; }
@@ -2373,23 +2374,24 @@ _SPRT_REPORT_HTML = r"""<!DOCTYPE html>
       <label>reference engine<input id="reference-engine" value="__FORGE_SPRT_DEFAULT_REFERENCE_ENGINE__"></label>
       <label>min games<input id="min-games" class="small" type="number" min="0" value="1500"></label>
       <label>limit<input id="limit" class="small" type="number" min="1" max="1000" value="20"></label>
+      <label class="check"><input id="show-runs" type="checkbox">run names</label>
       <button type="submit">apply</button>
     </form>
-    <div class="tabs"><button data-view="ranking" class="active">ranking</button><button data-view="runs">history</button></div>
     <div class="table-wrap"><table><thead></thead><tbody></tbody></table></div>
   </main>
   <script>
-    const state = {view:'ranking', payload:null, sort:null, desc:false};
+    const state = {payload:null, sort:null, desc:false};
     const esc = value => String(value ?? '—').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
     const label = name => String(name).replaceAll('_',' ');
     function params() {
-      const p = new URLSearchParams({view:state.view,
+      const p = new URLSearchParams({
         reference_net:document.querySelector('#reference').value,
         candidate_net:document.querySelector('#candidate').value,
         engine:document.querySelector('#engine').value,
         reference_engine:document.querySelector('#reference-engine').value,
         min_games:document.querySelector('#min-games').value,
         limit:document.querySelector('#limit').value});
+      if (document.querySelector('#show-runs').checked) p.set('runs','1');
       return p;
     }
     function valueText(column,value) {
@@ -2399,7 +2401,9 @@ _SPRT_REPORT_HTML = r"""<!DOCTYPE html>
       return String(value);
     }
     function render() {
-      const payload=state.payload, columns=payload?.columns||[];
+      const payload=state.payload;
+      const columns=[...(payload?.columns||[])];
+      if (document.querySelector('#show-runs').checked && !columns.includes('run')) columns.push('run');
       let rows=[...(payload?.rows||[])];
       if (state.sort) rows.sort((a,b) => {
         const x=a[state.sort], y=b[state.sort];
@@ -2432,15 +2436,11 @@ _SPRT_REPORT_HTML = r"""<!DOCTYPE html>
       } catch(error) { document.querySelector('#state').textContent=error.message; }
     }
     document.querySelector('#filters').onsubmit=event=>{event.preventDefault();load();};
-    document.querySelectorAll('[data-view]').forEach(button=>button.onclick=()=>{
-      state.view=button.dataset.view;
-      document.querySelectorAll('[data-view]').forEach(item=>item.classList.toggle('active',item===button)); load();
-    });
+    document.querySelector('#show-runs').onchange=()=>{history.replaceState(null,'',`?${params()}`); render();};
     const initial=new URLSearchParams(location.search);
     for (const [key,id] of [['reference_net','reference'],['candidate_net','candidate'],['engine','engine'],['reference_engine','reference-engine'],['min_games','min-games'],['limit','limit']])
       if(initial.has(key)) document.querySelector(`#${id}`).value=initial.get(key);
-    if(['ranking','runs'].includes(initial.get('view'))) state.view=initial.get('view');
-    document.querySelectorAll('[data-view]').forEach(item=>item.classList.toggle('active',item.dataset.view===state.view));
+    document.querySelector('#show-runs').checked=initial.get('runs')==='1';
     load();
   </script>
 </body>
@@ -3327,7 +3327,6 @@ def _api_sprt_score(query: str) -> bytes:
         return str(items[-1]) if items else default
 
     payload = sprt_score_report(
-        view=value("view", "ranking"),
         reference_net=value("reference_net", SPRT_DEFAULT_REFERENCE_NET),
         candidate_net=value("candidate_net", "*"),
         engine=value("engine", SPRT_DEFAULT_ENGINE_FILTER),

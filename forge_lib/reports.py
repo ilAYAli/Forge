@@ -12,7 +12,6 @@ from typing import Any
 from .status import SPRT_DB_PATH
 
 
-SPRT_REPORT_VIEWS = ("ranking", "runs")
 SPRT_DEFAULT_REFERENCE_NET = "nn-1a298aa575a0.nnue"
 SPRT_DEFAULT_ENGINE_FILTER = "*"
 SPRT_DEFAULT_REFERENCE_ENGINE = "stockfish"
@@ -74,17 +73,15 @@ def _reference_net_matches(
 
 def sprt_score_report(
     *,
-    view: str = "ranking",
     reference_net: str = SPRT_DEFAULT_REFERENCE_NET,
     candidate_net: str = "*",
     engine: str = SPRT_DEFAULT_ENGINE_FILTER,
     reference_engine: str = SPRT_DEFAULT_REFERENCE_ENGINE,
     min_games: int = 1500,
     limit: int = 20,
+    show_run: bool = False,
     db_path: Path | None = None,
 ) -> dict[str, Any]:
-    if view not in SPRT_REPORT_VIEWS:
-        raise ValueError(f"unknown SPRT score view: {view}")
     if min_games < 0:
         raise ValueError("min_games must be non-negative")
     if limit < 1 or limit > 1000:
@@ -112,34 +109,26 @@ def sprt_score_report(
         params.append(min_games)
     predicate = " AND ".join(where)
 
-    if view == "ranking":
-        columns = ["rank", "elo", "candidate", "candidate_net", "reference", "reference_net", "games", "date"]
-        query = f"""
-            SELECT ROW_NUMBER() OVER (ORDER BY elo DESC) AS rank,
-                   elo, engine AS candidate, candidate_net, reference_engine AS reference, reference_net, games, date
-            FROM (
-                SELECT *, ROW_NUMBER() OVER (
-                    -- One row per candidate (engine + net) and reference engine.
-                    PARTITION BY engine, candidate_net, reference_engine
-                    ORDER BY date DESC, id DESC
-                ) AS candidate_rank
-                FROM sprt
-                WHERE {predicate}
-            )
-            WHERE candidate_rank = 1
-            ORDER BY elo DESC
-            LIMIT ?
-        """
-    else:
-        columns = ["date", "elo", "ci", "llr", "candidate", "candidate_net", "reference", "reference_net", "games", "run"]
-        query = f"""
-            SELECT date, elo, ci, llr, engine AS candidate, candidate_net, reference_engine AS reference,
-                   reference_net, games, run
+    columns = ["rank", "elo", "candidate", "candidate_net", "reference", "reference_net", "games", "date"]
+    if show_run:
+        columns.append("run")
+    # The latest result per candidate (engine + net) and reference engine.
+    query = f"""
+        SELECT ROW_NUMBER() OVER (ORDER BY elo DESC) AS rank,
+               elo, engine AS candidate, candidate_net, reference_engine AS reference, reference_net,
+               games, date, run
+        FROM (
+            SELECT *, ROW_NUMBER() OVER (
+                PARTITION BY engine, candidate_net, reference_engine
+                ORDER BY date DESC, id DESC
+            ) AS candidate_rank
             FROM sprt
             WHERE {predicate}
-            ORDER BY date DESC, id DESC
-            LIMIT ?
-        """
+        )
+        WHERE candidate_rank = 1
+        ORDER BY elo DESC
+        LIMIT ?
+    """
     params.append(limit)
 
     connection = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
@@ -156,7 +145,6 @@ def sprt_score_report(
     return {
         "template": "sprt",
         "report": "score",
-        "view": view,
         "columns": columns,
         "rows": rows,
         "filters": {
@@ -195,7 +183,7 @@ def cmd_report(args: argparse.Namespace) -> int:
     if args.template != "sprt" or args.report != "score":
         raise SystemExit(f"unknown report: {args.template} {args.report}")
     payload = sprt_score_report(
-        view=args.view,
+        show_run=bool(args.runs),
         reference_net=args.reference_net,
         candidate_net=args.candidate_net,
         engine=args.engine or "",
