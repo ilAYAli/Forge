@@ -10,7 +10,12 @@ from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
 from .core import *
-from .reports import SPRT_DEFAULT_ENGINE_FILTER, SPRT_DEFAULT_REFERENCE_NET, sprt_score_report
+from .reports import (
+    SPRT_DEFAULT_ENGINE_FILTER,
+    SPRT_DEFAULT_REFERENCE_ENGINE,
+    SPRT_DEFAULT_REFERENCE_NET,
+    sprt_score_report,
+)
 from .status import PROGRESS_GRAPH_VERSION, configured_coordinator_runs, format_status_values, parse_timestamp_epoch
 from .tasks import parse_coordinator, shell_join
 
@@ -2365,6 +2370,7 @@ _SPRT_REPORT_HTML = r"""<!DOCTYPE html>
       <label>reference net regexp<input id="reference" placeholder="nn-*.nnue" value="__FORGE_SPRT_DEFAULT_REFERENCE_NET__"></label>
       <label>candidate<input id="candidate" value="*"></label>
       <label>engine<input id="engine" value="__FORGE_SPRT_DEFAULT_ENGINE_FILTER__"></label>
+      <label>reference engine<input id="reference-engine" value="__FORGE_SPRT_DEFAULT_REFERENCE_ENGINE__"></label>
       <label>min games<input id="min-games" class="small" type="number" min="0" value="1500"></label>
       <label>limit<input id="limit" class="small" type="number" min="1" max="1000" value="20"></label>
       <button type="submit">apply</button>
@@ -2381,6 +2387,7 @@ _SPRT_REPORT_HTML = r"""<!DOCTYPE html>
         reference_net:document.querySelector('#reference').value,
         candidate_net:document.querySelector('#candidate').value,
         engine:document.querySelector('#engine').value,
+        reference_engine:document.querySelector('#reference-engine').value,
         min_games:document.querySelector('#min-games').value,
         limit:document.querySelector('#limit').value});
       return p;
@@ -2430,7 +2437,7 @@ _SPRT_REPORT_HTML = r"""<!DOCTYPE html>
       document.querySelectorAll('[data-view]').forEach(item=>item.classList.toggle('active',item===button)); load();
     });
     const initial=new URLSearchParams(location.search);
-    for (const [key,id] of [['reference_net','reference'],['candidate_net','candidate'],['engine','engine'],['min_games','min-games'],['limit','limit']])
+    for (const [key,id] of [['reference_net','reference'],['candidate_net','candidate'],['engine','engine'],['reference_engine','reference-engine'],['min_games','min-games'],['limit','limit']])
       if(initial.has(key)) document.querySelector(`#${id}`).value=initial.get(key);
     if(['ranking','runs'].includes(initial.get('view'))) state.view=initial.get('view');
     document.querySelectorAll('[data-view]').forEach(item=>item.classList.toggle('active',item.dataset.view===state.view));
@@ -2441,7 +2448,9 @@ _SPRT_REPORT_HTML = r"""<!DOCTYPE html>
 
 _SPRT_REPORT_HTML = _SPRT_REPORT_HTML.replace(
     "__FORGE_SPRT_DEFAULT_REFERENCE_NET__", SPRT_DEFAULT_REFERENCE_NET,
-).replace("__FORGE_SPRT_DEFAULT_ENGINE_FILTER__", SPRT_DEFAULT_ENGINE_FILTER)
+).replace("__FORGE_SPRT_DEFAULT_ENGINE_FILTER__", SPRT_DEFAULT_ENGINE_FILTER).replace(
+    "__FORGE_SPRT_DEFAULT_REFERENCE_ENGINE__", SPRT_DEFAULT_REFERENCE_ENGINE,
+)
 
 _SPRT_REPORT_HTML_BYTES = _SPRT_REPORT_HTML.encode()
 
@@ -3322,6 +3331,7 @@ def _api_sprt_score(query: str) -> bytes:
         reference_net=value("reference_net", SPRT_DEFAULT_REFERENCE_NET),
         candidate_net=value("candidate_net", "*"),
         engine=value("engine", SPRT_DEFAULT_ENGINE_FILTER),
+        reference_engine=value("reference_engine", SPRT_DEFAULT_REFERENCE_ENGINE),
         min_games=int(value("min_games", "1500")),
         limit=int(value("limit", "20")),
     )

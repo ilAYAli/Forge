@@ -430,6 +430,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--engine", default=SPRT_DEFAULT_ENGINE_FILTER,
         help="Engine basename or shell wildcard pattern; '*' selects all engines.",
     )
+    report.add_argument(
+        "--reference-engine", default=SPRT_DEFAULT_REFERENCE_ENGINE,
+        help="Reference engine basename or shell wildcard pattern; '*' selects all reference engines.",
+    )
     report.add_argument("--min-games", type=int, default=1500)
     report.add_argument("--limit", type=int, default=20)
     report.add_argument("--json", action="store_true")

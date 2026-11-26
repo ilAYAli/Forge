@@ -214,15 +214,16 @@ class ForgeTests(unittest.TestCase):
         connection = sqlite3.connect(path)
         connection.execute(
             "CREATE TABLE sprt (id INTEGER PRIMARY KEY, date TEXT, candidate_net TEXT, "
-            "reference_net TEXT, elo REAL, ci REAL, llr REAL, engine TEXT, games INTEGER, run TEXT)"
+            "reference_net TEXT, elo REAL, ci REAL, llr REAL, engine TEXT, games INTEGER, run TEXT, "
+            "reference_engine TEXT)"
         )
         connection.executemany(
-            "INSERT INTO sprt VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO sprt VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             [
-                (1, "2026-08-10", "enyo-a.nn", "ref.nn", 10.0, 2.0, 1.0, "engine-a", 1500, "run-a-short"),
-                (2, "2026-08-09", "enyo-a.nn", "ref.nn", 5.0, 1.0, 2.0, "engine-a", 4000, "run-a-long"),
-                (3, "2026-08-11", "enyo-b.nn", "ref.nn", 8.0, 1.5, 3.0, "engine-a", 4000, "run-b"),
-                (4, "2026-08-12", "enyo-c.nn", "other.nn", 20.0, 1.0, 4.0, "engine-a", 4000, "run-c"),
+                (1, "2026-08-10", "enyo-a.nn", "ref.nn", 10.0, 2.0, 1.0, "engine-a", 1500, "run-a-short", "stockfish"),
+                (2, "2026-08-09", "enyo-a.nn", "ref.nn", 5.0, 1.0, 2.0, "engine-a", 4000, "run-a-long", "stockfish"),
+                (3, "2026-08-11", "enyo-b.nn", "ref.nn", 8.0, 1.5, 3.0, "engine-a", 4000, "run-b", "stockfish"),
+                (4, "2026-08-12", "enyo-c.nn", "other.nn", 20.0, 1.0, 4.0, "engine-a", 4000, "run-c", "stockfish"),
             ],
         )
         connection.commit()
@@ -283,6 +284,28 @@ class ForgeTests(unittest.TestCase):
             self.assertEqual("*", all_engines["filters"]["candidate_net"])
             self.assertEqual("*", all_engines["filters"]["engine"])
 
+    def test_sprt_score_report_filters_by_reference_engine(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            database = Path(tmp) / "sprt.db"
+            self.make_sprt_report_db(database)
+            connection = sqlite3.connect(database)
+            connection.execute("UPDATE sprt SET reference_engine = 'enyo_40e0d7e' WHERE id = 3")
+            connection.execute("UPDATE sprt SET reference_engine = NULL WHERE id = 4")
+            connection.commit()
+            connection.close()
+
+            def candidates(**kwargs) -> list[str]:
+                payload = forge.sprt_score_report(view="runs", min_games=0, limit=20, db_path=database, **kwargs)
+                return [row["candidate_net"] for row in payload["rows"]]
+
+            self.assertEqual(["enyo-a.nn", "enyo-a.nn"], candidates())
+            self.assertEqual(["enyo-b.nn"], candidates(reference_engine="enyo_*"))
+            self.assertEqual(["enyo-c.nn", "enyo-b.nn", "enyo-a.nn", "enyo-a.nn"], candidates(reference_engine="*"))
+            payload = forge.sprt_score_report(min_games=0, db_path=database)
+            self.assertIn("reference_engine", payload["columns"])
+            self.assertEqual("stockfish", payload["rows"][0]["reference_engine"])
+            self.assertEqual("stockfish", payload["filters"]["reference_engine"])
+
     def test_sprt_score_report_cli_and_web_share_backend(self) -> None:
         import forge_lib.web as web
 
@@ -306,7 +329,8 @@ class ForgeTests(unittest.TestCase):
             self.assertIn("String(r.kind || '').toLowerCase() === 'sprt'", web._HTML)
             self.assertIn('<a class="top-tab active" href="/">runs</a>', web._HTML)
             self.assertIn('<a class="top-tab active" href="/reports/sprt">SPRT scores</a>', web._SPRT_REPORT_HTML)
-            self.assertIn('id="reference" placeholder="nn-*.nnue" value="nn-1a298aa575a0.nnue"', web._SPRT_REPORT_HTML)
+            self.assertIn('id="reference" placeholder="nn-*.nnue" value=".*"', web._SPRT_REPORT_HTML)
+            self.assertIn('id="reference-engine" value="stockfish"', web._SPRT_REPORT_HTML)
             self.assertIn('id="candidate" value="*"', web._SPRT_REPORT_HTML)
             self.assertIn('id="engine" value="*"', web._SPRT_REPORT_HTML)
             self.assertIn('<button data-view="runs">history</button>', web._SPRT_REPORT_HTML)

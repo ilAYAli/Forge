@@ -13,8 +13,9 @@ from .status import SPRT_DB_PATH
 
 
 SPRT_REPORT_VIEWS = ("ranking", "runs")
-SPRT_DEFAULT_REFERENCE_NET = "nn-1a298aa575a0.nnue"
+SPRT_DEFAULT_REFERENCE_NET = ".*"
 SPRT_DEFAULT_ENGINE_FILTER = "*"
+SPRT_DEFAULT_REFERENCE_ENGINE = "stockfish"
 
 
 def sprt_report_db_path() -> Path:
@@ -77,6 +78,7 @@ def sprt_score_report(
     reference_net: str = SPRT_DEFAULT_REFERENCE_NET,
     candidate_net: str = "*",
     engine: str = SPRT_DEFAULT_ENGINE_FILTER,
+    reference_engine: str = SPRT_DEFAULT_REFERENCE_ENGINE,
     min_games: int = 1500,
     limit: int = 20,
     db_path: Path | None = None,
@@ -98,16 +100,23 @@ def sprt_score_report(
     engine_filter_value, engine_like = engine_filter(engine)
     where.append("engine LIKE ?")
     params.append(engine_like)
+    reference_engine_value, reference_engine_like = engine_filter(reference_engine)
+    if reference_engine_value == "*":
+        # '*' also selects results recorded before the reference engine was.
+        where.append("(reference_engine LIKE ? OR reference_engine IS NULL)")
+    else:
+        where.append("reference_engine LIKE ?")
+    params.append(reference_engine_like)
     if min_games:
         where.append("games >= ?")
         params.append(min_games)
     predicate = " AND ".join(where)
 
     if view == "ranking":
-        columns = ["rank", "candidate_net", "elo", "ci", "engine", "games", "date"]
+        columns = ["rank", "candidate_net", "elo", "ci", "engine", "reference_engine", "games", "date"]
         query = f"""
             SELECT ROW_NUMBER() OVER (ORDER BY elo DESC) AS rank,
-                   candidate_net, elo, ci, engine, games, date
+                   candidate_net, elo, ci, engine, reference_engine, games, date
             FROM (
                 SELECT *, ROW_NUMBER() OVER (
                     PARTITION BY candidate_net
@@ -121,9 +130,9 @@ def sprt_score_report(
             LIMIT ?
         """
     else:
-        columns = ["date", "candidate_net", "reference_net", "elo", "ci", "llr", "engine", "games", "run"]
+        columns = ["date", "candidate_net", "reference_net", "elo", "ci", "llr", "engine", "reference_engine", "games", "run"]
         query = f"""
-            SELECT date, candidate_net, reference_net, elo, ci, llr, engine, games, run
+            SELECT date, candidate_net, reference_net, elo, ci, llr, engine, reference_engine, games, run
             FROM sprt
             WHERE {predicate}
             ORDER BY date DESC, id DESC
@@ -152,6 +161,7 @@ def sprt_score_report(
             "reference_net": reference_filter,
             "candidate_net": candidate_filter_value,
             "engine": engine_filter_value,
+            "reference_engine": reference_engine_value,
             "min_games": min_games,
             "limit": limit,
         },
@@ -187,6 +197,7 @@ def cmd_report(args: argparse.Namespace) -> int:
         reference_net=args.reference_net,
         candidate_net=args.candidate_net,
         engine=args.engine or "",
+        reference_engine=args.reference_engine or "",
         min_games=args.min_games,
         limit=args.limit,
     )
