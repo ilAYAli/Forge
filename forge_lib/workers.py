@@ -3777,7 +3777,7 @@ def run_host_utilization(workers_path: Path, host: str) -> str | None:
             return str(record.get("utilization") or DEFAULT_UTILIZATION)
     return None
 
-def apply_hold_to_active_run(host: str, *, force: bool, lease_seconds: int, label: str) -> int:
+def apply_hold_to_active_run(host: str, *, force: bool, lease_seconds: int, label: str, add_missing: bool) -> int:
     """Re-resolve a host in the active run so a new or released hold takes effect."""
     try:
         run_name = single_active_local_run_name(lease_seconds=lease_seconds)
@@ -3786,6 +3786,9 @@ def apply_hold_to_active_run(host: str, *, force: bool, lease_seconds: int, labe
         return 0
     _, _, workers_path = materialized_run_paths(run_dir_for_name(run_name), label=run_name)
     utilization = run_host_utilization(workers_path, host)
+    if utilization is None and not add_missing:
+        print(f"{label}: {host} is not in {run_name}")
+        return 0
     if utilization is None:
         # A hold at 0 removed the host from the run, or the run started
         # during the hold: give it back if it is one of the pool's hosts.
@@ -3827,7 +3830,9 @@ def cmd_worker_hold(args: argparse.Namespace) -> int:
         return forwarded
     hold = set_hold(str(args.worker), str(args.limit), reason=args.reason, seconds=seconds)
     print(f"worker hold: {describe_hold(str(args.worker), hold)}", flush=True)
-    return apply_hold_to_active_run(str(args.worker), force=bool(args.force), lease_seconds=args.lease_seconds, label="worker hold")
+    return apply_hold_to_active_run(
+        str(args.worker), force=bool(args.force), lease_seconds=args.lease_seconds, label="worker hold", add_missing=False,
+    )
 
 def cmd_worker_release(args: argparse.Namespace) -> int:
     from .holds import clear_hold
@@ -3839,14 +3844,16 @@ def cmd_worker_release(args: argparse.Namespace) -> int:
         print(f"worker release: {args.worker} has no hold")
         return 0
     print(f"worker release: {args.worker} back to full capacity", flush=True)
-    return apply_hold_to_active_run(str(args.worker), force=False, lease_seconds=args.lease_seconds, label="worker release")
+    return apply_hold_to_active_run(
+        str(args.worker), force=False, lease_seconds=args.lease_seconds, label="worker release", add_missing=True,
+    )
 
 def release_expired_holds(*, lease_seconds: int) -> None:
     from .holds import expire_holds
 
     for host in expire_holds():
         print(f"worker release: {host} hold expired", flush=True)
-        apply_hold_to_active_run(host, force=False, lease_seconds=lease_seconds, label="worker release")
+        apply_hold_to_active_run(host, force=False, lease_seconds=lease_seconds, label="worker release", add_missing=True)
 
 def cmd_worker_set(args: argparse.Namespace) -> int:
     coordinator_runs = configured_coordinator_runs()

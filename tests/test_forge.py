@@ -9072,6 +9072,11 @@ console.log(JSON.stringify(orderDashboardRuns([
                 self.assertEqual(0, release.func(release))
                 self.assertEqual(["worker", "set", "pwa-mbp:100%", "sprt-x", "--no-notify"], run.call_args.args[0][2:])
                 self.assertEqual({}, __import__("forge_lib.holds", fromlist=["x"]).active_holds())
+                # Holding a host that is not in the run must not add it.
+                run.reset_mock()
+                hold = forge.build_parser().parse_args(["worker", "hold", "pwa-mbp", "0"])
+                self.assertEqual(0, hold.func(hold))
+                run.assert_not_called()
 
     def test_worker_set_changes_only_the_run(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
