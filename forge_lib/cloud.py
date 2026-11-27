@@ -679,7 +679,37 @@ def run_is_live(run: str) -> bool:
         return run_dir_for_name(run).exists()
 
 
+def symlinked_inputs(run: str) -> list[Path]:
+    """Targets of a run's symlinked inputs.
+
+    Forge copies a shared-home input link as a link: home workers already
+    hold its target, a new cloud worker does not.
+    """
+    try:
+        manifest = read_json(run_dir_for_name(run) / "manifest.json")
+    except (OSError, ValueError):
+        return []
+    requirements = manifest.get("requirements") if isinstance(manifest, dict) else None
+    inputs = requirements.get("inputs") if isinstance(requirements, dict) else None
+    paths: list[Path] = []
+    for item in inputs if isinstance(inputs, list) else []:
+        raw = item.get("path") if isinstance(item, dict) else None
+        if not raw:
+            continue
+        link = expand_path(str(raw))
+        if link.is_symlink() and link.resolve().exists():
+            paths.extend([link, link.resolve()])
+    return paths
+
+
+def sync_run_inputs(instance: Instance, run: str) -> None:
+    paths = symlinked_inputs(run)
+    if paths:
+        rsync([str(path) for path in paths], f"{instance.name}:/", "--relative", "--omit-dir-times")
+
+
 def join_run(pool: Pool, instance: Instance, run: str, *, log: Callable[[str], None]) -> bool:
+    sync_run_inputs(instance, run)
     for attempt in range(6):
         result = forge_cli("worker", "set", f"{instance.name}={pool.worker_profile}:max", run, "--no-notify")
         if result.returncode == 0:
@@ -817,9 +847,30 @@ def cloud_requests(workers_arg: str | None, pools: dict[str, Pool]) -> list[tupl
     """
     if workers_arg is not None and not expand_path(workers_arg).exists():
         return split_cloud_entries(workers_arg, pools)[1]
+    if workers_arg is not None:
+        # A resolved workers file (template runs, run snapshots) carries the
+        # requests it was made from.
+        try:
+            carried = read_json(expand_path(workers_arg)).get("cloud")
+        except (OSError, ValueError, AttributeError):
+            carried = None
+        if isinstance(carried, list):
+            return [(str(item["pool"]), None if item.get("cores") is None else int(item["cores"]))
+                    for item in carried if isinstance(item, dict) and str(item.get("pool")) in pools]
     file_pools = pools if workers_arg is None else cloud_pools(expand_path(workers_arg))
     return [(pool.name, pool.cores) for pool in file_pools.values()
             if pool.enabled and pool.cores and pool.name in pools]
+
+
+def carry_cloud_requests(payload: dict[str, Any], workers_arg: str | None) -> dict[str, Any]:
+    """Keep a run's cloud requests in a resolved workers payload written to a file."""
+    try:
+        requests = cloud_requests(workers_arg, cloud_pools())
+    except SystemExit:
+        return payload
+    if not requests:
+        return payload
+    return {**payload, "cloud": [{"pool": pool, "cores": cores} for pool, cores in requests]}
 
 
 def start_cloud_requests(workers_arg: str | None, run: str, *, log: Callable[[str], None]) -> None:

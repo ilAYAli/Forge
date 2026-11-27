@@ -1883,13 +1883,17 @@ def cmd_template_run(args: argparse.Namespace) -> int:
                     or selfplay_workers_payload
                     or sprt_worker_slots_payload(workers_arg, template_resources(template, params))
                 )
-            write_json(workers_path, worker_payload)
+            from .cloud import carry_cloud_requests
+
+            write_json(workers_path, carry_cloud_requests(worker_payload, workers_arg))
             workers_arg = str(workers_path)
         elif generic_workers_payload is not None:
             # Already resolved against this template's task cost; reuse it so
             # hosts are not probed and sized a second time.
+            from .cloud import carry_cloud_requests
+
             workers_path = Path(tmp) / "workers.json"
-            write_json(workers_path, generic_workers_payload)
+            write_json(workers_path, carry_cloud_requests(generic_workers_payload, workers_arg))
             workers_arg = str(workers_path)
         from .workers import cmd_run_job
 

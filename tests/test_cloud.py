@@ -68,6 +68,27 @@ class CloudConfigTests(unittest.TestCase):
         self.write_workers(["pwa-llm", {"host": "aws", "cloud": {}, "cores": 32}])
         self.assertEqual(cloud.cloud_requests(None, cloud.cloud_pools()), [("aws", 32)])
 
+    def test_resolved_workers_file_carries_cloud_requests(self) -> None:
+        self.write_workers(["pwa-llm", {"host": "aws", "cloud": {}, "cores": 16, "enabled": False}])
+        resolved = cloud.carry_cloud_requests({"schema": "forge.workers.v1", "workers": ["pwa-llm"]}, "pwa-llm,aws:16")
+        self.assertEqual(resolved["cloud"], [{"pool": "aws", "cores": 16}])
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "workers.json"
+            path.write_text(json.dumps(resolved))
+            self.assertEqual(cloud.cloud_requests(str(path), cloud.cloud_pools()), [("aws", 16)])
+            self.assertEqual(workers.read_config_workers(path)["workers"], ["pwa-llm"])
+        # Nothing asked for: the payload is unchanged.
+        plain = {"schema": "forge.workers.v1", "workers": ["pwa-llm"]}
+        self.assertEqual(cloud.carry_cloud_requests(plain, "pwa-llm"), plain)
+
+    def test_status_does_not_list_cloud_pools_as_unassigned_hosts(self) -> None:
+        from forge_lib import status
+
+        self.write_workers(["pwa-llm", {"host": "pwa-5090"}, {"host": "aws", "cloud": {}, "cores": 16}])
+        hosts = [row.get("host") for row in status.unassigned_worker_rows([])]
+        self.assertNotIn("aws", hosts)
+        self.assertIn("pwa-5090", hosts)
+
     def test_bare_pool_without_cores_is_an_error(self) -> None:
         with self.assertRaises(SystemExit):
             cloud.parse_cloud_entry("aws", {"aws": cloud.Pool(name="aws")})
@@ -231,6 +252,24 @@ class ScaleTests(unittest.TestCase):
             with mock.patch.object(cloud, "run_dir_for_name", return_value=run_dir):
                 cloud.forget_hosts("r", {"aws-0000aaaa", "aws-0000bbbb"})
             self.assertEqual(json.loads(path.read_text())["workers"], [{"host": "pwa-llm"}])
+
+    def test_symlinked_inputs_bring_their_targets(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "nets").mkdir()
+            target = root / "nets" / "enyo-1.nn"
+            target.write_text("net")
+            (root / "nets" / "candidate.net").symlink_to(target)
+            (root / "book.epd").write_text("book")
+            run_dir = root / "r"
+            run_dir.mkdir()
+            (run_dir / "manifest.json").write_text(json.dumps({"requirements": {"inputs": [
+                {"name": "book", "path": str(root / "book.epd")},
+                {"name": "candidate net", "path": str(root / "nets" / "candidate.net")},
+            ]}}))
+            with mock.patch.object(cloud, "run_dir_for_name", return_value=run_dir):
+                paths = cloud.symlinked_inputs("r")
+            self.assertEqual(paths, [root / "nets" / "candidate.net", target.resolve()])
 
     def test_release_run_never_raises(self) -> None:
         with mock.patch.object(cloud, "cloud_pools", return_value=POOLS), \

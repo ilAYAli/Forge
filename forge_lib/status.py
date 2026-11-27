@@ -3145,7 +3145,7 @@ def unassigned_worker_rows(worker_processes: list[dict[str, Any]]) -> list[dict[
     }
     rows = []
     for worker in configured_workers:
-        if not isinstance(worker, dict):
+        if not isinstance(worker, dict) or isinstance(worker.get("cloud"), dict):
             continue
         host = str(worker.get("host") or "").strip()
         if not host or host in participating_hosts:
