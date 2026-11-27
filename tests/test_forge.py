@@ -7210,6 +7210,75 @@ console.log(JSON.stringify(orderDashboardRuns([
         self.assertIn("  boom", output)
         self.assertEqual("sh: failed on 1/2 host(s):\n  worker-b:\n      boom\n", stderr.getvalue())
 
+    def test_sh_runs_every_host_concurrently_by_default(self) -> None:
+        parser = forge.build_parser()
+        self.assertIsNone(parser.parse_args(["sh", "true"]).jobs)
+        self.assertEqual(3, forge.shell_jobs_limit(None, 3))
+        self.assertEqual(2, forge.shell_jobs_limit(2, 3))
+        jobs = parser.parse_args(["jobs", "last", "--wait"])
+        self.assertEqual("jobs", jobs.subcommand)
+        self.assertEqual("last", jobs.id)
+        self.assertTrue(jobs.wait)
+
+    def test_sh_detach_records_job_and_jobs_polls_it(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runs = Path(tmp) / "runs"
+            home = Path(tmp) / "home"
+            home.mkdir()
+
+            def sh_args(command: str) -> argparse.Namespace:
+                return argparse.Namespace(
+                    command=command,
+                    workers="localhost",
+                    jobs=None,
+                    detach=True,
+                    remote_timeout_seconds=60.0,
+                )
+
+            def jobs_args(**overrides: Any) -> argparse.Namespace:
+                values = {
+                    "id": "last",
+                    "wait": True,
+                    "log": None,
+                    "interval_seconds": 1.0,
+                    "limit": 10,
+                    "remote_timeout_seconds": 60.0,
+                }
+                values.update(overrides)
+                return argparse.Namespace(**values)
+
+            with (
+                self.patch_runs_dir(runs),
+                mock.patch.dict(os.environ, {"HOME": str(home)}),
+                contextlib.redirect_stdout(io.StringIO()) as stdout,
+                contextlib.redirect_stderr(io.StringIO()) as stderr,
+            ):
+                self.assertEqual(0, forge.cmd_sh(sh_args("echo one; printf 'a\\rb\\n'; exit 4")))
+                self.assertEqual(1, forge.cmd_jobs(jobs_args()))
+                self.assertEqual(0, forge.cmd_jobs(jobs_args(log="localhost")))
+                self.assertEqual(0, forge.cmd_jobs(jobs_args(id=None, wait=False)))
+
+            ids = sorted(path.stem for path in (runs / ".sh-jobs").glob("*.json"))
+            self.assertEqual(1, len(ids))
+            job = forge.read_json(runs / ".sh-jobs" / f"{ids[0]}.json")
+            self.assertEqual("forge.sh-job.v1", job["schema"])
+            output = stdout.getvalue()
+            self.assertIn(f"sh: started job {ids[0]} on 1 host(s): localhost", output)
+            self.assertIn("localhost: FAILED rc=4\n  one\n  a\n  b\n", output)
+            self.assertIn(f"job {ids[0]}: 1 failed", output)
+            self.assertIn("1 failed\none\na\nb\n", output)
+            self.assertIn(f"forge jobs {ids[0]} --log localhost", stderr.getvalue())
+
+    def test_sh_job_status_parsing(self) -> None:
+        def done(stdout: str, rc: int = 0) -> subprocess.CompletedProcess[str]:
+            return subprocess.CompletedProcess(["ssh"], rc, stdout=stdout, stderr="")
+
+        self.assertEqual(("ok", 0, ["last"]), forge.parse_sh_job_status(done("done 0\nlast\n")))
+        self.assertEqual(("failed", 2, []), forge.parse_sh_job_status(done("done 2\n")))
+        self.assertEqual(("running", None, ["x"]), forge.parse_sh_job_status(done("running\nx\n")))
+        self.assertEqual("lost", forge.parse_sh_job_status(done("lost\n"))[0])
+        self.assertEqual("unreachable", forge.parse_sh_job_status(done("", 255))[0])
+
     def test_shell_stream_text_uses_crlf_for_tty_output(self) -> None:
         class TtyStream(io.StringIO):
             def isatty(self) -> bool:

@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 # Build Enyo locally on each selected worker, then atomically install it.
-# Usage: scripts/deploy_enyo.sh [<commit>] [--workers hosts] [--candidate|--reference]
+# All hosts build concurrently. --detach returns at once with a job id; poll it
+# with `forge jobs <id>` (or `forge jobs last --wait`).
+# Usage: scripts/deploy_enyo.sh [<commit>] [--workers hosts] [--candidate|--reference] [--detach]
 set -euo pipefail
 
 usage() {
-    echo "Usage: $0 [<commit>] [--workers hosts] [--candidate|--reference]" >&2
+    echo "Usage: $0 [<commit>] [--workers hosts] [--candidate|--reference] [--detach]" >&2
     exit 1
 }
 
@@ -17,20 +19,22 @@ fi
 
 MODE="candidate"
 MODE_SET=0
-WORKERS_SET=0
-WORKER_ARGS=()
+SH_ARGS=()
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --workers)
             [[ $# -ge 2 ]] || usage
-            WORKER_ARGS+=(--workers "$2")
-            WORKERS_SET=1
+            SH_ARGS+=(--workers "$2")
             shift 2
             ;;
         --candidate|--reference)
             [[ "$MODE_SET" -eq 0 ]] || usage
             MODE="${1#--}"
             MODE_SET=1
+            shift
+            ;;
+        --detach)
+            SH_ARGS+=(--detach)
             shift
             ;;
         *) usage ;;
@@ -62,7 +66,4 @@ ln -sfn \"\$destination\" \"\$engines_dir/$MODE\"
 ls -l \"\$engines_dir/$MODE\"
 trap - EXIT"
 
-if [[ "$WORKERS_SET" -eq 1 ]]; then
-    exec forge sh "${WORKER_ARGS[@]}" --remote-timeout-seconds 3600 "$CMD"
-fi
-exec forge sh --remote-timeout-seconds 3600 "$CMD"
+exec forge sh ${SH_ARGS[@]+"${SH_ARGS[@]}"} --remote-timeout-seconds 3600 "$CMD"

@@ -39,6 +39,7 @@ COMMON_COMMANDS = [
     "spsa",
     "sync",
     "sh",
+    "jobs",
     "start",
     "del",
     "stop",
@@ -381,9 +382,40 @@ def build_parser() -> argparse.ArgumentParser:
     )
     shell.add_argument("command", nargs="+", help="Shell command and arguments run on each host.")
     shell.add_argument("--workers", help=WORKERS_ARG_HELP_WITH_DEFAULT)
-    shell.add_argument("--jobs", type=int, default=4, help="Maximum hosts to run concurrently.")
-    shell.add_argument("--remote-timeout-seconds", type=float, default=1800.0, help="Timeout for each host command.")
+    shell.add_argument("--jobs", type=int, default=None, help="Maximum hosts to run concurrently; None means every host.")
+    shell.add_argument(
+        "--detach",
+        action="store_true",
+        help="Start the command in the background on each host and return a job id for forge jobs.",
+    )
+    shell.add_argument(
+        "--remote-timeout-seconds",
+        type=float,
+        default=1800.0,
+        help="Timeout for each host command (with --detach, for starting it).",
+    )
     shell.set_defaults(func=cmd_sh)
+
+    jobs = sub.add_parser(
+        "jobs",
+        help="List or poll detached forge sh jobs.",
+        formatter_class=ForgeHelpFormatter,
+        description=(
+            "List detached forge sh jobs, or show per-host status for one.\n\n"
+            "Examples:\n"
+            "  forge sh --detach \"cd ~/repo && make\"\n"
+            "  forge jobs\n"
+            "  forge jobs last --wait\n"
+            "  forge jobs 20261127-101500-ab12 --log worker-a"
+        ),
+    )
+    jobs.add_argument("id", nargs="?", help="Job id, unique id prefix, or 'last'. Omit to list jobs.")
+    jobs.add_argument("--wait", action="store_true", help="Poll until every host has finished.")
+    jobs.add_argument("--log", metavar="HOST", help="Print the full log from one host.")
+    jobs.add_argument("--interval-seconds", type=float, default=10.0, help="Poll interval for --wait.")
+    jobs.add_argument("--limit", type=int, default=10, help="Jobs to show when listing.")
+    jobs.add_argument("--remote-timeout-seconds", type=float, default=60.0, help="Timeout for each status probe.")
+    jobs.set_defaults(func=cmd_jobs)
 
     sync = sub.add_parser(
         "sync",

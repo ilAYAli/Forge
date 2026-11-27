@@ -114,6 +114,23 @@ command, so `forge "sprt foo bar"` runs that shell command while
 forge sh --workers worker1,worker3,worker2 "hostname; git --version"
 ```
 
+Every host runs concurrently; `--jobs N` caps how many run at once.
+
+For long commands, `--detach` starts the command in the background on each
+host and returns a job id at once. Each host keeps the job's output, pid and
+exit code in `~/.forge/sh/<id>/`, so the job survives the coordinator's SSH
+connection dropping. `--remote-timeout-seconds` then only bounds the launch.
+
+```sh
+forge sh --detach "cd ~/repo && git pull && cmake --build build"
+forge jobs                      # recent detached jobs
+forge jobs last                 # per-host status: running, ok, FAILED rc=N, LOST
+forge jobs last --wait          # poll until every host finishes; rc 1 on any failure
+forge jobs <id> --log worker1   # full output from one host
+```
+
+`scripts/deploy_enyo.sh <commit> --reference --detach` deploys Enyo this way.
+
 ## Start Work
 
 ```sh
