@@ -87,7 +87,7 @@ class Pool:
     engine_repo: str = "~/code/chess/enyo"
     engine_net: str = "~/assets/nets/reference.net"
     llvm_version: int = 21
-    cores: int | None = None
+    cores: int | str | None = None  # an int, "max" (the free quota) or unset
     enabled: bool = False
 
     @property
@@ -129,7 +129,13 @@ def pool_from_record(item: dict[str, Any]) -> Pool:
     if pool.market not in QUOTA_CODES:
         raise SystemExit(f"cloud: {name}: market must be on-demand or spot, got {pool.market!r}")
     if item.get("cores") is not None:
-        pool.cores = int(item["cores"])
+        raw_cores = str(item["cores"]).strip().lower()
+        if raw_cores == "max":
+            pool.cores = "max"
+        elif raw_cores.isdigit():
+            pool.cores = int(raw_cores)
+        else:
+            raise SystemExit(f"cloud: {name}: cores must be a number or \"max\", got {item['cores']!r}")
     pool.enabled = bool(item.get("enabled", True))
     return pool
 
@@ -150,6 +156,11 @@ def cloud_pools(path: Path | None = None) -> dict[str, Pool]:
     return pools
 
 
+def pool_request(pool: Pool) -> int | None:
+    """The cores a bare pool name asks for; None means as many as the quota allows."""
+    return None if pool.cores == "max" else int(pool.cores or 0)
+
+
 def parse_cloud_entry(entry: str, pools: dict[str, Pool]) -> tuple[str, int | None] | None:
     """``aws:64`` -> ("aws", 64); ``aws:max`` -> ("aws", None); ``aws`` -> the pool's
     configured cores; other specs -> None."""
@@ -161,7 +172,7 @@ def parse_cloud_entry(entry: str, pools: dict[str, Pool]) -> tuple[str, int | No
         pool = pools[match["pool"]]
         if pool.cores is None:
             raise SystemExit(f"cloud: {pool.name}: set \"cores\" in workers.json or ask for {pool.name}:N")
-        return pool.name, pool.cores
+        return pool.name, pool_request(pool)
     return match["pool"], None if cores == "max" else int(cores)
 
 
@@ -858,7 +869,7 @@ def cloud_requests(workers_arg: str | None, pools: dict[str, Pool]) -> list[tupl
             return [(str(item["pool"]), None if item.get("cores") is None else int(item["cores"]))
                     for item in carried if isinstance(item, dict) and str(item.get("pool")) in pools]
     file_pools = pools if workers_arg is None else cloud_pools(expand_path(workers_arg))
-    return [(pool.name, pool.cores) for pool in file_pools.values()
+    return [(pool.name, pool_request(pool)) for pool in file_pools.values()
             if pool.enabled and pool.cores and pool.name in pools]
 
 

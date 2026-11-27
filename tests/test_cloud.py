@@ -89,6 +89,21 @@ class CloudConfigTests(unittest.TestCase):
         self.assertNotIn("aws", hosts)
         self.assertIn("pwa-5090", hosts)
 
+    def test_cores_max_asks_for_the_whole_quota(self) -> None:
+        self.write_workers([{"host": "aws", "cloud": {}, "cores": "max", "enabled": False}])
+        pools = cloud.cloud_pools()
+        self.assertEqual(pools["aws"].cores, "max")
+        self.assertEqual(cloud.parse_cloud_entry("aws", pools), ("aws", None))
+        self.assertEqual(cloud.cloud_requests("pwa-llm,aws", pools), [("aws", None)])
+        self.assertEqual(cloud.cloud_requests("aws:16", pools), [("aws", 16)])
+        self.write_workers([{"host": "aws", "cloud": {}, "cores": "max"}])
+        self.assertEqual(cloud.cloud_requests(None, cloud.cloud_pools()), [("aws", None)])
+
+    def test_rejects_invalid_cores(self) -> None:
+        self.write_workers([{"host": "aws", "cloud": {}, "cores": "lots"}])
+        with self.assertRaises(SystemExit):
+            cloud.cloud_pools()
+
     def test_bare_pool_without_cores_is_an_error(self) -> None:
         with self.assertRaises(SystemExit):
             cloud.parse_cloud_entry("aws", {"aws": cloud.Pool(name="aws")})

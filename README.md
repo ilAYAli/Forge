@@ -365,7 +365,9 @@ forge cloud down                            # terminate every cloud worker now
 ```
 
 `N` in `aws:N` is physical cores (one SPRT game each); `aws:max` is whatever the
-account's quota still allows, and a bare `aws` uses the pool's `cores`. The run
+account's quota still allows, and a bare `aws` uses the pool's `cores` (a number,
+or `"max"` for the whole free quota: cost barely depends on the core count, see
+below). The run
 starts on the other workers immediately; each instance joins it when it is
 ready, about two minutes after launch (`runs/<run>/cloud.log`). Forge picks the
 fewest instances that cover `N` (64 cores is one `c7a.16xlarge`, 80 is a
@@ -416,9 +418,12 @@ link points at is therefore built once on a cloud instance with the repo's
 `scripts/deploy.sh`, cached in `~/.cache/forge/cloud/engines/<family>/`, and
 copied to later instances of that family; the first build adds a few minutes.
 
-Costs are per second while an instance runs. As a guide, a 5k-game SPRT at
-10+0.1 is about 30 core-hours: on-demand c7a is roughly 0.05 USD per core-hour
-and spot about a quarter of that.
+Costs are per second while an instance runs, so a run costs its core-hours
+whether they come from 10 cores or 100; only each instance's two-minute start
+and the last shards' tail grow with the core count. As a guide, a 5k-game SPRT
+at 10+0.1 is about 30 core-hours: on-demand c7a is roughly 0.05 USD per
+core-hour (about 1.5 USD, some 15% more on 100 cores than on 10) and spot about
+a quarter of that.
 
 ## Capacity
 
