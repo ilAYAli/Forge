@@ -107,6 +107,11 @@ def sprt_score_report(
     if min_games:
         where.append("games >= ?")
         params.append(min_games)
+    connection = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    # Fixed-depth/node matches measure move quality, not playing strength at
+    # a clock, so they never replace a candidate's ranked result.
+    if "tc" in {row[1] for row in connection.execute("PRAGMA table_info(sprt)")}:
+        where.append("(tc IS NULL OR (tc NOT LIKE 'depth=%' AND tc NOT LIKE 'nodes=%'))")
     predicate = " AND ".join(where)
 
     columns = ["rank", "elo", "candidate", "candidate_net", "reference", "reference_net", "games", "date"]
@@ -131,7 +136,6 @@ def sprt_score_report(
     """
     params.append(limit)
 
-    connection = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
     connection.row_factory = sqlite3.Row
     connection.create_function(
         "REGEXP",

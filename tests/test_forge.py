@@ -243,6 +243,25 @@ class ForgeTests(unittest.TestCase):
             self.assertEqual([10.0, 8.0], [row["elo"] for row in payload["rows"]])
             self.assertEqual([1, 2], [row["rank"] for row in payload["rows"]])
 
+    def test_sprt_score_report_ignores_fixed_limit_results(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            database = Path(tmp) / "sprt.db"
+            self.make_sprt_report_db(database)
+            connection = sqlite3.connect(database)
+            connection.execute("ALTER TABLE sprt ADD COLUMN tc TEXT")
+            connection.execute(
+                "INSERT INTO sprt VALUES (5, '2026-08-20', 'enyo-a.nn', 'ref.nn', 99.0, 1.0, 3.0, "
+                "'engine-a', 4000, 'run-a-depth', 'stockfish', 'depth=8')"
+            )
+            connection.commit()
+            connection.close()
+
+            payload = forge.sprt_score_report(
+                reference_net="ref.nn", candidate_net="enyo-", min_games=1500, limit=20, db_path=database
+            )
+
+            self.assertEqual([10.0, 8.0], [row["elo"] for row in payload["rows"]])
+
     def test_sprt_score_report_accepts_reference_regex_and_shell_wildcards(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             database = Path(tmp) / "sprt.db"
@@ -4869,6 +4888,51 @@ console.log(JSON.stringify(orderDashboardRuns([
         self.assertIn("--candidate-uci Hash=256", command)
         self.assertLess(command.index("--candidate-uci Hash=128"), command.index("--candidate-uci Hash=256"))
         self.assertIn("--reference-uci nnue_file=~/code/chess/enyo/net/reference.nn", command)
+
+    def sprt_command(self, *extra: str) -> str:
+        template_path = ROOT / "templates" / "sprt.template.json"
+        template = forge.load_template(template_path)
+        params = forge.parse_template_parameters(
+            "sprt",
+            template,
+            [
+                "--candidate", "~/assets/engines/enyo_9696dac",
+                "--reference", "~/assets/engines/reference",
+                "--candidate-net", "~/code/chess/enyo/net/candidate.nn",
+                "--reference-net", "~/code/chess/enyo/net/reference.nn",
+                "--games", "50",
+                "--shards", "1",
+                *extra,
+            ],
+        )
+        manifest = forge.expand_template("sprt", template_path, template, params)
+        return manifest["tasks"][0]["command"]
+
+    def test_sprt_template_passes_fixed_depth_and_nodes(self) -> None:
+        clock = self.sprt_command("--tc", "5+0.05")
+        self.assertIn("--tc 5+0.05", clock)
+        self.assertNotIn("--depth", clock)
+        self.assertNotIn("--nodes", clock)
+
+        self.assertIn("--depth 8", self.sprt_command("--depth", "8"))
+        self.assertIn("--nodes 20000", self.sprt_command("--nodes", "20000"))
+
+    def test_sprt_calibration_signature_includes_fixed_limits(self) -> None:
+        template = forge.load_template(ROOT / "templates" / "sprt.template.json")
+        signature = template["chunking"]["signature_parameters"]
+        self.assertIn("depth", signature)
+        self.assertIn("nodes", signature)
+
+    def test_sprt_limit_text_prefers_fixed_limits(self) -> None:
+        def flags(values: dict[str, str]):
+            return values.get
+
+        self.assertEqual("10+0.1", forge.sprt_limit_text(flags({"--tc": "10+0.1"})))
+        self.assertEqual("depth=8", forge.sprt_limit_text(flags({"--tc": "10+0.1", "--depth": "8"})))
+        self.assertEqual(
+            "depth=8 nodes=900",
+            forge.sprt_limit_text(flags({"--depth": "8", "--nodes": "900"})),
+        )
 
     def test_sprt_template_generates_comment_from_net_basenames(self) -> None:
         template_path = ROOT / "templates" / "sprt.template.json"

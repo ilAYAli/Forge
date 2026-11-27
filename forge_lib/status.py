@@ -5983,6 +5983,17 @@ def migrate_sprt_result_columns(conn: sqlite3.Connection) -> None:
         "ON sprt(run) WHERE run IS NOT NULL"
     )
 
+
+def sprt_limit_text(extract_flag: Any) -> str | None:
+    """The search limit a result was played at: fixed depth/nodes, else the clock."""
+    limits = [
+        f"{name}={value}"
+        for name in ("depth", "nodes")
+        if (value := extract_flag(f"--{name}")) not in (None, "", "0")
+    ]
+    return " ".join(limits) or extract_flag("--tc")
+
+
 def record_sprt_completion(payload: dict[str, Any]) -> None:
     """Record a completed SPRT run's aggregate result to SPRT_DB_PATH.
 
@@ -6139,7 +6150,7 @@ def record_sprt_completion(payload: dict[str, Any]) -> None:
                 pentanomial_text,
                 Path(candidate_engine).name if candidate_engine else None,
                 Path(reference_engine).name if reference_engine else None,
-                extract_flag("--tc"),
+                sprt_limit_text(extract_flag),
                 to_int(extract_flag("--threads")),
                 to_int(extract_flag("--concurrency")),
                 to_int(extract_flag("--hash")),

@@ -160,6 +160,16 @@ Paths beneath the coordinator's home are mapped to the corresponding `~/` path
 on each worker. Declared file inputs are content-hashed, transferred on demand,
 and verified.
 
+SPRT games run at `--tc` by default. `--depth N` or `--nodes N` replaces the
+clock with a fixed search limit per move (both together apply both limits), so
+the match measures the quality of the moves each side plays rather than its
+speed:
+
+```sh
+forge sprt --candidate ... --games 2000 --depth 8
+forge sprt --candidate ... --games 2000 --nodes 20000
+```
+
 ## Status
 
 ```sh
@@ -193,7 +203,8 @@ overrides `runs/coordinator`.
 Templates may declare reports alongside their run configuration. The SPRT
 template provides a ranking backed by `logs/sprt.db`: the latest result per
 candidate (engine and net) and reference engine, by default against
-`stockfish` with reference net `nn-1a298aa575a0.nnue`:
+`stockfish` with reference net `nn-1a298aa575a0.nnue`. Fixed-depth and
+fixed-node results are recorded but left out of the ranking:
 
 ```sh
 forge report sprt score
