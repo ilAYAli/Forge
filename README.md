@@ -241,6 +241,7 @@ forge worker set worker3:50% --reason lichess
 forge worker set worker3:4 --for 3h          # a four-thread budget for three hours
 forge worker set worker3:max                 # back to its full detected capacity
 forge worker set worker3:50% my-run          # only that run
+forge worker set aws                         # rent cloud cores for the active run
 ```
 
 Without a run name the value is the host's limit: it applies to the active
@@ -332,7 +333,7 @@ Workers files as JSON:
     {
       "host": "aws",
       "cloud": {"profile": "forge", "region": "eu-north-1", "family": "c7a"},
-      "cores": 64,
+      "cores": "max",
       "enabled": false
     }
   ]
@@ -355,9 +356,10 @@ not a host.
 A cloud pool rents workers for a run and returns them when it ends:
 
 ```sh
-forge sprt ... --workers aws                # default workers + the pool's 64 cores
+forge sprt ... --workers aws                # default workers + the pool's cores
 forge sprt ... --workers aws:16             # default workers + 16 cloud cores
 forge sprt ... --workers pwa-llm,aws:128    # pwa-llm + 128 cloud cores
+forge worker set aws                        # add the pool's cores to the active run
 forge worker set aws:192 my-run             # resize a running run's cloud share
 forge worker set aws:0 my-run               # back to the home workers only
 forge cloud ls                              # instances, their runs and state
@@ -367,9 +369,8 @@ forge cloud down                            # terminate every cloud worker now
 `N` in `aws:N` is physical cores (one SPRT game each); `aws:max` is whatever the
 account's quota still allows, and a bare `aws` uses the pool's `cores` (a number,
 or `"max"` for the whole free quota: cost barely depends on the core count, see
-below). The run
-starts on the other workers immediately; each instance joins it when it is
-ready, about two minutes after launch (`runs/<run>/cloud.log`). Forge picks the
+below). The run starts on the other workers immediately; each instance joins it
+when it is ready, about two minutes after launch (`runs/<run>/cloud.log`). Forge picks the
 fewest instances that cover `N` (64 cores is one `c7a.16xlarge`, 80 is a
 `16xlarge` and a `4xlarge`). A pool with `"enabled": true` is added to every run
 that uses the default workers, labeling included, so it is off by default.
