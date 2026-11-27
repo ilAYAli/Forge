@@ -214,6 +214,9 @@ def add_worker_set_options(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument("--reason", help="Without a run: why the host is limited (shown in forge status).")
     parser.add_argument("--for", dest="duration", help="Without a run: clear the limit automatically after this long (30m, 3h, 1d).")
+    # Host the command was typed on; forwarded to the coordinator so a host
+    # limit records who set it (not the coordinator itself).
+    parser.add_argument("--by", help=argparse.SUPPRESS)
     parser.add_argument(
         "--force",
         action="store_true",

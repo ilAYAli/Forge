@@ -76,13 +76,15 @@ def host_hold_limit(host: str) -> str | None:
     return str(hold["limit"]) if hold else None
 
 
-def set_hold(host: str, limit: str, *, reason: str | None, seconds: float | None) -> dict[str, Any]:
+def set_hold(
+    host: str, limit: str, *, reason: str | None, seconds: float | None, by: str | None = None,
+) -> dict[str, Any]:
     now = time.time()
     hold: dict[str, Any] = {
         "limit": normalize_utilization(limit, label=host),
         "reason": reason or "",
         "since_epoch": now,
-        "by": socket.gethostname(),
+        "by": by or socket.gethostname(),
     }
     if seconds is not None:
         hold["until_epoch"] = now + seconds
@@ -120,6 +122,8 @@ def describe_hold(host: str, hold: dict[str, Any], now: float | None = None) -> 
     since = hold.get("since_epoch")
     if since is not None:
         text += f" since {time.strftime('%H:%M', time.localtime(float(since)))}"
+    if hold.get("by"):
+        text += f" by {hold['by']}"
     until = hold.get("until_epoch")
     if until is not None:
         minutes = max(0, int((float(until) - now) // 60))

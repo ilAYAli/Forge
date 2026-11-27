@@ -3346,6 +3346,8 @@ def worker_control_command_args(action: str, args: argparse.Namespace) -> list[s
             command.extend(["--reason", str(args.reason)])
         if action == "set" and getattr(args, "duration", None):
             command.extend(["--for", str(args.duration)])
+        if action == "set":
+            command.extend(["--by", str(getattr(args, "by", None) or socket.gethostname())])
         if bool(getattr(args, "wait", False)):
             command.append("--wait")
         if getattr(args, "verify", None) is True:
@@ -3841,7 +3843,8 @@ def set_host_limit(args: argparse.Namespace) -> int:
         return apply_hold_to_active_run(host, force=False, lease_seconds=args.lease_seconds,
                                         label="worker set", add_missing=True)
     seconds = parse_duration(args.duration) if getattr(args, "duration", None) else None
-    hold = set_hold(host, utilization, reason=getattr(args, "reason", None), seconds=seconds)
+    hold = set_hold(host, utilization, reason=getattr(args, "reason", None), seconds=seconds,
+                    by=getattr(args, "by", None))
     print(f"worker set: {describe_hold(host, hold)}", flush=True)
     return apply_hold_to_active_run(host, force=bool(getattr(args, "force", False)), lease_seconds=args.lease_seconds,
                                     label="worker set", add_missing=False)

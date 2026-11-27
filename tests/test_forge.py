@@ -12,6 +12,7 @@ import re
 import signal
 import shutil
 import sqlite3
+import socket
 import subprocess
 import sys
 import tempfile
@@ -9122,6 +9123,11 @@ console.log(JSON.stringify(orderDashboardRuns([
             args = forge.build_parser().parse_args(["worker", "set", "pwa-mbp:0", "--reason", "lichess", "--for", "3h"])
             self.assertEqual(["worker", "set", "pwa-mbp:0", "--reason", "lichess", "--for", "3h"],
                              forge.worker_control_command_args("set", args)[:7])
+            # ...and says which host it came from, which the limit records.
+            command = forge.worker_control_command_args("set", args)
+            self.assertEqual(["--by", socket.gethostname()], command[command.index("--by"):command.index("--by") + 2])
+            from forge_lib import holds
+            self.assertIn(" by pwa-mbp", holds.describe_hold("pwa-mbp", {"limit": "0", "since_epoch": 0, "by": "pwa-mbp"}))
 
     def test_status_shows_host_limits_affecting_a_run(self) -> None:
         from forge_lib import holds, status
