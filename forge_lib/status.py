@@ -2805,6 +2805,9 @@ def cmd_stop(args: argparse.Namespace) -> int:
         )
         stopped += 1
         if bool(getattr(args, "force", False)):
+            from .cloud import release_run
+
+            release_run(path.parent.name)
             message = f"stop requested: {path.parent.name}"
             if stop_result["released"]:
                 message += f" released={len(stop_result['released'])}"
@@ -2935,6 +2938,9 @@ def cmd_del(args: argparse.Namespace) -> int:
         for host, detail in sorted(cleanup.items()):
             if detail != "ok":
                 print(f"{path.name}: worker cleanup {host}: {detail}", file=sys.stderr)
+        from .cloud import release_run
+
+        release_run(path.name)
         shutil.rmtree(path)
         mark_deleted_run_for_web(path.name)
         print(f"deleted: {path.name}")
@@ -5543,6 +5549,10 @@ def _cmd_wait(args: argparse.Namespace) -> int:
             finalizer = manifest.get("finalize")
             if isinstance(finalizer, dict):
                 cleanup_partials(manifest, finalizer)
+        # After the worker cache cleanup, which still reaches cloud workers.
+        from .cloud import release_run
+
+        release_run(manifest_path.parent.name)
         launch_request_path(manifest).unlink(missing_ok=True)
         payload = run_completion_event_payload(
             manifest_path=manifest_path,

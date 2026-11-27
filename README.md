@@ -328,6 +328,12 @@ Workers files as JSON:
     {
       "host": "worker4",
       "enabled": false
+    },
+    {
+      "host": "aws",
+      "cloud": {"profile": "forge", "region": "eu-north-1", "family": "c7a"},
+      "cores": 64,
+      "enabled": false
     }
   ]
 }
@@ -341,7 +347,78 @@ reach them; it holds no capacity numbers (Forge measures each host, and
 containing `cpu` and/or `gpu`; omitted workers are CPU-only. `env` maps shell
 variable names to literal string values and is exported for every Forge command
 on that worker (for example, a CUDA toolkit path). Inline entries inherit matching
-worker-file defaults.
+worker-file defaults. An entry with a `cloud` object is a [cloud pool](#cloud-workers),
+not a host.
+
+## Cloud Workers
+
+A cloud pool rents workers for a run and returns them when it ends:
+
+```sh
+forge sprt ... --workers aws                # default workers + the pool's 64 cores
+forge sprt ... --workers aws:16             # default workers + 16 cloud cores
+forge sprt ... --workers pwa-llm,aws:128    # pwa-llm + 128 cloud cores
+forge worker set aws:192 my-run             # resize a running run's cloud share
+forge worker set aws:0 my-run               # back to the home workers only
+forge cloud ls                              # instances, their runs and state
+forge cloud down                            # terminate every cloud worker now
+```
+
+`N` in `aws:N` is physical cores (one SPRT game each); `aws:max` is whatever the
+account's quota still allows, and a bare `aws` uses the pool's `cores`. The run
+starts on the other workers immediately; each instance joins it when it is
+ready, about two minutes after launch (`runs/<run>/cloud.log`). Forge picks the
+fewest instances that cover `N` (64 cores is one `c7a.16xlarge`, 80 is a
+`16xlarge` and a `4xlarge`). A pool with `"enabled": true` is added to every run
+that uses the default workers, labeling included, so it is off by default.
+
+Instances are terminated when their run finishes, is stopped or deleted. As a
+safety net each one also powers itself off (which terminates it) after
+`idle_minutes` without Forge processes and after `max_hours` in any case, so a
+coordinator that goes away never leaves one running.
+
+### Setup
+
+The pool is reached over [Tailscale](https://tailscale.com); instances accept
+no inbound traffic. On the coordinator:
+
+1. Install the AWS CLI v2 and Tailscale (`tailscale up`).
+2. Create an IAM user with `AmazonEC2FullAccess` and `ServiceQuotasFullAccess`
+   and an access key, then `aws configure --profile forge`.
+3. In the Tailscale admin console add `"tag:forge-cloud"` to `tagOwners` and
+   create a *reusable*, *ephemeral* auth key with that tag. Save it to
+   `~/.config/forge/tailscale.key` (mode 600).
+4. Add the pool to `~/.config/forge/workers.json` (above) and check the quota:
+   EC2 *Running On-Demand Standard instances* (or *Spot Instance Requests*) in
+   the region, in vCPUs.
+
+The first launch creates a `forge-cloud` security group without inbound rules,
+an SSH key the instances use to reach the coordinator (`~/.ssh/forge_cloud`,
+accepted only from Tailscale addresses), and an `Include` of
+`~/.ssh/forge-cloud.conf` at the top of `~/.ssh/config`.
+
+`cloud` keys (all optional):
+
+| Key | Default | Meaning |
+|---|---|---|
+| `profile`, `region` | `forge`, `eu-north-1` | AWS CLI profile and region |
+| `family` | `c7a` | Instance family; sizes come from AWS. c7a has one core per vCPU |
+| `market` | `on-demand` | `on-demand` or `spot` |
+| `idle_minutes`, `max_hours` | `15`, `12` | Self-termination limits |
+| `sync` | `["~/.cache/forge/tools"]` | Paths copied to each instance |
+| `engines` | candidate and reference links | Engine links to install |
+| `engine_repo`, `engine_net` | `~/code/chess/enyo`, `~/assets/nets/reference.net` | Engine sources and the net they embed |
+| `tailscale_key`, `user`, `worker_profile` | `~/.config/forge/tailscale.key`, `$USER`, `linux` | Access and the profile workers run with |
+
+Engines built with `-march=native` on the coordinator may use instructions the
+cloud CPU lacks (a Zen 5 build crashes on Zen 4). Each `enyo_<commit>` an engine
+link points at is therefore built once on a cloud instance with the repo's
+`scripts/deploy.sh`, cached in `~/.cache/forge/cloud/engines/<family>/`, and
+copied to later instances of that family; the first build adds a few minutes.
+
+Costs are per second while an instance runs. As a guide, a 5k-game SPRT at
+10+0.1 is about 30 core-hours: on-demand c7a is roughly 0.05 USD per core-hour
+and spot about a quarter of that.
 
 ## Capacity
 

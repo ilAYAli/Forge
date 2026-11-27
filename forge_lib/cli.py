@@ -74,6 +74,7 @@ COMMAND_GROUPS = [
             "release",
             "heartbeat",
             "drain",
+            "cloud",
             "wait",
             "verify",
             "merge",
@@ -784,6 +785,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     add_worker_set_options(worker_set)
     worker_set.set_defaults(func=cmd_worker_set)
+
+    from .cloud import add_cloud_parser
+
+    add_cloud_parser(sub)
 
 
     worker_del = worker_sub.add_parser(

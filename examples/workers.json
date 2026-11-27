@@ -21,6 +21,17 @@
       "host": "localhost",
       "local": true,
       "enabled": false
+    },
+    {
+      "host": "aws",
+      "cloud": {
+        "profile": "forge",
+        "region": "eu-north-1",
+        "family": "c7a",
+        "market": "on-demand"
+      },
+      "cores": 64,
+      "enabled": false
     }
   ]
 }

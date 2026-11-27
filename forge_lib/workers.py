@@ -115,6 +115,11 @@ def read_config_workers(path: Path) -> dict[str, Any]:
     (``forge worker set host:N``), so stored utilization/slots values are dropped.
     """
     payload = read_json(path)
+    if isinstance(payload.get("workers"), list):
+        # Cloud pools (an object with "cloud") are started by deploy, not hosts.
+        from .cloud import is_cloud_record
+
+        payload = {**payload, "workers": [item for item in payload["workers"] if not is_cloud_record(item)]}
     try:
         is_config = expand_path(str(path)).resolve() == config_workers_path().resolve()
     except OSError:
@@ -244,6 +249,13 @@ def workers_payload_from_arg(
     path = expand_path(value)
     if path.exists():
         return read_config_workers(path)
+    # Cloud pool entries (aws:64) are started by deploy, not resolved as hosts;
+    # given alone they add to the default workers.
+    from .cloud import split_cloud_entries
+
+    value, _cloud_requests = split_cloud_entries(value)
+    if value is None:
+        return read_config_workers(default_workers_path())
     if worker_arg_looks_like_path(value):
         raise SystemExit(f"workers file not found: {value}")
     return parse_inline_workers(value, defaults_path=inline_defaults_path)
@@ -2761,6 +2773,14 @@ def run_deploy(args: argparse.Namespace) -> int:
         return setup_results_list
 
     status(colorize(f"deploy: run={run_dir.name} workers={len(workers)} jobs={jobs}", "cyan", enabled=color_enabled))
+    if has_tasks and not attach_existing:
+        from .cloud import start_cloud_requests
+
+        start_cloud_requests(
+            getattr(args, "workers", None),
+            run_dir.name,
+            log=lambda message: status(colorize(message, "cyan", enabled=color_enabled)),
+        )
     task_count = len(manifest.get("tasks") or [])
     if (
         has_tasks
@@ -3853,6 +3873,16 @@ def cmd_worker_set(args: argparse.Namespace) -> int:
     coordinator_runs = configured_coordinator_runs()
     if coordinator_runs and status_can_delegate(args.run):
         return run_worker_control_on_coordinator("set", args, coordinator_runs)
+    from .cloud import cloud_pools, parse_cloud_entry, spawn_scale, cloud_log_path
+
+    cloud_request = parse_cloud_entry(str(args.worker), cloud_pools())
+    if cloud_request is not None:
+        pool_name, cores = cloud_request
+        for run_name, _manifest_path, _workers_path in worker_run_paths(args.run, lease_seconds=args.lease_seconds):
+            spawn_scale(pool_name, cores, run_name)
+            print(f"worker set: {run_name} {pool_name}:{'max' if cores is None else cores} "
+                  f"scaling in the background (log: {cloud_log_path(run_name)})")
+        return 0
     if args.run is None:
         return set_host_limit(args)
     targets = worker_run_paths(args.run, lease_seconds=args.lease_seconds)
