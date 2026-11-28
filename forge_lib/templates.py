@@ -959,6 +959,16 @@ def as_int(value: Any, *, label: str) -> int:
     return result
 
 
+def split_start_key(split: dict[str, Any]) -> Any:
+    """Return the parameter that holds a split's first unit.
+
+    ``range_start`` means the same as ``start``.  Forge versions before it
+    ignore ``range_start``, so a template using it still loads in a worker
+    that was started on older code.
+    """
+    return split.get("start", split.get("range_start"))
+
+
 def template_value(value: Any, values: dict[str, Any]) -> Any:
     if isinstance(value, str) and value in values:
         return values[value]
@@ -1218,7 +1228,7 @@ def expand_template(
         raise SystemExit(f"{template_name}: task.split must be an object")
     task_count, shards, split_unit = resolve_split_count(split, values)
     try:
-        split_start = int(template_value(split.get("start", 0), values))
+        split_start = int(template_value(split_start_key(split) or 0, values))
     except (TypeError, ValueError) as exc:
         raise SystemExit("task.split.start must be a non-negative integer") from exc
     if split_start < 0:
@@ -1292,7 +1302,7 @@ def expand_template(
             if shards[index] is not None and "total" not in progress:
                 progress["total"] = shards[index]
             task["progress"] = progress
-        if isinstance(shard, int) and split_unit and "start" in split:
+        if isinstance(shard, int) and split_unit and split_start_key(split):
             task["adaptive_range"] = {
                 "unit": split_unit,
                 "start": range_offset,

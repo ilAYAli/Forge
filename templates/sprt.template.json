@@ -253,7 +253,7 @@
       "total": "games",
       "count": "shards",
       "unit": "games",
-      "start": "game_start"
+      "range_start": "game_start"
     },
     "resume": {
       "strategy": "split-progress",

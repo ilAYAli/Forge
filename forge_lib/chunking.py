@@ -486,7 +486,7 @@ def adaptive_rechunk_pending_tasks(
     cache_path: Path | None = None,
 ) -> dict[str, Any] | None:
     from .tasks import task_pending_from_marker_index, task_state_marker_ids
-    from .templates import expand_template, load_template
+    from .templates import expand_template, load_template, split_start_key
 
     template = manifest.get("template")
     if not isinstance(template, dict):
@@ -747,7 +747,7 @@ def adaptive_rechunk_pending_tasks(
         "__forge_preserve_derived": [total_key],
     }
     split_data = template_data.get("task", {}).get("split", {})
-    start_key = split_data.get("start") if isinstance(split_data, dict) else None
+    start_key = split_start_key(split_data) if isinstance(split_data, dict) else None
     if isinstance(start_key, str) and start_key:
         if ranged_pending:
             replan_params[start_key] = int(selected[0]["adaptive_range"]["start"])
