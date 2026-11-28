@@ -6051,6 +6051,12 @@ SPRT_DB_RESULT_COLUMNS = {
     "book_seed": "INTEGER",
     "book_offset": "INTEGER",
     "restart": "TEXT",
+    # The candidate's --candidate-uci settings: such a run measures that
+    # configuration, not the engine as shipped, so the ranking leaves it out.
+    "candidate_options": "TEXT",
+    # Why a result cannot be trusted (NULL when it can); the ranking leaves
+    # it out but the row stays as history.
+    "suspect": "TEXT",
 }
 
 def migrate_sprt_result_columns(conn: sqlite3.Connection) -> None:
@@ -6151,6 +6157,13 @@ def record_sprt_completion(payload: dict[str, Any]) -> None:
     def extract_flag(flag: str) -> str | None:
         return command_flags.get(flag)
 
+    candidate_options = " ".join(
+        tokens[index + 1] if token == "--candidate-uci" else token.split("=", 1)[1]
+        for index, token in enumerate(tokens)
+        if (token == "--candidate-uci" and index + 1 < len(tokens))
+        or token.startswith("--candidate-uci=")
+    ) or None
+
     candidate_net = extract_flag("--candidate-net")
     reference_net = extract_flag("--reference-net")
     candidate_engine = extract_flag("--candidate")
@@ -6218,9 +6231,10 @@ def record_sprt_completion(payload: dict[str, Any]) -> None:
                  source_ledger, raw_json, llr_lower_bound, llr_upper_bound,
                  elo0, elo1, alpha, beta, wins, draws, losses, pentanomial,
                  candidate_engine, reference_engine, tc, threads, concurrency,
-                 hash_mb, book, book_order, book_seed, book_offset, restart)
+                 hash_mb, book, book_order, book_seed, book_offset, restart,
+                 candidate_options)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 str(payload.get("completed_at"))[:10],
@@ -6260,6 +6274,7 @@ def record_sprt_completion(payload: dict[str, Any]) -> None:
                 to_int(extract_flag("--book-seed")),
                 to_int(extract_flag("--book-offset")),
                 extract_flag("--restart"),
+                candidate_options,
             ),
         )
         conn.commit()

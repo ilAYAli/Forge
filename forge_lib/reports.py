@@ -110,8 +110,15 @@ def sprt_score_report(
     connection = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
     # Fixed-depth/node matches measure move quality, not playing strength at
     # a clock, so they never replace a candidate's ranked result.
-    if "tc" in {row[1] for row in connection.execute("PRAGMA table_info(sprt)")}:
+    table_columns = {row[1] for row in connection.execute("PRAGMA table_info(sprt)")}
+    if "tc" in table_columns:
         where.append("(tc IS NULL OR (tc NOT LIKE 'depth=%' AND tc NOT LIKE 'nodes=%'))")
+    # A configured candidate or an untrustworthy result says nothing about the
+    # engine as shipped; such rows stay in the database as history only.
+    if "candidate_options" in table_columns:
+        where.append("(candidate_options IS NULL OR candidate_options = '')")
+    if "suspect" in table_columns:
+        where.append("suspect IS NULL")
     predicate = " AND ".join(where)
 
     columns = ["rank", "elo", "candidate", "candidate_net", "reference", "reference_net", "games", "date"]
