@@ -15,8 +15,15 @@ connect out through SSH/rsync; no daemon or database is required.
 
 ```sh
 git clone git@github.com:ilAYAli/Forge.git ~/code/chess/forge
-ln -s ~/code/chess/forge/forge.py ~/.local/bin/forge
+~/code/chess/forge/scripts/install.sh
 ```
+
+`install.sh` links `~/.local/bin/forge` to the checkout and adds `~/.local/bin`
+to PATH in the shell startup file (`~/.zshenv` for zsh, `~/.bashrc` and
+`~/.profile` for bash). `forge update` finds each host's checkout through that
+link. To set up another host, run
+`ssh HOST sh -s < scripts/install.sh`: it clones into `~/code/chess/forge`
+(or `FORGE_DIR`) if the checkout is missing. Running it again is safe.
 
 
 example config:
