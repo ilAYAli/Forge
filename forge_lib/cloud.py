@@ -66,6 +66,7 @@ SSH_OPTS = [
 ENTRY_RE = re.compile(r"^(?P<pool>[A-Za-z][\w-]*)(?::(?P<cores>\d+|max))?$")
 CLOUD_KEYS = ("profile", "region", "family", "market", "worker_profile", "user", "tailscale_key",
               "engine_repo", "engine_net")
+ENGINE_COMMANDS = ("candidate", "reference")
 CLOUD_INT_KEYS = ("max_hours", "idle_minutes", "boot_timeout_seconds", "llvm_version")
 
 
@@ -620,26 +621,59 @@ def build_engine(pool: Pool, name: str, family: str, base: str, cached: Path, *,
     tmp.replace(cached)
 
 
+def install_engine(pool: Pool, name: str, family: str, path: Path, *, log: Callable[[str], None]) -> None:
+    """Put an engine (a link or a binary) at the same path on a cloud worker.
+
+    ``enyo_<commit>`` binaries are rebuilt for the cloud CPU (see
+    build_engine); anything else, Stockfish included, is copied as is.
+    """
+    target = path.resolve()
+    base = target.name
+    if base.startswith("enyo_"):
+        cached = pool.state_dir / "engines" / family / base
+        with _engine_lock(f"{family}/{base}"):
+            if not cached.exists():
+                build_engine(pool, name, family, base, cached, log=log)
+        ssh(name, f"mkdir -p {shlex.quote(str(target.parent))}")
+        rsync([str(cached)], f"{name}:{target}")
+    else:
+        rsync([str(target)], f"{name}:/", "--relative", "--omit-dir-times")
+    if path.is_symlink():
+        ssh(name, f"mkdir -p {shlex.quote(str(path.parent))} && "
+                  f"ln -sfn {shlex.quote(str(target))} {shlex.quote(str(path))}")
+    ssh(name, f"printf 'uci\\nquit\\n' | {shlex.quote(str(path))} | grep -q uciok")
+
+
 def install_engines(pool: Pool, name: str, family: str, *, log: Callable[[str], None]) -> None:
-    cache = pool.state_dir / "engines" / family
     for raw in pool.engines:
         link = expand_path(raw)
         if not link.is_symlink():
             log(f"{name}: skip {raw} (not an engine link)")
             continue
-        target = link.resolve()
-        base = target.name
-        if not base.startswith("enyo_"):
-            rsync([str(target)], f"{name}:/", "--relative", "--omit-dir-times")
-        else:
-            cached = cache / base
-            with _engine_lock(f"{family}/{base}"):
-                if not cached.exists():
-                    build_engine(pool, name, family, base, cached, log=log)
-            ssh(name, f"mkdir -p {shlex.quote(str(target.parent))}")
-            rsync([str(cached)], f"{name}:{target}")
-        ssh(name, f"ln -sfn {shlex.quote(str(target))} {shlex.quote(str(link))} && "
-                  f"printf 'uci\\nquit\\n' | {shlex.quote(str(link))} | grep -q uciok")
+        install_engine(pool, name, family, link, log=log)
+
+
+def run_engines(run: str) -> list[Path]:
+    """Engines a run's manifest requires (sprt's candidate and reference).
+
+    A run may name engines directly (~/assets/engines/enyo_fc5052b,
+    ~/assets/engines/stockfish) instead of through the pool's engine links;
+    a cloud worker that lacks one fails setup and never joins.
+    """
+    try:
+        manifest = read_json(run_dir_for_name(run) / "manifest.json")
+    except (OSError, ValueError):
+        return []
+    requirements = manifest.get("requirements") if isinstance(manifest, dict) else None
+    commands = requirements.get("commands") if isinstance(requirements, dict) else None
+    paths: list[Path] = []
+    for item in commands if isinstance(commands, list) else []:
+        if not isinstance(item, dict) or str(item.get("name")) not in ENGINE_COMMANDS or not item.get("path"):
+            continue
+        path = expand_path(str(item["path"]))
+        if path.exists() and path not in paths:
+            paths.append(path)
+    return paths
 
 
 def provision(pool: Pool, instance: Instance, ip: str, *, log: Callable[[str], None]) -> None:
@@ -721,6 +755,9 @@ def sync_run_inputs(instance: Instance, run: str) -> None:
 
 def join_run(pool: Pool, instance: Instance, run: str, *, log: Callable[[str], None]) -> bool:
     sync_run_inputs(instance, run)
+    family = instance.type.split(".", 1)[0]
+    for engine in run_engines(run):
+        install_engine(pool, instance.name, family, engine, log=log)
     for attempt in range(6):
         result = forge_cli("worker", "set", f"{instance.name}={pool.worker_profile}:max", run, "--no-notify")
         if result.returncode == 0:

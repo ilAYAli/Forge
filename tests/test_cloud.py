@@ -286,6 +286,50 @@ class ScaleTests(unittest.TestCase):
                 paths = cloud.symlinked_inputs("r")
             self.assertEqual(paths, [root / "nets" / "candidate.net", target.resolve()])
 
+    def test_run_engines_come_from_the_manifest(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            candidate = root / "enyo_fc5052b"
+            candidate.write_text("bin")
+            real_sf = root / "bin" / "stockfish"
+            real_sf.parent.mkdir()
+            real_sf.write_text("bin")
+            (root / "stockfish").symlink_to(real_sf)
+            run_dir = root / "r"
+            run_dir.mkdir()
+            (run_dir / "manifest.json").write_text(json.dumps({"requirements": {"commands": [
+                {"name": "sprt", "path": str(root / "sprt")},
+                {"name": "candidate", "path": str(candidate)},
+                {"name": "reference", "path": str(root / "stockfish")},
+                {"name": "reference", "path": str(root / "missing")},
+            ]}}))
+            with mock.patch.object(cloud, "run_dir_for_name", return_value=run_dir):
+                self.assertEqual(cloud.run_engines("r"), [candidate, root / "stockfish"])
+
+    def test_install_engine_copies_links_and_rebuilds_enyo(self) -> None:
+        pool = cloud.Pool(name="aws")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            enyo = root / "enyo_fc5052b"
+            enyo.write_text("bin")
+            real_sf = root / "bin" / "stockfish"
+            real_sf.parent.mkdir()
+            real_sf.write_text("bin")
+            link = root / "stockfish"
+            link.symlink_to(real_sf)
+            with mock.patch.object(cloud, "rsync") as rsync, mock.patch.object(cloud, "ssh") as ssh, \
+                    mock.patch.object(cloud, "build_engine") as build, \
+                    mock.patch.object(cloud.Pool, "state_dir", new_callable=mock.PropertyMock, return_value=root / "state"):
+                cloud.install_engine(pool, "aws-1", "c7a", enyo, log=lambda _m: None)
+                build.assert_called_once()
+                # A plain binary is not turned into a link to itself.
+                self.assertFalse(any("ln -sfn" in call.args[1] for call in ssh.call_args_list))
+                ssh.reset_mock()
+                rsync.reset_mock()
+                cloud.install_engine(pool, "aws-1", "c7a", link, log=lambda _m: None)
+                self.assertEqual(rsync.call_args.args[0], [str(real_sf.resolve())])
+                self.assertTrue(any(f"ln -sfn {real_sf.resolve()} {link}" in call.args[1] for call in ssh.call_args_list))
+
     def test_release_run_never_raises(self) -> None:
         with mock.patch.object(cloud, "cloud_pools", return_value=POOLS), \
                 mock.patch.object(cloud, "list_instances", side_effect=cloud.CloudError("offline")):
