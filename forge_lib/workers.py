@@ -3870,6 +3870,15 @@ def set_host_limit(args: argparse.Namespace) -> int:
                                     label="worker set", add_missing=False)
 
 def cmd_worker_set(args: argparse.Namespace) -> int:
+    entries = [entry.strip() for entry in str(args.worker).split(",")]
+    if len(entries) > 1:
+        # host1:0,host2:0 sets each host in turn, like forge update's list.
+        if not all(entries):
+            raise SystemExit(f"{args.worker}: empty entry in worker list")
+        failed = 0
+        for entry in entries:
+            failed |= cmd_worker_set(argparse.Namespace(**{**vars(args), "worker": entry}))
+        return failed
     coordinator_runs = configured_coordinator_runs()
     if coordinator_runs and status_can_delegate(args.run):
         return run_worker_control_on_coordinator("set", args, coordinator_runs)

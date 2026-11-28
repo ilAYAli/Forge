@@ -9378,6 +9378,55 @@ console.log(JSON.stringify(orderDashboardRuns([
             from forge_lib import holds
             self.assertIn(" by pwa-mbp", holds.describe_hold("pwa-mbp", {"limit": "0", "since_epoch": 0, "by": "pwa-mbp"}))
 
+    def test_remove_run_dir_tolerates_concurrent_deletion(self) -> None:
+        from forge_lib import status
+
+        with tempfile.TemporaryDirectory() as tmp:
+            run = Path(tmp) / "run"
+            (run / "logs").mkdir(parents=True)
+            (run / "logs" / "a.log").write_text("x", encoding="utf-8")
+            real_rmtree = shutil.rmtree
+            calls = []
+
+            def racing_rmtree(path, *args, **kwargs):
+                calls.append(path)
+                if len(calls) == 1:
+                    # Another process deletes part of the run mid-walk.
+                    real_rmtree(Path(path) / "logs")
+                    raise FileNotFoundError(2, "No such file or directory", str(Path(path) / "logs"))
+                return real_rmtree(path, *args, **kwargs)
+
+            with mock.patch("forge_lib.status.shutil.rmtree", side_effect=racing_rmtree):
+                status.remove_run_dir(run)
+            self.assertFalse(run.exists())
+            self.assertEqual(2, len(calls))
+
+            # Already gone entirely: nothing to do, no error.
+            with mock.patch(
+                "forge_lib.status.shutil.rmtree",
+                side_effect=FileNotFoundError(2, "No such file or directory", str(run)),
+            ):
+                status.remove_run_dir(run)
+
+    def test_worker_set_applies_each_host_in_a_comma_list(self) -> None:
+        from forge_lib import workers
+
+        seen = []
+        with mock.patch.object(
+            workers, "configured_coordinator_runs", return_value=None
+        ), mock.patch.object(
+            workers, "set_host_limit", side_effect=lambda a: seen.append((a.worker, a.reason)) or 0
+        ):
+            args = forge.build_parser().parse_args(
+                ["worker", "set", "pwa-mbp:0, pwa-llm:0", "--reason", "lichess"]
+            )
+            self.assertEqual(0, args.func(args))
+        self.assertEqual([("pwa-mbp:0", "lichess"), ("pwa-llm:0", "lichess")], seen)
+
+        args = forge.build_parser().parse_args(["worker", "set", "pwa-mbp:0,"])
+        with self.assertRaises(SystemExit):
+            args.func(args)
+
     def test_status_shows_host_limits_affecting_a_run(self) -> None:
         from forge_lib import holds, status
 

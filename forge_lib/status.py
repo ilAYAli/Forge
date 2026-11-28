@@ -2890,6 +2890,22 @@ def mark_deleted_run_for_web(run: str) -> None:
     except Exception as exc:
         print(f"warning: web state not updated for {run}: {exc}", file=sys.stderr)
 
+def remove_run_dir(path: Path) -> None:
+    """Delete a run directory that another process may be deleting too.
+
+    A file or directory vanishing mid-walk (a second ``forge del``, the web
+    UI, a worker cleanup) is not an error; walk again until nothing is left.
+    """
+    for _attempt in range(5):
+        try:
+            shutil.rmtree(path)
+            return
+        except FileNotFoundError:
+            if not path.exists():
+                return
+    shutil.rmtree(path)
+
+
 def cmd_del(args: argparse.Namespace) -> int:
     delete_done = bool(getattr(args, "done", False))
     delete_all = bool(getattr(args, "all", False))
@@ -2941,7 +2957,7 @@ def cmd_del(args: argparse.Namespace) -> int:
         from .cloud import release_run
 
         release_run(path.name)
-        shutil.rmtree(path)
+        remove_run_dir(path)
         mark_deleted_run_for_web(path.name)
         print(f"deleted: {path.name}")
     for name in kept:

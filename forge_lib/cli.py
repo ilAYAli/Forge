@@ -203,7 +203,8 @@ def add_worker_set_options(parser: argparse.ArgumentParser) -> None:
         help=(
             "Worker utilization: host:50%% uses half of the detected host, host:4 a "
             "four-thread budget, host:max the whole host, host:0 takes it out of Forge. "
-            "Lowering it drains extra worker processes after their current task."
+            "Lowering it drains extra worker processes after their current task. "
+            "A comma-separated list (host1:0,host2:0) sets each host in turn."
         ),
     )
     parser.add_argument(
