@@ -4650,7 +4650,7 @@ console.log(JSON.stringify(orderDashboardRuns([
         ):
             self.assertIn(flag, first["command"])
         self.assertIn("--srand 40 --book-offset 100", first["command"])
-        self.assertIn("--srand 41 --book-offset 103", second["command"])
+        self.assertIn("--srand 40 --book-offset 103", second["command"])
 
     def test_extend_sprt_appends_games_without_discarding_completed_tasks(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -6292,6 +6292,122 @@ console.log(JSON.stringify(orderDashboardRuns([
             if task["id"] == claimed["task"]
         ))
         self.assertEqual(4, max(totals))
+
+    def test_sprt_live_rechunks_never_repeat_an_opening_pair(self) -> None:
+        from forge_lib import chunking
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "state").mkdir()
+            (root / "claims").mkdir()
+            template_path = forge.template_path("sprt")
+            template = forge.load_template(template_path)
+            params = forge.parse_sprt_template_parameters(
+                "sprt",
+                template,
+                [
+                    "--candidate", "~/assets/engines/candidate",
+                    "--candidate-net", "~/c.nnue",
+                    "--reference", "~/assets/engines/reference",
+                    "--reference-net", "~/r.nnue",
+                    "--book", "~/b.epd",
+                    "--games", "400",
+                    "--shards", "2",
+                    "--book-seed", "1000",
+                ],
+            )
+            manifest = forge.expand_template("sprt", template_path, template, params)
+            manifest["state_dir"] = str(root / "state")
+            manifest["claim_dir"] = str(root / "claims")
+            manifest_path = root / "manifest.json"
+            forge.write_json(manifest_path, manifest)
+            base = chunking.adaptive_template_parameters(manifest)
+            cache_path = root / "chunk-history.json"
+            write_chunk_history(cache_path, *[
+                ({**base, "__forge_worker": worker}, rate / 300.0, 3)
+                for worker, rate in (("w", 10), ("v", 40), ("x", 3))
+            ])
+
+            with mock.patch(
+                "forge_lib.calibration.adaptive_chunk_cache_path",
+                return_value=cache_path,
+            ):
+                for worker in ["w", "v", "x", "v", "w", "x", "v"] * 3:
+                    forge.claim_task(
+                        forge.load_manifest(manifest_path),
+                        manifest_path=manifest_path,
+                        worker=worker,
+                        profile=None,
+                        lease_seconds=600,
+                        retry_failed=False,
+                    )
+
+            pairs = []
+            for task in forge.load_manifest(manifest_path)["tasks"]:
+                command = task["command"]
+                seed = int(re.search(r"--srand (\d+)", command).group(1))
+                offset = int(re.search(r"--book-offset (\d+)", command).group(1))
+                games = int(re.search(r"--games (\d+)", command).group(1))
+                self.assertEqual(1000, seed)
+                pairs.extend(range(offset, offset + games // 2))
+
+        self.assertEqual(list(range(200)), sorted(pairs))
+
+    def test_selfplay_live_rechunks_never_repeat_a_seed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "state").mkdir()
+            (root / "claims").mkdir()
+            template_path = forge.template_path("selfplay")
+            template = forge.load_template(template_path)
+            params = forge.parse_selfplay_template_parameters(
+                "selfplay",
+                template,
+                [
+                    "--engine", "~/assets/engines/enyo_9696dac",
+                    "--net", "~/n.nnue",
+                    "--book", "~/b.epd",
+                    "--games", "600",
+                    "--shards", "2",
+                    "--seed", "5",
+                ],
+            )
+            manifest = forge.expand_template("selfplay", template_path, template, params)
+            manifest["state_dir"] = str(root / "state")
+            manifest["claim_dir"] = str(root / "claims")
+            manifest_path = root / "manifest.json"
+            forge.write_json(manifest_path, manifest)
+            cache_path = root / "chunk-history.json"
+            write_chunk_history(cache_path, *[
+                (
+                    {**params, "__forge_template_name": "selfplay", "__forge_worker": worker},
+                    rate / 300.0,
+                    3,
+                )
+                for worker, rate in (("w", 16), ("v", 60), ("x", 5))
+            ])
+
+            with mock.patch(
+                "forge_lib.calibration.adaptive_chunk_cache_path",
+                return_value=cache_path,
+            ):
+                for worker in ["w", "v", "x", "v", "w", "x"] * 3:
+                    forge.claim_task(
+                        forge.load_manifest(manifest_path),
+                        manifest_path=manifest_path,
+                        worker=worker,
+                        profile=None,
+                        lease_seconds=600,
+                        retry_failed=False,
+                    )
+
+            seeds = [
+                int(re.search(r"-srand (\d+)", task["command"]).group(1))
+                for task in forge.load_manifest(manifest_path)["tasks"]
+            ]
+
+        self.assertGreater(len(seeds), 2)
+        self.assertEqual(len(seeds), len(set(seeds)))
 
     def test_short_sprt_preserves_parallel_waves(self) -> None:
         from forge_lib import chunking

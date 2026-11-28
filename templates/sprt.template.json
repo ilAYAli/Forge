@@ -100,13 +100,18 @@
     },
     "book_seed": {
       "type": "int",
-      "help": "Base opening random seed; defaults to a new run-specific seed and each shard adds its task index"
+      "help": "Opening shuffle seed shared by every shard; defaults to a new run-specific seed"
     },
     "book_offset": {
       "arg": "--book-offset",
       "type": "int",
       "default": 0,
       "help": "Zero-based opening-book offset"
+    },
+    "game_start": {
+      "type": "int",
+      "default": 0,
+      "help": "First game of this plan within the run; live rechunking sets it so each shard keeps its own openings"
     },
     "shards": {
       "type": "int",
@@ -247,7 +252,8 @@
     "split": {
       "total": "games",
       "count": "shards",
-      "unit": "games"
+      "unit": "games",
+      "start": "game_start"
     },
     "resume": {
       "strategy": "split-progress",

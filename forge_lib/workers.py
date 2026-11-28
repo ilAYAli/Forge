@@ -4117,8 +4117,7 @@ def cmd_extend(args: argparse.Namespace) -> int:
         **parameters,
         "games": extra_games,
         "shards": max(1, math.ceil(extra_games / initial_units)),
-        "book_seed": int(parameters.get("book_seed", 1)) + len(old_tasks),
-        "book_offset": int(parameters.get("book_offset", 0)) + old_games // 2,
+        "game_start": old_games,
     }
     extension = expand_template("sprt", template_path_, template, extension_params)
     existing_ids = {str(task.get("id")) for task in old_tasks}

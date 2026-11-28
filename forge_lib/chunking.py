@@ -748,12 +748,35 @@ def adaptive_rechunk_pending_tasks(
     }
     split_data = template_data.get("task", {}).get("split", {})
     start_key = split_data.get("start") if isinstance(split_data, dict) else None
-    if ranged_pending and isinstance(start_key, str) and start_key:
-        replan_params[start_key] = int(selected[0]["adaptive_range"]["start"])
+    if isinstance(start_key, str) and start_key:
+        if ranged_pending:
+            replan_params[start_key] = int(selected[0]["adaptive_range"]["start"])
+        else:
+            # Pending tasks without ranges come from an older plan, so its
+            # ranges are unknown: start after everything it could have used.
+            replan_params[start_key] = max(
+                int(params.get(total_key) or 0),
+                max(
+                    (
+                        int(task["adaptive_range"]["start"])
+                        + adaptive_task_units(task, unit)
+                        for task in manifest.get("tasks") or []
+                        if isinstance(task, dict)
+                        and isinstance(task.get("adaptive_range"), dict)
+                    ),
+                    default=0,
+                ),
+            )
+    kept_tasks = [
+        task
+        for task in manifest.get("tasks") or []
+        if task not in selected
+    ]
+    next_index = max((int(task.get("index", -1)) for task in kept_tasks), default=-1) + 1
     if "seed" in params:
-        replan_params["seed"] = int(params.get("seed") or 1) + min(
-            int(task.get("index", 0)) for task in selected
-        )
+        # Replacement task i becomes index next_index + i, so its seed stays
+        # base + index and never repeats a kept task's seed.
+        replan_params["seed"] = int(params.get("seed") or 1) + next_index
     replan_template_name = str(
         template_data.get("name") or manifest.get("kind") or "task"
     )
@@ -800,13 +823,7 @@ def adaptive_rechunk_pending_tasks(
             return None
         replanned_tasks = [*replanned_tasks, *remainder]
 
-    kept_tasks = [
-        task
-        for task in manifest.get("tasks") or []
-        if task not in selected
-    ]
-    next_index = max((int(task.get("index", -1)) for task in kept_tasks), default=-1) + 1
-    width = max(4, len(str(next_index + len(replanned_tasks) - 1)))
+    width =max(4, len(str(next_index + len(replanned_tasks) - 1)))
     pending_ids = {str(task.get("id") or "") for task in selected}
     replacement_tasks: list[dict[str, Any]] = []
     for offset, task in enumerate(replanned_tasks):

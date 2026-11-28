@@ -414,6 +414,7 @@ SPRT_TEMPLATE_CONTROL_ARGS = {
     "book_seed",
     "candidate_net",
     "chunk_time_seconds",
+    "game_start",
     "games",
     "hash",
     "reference_net",
@@ -1256,7 +1257,9 @@ def expand_template(
         if template_name == "selfplay" and "seed" in values:
             task_values["seed"] = int(values["seed"]) + index
         if template_name == "sprt":
-            task_values["seed"] = int(values.get("book_seed", 1)) + index
+            # One shuffle seed per run and disjoint offsets per shard: every
+            # opening pair in the run starts from a different book position.
+            task_values["seed"] = int(values.get("book_seed", 1))
             task_values["book_offset"] = (
                 int(values.get("book_offset", 0)) + range_offset // 2
             )
