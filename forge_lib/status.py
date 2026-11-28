@@ -1494,13 +1494,17 @@ def summary_progress(summary: dict[str, Any]) -> str:
             manifest = summary.get("manifest_payload")
             if isinstance(manifest, dict):
                 recent_rate = recent_progress_rate(manifest, unit=unit)
-            # Prefer a trailing-window rate over the run's lifetime average,
+            # Prefer the active processes' throughput (see process_throughput),
+            # then a trailing-window rate, over the run's lifetime average,
             # which stays skewed for a long time by any past downtime
             # (crashes, stalls, idle periods) even after the run has fully
             # recovered. Fall back to the lifetime average (not the raw
             # active-worker rate) so a single noisy fresh shard can't
             # dominate the ETA.
-            if isinstance(recent_rate, (int, float)) and recent_rate > 0:
+            throughput = (summary.get("throughput") or {}).get(unit)
+            if isinstance(throughput, (int, float)) and throughput > 0:
+                eta_rate = throughput
+            elif isinstance(recent_rate, (int, float)) and recent_rate > 0:
                 eta_rate = recent_rate
             elif cumulative_rate is not None:
                 eta_rate = cumulative_rate
@@ -2166,6 +2170,7 @@ def run_progress_fields(summary: dict[str, Any]) -> list[str]:
         return split_eta_last(sprt_fields)
     return split_eta_last(fields)
 
+
 def run_progress_fraction(summary: dict[str, Any]) -> float | None:
     """Fraction of work done (0–1) based on per-unit totals, or None if unavailable."""
     progress_totals = summary.get("progress_totals")
@@ -2200,7 +2205,8 @@ def run_display_fields(summary: dict[str, Any]) -> list[str]:
     eta = [field for field in progress if is_eta_field(field)]
     remaining = [field for field in progress if not is_eta_field(field)]
     ordered: list[str] = []
-    for key in ("elo", "ci", "llr", "los", "draw", "games"):
+    # draw sits after the rate, apart from the elo statistics.
+    for key in ("elo", "ci", "llr", "los", "games", "games/min", "draw"):
         matches = [
             field for field in remaining
             if field.split("=", 1)[0].removesuffix("~") == key
@@ -4043,6 +4049,51 @@ def load_progress_history(manifest: dict[str, Any]) -> list[dict[str, Any]]:
     return entries
 
 
+THROUGHPUT_MIN_WINDOW_SECONDS = 300.0
+THROUGHPUT_WINDOW_CYCLES = 4
+
+
+def process_throughput(
+    events: list[tuple[float, str, int]],
+    active_processes: list[str],
+    now_epoch: float,
+) -> float | None:
+    """Units per second the active worker processes deliver.
+
+    Each process's rate comes from the spacing of its own recent completions,
+    which includes the idle time between tasks (claim, setup, sync) that a
+    task's elapsed time leaves out. Summing per-process rates over the
+    processes working now avoids the aliasing of counting completions in a
+    short window: with hundreds of slots that start together, tasks finish
+    in waves about one task long, and a window of similar length swings
+    between crests and troughs (174 to 427 games/min on a steady run).
+    """
+    if not events or not active_processes:
+        return None
+    by_process: dict[str, list[tuple[float, int]]] = {}
+    for completed, process, units in events:
+        by_process.setdefault(process, []).append((completed, units))
+    # Long enough for several completions per process, however long a task is.
+    spacings = []
+    for completions in by_process.values():
+        completions.sort()
+        spacings.extend(b[0] - a[0] for a, b in zip(completions, completions[1:]) if b[0] > a[0])
+    typical = sorted(spacings)[len(spacings) // 2] if spacings else 0.0
+    window = max(THROUGHPUT_MIN_WINDOW_SECONDS, THROUGHPUT_WINDOW_CYCLES * typical)
+    rates: dict[str, float] = {}
+    for process, completions in by_process.items():
+        recent = [item for item in completions if 0 <= now_epoch - item[0] <= window]
+        if len(recent) < 2 or recent[-1][0] <= recent[0][0]:
+            continue
+        rates[process] = sum(units for _epoch, units in recent[1:]) / (recent[-1][0] - recent[0][0])
+    if not rates:
+        return None
+    # A process that has not finished two tasks yet (a worker that just
+    # joined) counts at the fleet's typical rate.
+    typical_rate = sorted(rates.values())[len(rates) // 2]
+    return sum(rates.get(process, typical_rate) for process in active_processes)
+
+
 def recent_progress_rate(
     manifest: dict[str, Any],
     *,
@@ -4892,6 +4943,8 @@ def status_summary(
     progress_unit_totals: dict[str, int] = {}
     failure_reasons: dict[str, dict[str, Any]] = {}
     completed_task_epochs: list[float] = []
+    # (completed epoch, process, units) per finished task, for throughput.
+    completion_events: dict[str, list[tuple[float, str, int]]] = {}
     now_epoch = epoch()
 
     def record_completed_rate(
@@ -4918,6 +4971,9 @@ def status_summary(
         completed_worker_task_rates.setdefault(worker_name, []).append(rate)
         completed_worker_task_rates.setdefault(process_name, []).append(rate)
         completed_epoch = path_epoch(task_done_path(manifest, task))
+        unit = progress_config_unit_total(task)
+        if completed_epoch and unit is not None:
+            completion_events.setdefault(unit[0], []).append((completed_epoch, process_name, total))
         if completed_epoch and 0 <= now_epoch - completed_epoch <= 60.0:
             recent_worker_task_rates.setdefault(worker_name, []).append(rate)
             recent_worker_task_rates.setdefault(process_name, []).append(rate)
@@ -5229,10 +5285,22 @@ def status_summary(
     for process in worker_processes:
         process["active"] = str(process.get("worker_id") or "").strip() in active_worker_ids
 
+    active_processes = [
+        str(row.get("worker_id") or row.get("worker") or "unknown")
+        for row in active
+        if row.get("state") in {"running", "claimed"}
+    ]
+    throughput = {
+        unit: rate
+        for unit, events in completion_events.items()
+        if (rate := process_throughput(events, active_processes, now_epoch)) is not None
+    }
+
     return {
         "tasks": len(manifest["tasks"]),
         "counts": counts,
         "active_count": counts["running"] + counts["claimed"] + counts["stale"],
+        "throughput": throughput,
         "groups": groups,
         "active": active,
         "pending": pending,
