@@ -5516,11 +5516,11 @@ def print_status_details(
             if isinstance(process_rows, list) and process_rows
             else len(active_rows)
         )
-        active_title = color_count_line("active workers", active_process_count, "yellow", color_enabled=color_enabled)
+        active_title = color_count_line("active processes", active_process_count, "yellow", color_enabled=color_enabled)
         print(f"{indent}{active_title}{suffix}")
         print_active_rows(active_rows)
     elif show_empty:
-        print(f"{indent}{color_count_line('active workers', 0, 'yellow', color_enabled=color_enabled)}")
+        print(f"{indent}{color_count_line('active processes', 0, 'yellow', color_enabled=color_enabled)}")
     if stale_rows:
         print(f"{indent}{color_count_line('stale', len(stale_rows), 'red', color_enabled=color_enabled)}")
         print_active_rows(stale_rows)
@@ -5528,7 +5528,7 @@ def print_status_details(
     if isinstance(process_rows, list) and process_rows:
         inactive_rows = [p for p in process_rows if not bool(p.get("active"))]
         if inactive_rows:
-            print(f"{indent}{color_count_line('inactive workers', len(inactive_rows), 'cyan', color_enabled=color_enabled)}")
+            print(f"{indent}{color_count_line('inactive processes', len(inactive_rows), 'cyan', color_enabled=color_enabled)}")
             for process in inactive_rows:
                 worker_id = str(process.get("worker_id") or "unknown")
                 state_name = str(process.get("state") or "unknown")

@@ -2029,7 +2029,7 @@ _HTML = r"""<!DOCTYPE html>
         const activeFieldText = activeFields.join(' ');
         const ws = display.active_summary_text ? renderChips(display.active_summary_text) : renderChips(activeFieldText);
         sections.push(makeSection(r.run, 'active',
-          `active workers: <b>${active.count}</b>`, 'yel',
+          `active processes: <b>${active.count}</b>`, 'yel',
           ws + renderTasks(active.tasks), false
         ));
       }
@@ -2037,7 +2037,7 @@ _HTML = r"""<!DOCTYPE html>
       const inactiveWorkers = (workers.processes || []).filter(p => !p.active);
       if (inactiveWorkers.length > 0) {
         sections.push(makeSection(r.run, 'workers',
-          `inactive workers: <b>${inactiveWorkers.length}</b>`, 'dim',
+          `inactive processes: <b>${inactiveWorkers.length}</b>`, 'dim',
           renderWorkerProcesses(inactiveWorkers), false
         ));
       }
