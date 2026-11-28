@@ -6039,10 +6039,27 @@ def record_sprt_completion(payload: dict[str, Any]) -> None:
     if "elo" not in metrics or "games" not in metrics:
         return
 
-    games_parts = metrics["games"].split("/")
-    if len(games_parts) != 2 or not all(part.isdigit() for part in games_parts):
-        return
-    games, requested_games = int(games_parts[0]), int(games_parts[1])
+    # The display abbreviates counts from 10000 on ("432/10k"), so the exact
+    # progress counters take precedence.
+    def parse_count(text: str) -> int | None:
+        scale = {"k": 1_000, "m": 1_000_000}.get(text[-1:].lower(), 1)
+        digits = text[:-1] if scale != 1 else text
+        try:
+            return int(float(digits) * scale)
+        except ValueError:
+            return None
+
+    done = payload.get("progress_done")
+    totals = payload.get("progress_totals")
+    games = done.get("games") if isinstance(done, dict) else None
+    requested_games = totals.get("games") if isinstance(totals, dict) else None
+    if not isinstance(games, int) or not isinstance(requested_games, int):
+        games_parts = metrics["games"].split("/")
+        if len(games_parts) != 2:
+            return
+        games, requested_games = parse_count(games_parts[0]), parse_count(games_parts[1])
+        if games is None or requested_games is None:
+            return
 
     commands = payload.get("commands")
     command_text = ""
